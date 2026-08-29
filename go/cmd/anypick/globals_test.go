@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
 )
 
@@ -218,8 +219,11 @@ func TestBareInvocationHonoursConfiguredSurface(t *testing.T) {
 		t.Fatalf("default bare invocation should print help, got: %.200q", out)
 	}
 
-	// Persisted tui surface: explain where the interactive experience lives
-	// and exit successfully — never a partial Go TUI.
+	// Persisted tui surface: honour it by actually opening the Go TUI. Under a
+	// test there is no TTY, so it must fail closed with the usage exit code
+	// (invariant #6) rather than print help and exit 0. The exit code is the
+	// assertion: 2 proves the configured surface reached runTuiSurface, where
+	// the old "ships with the TypeScript build" path returned 0.
 	a, closeFn, err := appReadyForTest()
 	if err != nil {
 		t.Fatal(err)
@@ -229,13 +233,26 @@ func TestBareInvocationHonoursConfiguredSurface(t *testing.T) {
 	}
 	closeFn()
 
-	out = captureStdout(t, func() {
-		if code := run(nil); code != 0 {
-			t.Fatalf("bare tui-surface exited %d", code)
-		}
+	// Make the precondition explicit instead of relying on it. `go test`
+	// inherits the caller's standard input, so running this suite from an
+	// interactive terminal hands runTuiSurface a real TTY and bubbletea then
+	// blocks waiting for keystrokes until the test binary times out.
+	devNull, derr := os.Open(os.DevNull)
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	defer devNull.Close()
+	realStdin := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = realStdin }()
+
+	var tuiCode int
+	captureStdout(t, func() {
+		tuiCode = run(nil)
 	})
-	if !strings.Contains(out, "TypeScript build") {
-		t.Fatalf("configured tui surface must explain, got: %.200q", out)
+	if tuiCode != int(anyerr.InvalidUsage) {
+		t.Fatalf("bare tui-surface exited %d, want %d (no TTY must fail closed)",
+			tuiCode, anyerr.InvalidUsage)
 	}
 
 	// Persisted tray surface resolves for dispatch (the app run itself needs

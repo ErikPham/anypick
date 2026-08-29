@@ -90,20 +90,7 @@ func run(args []string) int {
 	case "list":
 		code = cmdList(ctx, a, args[1:])
 	case "tui", "--tui":
-		// The terminal UI is a bubbletea program over the same services the
-		// CLI commands use (ADR 0020 §5, NATIVE-M7 row 3): native releases
-		// ship no Node runtime, so the Ink/React tree in src/tui cannot be the
-		// one users get.
-		if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			// Invariant #6: refusing to run without a TTY is a usage problem,
-			// not a failure of the user's data.
-			if errors.Is(err, tui.ErrNoTTY) {
-				return int(anyerr.InvalidUsage)
-			}
-			return int(anyerr.Operational)
-		}
-		return int(anyerr.Success)
+		return runTuiSurface(ctx, a)
 	case "app":
 		code = cmdAppRun(ctx, a, args[1:])
 	case "desktop-service":
@@ -179,8 +166,25 @@ func run(args []string) int {
 	return int(code)
 }
 
-// bareInvocation mirrors the TS default: open the configured desktop surface,
-// or explain where the interactive experience lives when it would be the TUI.
+// runTuiSurface opens the terminal UI and maps its failure to an exit code.
+//
+// The UI is a bubbletea program over the same services the CLI commands use
+// (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime, so the
+// Ink/React tree in src/tui cannot be the one users get.
+func runTuiSurface(ctx context.Context, a *app.App) int {
+	if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		// Invariant #6: refusing to run without a TTY is a usage problem,
+		// not a failure of the user's data.
+		if errors.Is(err, tui.ErrNoTTY) {
+			return int(anyerr.InvalidUsage)
+		}
+		return int(anyerr.Operational)
+	}
+	return int(anyerr.Success)
+}
+
+// bareInvocation mirrors the TS default: open the configured desktop surface.
 // The configured surface comes from ui.defaultSurface in global config — an
 // explicit, persisted policy (plan §Scope: never silently add a Go TUI).
 func bareInvocation(ctx context.Context, a *app.App) int {
@@ -188,15 +192,16 @@ func bareInvocation(ctx context.Context, a *app.App) int {
 	case "tray":
 		return cmdAppRun(ctx, a, nil)
 	case "tui":
-		fmt.Println("The interactive TUI ships with the TypeScript build of AnyPick.")
-		fmt.Println("Use `anypick --help` for the available commands.")
-		return int(anyerr.Success)
+		// The user asked for the terminal surface, so honour it. This is not
+		// the "silent" launch the policy forbids: the policy is about bare
+		// invocation with *no* configuration, which stays on help below.
+		return runTuiSurface(ctx, a)
 	default:
 		// Unconfigured keeps today's explicit policy: CLI help, not an
 		// accidental app launch. Native cutover may change this default, but
 		// only as a tested decision (ADR 0020 §6).
 		usage()
-		fmt.Println("\nThe interactive TUI ships with the TypeScript build; run `anypick tui` there.")
+		fmt.Println("\nRun `anypick tui` for the interactive terminal UI.")
 		return int(anyerr.Success)
 	}
 }
