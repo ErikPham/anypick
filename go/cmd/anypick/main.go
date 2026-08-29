@@ -34,6 +34,7 @@ import (
 	"github.com/outof0/anypick/go/internal/runtime"
 	"github.com/outof0/anypick/go/internal/store"
 	"github.com/outof0/anypick/go/internal/transport"
+	"github.com/outof0/anypick/go/internal/tui"
 )
 
 func main() {
@@ -89,11 +90,19 @@ func run(args []string) int {
 	case "list":
 		code = cmdList(ctx, a, args[1:])
 	case "tui", "--tui":
-		// Intentional difference (plan §Scope): the terminal UI belongs to the
-		// TypeScript build. Explain instead of silently failing or shipping a
-		// partial Go TUI.
-		fmt.Println("The interactive TUI ships with the TypeScript build of AnyPick.")
-		fmt.Println("Use `anypick --help` for the available commands.")
+		// The terminal UI is a bubbletea program over the same services the
+		// CLI commands use (ADR 0020 §5, NATIVE-M7 row 3): native releases
+		// ship no Node runtime, so the Ink/React tree in src/tui cannot be the
+		// one users get.
+		if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			// Invariant #6: refusing to run without a TTY is a usage problem,
+			// not a failure of the user's data.
+			if errors.Is(err, tui.ErrNoTTY) {
+				return int(anyerr.InvalidUsage)
+			}
+			return int(anyerr.Operational)
+		}
 		return int(anyerr.Success)
 	case "app":
 		code = cmdAppRun(ctx, a, args[1:])
