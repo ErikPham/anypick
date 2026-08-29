@@ -288,12 +288,6 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 		}
 	}()
 
-	if opts.Root == "" && os.Getenv("ANYPICK_HOME") == "" {
-		if merr := MigrateLegacyRootIfPristine(root); merr != nil {
-			return nil, nil, merr
-		}
-	}
-
 	a, err := New(root)
 	if err != nil {
 		return nil, nil, err
