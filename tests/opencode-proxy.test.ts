@@ -1725,9 +1725,13 @@ describe('opencode-proxy credential failover', () => {
     });
     const dir2 = await mkdtemp(join(tmpdir(), 'oc-failover-live-'));
     const liveAuthPath = join(dir2, 'auth.json');
-    await writeFile(liveAuthPath, JSON.stringify({ opencode: { type: 'api', key: 'sk-live-key' } }), {
-      mode: 0o600,
-    });
+    await writeFile(
+      liveAuthPath,
+      JSON.stringify({ opencode: { type: 'api', key: 'sk-live-key' } }),
+      {
+        mode: 0o600,
+      },
+    );
 
     const seenKeys: string[] = [];
     const up = await mockUpstream((url, headers) => {
@@ -1754,7 +1758,9 @@ describe('opencode-proxy credential failover', () => {
         body: JSON.stringify({
           id: 'c1',
           object: 'chat.completion',
-          choices: [{ message: { role: 'assistant', content: 'from-live-key' }, finish_reason: 'stop' }],
+          choices: [
+            { message: { role: 'assistant', content: 'from-live-key' }, finish_reason: 'stop' },
+          ],
         }),
       };
     });

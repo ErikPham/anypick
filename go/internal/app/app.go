@@ -57,11 +57,11 @@ type App struct {
 	Plugins     *plugins.Service
 	PluginStore *plugins.Store
 	// PluginRuntime contains digest-verified candidates and non-fatal package
-	// failures. JavaScript activation is owned by the isolated host, never this
-	// core process.
+	// failures. Nothing is activated: this build has no plugin host (ADR 0020
+	// §5), so every candidate degrades to a LoadFailure. See plugin_host.go.
 	PluginRuntime plugins.Runtime
-	// pluginSup owns the supervised host across generations: single-flight
-	// restart, activation replay, and close-vs-recovery arbitration.
+	// pluginSup holds the diagnostics surface that replaced the supervised
+	// host: startup failures and the inert health/identity view.
 	pluginSup *pluginSupervisor
 
 	closeOnce closeGuard
