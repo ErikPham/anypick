@@ -3,7 +3,10 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../../.." && pwd)"
+# Two levels up, not three: this script lives at macos/scripts, so
+# ../.. is the repository root. It used to be src/macos/scripts, where the
+# extra level was correct — the path was not adjusted when the tree moved.
+repo_root="$(cd "${script_dir}/../.." && pwd)"
 go_root="${repo_root}/go"
 destination_dir="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/Helpers"
 destination="${destination_dir}/anypick-core"
@@ -23,6 +26,13 @@ if [[ -z "${go_toolchain}" ]]; then
   echo "error: go/go.mod must pin the helper build toolchain." >&2
   exit 1
 fi
+
+# The ambient GOPATH on some machines points at another project's module
+# cache, which makes the build below stall in module resolution and look like
+# a hang. Pin the cache explicitly; GOMODCACHE can still be overridden from
+# the environment or an Xcode build setting.
+export GOMODCACHE="${GOMODCACHE:-${HOME}/go/pkg/mod}"
+echo "note: building anypick-core with GOMODCACHE=${GOMODCACHE}" >&2
 
 requested_archs="${ARCHS:-${CURRENT_ARCH:-${NATIVE_ARCH_ACTUAL:-$(uname -m)}}}"
 normalized_archs=()
@@ -71,6 +81,7 @@ for architecture in "${ordered_archs[@]}"; do
       CGO_ENABLED=0 \
       GOARCH="${go_arch}" \
       GOCACHE="${derived_dir}/go-build-cache" \
+      GOMODCACHE="${GOMODCACHE:-${HOME}/go/pkg/mod}" \
       GOOS=darwin \
       GOTOOLCHAIN="${go_toolchain}" \
       "${go_binary}" build \
@@ -113,5 +124,6 @@ fi
 
 app_bundle="${TARGET_BUILD_DIR}/${FULL_PRODUCT_NAME:-AnyPick.app}"
 # Full ADR 0020 contract (names, shebang, path leaks, symlink escape) — not
-# a filename-only check. Cross-tested against check-node-free-artifact.mjs.
+# a filename-only check. Cross-tested against the Go scanner in
+# go/internal/artifact, which rejects the same fixtures.
 /bin/bash "${script_dir}/check-node-free-app.sh" "${app_bundle}"
