@@ -102,13 +102,16 @@ NATIVE-M1 has no dependency cycle with NATIVE-M2/M5/M8.
 | Detached-child ownership = structured ADR-0003 records (hub/pool/supervisor), unix | adr/0003; src/utils/process.ts | go/internal/ownership; cmd/anypick/detached.go + internal/app SpawnHubChild + cmd/anypick/{hubcmd,lifecycle,pool}.go rewired | internal/ownership tests (legacy fail-closed, argv identity, health veto) | TestHubActivationAdoptsAndStopsChild through echo-gated stop; PID reuse cannot cause kills | macOS/Linux (unix) | **complete** | Numeric-PID adoption removed on every path; hub stop gated on /health instance echo, fails closed with HUB_OWNERSHIP_UNVERIFIED. Identity no longer depends on `/bin/ps` (sysctl on darwin, /proc on Linux) and records carry a start-time stamp against PID reuse. Windows equivalents split out to the NATIVE-M5 platform-primitives row (no M1→M5 cycle) |
 | Desktop protocol frame contract parity (limits, canonical validation, strict decode) + route-action semantics | src/tray/protocol.ts, src/tray/supervisor-actions.ts | go/internal/desktop/{protocol_validate.go, protocol_strict_test.go}, snapshot.go routeActivator → PlanActivation/Execute | boundary tests (64×16 entryIds, export cap 64, exact key sets); route_actions_test.go (gateway chip writes binding, cross-provider chip binds the client not the source provider, current-route re-invoke re-applies) | desktop protocol fixtures (NATIVE-M2 harness) | all | **complete** | Review P1-3 fixed limits (entryIds 64×16, export 64, setting-quota-guard rename); review round 3 fixed route actions bypassing the planner (no-op successes + wrong-scope account mutation on cross-provider chips) with regression coverage. Command/snapshot *completeness* lives in NATIVE-M2 rows and GO-PARITY-M9 by design |
 | Settings/login/cancellation/snapshot/quota-guard parity | src/core/config*, tray-settings, quota-guard-policy, providers login | internal/config, internal/desktop/server.go settings ops, internal/accounts login checkpoint/cancel, internal/upstream quota guard | settings_test.go; browserlogin escalation tests; TestLoginCancelInCommitWindowRollsBack; upstream -race suite | desktop login cancellation e2e (TestDesktopAccountLogin) | go | **partial** | Done: four setting mutations (+ typed launch-at-login host effect, ADR 0020 §7), persisted preferences, cancellable login/commit rollback, gateway refresh using stored secrets without echoing them, quota-guard policy + Retry-After semantics, restart of verified running pools after a Quota Guard toggle, and structured degraded conditions consumed by the native Overview. Open: snapshot sections still empty (activity, hubSources/hubConflicts, clientModelConfigs), quota-guard event surfacing, and Codex live-route sync after Hub changes (GO-PARITY-M6/M9) |
-| Legacy Node plugin-host containment and recovery provenance | adr/0012/0014; superseded ADR 0019 | scripts/plugin-host.mjs; internal/pluginhost; internal/app/plugin_runtime.go + plugin_supervisor.go | existing Node protocol + Go recovery/security suites | retained only until production removal has regression coverage | source/test only | **complete** | Bounded RPC, digest checks, cancellation, failure compensation, secret screening, owner-aware recovery and reader-atomic publication are implemented and green. ADR 0020 freezes further compatibility work: catalog model-policy and plugin-pool forwarding are cancelled for native cutover. NATIVE-M6 removes this host, its assets and environment injection from every shipped product path. |
+| Executable ESM plugin host removed; registry retained as an inert seam | adr/0012/0014/0015; superseded ADR 0019; ADR 0020 §5 | internal/app/plugin_host.go replaces internal/pluginhost + plugin_runtime.go + plugin_supervisor.go | plugins_test.go (every candidate degrades, tamper still refused, diagnostics inert); cmd/anypick/plugins_test.go; scripts/npm-launcher-test.mjs "must not ship" assertions | n/a — nothing executes | all | **complete** | Deleted 2026-08-29 in one Go+JS pass (`09ab7e1`): `go/internal/pluginhost` (2.117 LOC + 838 test), `app/plugin_runtime.go` (1.720), `app/plugin_supervisor.go` (1.016), `app/plugin_recovery_test.go` (1.407), `app/plugin_proxy_test.go` (750), `scripts/plugin-host.mjs` (729 + 399 test) and `plugins/popular-providers/` (498). What survives deliberately: `internal/plugins` (registry: manifests, whole-package digests, enable/disable, add/remove) and `cmd/anypick/plugins.go`, so `anypick plugin …` still works; `proxy.PluginLifecycle` and `internal/proxy/service_plugin.go`, which are now unimplemented but are the contract a Go-native declarative executor will satisfy. Every candidate degrades to a `LoadFailure` naming `ErrPluginHostRemoved` with `Untrusted == false`, so `doctor` and the desktop protocol stay authoritative instead of reporting a healthy empty plugin set; tampering is still caught in `Inspect` first. `healthView` reports `inactive` (not `degraded`) and `Identity()` returns the zero value, so `internal/proxy` fails closed. ADR 0012/0015 are partly inert until a Go declarative executor lands |
 
 ADR 0020 removes arbitrary executable JavaScript-plugin parity from the native
-release scope. The existing plugin-host row is retained as migration provenance
-and containment evidence; its catalog-policy and plugin-pool gaps are cancelled
-as native-cutover work. Removal from production composition and artifacts is
-tracked by NATIVE-M6.
+release scope; the host was deleted rather than kept as provenance (decision
+2026-08-29). Its catalog-policy and plugin-pool gaps are cancelled as
+native-cutover work. The 7 vendors that only existed in the deleted ESM pack
+(`ark`, `tokenhub`, `groq-cloud`, `together-ai`, `fireworks`, `cerebras`,
+`nvidia-nim`) were compiled into `provider.BuiltinDefinitions()` first
+(`a3646c3`, now 24 built-ins) so the deletion is not a silent regression;
+`TestEveryBuiltinCompatibleDefinitionIsValid` guards the table.
 
 Acceptance gate: not met. Gate = every remaining in-scope GO-PARITY row complete +
 cross-runtime fixture alternation + `-race` green + injected version + refuses
@@ -189,8 +192,8 @@ its own artifact before those shells are release-ready (ADR 0020 §9).
 | Work item | Authority | Implementation | Focused verification | End-to-end verification | Platforms | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Remove user-toolchain invocation from every production-native path | ADR 0020 §3 | launchers/build outputs | artifact scan fails on forbidden executables, scripts, dev absolute paths, or PATH expectations | restricted-PATH clean install | all | **partial** | JS and production shell scanners share `scripts/node-free-artifact-fixtures.mjs` and must agree. Cross-tests fail external/dangling symlinks, Node shebang, `/Users` after byte 4096, forbidden names, and stale plugin-host. Xcode/CI call the full shell contract. Clean-account restricted-PATH install remains |
-| Remove JavaScript plugin-host assets and activation from native composition | ADR 0020 §§3/5 | macOS bundle phase, Tauri resources/sidecar, Go desktop composition | build-tree and environment scan; built-ins/declarative compatible providers remain green | installed apps exercise first-party providers without Node present | all | **partial** | Xcode no longer copies plugin-host.mjs or ESM plugin packs; Tauri no longer ships those resources or injects ANYPICK_PLUGIN_HOST_*. **Decision 2026-08-29: delete the executable ESM host entirely rather than keep it as provenance** — `go/internal/pluginhost` (2.117 LOC) plus its importers (~2.700 LOC non-test: `app/plugin_runtime.go`, `app/plugin_supervisor.go`, proxy service_plugin paths), `scripts/plugin-host.mjs` (+ test), `plugins/popular-providers/`, the `ANYPICK_PLUGIN_HOST_*` branch in `bin/anypick.js`, `package.json` files entries, and the assertions in `scripts/npm-launcher-test.mjs` that require plugin-host.mjs inside the package. `internal/plugins` (declarative, ADR 0015) stays. Go and JS sides must be cut in one pass: `tests/plugins.test.ts` boots `plugins/popular-providers`. Installed first-party e2e without Node is still open |
-| First-party and declarative extension coverage is Go-owned | ADR 0015; ADR 0020 §5 | internal/app providers/clients/catalog + declarative compatible definitions | composition and provider suites without plugin-host env | clean install covers account, activation, proxy, pool, Hub and backup flows | all | **partial** | Most first-party behavior is in Go; native e2e and removal of product dependence on executable ESM plugins remain |
+| Remove JavaScript plugin-host assets and activation from native composition | ADR 0020 §§3/5 | macOS bundle phase, Tauri resources/sidecar, Go desktop composition | build-tree and environment scan; built-ins/declarative compatible providers remain green | installed apps exercise first-party providers without Node present | all | **complete** | Xcode and Tauri stopped copying plugin-host.mjs/ESM packs and injecting ANYPICK_PLUGIN_HOST_* earlier; the host itself is now gone (decision 2026-08-29, `09ab7e1`). Cut in one Go+JS pass because `tests/plugins.test.ts` booted `plugins/popular-providers`: `go/internal/pluginhost` (2.117 LOC + 838 test), `app/plugin_runtime.go` (1.720), `app/plugin_supervisor.go` (1.016), `app/plugin_recovery_test.go` (1.407), `app/plugin_proxy_test.go` (750), `scripts/plugin-host.mjs` (729 + 399 test), `plugins/popular-providers/` (498), the `ANYPICK_PLUGIN_HOST_*`/`ANYPICK_BUNDLED_PLUGINS` injection in `bin/anypick.js` and `scripts/dev-go.mjs`, and the `package.json` `files` entries. `scripts/npm-launcher-test.mjs` now asserts the packed tarball ships **no** `package/plugins/` or `package/scripts/` and that the child receives `injectedPluginEnv: []`. `internal/plugins` stays as the inert registry — see the NATIVE-M1 row for the seam contract. Installed first-party e2e without Node remains open |
+| First-party and declarative extension coverage is Go-owned | ADR 0015; ADR 0020 §5 | internal/app providers/clients/catalog + declarative compatible definitions | composition and provider suites without plugin-host env | clean install covers account, activation, proxy, pool, Hub and backup flows | all | **partial → no executable-plugin dependence remains** | Product dependence on executable ESM plugins is gone: the 7 vendors that lived only in the deleted pack are compiled into `provider.BuiltinDefinitions()` (24 built-ins, `a3646c3`) and `TestEveryBuiltinCompatibleDefinitionIsValid` validates every row (unique id, `NewCompatible` accepts it, HTTPS-only endpoint profiles, non-empty credential labels). Still open: a Go-native executor for third-party declarative packages (`internal/plugins` registers but cannot activate them), and clean-install e2e for account/activation/proxy/pool/Hub/backup |
 | Node-free artifact attestation and clean-install smoke | ADR 0020 §8 | release inspection scripts + per-OS installed tests | recursive contents/import/dependency scan | launch and core workflows on a clean account with restricted PATH | all | **partial** | Production `.app` gate now matches the JS scanner (names, plugin-host, shebang, full-file path leak ≤512 KiB, symlink escape/dangling). Malicious shared fixtures fail both scanners. Notarized install + restricted-PATH clean-account smoke remain |
 
 Acceptance gate: not met. Every native artifact must pass the recursive scan and
@@ -203,14 +206,15 @@ Dependencies: NATIVE-M1, NATIVE-M2, native release binaries.
 
 | Work item | Authority | Implementation | Focused verification | End-to-end verification | Platforms | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| npm launcher selects the platform Go binary; signals/stdio/exit codes/args pass through; single JSON stdout stream | ADR 0020 §4 | bin/anypick.js | launcher fixture tests | `npm exec` matches native CLI output/exit codes | npm | **partial** | Target detection and passthrough exist, but TUI/plugin-host dispatch and plugin-host environment injection must be removed; real per-platform npm smokes remain |
+| npm launcher selects the platform Go binary; signals/stdio/exit codes/args pass through; single JSON stdout stream | ADR 0020 §4 | bin/anypick.js | launcher fixture tests | `npm exec` matches native CLI output/exit codes | npm | **partial** | Target detection and passthrough exist; the plugin-host environment injection and the `scripts/plugin-host.mjs` / `plugins` package entries are gone (`09ab7e1`), so the native branch spawns the Go binary with no injected environment at all. Still open: the `isTuiInvocation` branch (blocked on the Go TUI port, NATIVE-M7 row 3) and real per-platform npm smokes |
 | Platform optionalDependency packages (@anypick/cli-*) with os/cpu/libc metadata; deterministic error when omitted | npmjs package.json docs | npm/cli-* manifests + workspace optionalDependencies + scripts/build-npm-binaries.mjs | manifest/launcher/staging/pack contract tests | install with omitted optional deps → clear error | npm | **partial** | Five manifests and a deterministic CGO-free Go staging script exist; it injects one version, validates Mach-O/ELF/PE target architecture/mode, prints SHA-256, and local dry-run packs contain exactly their binary. Publishing, target-runner installs/signing, and the `fs-ext` native-build requirement on the TS TUI path remain open |
 | Retire Node-only product behavior | ADR 0020 §4 | Go command surface + npm package exports/bin | banned-dispatch tests; semver-major migration notes for removed JS API/TUI surfaces | npm install exposes the same supported behavior as the platform Go binary | npm | missing | **Decision 2026-08-29: the TUI is ported to Go, not retired.** `anypick tui` currently prints that the interactive TUI ships with the TypeScript build (`go/cmd/anypick/main.go`), so the Go binary has no TUI at all. Port a minimal Go TUI (bubbletea) covering the screens in `src/tui` (14.486 LOC), then delete the Ink/React tree and the TUI branch in `bin/anypick.js`. Public JS APIs cannot keep a second service engine alive |
 | Trusted publishing/provenance kept | CONTRIBUTING.md release setup | release workflow | provenance on publish | publish dry-run | npm | **partial** | Workflow exists for TS package; extend for platform pkgs |
 
-Acceptance gate: in progress; launcher/manifests exist, but the launcher still
-contains TUI/plugin-host branches, no platform package contains a release
-binary, and no per-platform install smoke has passed.
+Acceptance gate: not met. Launcher/manifests exist and the launcher no longer
+injects any plugin-host environment, but it still contains a TUI branch (the Go
+TUI port is not done), no platform package contains a release binary, and no
+per-platform install smoke has passed.
 
 ## NATIVE-M8 — Multi-platform release pipeline
 
@@ -277,6 +281,19 @@ Acceptance gate: not started.
   `Ready()`, its SQLite inspection path, and its staging/rollback routine.
   `processAlive` moved to `internal/app/process.go`.
 
+- Executable ESM plugin host removed (2026-08-29): product decision 2, scoped
+  by a follow-up question to "delete the host, keep the registry" so `anypick
+  plugin …` survives as an inert seam. `09ab7e1` cut the Go and JS sides in one
+  pass (~8.500 LOC) because `tests/plugins.test.ts` booted the ESM pack;
+  `a3646c3` then compiled that pack's 7 unique vendors into
+  `provider.BuiltinDefinitions()` (17 → 24) so nothing regressed silently.
+  `internal/app/plugin_host.go` is the whole replacement: candidates degrade to
+  `ErrPluginHostRemoved` failures, diagnostics report `inactive`, and
+  `Identity()` returns the zero value so `internal/proxy` fails closed.
+  `internal/plugins`, `proxy.PluginLifecycle` and
+  `internal/proxy/service_plugin.go` stay — they are the contract a Go-native
+  declarative executor will satisfy, not dead code.
+
 - Architecture rebaseline (2026-08-26): ADR 0020 supersedes ADR 0019. Native
   downloads are full applications over one bundled Go core and contain no Node
   runtime or plugin-host script. npm is only a thin distribution adapter to the
@@ -289,9 +306,9 @@ Acceptance gate: not started.
   land with owner-aware per-plugin reconcile (cross-plugin takeover degrades
   only the offender), a reader-atomic publication gate released before host
   cleanup, and local-frame-rejection classification.
-  This is retained as legacy containment evidence. ADR 0020 cancels further
-  native-release investment in the private runtime; NATIVE-M6 removes it from
-  production composition and artifacts.
+  Deleted 2026-08-29 with the rest of the host (`09ab7e1`); the rows above
+  record the design that was superseded. ADR 0020 cancelled further
+  native-release investment in the private runtime.
 - Normalized milestone names: cutover milestones are NATIVE-M0…NATIVE-M9;
   `go/PARITY.md` milestones are nested workstreams GO-PARITY-M0…GO-PARITY-M10
   and are referenced as dependencies, never as the master phase.
