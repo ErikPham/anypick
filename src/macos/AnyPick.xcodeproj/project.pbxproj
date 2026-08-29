@@ -1,0 +1,650 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* DesignTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DesignTypes.swift */; };
+		100000000000000000000002 /* DesignFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* DesignFixture.swift */; };
+		100000000000000000000003 /* HubRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* HubRouting.swift */; };
+		100000000000000000000004 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
+		100000000000000000000005 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* Models.swift */; };
+		100000000000000000000006 /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* Store.swift */; };
+		100000000000000000000007 /* StoreTransfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* StoreTransfers.swift */; };
+		100000000000000000000008 /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* AppPreferences.swift */; };
+		100000000000000000000009 /* AppIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon.swift */; };
+		10000000000000000000000A /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* Motion.swift */; };
+		10000000000000000000000B /* ProductionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProductionModel.swift */; };
+		10000000000000000000000C /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* SharedUI.swift */; };
+		10000000000000000000000D /* BrandIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* BrandIcons.swift */; };
+		10000000000000000000000E /* AccountFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountFlows.swift */; };
+		10000000000000000000000F /* ProxyFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* ProxyFlows.swift */; };
+		100000000000000000000010 /* BackupFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* BackupFlows.swift */; };
+		100000000000000000000011 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* OverviewView.swift */; };
+		100000000000000000000012 /* AppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* AppsView.swift */; };
+		100000000000000000000013 /* AppDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AppDetailView.swift */; };
+		100000000000000000000014 /* AppSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AppSheets.swift */; };
+		100000000000000000000015 /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* AccountsView.swift */; };
+		100000000000000000000016 /* AccountDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* AccountDetailView.swift */; };
+		100000000000000000000017 /* ProxyHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000017 /* ProxyHubView.swift */; };
+		100000000000000000000018 /* ProxiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* ProxiesView.swift */; };
+		100000000000000000000019 /* ProxyDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* ProxyDetailView.swift */; };
+		10000000000000000000001A /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* ActivityView.swift */; };
+		10000000000000000000001B /* BackupsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* BackupsView.swift */; };
+		10000000000000000000001C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* SettingsView.swift */; };
+		10000000000000000000001D /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* SettingsPanes.swift */; };
+		10000000000000000000001E /* MenuBarChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001E /* MenuBarChrome.swift */; };
+		10000000000000000000001F /* MenuBarSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001F /* MenuBarSearch.swift */; };
+		100000000000000000000020 /* MenuBarMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* MenuBarMenu.swift */; };
+		100000000000000000000021 /* MenuBarHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* MenuBarHome.swift */; };
+		100000000000000000000022 /* MenuBarFirstRun.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* MenuBarFirstRun.swift */; };
+		100000000000000000000023 /* MenuBarUseWith.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* MenuBarUseWith.swift */; };
+		100000000000000000000024 /* MenuBarSwitching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* MenuBarSwitching.swift */; };
+		100000000000000000000025 /* MenuBarPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* MenuBarPreview.swift */; };
+		100000000000000000000026 /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* MainWindow.swift */; };
+		100000000000000000000027 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* AppDelegate.swift */; };
+		100000000000000000000028 /* AppEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* AppEntry.swift */; };
+		100000000000000000000029 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
+		10000000000000000000002A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
+		110000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000001 /* Assets.xcassets */; };
+		110000000000000000000002 /* brands in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000002 /* brands */; };
+		110000000000000000000003 /* anypick in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000003 /* anypick */; };
+		110000000000000000000004 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000004 /* icons */; };
+		110000000000000000000005 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000005 /* AppIcon.png */; };
+		120000000000000000000001 /* AnyPickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000001 /* AnyPickTests.swift */; };
+		120000000000000000000002 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
+		120000000000000000000003 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		900000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 600000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 500000000000000000000001;
+			remoteInfo = AnyPick;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* DesignTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTypes.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* DesignFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignFixture.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* HubRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRouting.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* SnapshotTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotTypes.swift; sourceTree = "<group>"; };
+		200000000000000000000005 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		200000000000000000000006 /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* StoreTransfers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTransfers.swift; sourceTree = "<group>"; };
+		200000000000000000000008 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
+		200000000000000000000009 /* AppIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIcon.swift; sourceTree = "<group>"; };
+		20000000000000000000000A /* Motion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Motion.swift; sourceTree = "<group>"; };
+		20000000000000000000000B /* ProductionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionModel.swift; sourceTree = "<group>"; };
+		20000000000000000000000C /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		20000000000000000000000D /* BrandIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandIcons.swift; sourceTree = "<group>"; };
+		20000000000000000000000E /* AccountFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFlows.swift; sourceTree = "<group>"; };
+		20000000000000000000000F /* ProxyFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyFlows.swift; sourceTree = "<group>"; };
+		200000000000000000000010 /* BackupFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupFlows.swift; sourceTree = "<group>"; };
+		200000000000000000000011 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
+		200000000000000000000012 /* AppsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsView.swift; sourceTree = "<group>"; };
+		200000000000000000000013 /* AppDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDetailView.swift; sourceTree = "<group>"; };
+		200000000000000000000014 /* AppSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSheets.swift; sourceTree = "<group>"; };
+		200000000000000000000015 /* AccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountsView.swift; sourceTree = "<group>"; };
+		200000000000000000000016 /* AccountDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDetailView.swift; sourceTree = "<group>"; };
+		200000000000000000000017 /* ProxyHubView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyHubView.swift; sourceTree = "<group>"; };
+		200000000000000000000018 /* ProxiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxiesView.swift; sourceTree = "<group>"; };
+		200000000000000000000019 /* ProxyDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyDetailView.swift; sourceTree = "<group>"; };
+		20000000000000000000001A /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		20000000000000000000001B /* BackupsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupsView.swift; sourceTree = "<group>"; };
+		20000000000000000000001C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		20000000000000000000001D /* SettingsPanes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPanes.swift; sourceTree = "<group>"; };
+		20000000000000000000001E /* MenuBarChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarChrome.swift; sourceTree = "<group>"; };
+		20000000000000000000001F /* MenuBarSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarSearch.swift; sourceTree = "<group>"; };
+		200000000000000000000020 /* MenuBarMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarMenu.swift; sourceTree = "<group>"; };
+		200000000000000000000021 /* MenuBarHome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarHome.swift; sourceTree = "<group>"; };
+		200000000000000000000022 /* MenuBarFirstRun.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarFirstRun.swift; sourceTree = "<group>"; };
+		200000000000000000000023 /* MenuBarUseWith.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarUseWith.swift; sourceTree = "<group>"; };
+		200000000000000000000024 /* MenuBarSwitching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarSwitching.swift; sourceTree = "<group>"; };
+		200000000000000000000025 /* MenuBarPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPreview.swift; sourceTree = "<group>"; };
+		200000000000000000000026 /* MainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindow.swift; sourceTree = "<group>"; };
+		200000000000000000000027 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		200000000000000000000028 /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
+		200000000000000000000029 /* AppServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServiceClient.swift; sourceTree = "<group>"; };
+		20000000000000000000002A /* GoServiceProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoServiceProcess.swift; sourceTree = "<group>"; };
+		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		220000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		220000000000000000000002 /* brands */ = {isa = PBXFileReference; lastKnownFileType = folder; name = brands; path = ../../design/assets/brands; sourceTree = "<group>"; };
+		220000000000000000000003 /* anypick */ = {isa = PBXFileReference; lastKnownFileType = folder; name = anypick; path = ../../design/assets/anypick; sourceTree = "<group>"; };
+		220000000000000000000004 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = ../tray/icons; sourceTree = "<group>"; };
+		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
+		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
+		240000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		240000000000000000000002 /* AnyPick.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AnyPick.entitlements; sourceTree = "<group>"; };
+		240000000000000000000003 /* bundle-go-helper.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "bundle-go-helper.sh"; sourceTree = "<group>"; };
+		240000000000000000000004 /* check-node-free-app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "check-node-free-app.sh"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		400000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		400000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		300000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				300000000000000000000002 /* Sources */,
+				300000000000000000000003 /* Resources */,
+				300000000000000000000004 /* Configuration */,
+				300000000000000000000005 /* Scripts */,
+				300000000000000000000006 /* AnyPickTests */,
+				300000000000000000000007 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		300000000000000000000002 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000001 /* DesignTypes.swift */,
+				200000000000000000000002 /* DesignFixture.swift */,
+				200000000000000000000003 /* HubRouting.swift */,
+				200000000000000000000004 /* SnapshotTypes.swift */,
+				200000000000000000000029 /* AppServiceClient.swift */,
+				20000000000000000000002A /* GoServiceProcess.swift */,
+				200000000000000000000005 /* Models.swift */,
+				200000000000000000000006 /* Store.swift */,
+				200000000000000000000007 /* StoreTransfers.swift */,
+				200000000000000000000008 /* AppPreferences.swift */,
+				200000000000000000000009 /* AppIcon.swift */,
+				20000000000000000000000A /* Motion.swift */,
+				20000000000000000000000B /* ProductionModel.swift */,
+				20000000000000000000000C /* SharedUI.swift */,
+				20000000000000000000000D /* BrandIcons.swift */,
+				20000000000000000000000E /* AccountFlows.swift */,
+				20000000000000000000000F /* ProxyFlows.swift */,
+				200000000000000000000010 /* BackupFlows.swift */,
+				200000000000000000000011 /* OverviewView.swift */,
+				200000000000000000000012 /* AppsView.swift */,
+				200000000000000000000013 /* AppDetailView.swift */,
+				200000000000000000000014 /* AppSheets.swift */,
+				200000000000000000000015 /* AccountsView.swift */,
+				200000000000000000000016 /* AccountDetailView.swift */,
+				200000000000000000000017 /* ProxyHubView.swift */,
+				200000000000000000000018 /* ProxiesView.swift */,
+				200000000000000000000019 /* ProxyDetailView.swift */,
+				20000000000000000000001A /* ActivityView.swift */,
+				20000000000000000000001B /* BackupsView.swift */,
+				20000000000000000000001C /* SettingsView.swift */,
+				20000000000000000000001D /* SettingsPanes.swift */,
+				20000000000000000000001E /* MenuBarChrome.swift */,
+				20000000000000000000001F /* MenuBarSearch.swift */,
+				200000000000000000000020 /* MenuBarMenu.swift */,
+				200000000000000000000021 /* MenuBarHome.swift */,
+				200000000000000000000022 /* MenuBarFirstRun.swift */,
+				200000000000000000000023 /* MenuBarUseWith.swift */,
+				200000000000000000000024 /* MenuBarSwitching.swift */,
+				200000000000000000000025 /* MenuBarPreview.swift */,
+				200000000000000000000026 /* MainWindow.swift */,
+				200000000000000000000027 /* AppDelegate.swift */,
+				200000000000000000000028 /* AppEntry.swift */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		300000000000000000000003 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				220000000000000000000001 /* Assets.xcassets */,
+				220000000000000000000005 /* AppIcon.png */,
+				220000000000000000000002 /* brands */,
+				220000000000000000000003 /* anypick */,
+				220000000000000000000004 /* icons */,
+			);
+			name = Resources;
+			sourceTree = "<group>";
+		};
+		300000000000000000000004 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				240000000000000000000001 /* Info.plist */,
+				240000000000000000000002 /* AnyPick.entitlements */,
+			);
+			name = Configuration;
+			sourceTree = "<group>";
+		};
+		300000000000000000000005 /* Scripts */ = {
+			isa = PBXGroup;
+			children = (
+				240000000000000000000003 /* bundle-go-helper.sh */,
+				240000000000000000000004 /* check-node-free-app.sh */,
+			);
+			name = Scripts;
+			path = scripts;
+			sourceTree = "<group>";
+		};
+		300000000000000000000006 /* AnyPickTests */ = {
+			isa = PBXGroup;
+			children = (
+				230000000000000000000001 /* AnyPickTests.swift */,
+			);
+			path = AnyPickTests;
+			sourceTree = "<group>";
+		};
+		300000000000000000000007 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				210000000000000000000001 /* AnyPick.app */,
+				210000000000000000000002 /* AnyPickTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* AnyPick */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 700000000000000000000002 /* Build configuration list for PBXNativeTarget "AnyPick" */;
+			buildPhases = (
+				400000000000000000000002 /* Sources */,
+				400000000000000000000001 /* Frameworks */,
+				400000000000000000000003 /* Resources */,
+				400000000000000000000004 /* Bundle Go Helper */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AnyPick;
+			productName = AnyPick;
+			productReference = 210000000000000000000001 /* AnyPick.app */;
+			productType = "com.apple.product-type.application";
+		};
+		500000000000000000000002 /* AnyPickTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 700000000000000000000003 /* Build configuration list for PBXNativeTarget "AnyPickTests" */;
+			buildPhases = (
+				400000000000000000000006 /* Sources */,
+				400000000000000000000005 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				900000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = AnyPickTests;
+			productName = AnyPickTests;
+			productReference = 210000000000000000000002 /* AnyPickTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		600000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					500000000000000000000001 = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					500000000000000000000002 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = 500000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = 700000000000000000000001 /* Build configuration list for PBXProject "AnyPick" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 300000000000000000000001;
+			productRefGroup = 300000000000000000000007 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				500000000000000000000001 /* AnyPick */,
+				500000000000000000000002 /* AnyPickTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		400000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				110000000000000000000001 /* Assets.xcassets in Resources */,
+				110000000000000000000005 /* AppIcon.png in Resources */,
+				110000000000000000000002 /* brands in Resources */,
+				110000000000000000000003 /* anypick in Resources */,
+				110000000000000000000004 /* icons in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		400000000000000000000004 /* Bundle Go Helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../go/go.mod",
+				"$(SRCROOT)/../../go/go.sum",
+				"$(SRCROOT)/scripts/bundle-go-helper.sh",
+				"$(SRCROOT)/scripts/check-node-free-app.sh",
+			);
+			name = "Bundle Go Helper";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/anypick-core",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "/bin/bash \"${SRCROOT}/scripts/bundle-go-helper.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		400000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000001 /* DesignTypes.swift in Sources */,
+				100000000000000000000002 /* DesignFixture.swift in Sources */,
+				100000000000000000000003 /* HubRouting.swift in Sources */,
+				100000000000000000000004 /* SnapshotTypes.swift in Sources */,
+				100000000000000000000029 /* AppServiceClient.swift in Sources */,
+				10000000000000000000002A /* GoServiceProcess.swift in Sources */,
+				100000000000000000000005 /* Models.swift in Sources */,
+				100000000000000000000006 /* Store.swift in Sources */,
+				100000000000000000000007 /* StoreTransfers.swift in Sources */,
+				100000000000000000000008 /* AppPreferences.swift in Sources */,
+				100000000000000000000009 /* AppIcon.swift in Sources */,
+				10000000000000000000000A /* Motion.swift in Sources */,
+				10000000000000000000000B /* ProductionModel.swift in Sources */,
+				10000000000000000000000C /* SharedUI.swift in Sources */,
+				10000000000000000000000D /* BrandIcons.swift in Sources */,
+				10000000000000000000000E /* AccountFlows.swift in Sources */,
+				10000000000000000000000F /* ProxyFlows.swift in Sources */,
+				100000000000000000000010 /* BackupFlows.swift in Sources */,
+				100000000000000000000011 /* OverviewView.swift in Sources */,
+				100000000000000000000012 /* AppsView.swift in Sources */,
+				100000000000000000000013 /* AppDetailView.swift in Sources */,
+				100000000000000000000014 /* AppSheets.swift in Sources */,
+				100000000000000000000015 /* AccountsView.swift in Sources */,
+				100000000000000000000016 /* AccountDetailView.swift in Sources */,
+				100000000000000000000017 /* ProxyHubView.swift in Sources */,
+				100000000000000000000018 /* ProxiesView.swift in Sources */,
+				100000000000000000000019 /* ProxyDetailView.swift in Sources */,
+				10000000000000000000001A /* ActivityView.swift in Sources */,
+				10000000000000000000001B /* BackupsView.swift in Sources */,
+				10000000000000000000001C /* SettingsView.swift in Sources */,
+				10000000000000000000001D /* SettingsPanes.swift in Sources */,
+				10000000000000000000001E /* MenuBarChrome.swift in Sources */,
+				10000000000000000000001F /* MenuBarSearch.swift in Sources */,
+				100000000000000000000020 /* MenuBarMenu.swift in Sources */,
+				100000000000000000000021 /* MenuBarHome.swift in Sources */,
+				100000000000000000000022 /* MenuBarFirstRun.swift in Sources */,
+				100000000000000000000023 /* MenuBarUseWith.swift in Sources */,
+				100000000000000000000024 /* MenuBarSwitching.swift in Sources */,
+				100000000000000000000025 /* MenuBarPreview.swift in Sources */,
+				100000000000000000000026 /* MainWindow.swift in Sources */,
+				100000000000000000000027 /* AppDelegate.swift in Sources */,
+				100000000000000000000028 /* AppEntry.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		400000000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				120000000000000000000001 /* AnyPickTests.swift in Sources */,
+				120000000000000000000002 /* AppServiceClient.swift in Sources */,
+				120000000000000000000003 /* SnapshotTypes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		900000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 500000000000000000000001 /* AnyPick */;
+			targetProxy = 900000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		800000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+		};
+			name = Debug;
+		};
+		800000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		800000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = AnyPick.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		800000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = AnyPick.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		800000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		800000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		700000000000000000000001 /* Build configuration list for PBXProject "AnyPick" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				800000000000000000000001 /* Debug */,
+				800000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		700000000000000000000002 /* Build configuration list for PBXNativeTarget "AnyPick" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				800000000000000000000003 /* Debug */,
+				800000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		700000000000000000000003 /* Build configuration list for PBXNativeTarget "AnyPickTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				800000000000000000000005 /* Debug */,
+				800000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 600000000000000000000001 /* Project object */;
+}

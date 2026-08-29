@@ -1,0 +1,7 @@
+{
+  "name": "popular-providers",
+  "version": "1.1.0",
+  "description": "Official API and coding-plan accounts for popular model vendors and inference clouds",
+  "apiVersion": 1,
+  "main": "index.mjs"
+}

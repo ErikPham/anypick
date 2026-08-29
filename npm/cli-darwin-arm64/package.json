@@ -1,0 +1,23 @@
+{
+  "name": "@anypick/cli-darwin-arm64",
+  "version": "1.0.0",
+  "description": "AnyPick native CLI for macOS arm64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outof0/anypick.git",
+    "directory": "npm/cli-darwin-arm64"
+  },
+  "files": [
+    "bin/anypick"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

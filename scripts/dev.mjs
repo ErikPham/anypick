@@ -2,7 +2,7 @@
 /**
  * Single local entry for the AnyPick app.
  *
- *   pnpm dev                 → interactive CLI / TUI from source
+ *   pnpm dev                 → native macOS app with menu-bar quick access
  *   pnpm dev --help
  *   pnpm dev list accounts
  *   pnpm dev tray start
@@ -20,6 +20,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
+const hasCommandOrOption = args.some((arg) => arg !== '--watch' && arg !== '--no-watch');
+const opensDefaultMacApp = process.platform === 'darwin' && !hasCommandOrOption;
+if (opensDefaultMacApp) {
+  args.push('--tray');
+}
 const entry = join(root, 'src', 'cli.ts');
 
 const require = createRequire(import.meta.url);
@@ -85,7 +90,7 @@ function shouldWatch(argv) {
   if (argv[0] === 'proxy' && argv[1] === 'serve') {
     return true;
   }
-  if (argv.includes('--tui')) {
+  if (argv.includes('--tui') || argv.includes('--tray')) {
     return true;
   }
   return false;

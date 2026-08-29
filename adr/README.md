@@ -21,6 +21,11 @@ immutable once accepted.
 | [0012](0012-plugin-trust-boundary.md) | Plugins are installed disabled, enabled by an explicit decision, pinned to a digest verified before `import()`, activated inside the sealing window, and never fatal. (EXT-01) | accepted, amended by [0014](0014-plugin-package-digest.md) |
 | [0013](0013-model-routed-proxy-hub.md) | One loopback Proxy Hub keeps provider model IDs unchanged, routes exact IDs only after explicit collision resolution, and gives each client a token-scoped manifest. (HUB-01) | accepted |
 | [0014](0014-plugin-package-digest.md) | The plugin trust pin is a SHA-256 of the whole package (not only `main`), verified before `import()`. (EXT-02) | accepted |
+| [0015](0015-declarative-compatible-provider-plugins.md) | Compatible provider plugins declare official endpoints and credential products; core owns snapshots, dual-protocol proxying, pools, and Hub backends. (EXT-03) | accepted |
+| [0016](0016-compatible-backend-capability-routing.md) | Compatible providers use a credential-aware backend and route native protocol surfaces only when every pool candidate declares the capability. (EXT-04) | accepted |
+| [0018](0018-macos-app-single-swift-tree.md) | macOS is one Dock app compiled from `src/macos/`. Fixture vs live is a data source, not a second Swift tree. | accepted |
+| [0019](0019-native-app-cutover-architecture.md) | The native app owns lifecycle over a bundled Go service on bounded, versioned stdio; host effects are narrow typed requests; the Node plugin-host and npm channel are documented exceptions. | superseded by [0020](0020-node-free-native-app-distribution.md) |
+| [0020](0020-node-free-native-app-distribution.md) | Native downloads are full desktop applications over one bundled Go engine, contain no Node runtime, and treat npm only as an optional distribution adapter. | accepted |
 
 ## Writing a new one
 

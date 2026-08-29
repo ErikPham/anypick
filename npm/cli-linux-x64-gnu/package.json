@@ -1,0 +1,26 @@
+{
+  "name": "@anypick/cli-linux-x64-gnu",
+  "version": "1.0.0",
+  "description": "AnyPick native CLI for Linux x64 (glibc)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outof0/anypick.git",
+    "directory": "npm/cli-linux-x64-gnu"
+  },
+  "files": [
+    "bin/anypick"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

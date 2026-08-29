@@ -1,38 +1,35 @@
-import { copyFile, mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
-const nativeSourceDir = resolve('src/tray/native');
-const nativeDestDir = resolve('dist/tray/native');
-await mkdir(nativeDestDir, { recursive: true });
+const macosSourceDir = resolve('src/macos');
+const macosDestDir = resolve('dist/macos');
+await mkdir(macosDestDir, { recursive: true });
 
-const manifest = await readFile(join(nativeSourceDir, 'sources.txt'), 'utf8').catch(() => '');
-const names = manifest
+const macosManifest = await readFile(join(macosSourceDir, 'sources.txt'), 'utf8');
+const macosFiles = macosManifest
   .split(/\r?\n/)
   .map((line) => line.trim())
   .filter((line) => line && !line.startsWith('#') && line.endsWith('.swift'));
-
-const files =
-  names.length > 0
-    ? names
-    : (await readdir(nativeSourceDir)).filter((name) => name.endsWith('.swift')).sort();
-
-for (const name of files) {
-  await copyFile(join(nativeSourceDir, name), join(nativeDestDir, name));
+if (macosFiles.length === 0) {
+  throw new Error('No Swift sources listed in src/macos/sources.txt.');
 }
-await writeFile(join(nativeDestDir, 'sources.txt'), `${files.join('\n')}\n`);
+for (const name of macosFiles) {
+  await copyFile(join(macosSourceDir, name), join(macosDestDir, name));
+}
+await writeFile(join(macosDestDir, 'sources.txt'), `${macosFiles.join('\n')}\n`);
 
-// Keep a short pointer so older tooling that looks for AnyPickTray.swift fails loudly
-// with a useful message instead of compiling a stale monolith.
 await mkdir(resolve('dist/tray'), { recursive: true });
 await writeFile(
   resolve('dist/tray/AnyPickTray.swift'),
   [
-    '// AnyPickTray.swift was split into src/tray/native/*.swift',
-    '// The build compiles every module listed in native/sources.txt.',
+    '// The macOS app lives in src/macos/. The build copies that tree to dist/macos/.',
     '// Do not add code here.',
     '',
   ].join('\n'),
 );
+
+const trayIconDir = resolve('dist/tray/icons');
+await mkdir(trayIconDir, { recursive: true });
 
 for (const icon of [
   'claude.svg',
@@ -43,13 +40,42 @@ for (const icon of [
   'kiro.svg',
   'grok.svg',
 ]) {
-  const iconSource = resolve('src/tray/icons', icon);
-  const iconDestination = resolve('dist/tray/icons', icon);
-  await mkdir(dirname(iconDestination), { recursive: true });
-  await copyFile(iconSource, iconDestination);
+  await copyFile(resolve('src/tray/icons', icon), join(trayIconDir, icon));
+}
+
+const brandMarks = [
+  'claude-mark.png',
+  'codex-app-dark.png',
+  'codex-app-light.png',
+  'openai-mark-dark.png',
+  'openai-mark-light.png',
+  'gemini-mark-v2.png',
+  'gemini-mark.png',
+  'kiro-app.png',
+  'openrouter-glyph-dark.png',
+  'openrouter-glyph-light.png',
+  'grok-mark-dark.png',
+  'grok-mark-light.png',
+  'opencode-mark-dark.png',
+  'opencode-mark-light.png',
+];
+for (const file of brandMarks) {
+  await copyFile(resolve('design/assets/brands', file), join(trayIconDir, file)).catch((error) => {
+    if (error && error.code === 'ENOENT') return;
+    throw error;
+  });
+}
+
+for (const file of ['app-icon-32.png', 'app-icon-64.png', 'app-icon-128.png']) {
+  await copyFile(resolve('design/assets/anypick', file), join(trayIconDir, file)).catch((error) => {
+    if (error && error.code === 'ENOENT') return;
+    throw error;
+  });
 }
 
 // Dock / Cmd-Tab brand mark for the minimal AnyPick.app bundle.
+const appIconDir = resolve('dist/tray/app-icons');
+await mkdir(appIconDir, { recursive: true });
 for (const icon of [
   'icon-16.png',
   'icon-32.png',
@@ -59,8 +85,5 @@ for (const icon of [
   'icon-512.png',
   'icon-1024.png',
 ]) {
-  const iconSource = resolve('assets', icon);
-  const iconDestination = resolve('dist/tray/app-icons', icon);
-  await mkdir(dirname(iconDestination), { recursive: true });
-  await copyFile(iconSource, iconDestination);
+  await copyFile(resolve('assets', icon), join(appIconDir, icon));
 }

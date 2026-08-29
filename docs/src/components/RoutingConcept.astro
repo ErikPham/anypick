@@ -1,0 +1,633 @@
+---
+import { Icon } from "astro-icon/components";
+
+interface Props {
+  variant: "hero" | "desktop";
+  class?: string;
+}
+
+const { variant, class: className } = Astro.props;
+---
+
+<figure class:list={["routing-concept", className]} data-variant={variant}>
+  <div class="concept-glow" aria-hidden="true"></div>
+  <div class="concept-frame">
+    <div class="concept-meta">
+      <span>Conceptual routing map</span>
+      <span class="concept-status"><i></i> Compatibility checked</span>
+    </div>
+
+    {variant === "hero" ? (
+      <div class="hero-map">
+        <section class="route-lane primary-lane" aria-labelledby="model-route-title">
+          <div class="lane-heading">
+            <div>
+              <p>Model-routed lane</p>
+              <strong class="concept-title" id="model-route-title">Compatible sources only</strong>
+            </div>
+            <span>Claude Code · Codex CLI</span>
+          </div>
+
+          <div class="route-flow">
+            <ul class="source-stack" aria-label="Compatible source types">
+              <li><Icon name="ph:identification-card" /><span>Account</span></li>
+              <li><Icon name="ph:cloud-arrow-up" /><span>Gateway</span></li>
+              <li><Icon name="ph:stack" /><span>Proxy Hub</span></li>
+            </ul>
+
+            <div class="flow-line" aria-hidden="true"><i></i></div>
+
+            <div class="anypick-node">
+              <div class="brand-mark"><Icon name="ph:path" /></div>
+              <div>
+                <strong>AnyPick</strong>
+                <span>resolve · plan · verify</span>
+              </div>
+              <small>direct or managed transport</small>
+            </div>
+
+            <div class="flow-line" aria-hidden="true"><i></i></div>
+
+            <ul class="client-stack" aria-label="Cross-provider routing clients">
+              <li><Icon name="ph:terminal-window" /><span>Claude Code</span></li>
+              <li><Icon name="ph:code" /><span>Codex CLI</span></li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="route-lane native-lane" aria-labelledby="native-route-title">
+          <div class="native-source">
+            <Icon name="ph:key" />
+            <div><span>Provider-matched login</span><strong>Native credentials</strong></div>
+          </div>
+          <div class="native-path" aria-hidden="true"><span>credential switch</span><i></i></div>
+          <div class="native-target">
+            <p id="native-route-title">Native-only lane</p>
+            <strong>Gemini · Kiro</strong>
+          </div>
+        </section>
+      </div>
+    ) : (
+      <div class="desktop-map">
+        <div class="selection-flow">
+          <section class="selection-sources" aria-labelledby="source-types-title">
+            <p id="source-types-title">Compatible source types</p>
+            <ul>
+              <li><Icon name="ph:user-circle" /><span>Saved account</span></li>
+              <li><Icon name="ph:cloud" /><span>Gateway</span></li>
+              <li><Icon name="ph:stack" /><span>Proxy Hub</span></li>
+            </ul>
+          </section>
+
+          <div class="selection-path" aria-hidden="true"><i></i><span>choose</span></div>
+
+          <section class="active-route" aria-labelledby="active-route-title">
+            <div class="route-pulse" aria-hidden="true"></div>
+            <Icon name="ph:arrows-left-right" />
+            <p>Active app route</p>
+            <strong class="concept-title" id="active-route-title">Compatible source applied</strong>
+            <span>planned · supervised · verified</span>
+          </section>
+        </div>
+
+        <ul class="route-outcomes" aria-label="Route controls and outcomes">
+          <li><Icon name="ph:list" /><span>Menu-bar switch</span></li>
+          <li><Icon name="ph:gauge" /><span>Usage when supported</span></li>
+          <li><Icon name="ph:shield-check" /><span>Local proxy when required</span></li>
+        </ul>
+      </div>
+    )}
+  </div>
+  <figcaption>
+    {variant === "hero"
+      ? "Two explicit paths: compatible model routing for Claude Code and Codex CLI, native credential switching for Gemini and Kiro."
+      : "A source-selection model—not a reproduction of the desktop interface."}
+  </figcaption>
+</figure>
+
+<style>
+  .routing-concept {
+    position: relative;
+    margin: 0;
+  }
+
+  .concept-glow {
+    position: absolute;
+    inset: 12% 8% 8%;
+    border-radius: 999px;
+    background: color-mix(in srgb, #7c3aed 42%, transparent);
+    filter: blur(76px);
+    opacity: 0.38;
+  }
+
+  .concept-frame {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 1.25rem;
+    background:
+      linear-gradient(135deg, rgb(124 58 237 / 0.08), transparent 38%),
+      #0d0e16;
+    box-shadow:
+      0 35px 90px rgb(0 0 0 / 0.42),
+      0 1px 0 rgb(255 255 255 / 0.06) inset;
+  }
+
+  .concept-frame::before {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.025) 1px, transparent 1px);
+    background-size: 2rem 2rem;
+    mask-image: linear-gradient(to bottom, black, transparent 85%);
+    content: "";
+    pointer-events: none;
+  }
+
+  .concept-meta {
+    position: relative;
+    display: flex;
+    min-height: 2.8rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid rgb(255 255 255 / 0.08);
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .concept-status {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: #a7f3d0;
+  }
+
+  .concept-status i {
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 999px;
+    background: #34d399;
+    box-shadow: 0 0 0.8rem rgb(52 211 153 / 0.75);
+  }
+
+  .hero-map,
+  .desktop-map {
+    position: relative;
+    padding: 1rem;
+  }
+
+  .route-lane {
+    position: relative;
+    border: 1px solid rgb(255 255 255 / 0.08);
+    border-radius: 0.95rem;
+    background: rgb(255 255 255 / 0.025);
+  }
+
+  .primary-lane {
+    padding: 1rem;
+  }
+
+  .lane-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 1px solid rgb(255 255 255 / 0.06);
+  }
+
+  .lane-heading p,
+  .native-target p,
+  .selection-sources > p,
+  .active-route p {
+    margin: 0;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .concept-title {
+    display: block;
+    margin-top: 0.22rem;
+    color: #f8fafc;
+    font-size: 0.9rem;
+    font-weight: 620;
+  }
+
+  .lane-heading > span {
+    color: #c4b5fd;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+  }
+
+  .route-flow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1.5rem minmax(8.5rem, 1.08fr) 1.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    padding-top: 1rem;
+  }
+
+  .source-stack,
+  .client-stack,
+  .selection-sources ul,
+  .route-outcomes {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .source-stack,
+  .client-stack {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  .source-stack li,
+  .client-stack li,
+  .selection-sources li {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid rgb(255 255 255 / 0.07);
+    border-radius: 0.6rem;
+    background: rgb(7 9 14 / 0.72);
+    color: #d8dbe4;
+    font-size: 0.68rem;
+  }
+
+  .source-stack svg,
+  .client-stack svg,
+  .selection-sources svg,
+  .route-outcomes svg {
+    width: 0.95rem;
+    height: 0.95rem;
+    flex: 0 0 auto;
+    color: #a78bfa;
+  }
+
+  .flow-line {
+    position: relative;
+    height: 1px;
+    background: linear-gradient(90deg, rgb(124 58 237 / 0.22), #a78bfa);
+  }
+
+  .flow-line i {
+    position: absolute;
+    top: -2px;
+    right: -1px;
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: #c4b5fd;
+    box-shadow: 0 0 0.75rem #7c3aed;
+  }
+
+  .anypick-node {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.8rem;
+    border: 1px solid rgb(167 139 250 / 0.34);
+    border-radius: 0.8rem;
+    background: linear-gradient(145deg, rgb(124 58 237 / 0.22), rgb(124 58 237 / 0.07));
+    box-shadow: 0 0 2.2rem rgb(124 58 237 / 0.14);
+  }
+
+  .brand-mark {
+    display: grid;
+    width: 2.15rem;
+    height: 2.15rem;
+    place-items: center;
+    border-radius: 0.62rem;
+    background: #7c3aed;
+    color: white;
+  }
+
+  .brand-mark svg {
+    width: 1.15rem;
+    height: 1.15rem;
+  }
+
+  .anypick-node strong {
+    display: block;
+    color: #f8fafc;
+    font-size: 0.8rem;
+  }
+
+  .anypick-node span,
+  .anypick-node small {
+    color: #aeb4c2;
+    font-family: var(--font-mono);
+    font-size: 0.5rem;
+  }
+
+  .anypick-node small {
+    grid-column: 1 / -1;
+    padding-top: 0.55rem;
+    border-top: 1px solid rgb(255 255 255 / 0.08);
+    color: #c4b5fd;
+    text-align: center;
+  }
+
+  .native-lane {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(5rem, 0.72fr) minmax(0, 0.8fr);
+    align-items: center;
+    gap: 0.8rem;
+    margin-top: 0.65rem;
+    padding: 0.75rem;
+  }
+
+  .native-source {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .native-source > svg {
+    width: 1.3rem;
+    height: 1.3rem;
+    flex: 0 0 auto;
+    color: #8b93a7;
+  }
+
+  .native-source span,
+  .native-path span {
+    display: block;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.52rem;
+  }
+
+  .native-source strong,
+  .native-target strong {
+    display: block;
+    margin-top: 0.15rem;
+    color: #d8dbe4;
+    font-size: 0.7rem;
+  }
+
+  .native-path {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .native-path i {
+    height: 1px;
+    flex: 1;
+    background: repeating-linear-gradient(90deg, #697386 0 3px, transparent 3px 6px);
+  }
+
+  .native-target {
+    padding-left: 0.75rem;
+    border-left: 1px solid rgb(255 255 255 / 0.08);
+  }
+
+  .selection-flow {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) 3.2rem minmax(0, 1.1fr);
+    align-items: center;
+    gap: 0.8rem;
+  }
+
+  .selection-sources,
+  .active-route {
+    padding: 1rem;
+    border: 1px solid rgb(255 255 255 / 0.08);
+    border-radius: 0.85rem;
+    background: rgb(255 255 255 / 0.025);
+  }
+
+  .selection-sources ul {
+    display: grid;
+    gap: 0.45rem;
+    margin-top: 0.75rem;
+  }
+
+  .selection-sources li:first-child {
+    border-color: rgb(167 139 250 / 0.3);
+    background: rgb(124 58 237 / 0.1);
+  }
+
+  .selection-path {
+    display: grid;
+    justify-items: center;
+    gap: 0.35rem;
+  }
+
+  .selection-path i {
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, #7c3aed, #c4b5fd);
+  }
+
+  .selection-path span {
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.52rem;
+  }
+
+  .active-route {
+    position: relative;
+    overflow: hidden;
+    border-color: rgb(167 139 250 / 0.28);
+    background: linear-gradient(145deg, rgb(124 58 237 / 0.18), rgb(255 255 255 / 0.025));
+  }
+
+  .active-route > svg {
+    width: 1.35rem;
+    height: 1.35rem;
+    margin-bottom: 1.5rem;
+    color: #c4b5fd;
+  }
+
+  .active-route > span {
+    display: block;
+    margin-top: 0.7rem;
+    color: #a7f3d0;
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+  }
+
+  .route-pulse {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: #34d399;
+    box-shadow: 0 0 1rem rgb(52 211 153 / 0.75);
+  }
+
+  .route-outcomes {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin-top: 0.8rem;
+  }
+
+  .route-outcomes li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem;
+    border: 1px solid rgb(255 255 255 / 0.07);
+    border-radius: 0.65rem;
+    background: rgb(7 9 14 / 0.68);
+    color: #aeb4c2;
+    font-size: 0.62rem;
+  }
+
+  figcaption {
+    position: relative;
+    margin-top: 0.8rem;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  @media (max-width: 40rem) {
+    .concept-meta {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .route-flow,
+    .native-lane,
+    .selection-flow {
+      grid-template-columns: 1fr;
+    }
+
+    .flow-line,
+    .native-path,
+    .selection-path {
+      width: 1px;
+      height: 1.25rem;
+      justify-self: center;
+      background: linear-gradient(#7c3aed, #c4b5fd);
+    }
+
+    .flow-line i,
+    .native-path span,
+    .native-path i,
+    .selection-path i,
+    .selection-path span {
+      display: none;
+    }
+
+    .source-stack,
+    .client-stack {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .source-stack li:last-child {
+      grid-column: 1 / -1;
+    }
+
+    .native-target {
+      padding: 0;
+      border: 0;
+      text-align: center;
+    }
+
+    .route-outcomes {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .concept-glow {
+      animation: ambient-breathe 7s ease-in-out infinite;
+    }
+
+    .concept-status i,
+    .route-pulse {
+      animation: route-pulse 2.4s ease-in-out infinite;
+    }
+
+    .flow-line i {
+      right: auto;
+      left: 0;
+      animation: signal-travel 2.8s ease-in-out infinite;
+    }
+
+    .route-flow > .flow-line:nth-child(4) i {
+      animation-delay: -1.4s;
+    }
+
+    .native-path i,
+    .selection-path i {
+      background-size: 200% 100%;
+      animation: path-shimmer 3.6s linear infinite;
+    }
+
+    .anypick-node,
+    .active-route {
+      animation: node-breathe 4.8s ease-in-out infinite;
+    }
+  }
+
+  @keyframes ambient-breathe {
+    50% {
+      opacity: 0.52;
+      transform: scale(1.04);
+    }
+  }
+
+  @keyframes route-pulse {
+    50% {
+      opacity: 0.55;
+      transform: scale(0.78);
+    }
+  }
+
+  @keyframes signal-travel {
+    0%,
+    12% {
+      opacity: 0;
+      transform: translateX(0) scale(0.7);
+    }
+
+    30% {
+      opacity: 1;
+    }
+
+    88%,
+    100% {
+      opacity: 0;
+      transform: translateX(1.5rem) scale(1);
+    }
+  }
+
+  @keyframes path-shimmer {
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  @keyframes node-breathe {
+    50% {
+      border-color: rgb(196 181 253 / 0.46);
+      box-shadow: 0 0 2.6rem rgb(124 58 237 / 0.2);
+    }
+  }
+</style>

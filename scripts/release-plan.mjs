@@ -7,7 +7,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cargoManifestPath = resolve(root, 'src/tray/tauri/src-tauri/Cargo.toml');
 const cargoLockPath = resolve(root, 'src/tray/tauri/src-tauri/Cargo.lock');
 const packagePath = resolve(root, 'package.json');
+const platformPackagePaths = [
+  'npm/cli-darwin-arm64/package.json',
+  'npm/cli-darwin-x64/package.json',
+  'npm/cli-linux-arm64-gnu/package.json',
+  'npm/cli-linux-x64-gnu/package.json',
+  'npm/cli-win32-x64/package.json',
+].map((path) => resolve(root, path));
 const tauriConfigPath = resolve(root, 'src/tray/tauri/src-tauri/tauri.conf.json');
+const xcodeProjectPath = resolve(root, 'src/macos/AnyPick.xcodeproj/project.pbxproj');
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function fail(message) {
@@ -43,18 +51,34 @@ function readCargoManifestVersion(source) {
 
 function readCargoLockVersion(source) {
   const entry = source.match(
-    /^\[\[package\]\]\s*\nname\s*=\s*"anypick-tray"\s*\nversion\s*=\s*"([^"]+)"/m,
+    /^\[\[package\]\]\s*\nname\s*=\s*"anypick-desktop"\s*\nversion\s*=\s*"([^"]+)"/m,
   );
-  if (!entry) fail('Cargo.lock does not contain the anypick-tray package');
+  if (!entry) fail('Cargo.lock does not contain the anypick-desktop package');
   return entry[1];
+}
+
+function readXcodeMarketingVersion(source) {
+  const versions = [...source.matchAll(/^\s*MARKETING_VERSION\s*=\s*([^;]+);\s*$/gm)].map((match) =>
+    match[1].trim(),
+  );
+  if (versions.length === 0) fail('Xcode project does not contain MARKETING_VERSION');
+  const unique = new Set(versions);
+  if (unique.size !== 1) {
+    fail(`Xcode MARKETING_VERSION values disagree: ${JSON.stringify(versions)}`);
+  }
+  return versions[0];
 }
 
 function readVersions() {
   const versions = {
     'package.json': readJson(packagePath).version,
+    ...Object.fromEntries(
+      platformPackagePaths.map((path) => [path.slice(root.length + 1), readJson(path).version]),
+    ),
     'Cargo.toml': readCargoManifestVersion(readFileSync(cargoManifestPath, 'utf8')),
     'Cargo.lock': readCargoLockVersion(readFileSync(cargoLockPath, 'utf8')),
     'tauri.conf.json': readJson(tauriConfigPath).version,
+    'Xcode MARKETING_VERSION': readXcodeMarketingVersion(readFileSync(xcodeProjectPath, 'utf8')),
   };
 
   for (const [source, version] of Object.entries(versions)) parseVersion(version, source);
@@ -231,6 +255,7 @@ function writeJsonVersion(path, version) {
 
 function writeVersions(version) {
   writeJsonVersion(packagePath, version);
+  for (const path of platformPackagePaths) writeJsonVersion(path, version);
   writeJsonVersion(tauriConfigPath, version);
 
   const manifest = readFileSync(cargoManifestPath, 'utf8');
@@ -245,11 +270,23 @@ function writeVersions(version) {
   const lock = readFileSync(cargoLockPath, 'utf8');
   const nextLock = replaceExactlyOnce(
     lock,
-    /(^\[\[package\]\]\s*\nname\s*=\s*"anypick-tray"\s*\nversion\s*=\s*")[^"]+("\s*$)/m,
+    /(^\[\[package\]\]\s*\nname\s*=\s*"anypick-desktop"\s*\nversion\s*=\s*")[^"]+("\s*$)/m,
     version,
     'Cargo.lock',
   );
   writeFileSync(cargoLockPath, nextLock);
+
+  const xcodeProject = readFileSync(xcodeProjectPath, 'utf8');
+  let xcodeVersionCount = 0;
+  const nextXcodeProject = xcodeProject.replace(
+    /^(\s*MARKETING_VERSION\s*=\s*)[^;]+(;\s*)$/gm,
+    (_match, prefix, suffix) => {
+      xcodeVersionCount += 1;
+      return `${prefix}${version}${suffix}`;
+    },
+  );
+  if (xcodeVersionCount === 0) fail('Xcode project does not contain MARKETING_VERSION');
+  writeFileSync(xcodeProjectPath, nextXcodeProject);
 
   const written = readVersions();
   if (written !== version) fail(`wrote ${version}, then read back ${written}`);
