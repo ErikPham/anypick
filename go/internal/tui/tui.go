@@ -6,6 +6,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 	"github.com/outof0/anypick/go/internal/app"
 )
 
@@ -42,15 +43,15 @@ func Run(ctx context.Context, a *app.App, stdin *os.File, stdout *os.File) error
 	return nil
 }
 
-// isTTY reports whether f is a character device. Used on stdin: the TUI reads
-// keys, so a pipe or a file is not a usable input.
+// isTTY reports whether f is a terminal that can deliver keystrokes.
+//
+// It must NOT be `Mode()&os.ModeCharDevice != 0`: /dev/null is a character
+// device too, so that test calls it a terminal and the TUI then starts, reads
+// nothing, and hangs — exactly what happens under cron, CI and `< /dev/null`.
+// isatty asks the terminal driver (TCGETS/isatty) instead.
 func isTTY(f *os.File) bool {
 	if f == nil {
 		return false
 	}
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(f.Fd())
 }

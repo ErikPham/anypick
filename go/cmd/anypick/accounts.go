@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mattn/go-isatty"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/lock"
@@ -107,12 +108,18 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
+// isTTY reports whether f is a terminal that a human can answer on.
+//
+// It must NOT be `Mode()&os.ModeCharDevice != 0`: /dev/null is a character
+// device too, so that check calls it a terminal. confirmDelete and
+// confirmPluginTrust then print a prompt and read stdin under cron and CI
+// instead of refusing outright, which breaks invariant #6 (never prompt
+// without a TTY) and gives scripts the wrong exit code.
 func isTTY(f *os.File) bool {
-	st, err := f.Stat()
-	if err != nil {
+	if f == nil {
 		return false
 	}
-	return st.Mode()&os.ModeCharDevice != 0
+	return isatty.IsTerminal(f.Fd())
 }
 
 func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
