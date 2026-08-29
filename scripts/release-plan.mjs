@@ -4,8 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const cargoManifestPath = resolve(root, 'src/tray/tauri/src-tauri/Cargo.toml');
-const cargoLockPath = resolve(root, 'src/tray/tauri/src-tauri/Cargo.lock');
 const packagePath = resolve(root, 'package.json');
 const platformPackagePaths = [
   'npm/cli-darwin-arm64/package.json',
@@ -14,7 +12,9 @@ const platformPackagePaths = [
   'npm/cli-linux-x64-gnu/package.json',
   'npm/cli-win32-x64/package.json',
 ].map((path) => resolve(root, path));
-const tauriConfigPath = resolve(root, 'src/tray/tauri/src-tauri/tauri.conf.json');
+// The desktop app is the Swift app in src/macos; the Tauri tray was removed
+// with the TypeScript engine, so its Cargo/tauri manifests are no longer
+// version sources.
 const xcodeProjectPath = resolve(root, 'src/macos/AnyPick.xcodeproj/project.pbxproj');
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -40,23 +40,6 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-function readCargoManifestVersion(source) {
-  const packageStart = source.search(/^\[package\]\s*$/m);
-  const nextSection = source.indexOf('\n[', packageStart + '[package]'.length);
-  const packageSection = source.slice(packageStart, nextSection === -1 ? undefined : nextSection);
-  const version = packageSection?.match(/^version\s*=\s*"([^"]+)"\s*$/m)?.[1];
-  if (!version) fail('Cargo.toml does not contain package.version');
-  return version;
-}
-
-function readCargoLockVersion(source) {
-  const entry = source.match(
-    /^\[\[package\]\]\s*\nname\s*=\s*"anypick-desktop"\s*\nversion\s*=\s*"([^"]+)"/m,
-  );
-  if (!entry) fail('Cargo.lock does not contain the anypick-desktop package');
-  return entry[1];
-}
-
 function readXcodeMarketingVersion(source) {
   const versions = [...source.matchAll(/^\s*MARKETING_VERSION\s*=\s*([^;]+);\s*$/gm)].map((match) =>
     match[1].trim(),
@@ -75,9 +58,6 @@ function readVersions() {
     ...Object.fromEntries(
       platformPackagePaths.map((path) => [path.slice(root.length + 1), readJson(path).version]),
     ),
-    'Cargo.toml': readCargoManifestVersion(readFileSync(cargoManifestPath, 'utf8')),
-    'Cargo.lock': readCargoLockVersion(readFileSync(cargoLockPath, 'utf8')),
-    'tauri.conf.json': readJson(tauriConfigPath).version,
     'Xcode MARKETING_VERSION': readXcodeMarketingVersion(readFileSync(xcodeProjectPath, 'utf8')),
   };
 
@@ -256,26 +236,6 @@ function writeJsonVersion(path, version) {
 function writeVersions(version) {
   writeJsonVersion(packagePath, version);
   for (const path of platformPackagePaths) writeJsonVersion(path, version);
-  writeJsonVersion(tauriConfigPath, version);
-
-  const manifest = readFileSync(cargoManifestPath, 'utf8');
-  const nextManifest = replaceExactlyOnce(
-    manifest,
-    /(^\[package\]\s*$[\s\S]*?^version\s*=\s*")[^"]+("\s*$)/m,
-    version,
-    'Cargo.toml',
-  );
-  writeFileSync(cargoManifestPath, nextManifest);
-
-  const lock = readFileSync(cargoLockPath, 'utf8');
-  const nextLock = replaceExactlyOnce(
-    lock,
-    /(^\[\[package\]\]\s*\nname\s*=\s*"anypick-desktop"\s*\nversion\s*=\s*")[^"]+("\s*$)/m,
-    version,
-    'Cargo.lock',
-  );
-  writeFileSync(cargoLockPath, nextLock);
-
   const xcodeProject = readFileSync(xcodeProjectPath, 'utf8');
   let xcodeVersionCount = 0;
   const nextXcodeProject = xcodeProject.replace(

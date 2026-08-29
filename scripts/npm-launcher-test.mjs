@@ -14,11 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  LauncherError,
-  platformTarget,
-  resolveNativeBinary,
-} from '../bin/anypick.js';
+import { LauncherError, platformTarget, resolveNativeBinary } from '../bin/anypick.js';
 
 const root = resolve(import.meta.dirname, '..');
 const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
