@@ -208,13 +208,14 @@ Dependencies: NATIVE-M1, NATIVE-M2, native release binaries.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | npm launcher selects the platform Go binary; signals/stdio/exit codes/args pass through; single JSON stdout stream | ADR 0020 §4 | bin/anypick.js | launcher fixture tests | `npm exec` matches native CLI output/exit codes | npm | **partial** | Target detection and passthrough exist; the plugin-host environment injection and the `scripts/plugin-host.mjs` / `plugins` package entries are gone (`09ab7e1`), so the native branch spawns the Go binary with no injected environment at all. Still open: the `isTuiInvocation` branch (blocked on the Go TUI port, NATIVE-M7 row 3) and real per-platform npm smokes |
 | Platform optionalDependency packages (@anypick/cli-*) with os/cpu/libc metadata; deterministic error when omitted | npmjs package.json docs | npm/cli-* manifests + workspace optionalDependencies + scripts/build-npm-binaries.mjs | manifest/launcher/staging/pack contract tests | install with omitted optional deps → clear error | npm | **partial** | Five manifests and a deterministic CGO-free Go staging script exist; it injects one version, validates Mach-O/ELF/PE target architecture/mode, prints SHA-256, and local dry-run packs contain exactly their binary. Publishing, target-runner installs/signing, and the `fs-ext` native-build requirement on the TS TUI path remain open |
-| Retire Node-only product behavior | ADR 0020 §4 | Go command surface + npm package exports/bin | banned-dispatch tests; semver-major migration notes for removed JS API/TUI surfaces | npm install exposes the same supported behavior as the platform Go binary | npm | missing | **Decision 2026-08-29: the TUI is ported to Go, not retired.** `anypick tui` currently prints that the interactive TUI ships with the TypeScript build (`go/cmd/anypick/main.go`), so the Go binary has no TUI at all. Port a minimal Go TUI (bubbletea) covering the screens in `src/tui` (14.486 LOC), then delete the Ink/React tree and the TUI branch in `bin/anypick.js`. Public JS APIs cannot keep a second service engine alive |
+| Port the interactive TUI to Go | ADR 0020 §4/§5 | go/internal/tui (bubbletea + lipgloss), wired in `go/cmd/anypick/main.go` case `"tui"` | 19 unit tests over the model and the pure display layer; pty smoke drives real keystrokes and asserts a clean exit | `anypick tui` in a real terminal lists providers, opens accounts, switches, starts/stops proxies | all | **partial → v1 landed** | **Decision 2026-08-29: the TUI is ported to Go, not retired.** `go/internal/tui` now covers the core loop: provider home (live-login relation, saved count, proxy state) → account list → detail, with use/switch, save-live, proxy start/stop, delete-behind-confirmation, reload and help. It calls the services directly (`a.Accounts`, `a.Proxy`, `a.Store`, `a.Providers`) because the CLI handlers live in `package main` and cannot be reused. `deriveLiveRelation`, `formatProxyLabel`, `identityDisplayText` and `formatRelativeTime` are ported verbatim from `src/tui/model/identity.ts` so both trees agree while both exist. Invariant #2 is enforced structurally: `StartResult.Token` is discarded, only the endpoint is shown. Invariant #6: `Run` refuses to start without a TTY on stdin and exits 2 with an actionable message. Deferred (deliberately, as the non-core surface): gateway CRUD, Hub routing, app bindings and the model-map editors. Remaining work is *deletion*, not porting: remove `src/tui` and the `isTuiInvocation` branch in `bin/anypick.js` |
 | Trusted publishing/provenance kept | CONTRIBUTING.md release setup | release workflow | provenance on publish | publish dry-run | npm | **partial** | Workflow exists for TS package; extend for platform pkgs |
 
 Acceptance gate: not met. Launcher/manifests exist and the launcher no longer
-injects any plugin-host environment, but it still contains a TUI branch (the Go
-TUI port is not done), no platform package contains a release binary, and no
-per-platform install smoke has passed.
+injects any plugin-host environment. The Go TUI now exists, so the
+`isTuiInvocation` branch in `bin/anypick.js` is only waiting on deleting
+`src/tui`; no platform package contains a release binary, and no per-platform
+install smoke has passed.
 
 ## NATIVE-M8 — Multi-platform release pipeline
 
@@ -280,6 +281,17 @@ Acceptance gate: not started.
   `internal/app/legacy.go` is gone, along with its bootstrap branch in
   `Ready()`, its SQLite inspection path, and its staging/rollback routine.
   `processAlive` moved to `internal/app/process.go`.
+
+- Minimal Go TUI landed (2026-08-29): product decision 1. `anypick tui` was a
+  stub that printed "ships with the TypeScript build"; it is now a bubbletea
+  program in `go/internal/tui`. Dependency pinned to **bubbletea v1.3.6**, not
+  v1.3.10 — the newer release needs go >= 1.24 and CI pins Go 1.23, so
+  `@latest` would have bumped the module directive behind the team's back.
+  Verified by 19 unit tests plus a pty harness that sends real keystrokes
+  (home→enter→esc→q and help→esc→q both exit 0). An earlier "TUI does not quit"
+  reading was a bug in the harness, not the program: the pty master raises EIO
+  when the child exits, and the script broke out of its loop without recording
+  the exit code.
 
 - Executable ESM plugin host removed (2026-08-29): product decision 2, scoped
   by a follow-up question to "delete the host, keep the registry" so `anypick
