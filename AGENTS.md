@@ -4,8 +4,8 @@ AnyPick points AI coding clients at AI accounts you already have. It rewrites
 other tools' credential and config files and spawns local proxies, so a careless
 change corrupts a developer's real logins. Bias toward verifying over assuming.
 
-The engine is **Go** (`go/`): CLI, terminal UI and desktop service all run from
-one bundled binary (ADR 0020). The macOS app is Swift (`macos/`). npm is a
+The engine is **Go** (`src/go/`): CLI, terminal UI and desktop service all run from
+one bundled binary (ADR 0020). The macOS app is Swift (`src/macos/`). npm is a
 distribution adapter — `bin/anypick.js` resolves the platform Go binary and
 spawns it; it ships no TypeScript and needs no Node runtime to do real work.
 
@@ -23,7 +23,7 @@ make test                      # go test ./... -count=1
 make test-race                 # the same under -race
 make vet
 make fmt-check                 # fails if anything is not gofmt-clean
-make build                     # -> go/bin/anypick-dev
+make build                     # -> src/go/bin/anypick-dev
 
 make run ARGS="providers"      # build, then run a command
 make sandbox ARGS="providers"  # same, against a throwaway HOME + ANYPICK_HOME
@@ -32,7 +32,7 @@ make release-check             # VERSION and Xcode MARKETING_VERSION agree
 make release-bump PART=patch   # also: make release-set VERSION=1.2.3
 make artifact-check ROOT=path  # ADR 0020 §8: no Node runtime in the artifact
 
-make app                       # open macos/AnyPick.xcodeproj
+make app                       # open src/macos/AnyPick.xcodeproj
 make app-test                  # xcodebuild unit tests
 ```
 
@@ -72,11 +72,11 @@ run it against the wrong project.
 | Question | Read |
 | --- | --- |
 | How is this layered? What do I implement to add a client/provider? | `CONTRIBUTING.md` |
-| How does everything wire together? | `go/internal/app/app.go` — the composition root |
+| How does everything wire together? | `src/go/internal/app/app.go` — the composition root |
 | *Why* is it like this? | `adr/` — cite records by number |
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
-| How must the macOS app look and behave? | `macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
+| How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
 
 Do not edit an accepted ADR to reflect new thinking; write a new one and mark the
 old superseded.
@@ -85,16 +85,16 @@ old superseded.
 
 Breaking one of these is a correctness or security regression, not a style nit.
 
-1. **Capability pairs come from `TransportFor`** in `go/internal/transport`.
+1. **Capability pairs come from `TransportFor`** in `src/go/internal/transport`.
    `claude`, `codex`, and `opencode` may accept a source from a different
    provider; `gemini` and `kiro` return `unsupported` for anything but their
-   own. `go/internal/client` lists what *exists*, not what is *allowed* — never
+   own. `src/go/internal/client` lists what *exists*, not what is *allowed* — never
    infer a pairing from the registry, and never publish one in docs or marketing
    copy without reading the adapter.
 2. **Proxy secrets never cross an output boundary.** Every local proxy
    authenticates each request with a per-instance secret (ADR 0006) and binds
    loopback only. `StartResult.Token` is deliberately discarded by every
-   caller — the CLI, the TUI (`go/internal/tui/toggleProxyCmd`) and the desktop
+   caller — the CLI, the TUI (`src/go/internal/tui/toggleProxyCmd`) and the desktop
    protocol all surface the endpoint only. JSON output lands in CI logs.
 3. **Activation is planned, journalled, then executed.** `ActivationPlan.steps`
    is the single source of truth for both execution and rollback; the executor
@@ -136,29 +136,29 @@ Breaking one of these is a correctness or security regression, not a style nit.
   `t.TempDir()` and `app.Options{SkipMigrate: true}`. Never let a test reach the
   developer's real `~/.anypick`.
 - **The help tree has a golden.** `cmd/anypick/help_parity_test.go` compares the
-  command tree against `go/testdata/parity/cli-tree.json`; adding or renaming a
+  command tree against `src/go/testdata/parity/cli-tree.json`; adding or renaming a
   command fails until the fixture is regenerated.
 - CI runs on `ubuntu-latest` and `windows-latest` for Go, plus macOS for the
   app. Do not claim support for platforms the release matrix does not build.
 - The Codex desktop app keeps its own signed-in ChatGPT account and does **not**
   follow a switch of `~/.codex/auth.json`. AnyPick only detects the mismatch in
-  order to suppress the quota readout (`go/internal/provider/codex.go`).
-- **macOS chrome has one contract.** `macos/` is a System Settings
+  order to suppress the quota readout (`src/go/internal/provider/codex.go`).
+- **macOS chrome has one contract.** `src/macos/` is a System Settings
   clone (grouped `Form`, system controls, no cards). Pencil boards are IA/copy
   only. A prompt that says “native SwiftUI” is not enough if leftover tray
   cards or RGB tokens are treated as references.
 - **`MenuBarExtra` is the `.window` Power Quick Panel.** Production and the
-  fixture both host `macos/MenuBarMenu.swift`, matching Pencil node
+  fixture both host `src/macos/MenuBarMenu.swift`, matching Pencil node
   `m0s8el`. Do not replace it with a text-only menu. With no fixture variables
   set the app launches the regular macOS app and main window; the menu-bar extra
   remains a quick-access surface. Service rows must provide complete start/stop
   and restart actions; detailed configuration stays in the full app.
 - **String-scan app tests lag the contract.** If a test fights
-  `macos/README.md`, update the test.
+  `src/macos/README.md`, update the test.
 - **Native app bundles are Node-free (ADR 0020).** Do not copy a private Node
   runtime, an npm/pnpm/tsx shim, an ESM plugin pack, or source-tree absolute
   paths into `AnyPick.app`. Two gates enforce it and both must reject the same
-  shapes: `macos/scripts/check-node-free-app.sh` (shell, used by Xcode) and
+  shapes: `src/macos/scripts/check-node-free-app.sh` (shell, used by Xcode) and
   `go run ./cmd/anypick-artifact node-free <root>` (Go, used by CI).
 
 ## macOS SwiftUI (System Settings)
@@ -166,7 +166,7 @@ Breaking one of these is a correctness or security regression, not a style nit.
 The macOS app’s main window must look like an app Apple could ship:
 **System Settings structure**, not a website imitating macOS.
 
-- **Edit `macos/`** for the app scene, panes, sheets, menu-bar content,
+- **Edit `src/macos/`** for the app scene, panes, sheets, menu-bar content,
   and the production store/bridge. Fixture vs live is a data source, not a
   second app.
 - **Use** `NavigationSplitView`, `List` (`.sidebar`), `Form` (`.grouped`),
@@ -184,7 +184,7 @@ The macOS app’s main window must look like an app Apple could ship:
 - Preview with `pnpm macos:design`. Audit with the design-checklist skill
   routed `--surface desktop-app --artifact preferences --platform macos`.
 - Full allowed/forbidden list, pane recipe, IA table, and current
-  deviations: `macos/README.md`.
+  deviations: `src/macos/README.md`.
 
 ## Conventions
 

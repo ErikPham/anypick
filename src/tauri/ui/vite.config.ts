@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 const root = import.meta.dirname;
-const repoRoot = resolve(root, '../..');
+const repoRoot = resolve(root, '../../..');
 const require = createRequire(import.meta.url);
 const reactPath = dirname(require.resolve('react/package.json'));
 const reactDomPath = dirname(require.resolve('react-dom/package.json'));

@@ -115,10 +115,10 @@
 		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		220000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		220000000000000000000002 /* brands */ = {isa = PBXFileReference; lastKnownFileType = folder; name = brands; path = ../design/assets/brands; sourceTree = "<group>"; };
-		220000000000000000000003 /* anypick */ = {isa = PBXFileReference; lastKnownFileType = folder; name = anypick; path = ../design/assets/anypick; sourceTree = "<group>"; };
+		220000000000000000000002 /* brands */ = {isa = PBXFileReference; lastKnownFileType = folder; name = brands; path = ../../design/assets/brands; sourceTree = "<group>"; };
+		220000000000000000000003 /* anypick */ = {isa = PBXFileReference; lastKnownFileType = folder; name = anypick; path = ../../design/assets/anypick; sourceTree = "<group>"; };
 		220000000000000000000004 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Resources/icons; sourceTree = "<group>"; };
-		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../assets/icon-1024.png; sourceTree = "<group>"; };
+		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
 		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
 		240000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		240000000000000000000002 /* AnyPick.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AnyPick.entitlements; sourceTree = "<group>"; };

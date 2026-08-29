@@ -20,7 +20,7 @@ or **System Settings → Battery**, it is the wrong change.
 
 1. This file and the macOS section in repo-root `AGENTS.md`.
 2. Apple HIG for macOS — Settings, Windows, Sidebars, Menus, Alerts,
-   Accessibility: <https://developer.apple.com/design/human-interface-guidelines/designing-for-macos/>
+   Accessibility: <https://developer.apple.com/design/human-interface-guidelines/designing-for-src/macos/>
 3. The shipped System Settings app on the machine you are designing on.
    Open it. Match spacing, control kinds, and pane rhythm. Do not guess.
 4. Product vocabulary and pane/sheet **content** in `design/design.pen`.
@@ -85,7 +85,7 @@ ANYPICK_MACOS_APPEARANCE=dark
 Compile-only check of the Swift tree:
 
 ```bash
-xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
+xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
 ```
 

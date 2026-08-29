@@ -24,11 +24,11 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
           go-version: '1.26'
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: src/go/go.sum
 
       - name: gofmt
         run: |
-          cd go
+          cd src/go
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "::error::these files are not gofmt-clean:"
@@ -37,10 +37,10 @@ jobs:
           fi
 
       - name: Vet
-        run: cd go && go vet ./...
+        run: cd src/go && go vet ./...
 
       - name: Release versions are synchronized
-        run: cd go && go run ./cmd/anypick-release check
+        run: cd src/go && go run ./cmd/anypick-release check
 
   go:
     name: Go / Vet & Test
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
           go-version: '1.26'
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: src/go/go.sum
       - name: Vet
         working-directory: go
         run: go vet ./...
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
           go-version: '1.26'
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: src/go/go.sum
       - name: Test native Windows process, lock, proxy, and CLI paths
         working-directory: go
         run: go test ./... -count=1
@@ -83,20 +83,20 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
           go-version: '1.26'
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: src/go/go.sum
       - name: Unit-test app and bundled helper contract
         run: >-
-          xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick
+          xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick
           -configuration Debug -destination 'platform=macOS'
           CODE_SIGNING_ALLOWED=NO test
       - name: Smoke-test the app-owned bundled service
         run: |
           app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/AnyPick.app' -print -quit)"
           test -n "$app"
-          macos/scripts/smoke-app-service.sh "$app"
+          src/macos/scripts/smoke-app-service.sh "$app"
       - name: Build unsigned universal structure
         run: >-
-          xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick
+          xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick
           -configuration Release -destination 'generic/platform=macOS'
           ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
       - name: Verify both app and helper architectures
@@ -112,7 +112,7 @@ jobs:
             'x86_64 arm64'|'arm64 x86_64') ;;
             *) exit 1 ;;
           esac
-          macos/scripts/check-node-free-app.sh "$app"
+          src/macos/scripts/check-node-free-app.sh "$app"
 
   docs:
     name: Docs / Typecheck / Lint / Build

@@ -8,7 +8,7 @@ const VERSION_SYMBOL: &str = "github.com/outof0/anypick/go/internal/buildinfo.Ve
 fn main() {
     println!("cargo:rerun-if-env-changed=ANYPICK_CORE_SIDECAR");
     println!("cargo:rerun-if-env-changed=GO");
-    println!("cargo:rerun-if-changed=../../../../go");
+    println!("cargo:rerun-if-changed=../../go");
     prepare_core_sidecar().expect("failed to prepare the bundled AnyPick core sidecar");
     tauri_build::build()
 }
@@ -29,11 +29,14 @@ fn prepare_core_sidecar() -> Result<(), String> {
         return Ok(());
     }
 
+    // manifest_dir is <repo>/src/tauri/src-tauri, so three levels up is the
+    // repository root. The engine lives under src/, not at the root: joining
+    // "go" directly here would look for <repo>/go and fail.
     let repository = manifest_dir
         .ancestors()
-        .nth(2)
+        .nth(3)
         .ok_or("cannot resolve the repository root")?;
-    let go_dir = repository.join("go");
+    let go_dir = repository.join("src").join("go");
     let go = env::var_os("GO").unwrap_or_else(|| "go".into());
     let link_flags = format!(
         "-s -w -X {VERSION_SYMBOL}={}",

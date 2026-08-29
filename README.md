@@ -43,7 +43,7 @@ transport is private, versioned stdio; it is not a public localhost API or a
 permanent daemon.
 
 See [ADR 0020](adr/0020-node-free-native-app-distribution.md) for the accepted
-cutover decision and [the macOS source contract](macos/README.md) for the UI
+cutover decision and [the macOS source contract](src/macos/README.md) for the UI
 and lifecycle implementation.
 
 AnyPick is one Go engine. The macOS app is Swift, the CLI and the terminal UI
@@ -58,22 +58,22 @@ Neither flow below creates a supported release artifact.
 ### Native macOS app
 
 Requirements: macOS 14+, Xcode, and a Go launcher capable of selecting the
-toolchain pinned in `go/go.mod`.
+toolchain pinned in `src/go/go.mod`.
 
 ```bash
-open macos/AnyPick.xcodeproj
+open src/macos/AnyPick.xcodeproj
 ```
 
 Select the shared **AnyPick** scheme and Run. The Xcode build phase compiles the
 pinned Go service for the target architecture, places it at
 `AnyPick.app/Contents/Helpers/anypick-core`, and signs the nested helper before
 the outer app when signing is enabled. The project references the Swift files in
-`macos/` directly; it does not keep a second production source tree.
+`src/macos/` directly; it does not keep a second production source tree.
 
 Useful checks:
 
 ```bash
-xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
+xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
 pnpm macos:design                  # in-memory UI fixture, not production launch
 pnpm macos:design:check
@@ -84,10 +84,10 @@ Users of a future distributed app will not compile Swift or Go at runtime.
 
 ### CLI and terminal UI
 
-Requirements: the Go toolchain pinned in `go/go.mod` (Go 1.26+).
+Requirements: the Go toolchain pinned in `src/go/go.mod` (Go 1.26+).
 
 ```bash
-cd go
+cd src/go
 go build -o /tmp/anypick ./cmd/anypick
 /tmp/anypick --help
 /tmp/anypick tui          # interactive terminal UI (bubbletea)
@@ -102,7 +102,7 @@ make run ARGS="tui"
 make sandbox ARGS="providers"   # throwaway HOME + ANYPICK_HOME
 ```
 
-The terminal UI is `go/internal/tui`. It reads the services directly rather than
+The terminal UI is `src/go/internal/tui`. It reads the services directly rather than
 shelling out to the CLI, and it refuses to start without a TTY on stdin so a
 piped invocation fails fast instead of hanging.
 
@@ -136,7 +136,7 @@ anypick use claude --with openrouter-work
 ```
 
 Capability pairs are policy, not a Cartesian product. Read `TransportFor` in
-`go/internal/transport` before documenting a new client/source combination.
+`src/go/internal/transport` before documenting a new client/source combination.
 
 ## Development commands
 

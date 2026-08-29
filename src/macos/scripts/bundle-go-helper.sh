@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Two levels up, not three: this script lives at macos/scripts, so
 # ../.. is the repository root. It used to be src/macos/scripts, where the
 # extra level was correct — the path was not adjusted when the tree moved.
-repo_root="$(cd "${script_dir}/../.." && pwd)"
+repo_root="$(cd "${script_dir}/../../.." && pwd)"
 go_root="${repo_root}/go"
 destination_dir="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/Helpers"
 destination="${destination_dir}/anypick-core"

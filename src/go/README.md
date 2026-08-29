@@ -1,4 +1,4 @@
-# AnyPick — Go port (`go/`)
+# AnyPick — Go port (`src/go/`)
 
 Go implementation of AnyPick. This is the engine: CLI, terminal UI and desktop
 service all run here, over one bundled Go binary (ADR 0020).
@@ -11,7 +11,7 @@ a JavaScript UI cannot be the one users get.
 ## Layout
 
 ```
-go/
+src/go/
   cmd/anypick/       CLI entry (thin handlers): use/run/current/list/link/unlink/reset,
                      add, account, gateway, preset, proxy (+pool/hub), tui, tray(app),
                      serve, doctor/update/completion/providers/clients,
@@ -35,7 +35,7 @@ go/
     catalog/         Vendor metadata, model policies, live model fetch
     discovery/       Model list fallback chain: fresh cache → live → stale → catalog
     modelcache/      Cached vendor model lists
-    desktop/         Desktop-app stdio core (snapshots + commands), TS protocol compatible
+    src/tauri/         Desktop-app stdio core (snapshots + commands), TS protocol compatible
     refs/ anyerr/ paths/ …   Resource refs, structured errors, data-root paths
   testdata/parity/   Cross-runtime contract fixtures
 ```
@@ -43,7 +43,7 @@ go/
 ## Commands
 
 ```bash
-cd go
+cd src/go
 go vet ./...
 go test ./... -count=1
 go test -race ./... -count=1

@@ -35,7 +35,11 @@ refs/
 .workbuddy-ai/
 
 # Tauri desktop app (Linux/Windows) build output
-desktop/frontend/
-desktop/src-tauri/target/
-desktop/src-tauri/binaries/*.exe
-desktop/src-tauri/binaries/anypick-core-*
+src/tauri/frontend/
+src/tauri/src-tauri/target/
+src/tauri/src-tauri/binaries/*.exe
+src/tauri/src-tauri/binaries/anypick-core-*
+src/tauri/ui/node_modules/
+
+# Go build output
+src/go/bin/
