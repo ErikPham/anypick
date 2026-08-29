@@ -1,7 +1,0 @@
-{
-  "name": "fixture-plugin",
-  "version": "1.2.3",
-  "description": "Exercises every AnyPick plugin registration surface",
-  "apiVersion": 1,
-  "main": "index.mjs"
-}
