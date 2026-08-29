@@ -75,9 +75,17 @@ artifact-check: ## ADR 0020 §8: a built artifact contains no Node runtime
 app: ## Open the Xcode project
 	open macos/AnyPick.xcodeproj
 
+app-build: ## Build the app (unsigned); the Go helper is bundled by a build phase
+	xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
+	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
+
 app-test: ## Build and unit-test the app and the bundled helper contract
 	xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
+
+app-verify: app-build ## Build, then assert ADR 0020 (no Node runtime in the app)
+	cd $(GO_DIR) && go run ./cmd/anypick-artifact node-free \
+	  "$$DERIVED_DATA_DIR/Build/Products/Debug/AnyPick.app"
 
 # ── housekeeping ──────────────────────────────────────────────────────
 
