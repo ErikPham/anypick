@@ -1,0 +1,318 @@
+package desktop
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/outof0/anypick/go/internal/accounts"
+	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
+	"github.com/outof0/anypick/go/internal/config"
+	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/profile"
+	"github.com/outof0/anypick/go/internal/provider"
+	"github.com/outof0/anypick/go/internal/proxy"
+	"github.com/outof0/anypick/go/internal/store"
+)
+
+type trayEnv struct {
+	t      *testing.T
+	Root   string
+	Home   string
+	CodexA string // live auth path
+	Deps   Deps
+	Svc    *accounts.Service
+}
+
+func newTrayEnv(t *testing.T) *trayEnv {
+	t.Helper()
+	root := t.TempDir()
+	home := t.TempDir()
+	codexAuth := filepath.Join(home, ".codex", "auth.json")
+	t.Setenv("CODEX_AUTH_PATH", codexAuth)
+	t.Setenv("ANYPICK_CLAUDE_NO_KEYCHAIN", "1")
+	t.Setenv("ANYPICK_CLAUDE_CREDENTIALS_PATH", filepath.Join(home, ".claude", ".credentials.json"))
+	os.Unsetenv("GROK_AUTH_PATH")
+	os.Unsetenv("OPENCODE_AUTH_PATH")
+	os.Unsetenv("KIRO_SSO_CACHE_DIR")
+	os.Unsetenv("ANYPICK_KIRO_SECRET_DB")
+
+	database, err := db.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	st := store.New(root, database)
+	provReg := provider.NewRegistry()
+	if err := provider.RegisterBuiltin(provReg, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.RegisterBuiltinCompatibles(provReg); err != nil {
+		t.Fatal(err)
+	}
+	clientReg := client.NewRegistry()
+	if err := client.RegisterBuiltin(clientReg, home); err != nil {
+		t.Fatal(err)
+	}
+	svc := accounts.New(st, provReg)
+	px := proxy.New(st, &proxy.LeaseStore{DB: database.DB})
+	px.Resolver = &trayUpstreamResolver{}
+	svc.Proxy = px
+
+	env := &trayEnv{t: t, Root: root, Home: home, CodexA: codexAuth, Svc: svc}
+	env.Deps = Deps{
+		Root: root, Store: st, Accounts: svc, Proxy: px,
+		Providers: provReg, Clients: clientReg,
+		Profiles: &profile.Store{DB: database.DB},
+		Bindings: &bindings.Store{DB: database.DB},
+	}
+	cfgStore := config.NewStore(root, database)
+	env.Deps.Config = config.NewService(cfgStore)
+	return env
+}
+
+type trayUpstreamResolver struct{}
+
+func (r *trayUpstreamResolver) ResolveUpstream(context.Context, string, string) (*proxy.Upstream, error) {
+	base, _ := parseURLT("http://127.0.0.1:9") // never dialed in these tests
+	return &proxy.Upstream{BaseURL: base, Auth: "x"}, nil
+}
+
+func (e *trayEnv) writeCodexLive(email string) {
+	e.t.Helper()
+	data, _ := json.Marshal(map[string]interface{}{
+		"auth_mode": "chatgpt",
+		"tokens": map[string]string{
+			"id_token":     fakeJWT2(map[string]string{"email": email}),
+			"access_token": "tok-" + email,
+			"account_id":   "acct-" + email,
+		},
+	})
+	if err := os.MkdirAll(filepath.Dir(e.CodexA), 0o700); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.WriteFile(e.CodexA, data, 0o600); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func fakeJWT2(claims map[string]string) string {
+	payload, _ := json.Marshal(claims)
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) +
+		"." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+// ---- round trip ----
+
+func TestDesktopServerRoundTrip(t *testing.T) {
+	env := newTrayEnv(t)
+	ctx := context.Background()
+
+	env.writeCodexLive("a@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "a", true); err != nil {
+		t.Fatal(err)
+	}
+	env.writeCodexLive("b@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "b", true); err != nil {
+		t.Fatal(err)
+	}
+
+	inR, inW, err := os.Pipe() // app writes → core reads
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe() // core writes → app reads
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(env.Deps, inR, outW)
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+
+	// First snapshot must arrive immediately.
+	first := readFrame(t, outR, "snapshot")
+	snap := decodeJSON(t, first)
+	rev := int(snap["revision"].(float64))
+	if rev < 1 {
+		t.Fatalf("revision = %v", snap["revision"])
+	}
+	rows := snap["accounts"].([]interface{})
+	var switchA string
+	for _, raw := range rows {
+		row := raw.(map[string]interface{})
+		if row["providerId"] == "codex" && row["name"] == "a" {
+			id, _ := row["switchActionId"].(string)
+			if id == "" {
+				t.Fatal("missing switchActionId")
+			}
+			switchA = id
+		}
+	}
+	if switchA == "" {
+		t.Fatal("codex/a switch action missing")
+	}
+	if _, ok := snap["settings"].(map[string]interface{}); !ok {
+		t.Error("settings section missing")
+	}
+	if _, ok := snap["proxies"].([]interface{}); !ok {
+		t.Error("proxies section missing")
+	}
+
+	// Invoke the switch action for codex/a while b is live.
+	sendCommand(t, inW, "invoke\t"+encodePayload(map[string]interface{}{
+		"version": 1, "requestId": "r1", "revision": rev, "actionId": switchA,
+	}))
+	gotResult := false
+	for !gotResult {
+		frame := readFrame(t, outR, "")
+		switch {
+		case strings.HasPrefix(frame, "result\t"):
+			res := decodeJSON(t, frame[len("result\t"):])
+			if res["requestId"] != "r1" {
+				continue
+			}
+			gotResult = true
+			if res["status"] != "success" {
+				t.Fatalf("switch failed: %v", res["message"])
+			}
+		case strings.HasPrefix(frame, "snapshot\t"):
+			// post-invoke refresh; ignore here
+		default:
+			t.Fatalf("unexpected frame %q", truncate(frame, 80))
+		}
+	}
+
+	live := readFile(t, env.CodexA)
+	if !strings.Contains(live, "tok-a@example.com") {
+		t.Errorf("live auth not switched to a: %s", live)
+	}
+
+	// The refreshed snapshot marks codex/a as active.
+	next := decodeJSON(t, readFrame(t, outR, "snapshot"))
+	for _, raw := range next["accounts"].([]interface{}) {
+		row := raw.(map[string]interface{})
+		if row["name"] == "a" && row["active"] != true {
+			t.Errorf("codex/a active = %v after switch", row["active"])
+		}
+	}
+
+	// quit terminates the loop cleanly.
+	sendCommand(t, inW, "quit\n")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("server did not exit on quit")
+	}
+}
+
+func TestShutdownUsesCompositionOwnedServiceSweep(t *testing.T) {
+	called := false
+	srv := New(Deps{
+		ShutdownOwned: func(context.Context) error {
+			called = true
+			return fmt.Errorf("verified stop failed")
+		},
+	}, strings.NewReader(""), io.Discard)
+	if err := srv.shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown remains best effort: %v", err)
+	}
+	if !called {
+		t.Fatal("composition-owned service sweep was not called")
+	}
+}
+
+func sendCommand(t *testing.T, w *os.File, line string) {
+	t.Helper()
+	if _, err := fmt.Fprintln(w, line); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFrame(t *testing.T, r *os.File, wantPrefix string) string {
+	t.Helper()
+	buf := make([]byte, 0, 64*1024)
+	one := make([]byte, 1)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := r.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		n, err := r.Read(one)
+		if n == 1 {
+			buf = append(buf, one[0])
+			if one[0] == '\n' {
+				line := strings.TrimRight(string(buf), "\n")
+				if wantPrefix != "" && !strings.HasPrefix(line, wantPrefix+"\t") {
+					continue // skip unrelated frames
+				}
+				return line
+			}
+			continue
+		}
+		if err != nil {
+			if os.IsTimeout(err) {
+				continue
+			}
+			t.Fatalf("read: %v", err)
+		}
+	}
+	t.Fatal("timeout waiting for frame")
+	return ""
+}
+
+func encodePayload(v interface{}) string {
+	raw, _ := json.Marshal(v)
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+func decodeJSON(t *testing.T, frame string) map[string]interface{} {
+	t.Helper()
+	parts := strings.SplitN(frame, "\t", 2)
+	raw, err := base64.StdEncoding.DecodeString(parts[len(parts)-1])
+	if err != nil {
+		t.Fatalf("frame base64: %v", err)
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(raw, &m) != nil {
+		t.Fatalf("frame json: %s", raw)
+	}
+	return m
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func parseURLT(raw string) (*urlT, error) { return urlParse(raw) }
+
+type urlT = url.URL
+
+func urlParse(raw string) (*url.URL, error) { return parseURL(raw) }
+
+func parseURL(raw string) (*url.URL, error) { return url.Parse(raw) }
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}

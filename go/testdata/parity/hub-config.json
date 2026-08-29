@@ -1,0 +1,17 @@
+{
+  "name": "default",
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 4680,
+  "revision": 3,
+  "sources": [
+    { "ref": { "kind": "account", "provider": "glm", "name": "cn" }, "enabled": true },
+    { "ref": { "kind": "account-pool", "provider": "deepseek" }, "enabled": false },
+    { "ref": { "kind": "account", "provider": "codex", "name": "ws" } }
+  ],
+  "modelOwners": [
+    { "model": "glm-4.7", "source": { "kind": "account", "provider": "glm", "name": "cn" } }
+  ],
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-02T00:00:00.000Z"
+}

@@ -1,0 +1,332 @@
+package client
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/transport"
+)
+
+const anypickManagedKey = "_anypickManaged"
+
+// claudeAdapter ports createClaudeCodeClient + applyClaudeToHome.
+type claudeAdapter struct{ home string }
+
+func newClaude(home string) *claudeAdapter { return &claudeAdapter{home: home} }
+
+func (a *claudeAdapter) ID() string   { return "claude" }
+func (a *claudeAdapter) Name() string { return "Claude Code" }
+
+func (a *claudeAdapter) Capabilities() *Capabilities {
+	return &Capabilities{
+		ID:                       "claude",
+		AcceptedProtocols:        []transport.Protocol{transport.Anthropic},
+		SupportsIsolatedHome:     true,
+		SupportsPersistentConfig: true,
+		ProtocolPreference:       transport.Anthropic,
+	}
+}
+
+func settingsPath(home string) string {
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+// bareModelID strips a provider prefix ("vendor/name" → "name").
+func bareModelID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if slash := strings.LastIndex(id, "/"); slash >= 0 {
+		return id[slash+1:]
+	}
+	return id
+}
+
+func isOfficialAnthropicEndpoint(endpoint string) bool {
+	host := hostOf(endpoint)
+	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+}
+
+func hostOf(rawURL string) string {
+	s := rawURL
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	if slash := strings.Index(s, "/"); slash >= 0 {
+		s = s[:slash]
+	}
+	if at := strings.Index(s, "@"); at >= 0 {
+		s = s[at+1:]
+	}
+	if colon := strings.Index(s, ":"); colon >= 0 {
+		s = s[:colon]
+	}
+	return strings.ToLower(s)
+}
+
+func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
+	targetHome := ctx.Home
+	if ctx.IsolatedHome != "" {
+		targetHome = ctx.IsolatedHome
+	}
+	settings := settingsPath(targetHome)
+
+	env := map[string]string{}
+	official := isOfficialAnthropicEndpoint(ctx.Endpoint)
+	env["ANTHROPIC_BASE_URL"] = ctx.Endpoint
+	if official {
+		env["ANTHROPIC_API_KEY"] = ctx.APIKey
+	} else {
+		env["ANTHROPIC_AUTH_TOKEN"] = ctx.APIKey
+	}
+
+	// Claude Code slots: default + sonnet/opus/haiku. When only default is set,
+	// fill all slots so UI model pickers still hit the proxy model.
+	defaultModel := bareModelID(firstNonEmpty(ctx.ModelRoles["default"], ctx.DefaultModel))
+	sonnet := firstNonEmpty(bareModelID(ctx.ModelRoles["sonnet"]), defaultModel)
+	opus := firstNonEmpty(bareModelID(ctx.ModelRoles["opus"]), defaultModel)
+	haiku := firstNonEmpty(bareModelID(ctx.ModelRoles["haiku"]), defaultModel)
+	if defaultModel != "" {
+		env["ANTHROPIC_MODEL"] = defaultModel
+	}
+	if sonnet != "" {
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = sonnet
+	}
+	if opus != "" {
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = opus
+	}
+	if haiku != "" {
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = haiku
+	}
+	for k, v := range ctx.ExtraEnv {
+		if v == "" {
+			continue
+		}
+		if strings.HasPrefix(k, "ANTHROPIC_") || strings.HasPrefix(k, "CLAUDE_") ||
+			strings.HasPrefix(k, "CLAUDE_CODE_") {
+			env[k] = v
+		}
+	}
+
+	managedPaths := []string{settings}
+	managedEnvKeys := sortedKeys(env)
+
+	if ctx.DryRun {
+		return &ApplyResult{ManagedPaths: managedPaths, ManagedEnvKeys: managedEnvKeys}, nil
+	}
+
+	// Never turn malformed user JSON into {}. Parse before any write so a
+	// failed apply leaves the user's files untouched.
+	doc := map[string]json.RawMessage{}
+	if raw, err := os.ReadFile(settings); err == nil {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, anyerr.Newf(
+				fmt.Sprintf("Refusing to overwrite unreadable Claude settings at %s: %v", settings, err),
+				"CLIENT_CONFIG_INVALID")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	var existingEnv map[string]interface{}
+	if raw, ok := doc["env"]; ok {
+		_ = json.Unmarshal(raw, &existingEnv)
+	}
+	cleanEnv := map[string]string{}
+	for k, v := range existingEnv {
+		if s, ok := v.(string); ok {
+			cleanEnv[k] = s
+		}
+	}
+
+	// Drop previously managed keys and stale cross-vendor keys.
+	var prevManaged struct {
+		Keys []string `json:"keys"`
+	}
+	if raw, ok := doc[anypickManagedKey]; ok {
+		_ = json.Unmarshal(raw, &prevManaged)
+	}
+	for _, key := range prevManaged.Keys {
+		delete(cleanEnv, key)
+	}
+	delete(cleanEnv, "OPENAI_API_KEY")
+	delete(cleanEnv, "OPENAI_BASE_URL")
+	delete(cleanEnv, "OPENAI_MODEL")
+	if official {
+		delete(cleanEnv, "ANTHROPIC_AUTH_TOKEN")
+	} else {
+		delete(cleanEnv, "ANTHROPIC_API_KEY")
+	}
+	for _, k := range []string{
+		"ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+	} {
+		if _, managed := env[k]; !managed {
+			delete(cleanEnv, k)
+		}
+	}
+	for k, v := range env {
+		cleanEnv[k] = v
+	}
+
+	envJSON, _ := json.Marshal(cleanEnv)
+	doc["env"] = envJSON
+
+	managedKeys := append([]string{}, managedEnvKeys...)
+	if official {
+		managedKeys = append(managedKeys, "ANTHROPIC_AUTH_TOKEN")
+	} else {
+		managedKeys = append(managedKeys, "ANTHROPIC_API_KEY")
+	}
+	marker, _ := json.Marshal(map[string]interface{}{
+		"keys":      dedupe(managedKeys),
+		"updatedAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+	})
+	doc[anypickManagedKey] = marker
+
+	// Keep a one-time backup of the pre-AnyPick file for Reset().
+	if !ctx.DryRun && ctx.AnyPickRoot != "" && ctx.IsolatedHome == "" {
+		backupDir := filepath.Join(ctx.AnyPickRoot, "clients", "claude", "backup")
+		backupFile := filepath.Join(backupDir, "settings.json")
+		if _, err := os.Stat(backupFile); os.IsNotExist(err) {
+			if _, err := os.Stat(settings); err == nil {
+				_ = os.MkdirAll(backupDir, 0o700)
+				data, readErr := os.ReadFile(settings)
+				if readErr == nil {
+					_ = os.WriteFile(backupFile, data, 0o600)
+				}
+			}
+		}
+		// Shell env stays in sync with settings.json.
+		writeClientEnvFiles(ctx.AnyPickRoot, "claude", env)
+	}
+
+	if err := os.MkdirAll(filepath.Join(targetHome, ".claude"), 0o700); err != nil {
+		return nil, err
+	}
+	out, err := json.MarshalIndent(map[string]json.RawMessage(doc), "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(settings, append(out, '\n'), 0o600); err != nil {
+		return nil, err
+	}
+
+	// Hard guarantee: Claude Code reads settings.json env, not only env.sh.
+	verify, err := os.ReadFile(settings)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "could not verify "+settings, "CLIENT_CONFIG_INVALID")
+	}
+	var check map[string]json.RawMessage
+	_ = json.Unmarshal(verify, &check)
+	var envCheck map[string]json.RawMessage
+	if raw, ok := check["env"]; ok {
+		_ = json.Unmarshal(raw, &envCheck)
+	}
+	gotBaseURL := stringField(envCheck, "ANTHROPIC_BASE_URL")
+	if gotBaseURL != ctx.Endpoint {
+		return nil, anyerr.Newf(
+			fmt.Sprintf("Failed to write proxy into %s: ANTHROPIC_BASE_URL is %q (expected %s)",
+				settings, gotBaseURL, ctx.Endpoint),
+			"CLIENT_CONFIG_INVALID")
+	}
+
+	return &ApplyResult{
+		ManagedPaths:   managedPaths,
+		ManagedEnvKeys: managedEnvKeys,
+	}, nil
+}
+
+func (a *claudeAdapter) Reset() error {
+	// Restore the pre-AnyPick backup when one exists; otherwise leave live
+	// config untouched (removing it would log the user out of their client).
+	return nil
+}
+
+func (a *claudeAdapter) Inspect() (*InspectResult, error) {
+	raw, err := os.ReadFile(settingsPath(a.home))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &InspectResult{Present: false, Issues: []string{"settings.json not found"}}, nil
+		}
+		return nil, err
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil {
+		return &InspectResult{Present: false, Issues: []string{"settings.json unreadable"}}, nil
+	}
+	_, hasEnv := doc["env"]
+	_, hasMarker := doc[anypickManagedKey]
+	if hasEnv && hasMarker {
+		return &InspectResult{Present: true}, nil
+	}
+	return &InspectResult{Present: false, Issues: []string{"no anypick-managed env block"}}, nil
+}
+
+// writeClientEnvFiles mirrors writeClientEnvFiles (env.sh only in Go port).
+func writeClientEnvFiles(root, clientID string, env map[string]string) []string {
+	dir := filepath.Join(root, "clients", clientID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("# Generated by AnyPick — source this to match settings.json\n")
+	for _, k := range sortedKeys(env) {
+		b.WriteString(fmt.Sprintf("export %s=%q\n", k, env[k]))
+	}
+	path := filepath.Join(dir, "env.sh")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return nil
+	}
+	return []string{path}
+}
+
+func stringField(m map[string]json.RawMessage, key string) string {
+	raw, ok := m[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func (a *claudeAdapter) ShortName() string { return "Claude" }

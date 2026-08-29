@@ -1,0 +1,586 @@
+{
+  "commands": [
+    {
+      "path": "",
+      "description": "Pick any. Code on.",
+      "flags": [
+        "--version",
+        "-V",
+        "--json",
+        "--verbose",
+        "-v",
+        "--quiet",
+        "-q",
+        "--dry-run",
+        "--reveal",
+        "--no-input",
+        "--yes",
+        "-y",
+        "--trace",
+        "--tui",
+        "--tray"
+      ],
+      "subcommands": [
+        "use",
+        "run",
+        "current",
+        "list",
+        "add",
+        "link",
+        "unlink",
+        "reset",
+        "preset",
+        "tui",
+        "tray",
+        "__complete",
+        "update",
+        "completion",
+        "doctor",
+        "proxy",
+        "account",
+        "gateway",
+        "plugin",
+        "providers",
+        "clients"
+      ],
+      "hidden": false
+    },
+    {
+      "path": "use",
+      "description": "Set what a client uses by default",
+      "flags": ["--with", "--current", "--model", "--save"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "run",
+      "description": "Launch a client with its effective AnyPick binding",
+      "flags": ["--with", "--model"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "current",
+      "description": "Show effective AnyPick bindings",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "list",
+      "description": "List accounts, gateways, clients, or presets",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "add",
+      "description": "Add an account or gateway",
+      "flags": [],
+      "subcommands": ["account", "gateway"],
+      "hidden": false
+    },
+    {
+      "path": "add account",
+      "description": "Add a saved account login",
+      "flags": [
+        "--current",
+        "--new",
+        "--auth-method",
+        "--name",
+        "--source",
+        "--api-key",
+        "--region",
+        "--credential",
+        "--secret",
+        "--option"
+      ],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "add gateway",
+      "description": "Add an API gateway",
+      "flags": ["--provider", "--endpoint", "--api-key", "--api-key-env", "--model", "--models"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "link",
+      "description": "Set a project-specific client source",
+      "flags": ["--with", "--model"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "unlink",
+      "description": "Remove a project binding",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "reset",
+      "description": "Remove AnyPick-managed configuration for a client",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "preset",
+      "description": "Manage saved presets",
+      "flags": [],
+      "subcommands": ["list", "show", "remove"],
+      "hidden": false
+    },
+    {
+      "path": "preset list",
+      "description": "List presets",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "preset show",
+      "description": "",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "preset remove",
+      "description": "",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "tui",
+      "description": "Open the AnyPick Terminal UI",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "tray",
+      "description": "Open the AnyPick desktop app or manage its background supervisor",
+      "flags": [],
+      "subcommands": ["start", "status", "stop", "run"],
+      "hidden": false
+    },
+    {
+      "path": "tray start",
+      "description": "Start the AnyPick proxy supervisor (desktop app on macOS)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "tray status",
+      "description": "Show proxy supervisor status",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "tray stop",
+      "description": "Stop the supervisor and gracefully stop all AnyPick proxies",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "tray run",
+      "description": "Run the foreground proxy supervisor",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "__complete",
+      "description": "",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "update",
+      "description": "Update AnyPick to the latest npm release",
+      "flags": ["--check"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "completion",
+      "description": "Shell completion (zsh | bash | fish)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "doctor",
+      "description": "Diagnose setup; auto-fix only safe AnyPick-owned state",
+      "flags": ["--fix"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy",
+      "description": "Local compatibility proxies",
+      "flags": [],
+      "subcommands": [
+        "status",
+        "hub",
+        "pool",
+        "start",
+        "stop",
+        "enable",
+        "config",
+        "disable",
+        "logs"
+      ],
+      "hidden": false
+    },
+    {
+      "path": "proxy status",
+      "description": "Show proxy status (default: all)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub",
+      "description": "Unified local Proxy Hub (opt-in)",
+      "flags": [],
+      "subcommands": ["status", "enable", "source", "owner", "preview", "start", "stop"],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub status",
+      "description": "Show unified Proxy Hub status",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub enable",
+      "description": "Enable the unified Hub without changing existing bindings",
+      "flags": ["--port", "-p", "--host", "--start"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub source",
+      "description": "Enable or disable a saved account behind Proxy Hub",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub owner",
+      "description": "Choose the source for a duplicate raw model id",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub preview",
+      "description": "Refresh source catalogs and show routed models/conflicts",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub start",
+      "description": "Start the unified Proxy Hub",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy hub stop",
+      "description": "Stop the unified Proxy Hub",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy pool",
+      "description": "Multi-account proxy pool (opt-in)",
+      "flags": [],
+      "subcommands": ["status", "enable", "disable", "member"],
+      "hidden": false
+    },
+    {
+      "path": "proxy pool status",
+      "description": "Show pool mode and members",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy pool enable",
+      "description": "Opt-in multi-account pool for a provider",
+      "flags": ["--port", "-p", "--host", "--no-start"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy pool disable",
+      "description": "Back to single-account proxies (default)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy pool member",
+      "description": "Enable or pause a pool member",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy start",
+      "description": "Start proxy (default: active accounts with proxy enabled)",
+      "flags": ["--port", "-p", "--host"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy stop",
+      "description": "Stop proxy (default: running proxies)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy enable",
+      "description": "Enable proxy for an account",
+      "flags": ["--port", "-p", "--host", "--auth-mode", "--oauth-source", "--no-start"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy config",
+      "description": "Set proxy port/host for an account (restarts if running)",
+      "flags": ["--port", "-p", "--host", "--auth-mode", "--oauth-source", "--no-restart"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy disable",
+      "description": "Disable + stop proxy for an account",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy logs",
+      "description": "Show proxy logs (use -f to stream live)",
+      "flags": ["--lines", "-n", "--follow", "-f"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "account",
+      "description": "Manage saved accounts",
+      "flags": [],
+      "subcommands": ["list", "remove", "refresh", "export", "import"],
+      "hidden": false
+    },
+    {
+      "path": "account list",
+      "description": "List saved accounts",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "account remove",
+      "description": "Delete a saved account",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "account refresh",
+      "description": "Refresh OAuth tokens (live or saved)",
+      "flags": ["--all"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "account export",
+      "description": "Export a saved account snapshot",
+      "flags": ["--out", "-o"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "account import",
+      "description": "Import an account snapshot",
+      "flags": ["--in", "-i", "--force", "-f"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "gateway",
+      "description": "Manage API gateways",
+      "flags": [],
+      "subcommands": ["list", "show", "edit", "remove", "reset"],
+      "hidden": false
+    },
+    {
+      "path": "gateway list",
+      "description": "List gateways",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "gateway show",
+      "description": "Show a gateway",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "gateway edit",
+      "description": "Edit gateway fields",
+      "flags": ["--endpoint", "--api-key", "--model", "-m", "--models"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "gateway remove",
+      "description": "Delete a gateway",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "gateway reset",
+      "description": "Clear AnyPick-managed client config that pointed at a gateway",
+      "flags": ["--client", "-c"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin",
+      "description": "Manage plugins that extend AnyPick",
+      "flags": [],
+      "subcommands": ["list", "add", "remove", "enable", "disable", "trust"],
+      "hidden": false
+    },
+    {
+      "path": "plugin list",
+      "description": "List installed plugins and their load status",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin add",
+      "description": "Install a plugin directory (disabled until you enable it)",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin remove",
+      "description": "Uninstall a plugin",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin enable",
+      "description": "Allow a plugin to load into the AnyPick process",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin disable",
+      "description": "Stop loading a plugin without uninstalling it",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "plugin trust",
+      "description": "Re-pin a plugin digest after reviewing changed code",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "providers",
+      "description": "List account providers + gateway catalog",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "clients",
+      "description": "List supported clients",
+      "flags": [],
+      "subcommands": [],
+      "hidden": false
+    }
+  ],
+  "omitted": [
+    {
+      "path": "tui",
+      "reason": "plan §Scope"
+    },
+    {
+      "path": "tray run",
+      "reason": "hidden foreground supervisor (TS-only variant)"
+    },
+    {
+      "path": "app",
+      "reason": "Go supervisor entry (TS: tray run)"
+    },
+    {
+      "path": "desktop-service",
+      "reason": "hidden app-owned stdio service (native desktop only)"
+    },
+    {
+      "path": "serve",
+      "reason": "Go core status server helper"
+    },
+    {
+      "path": "start",
+      "reason": "Go top-level alias of TS tray start"
+    },
+    {
+      "path": "status",
+      "reason": "Go top-level alias of TS tray status"
+    },
+    {
+      "path": "stop",
+      "reason": "Go top-level alias of TS tray stop"
+    },
+    {
+      "path": "stop-proxy",
+      "reason": "Go legacy alias of TS proxy stop"
+    },
+    {
+      "path": "_serve-hub",
+      "reason": "hidden detached helper (ADR 0003)"
+    },
+    {
+      "path": "_serve-pool",
+      "reason": "hidden detached helper (ADR 0003)"
+    },
+    {
+      "path": "_serve-proxy",
+      "reason": "hidden detached helper (ADR 0003)"
+    },
+    {
+      "path": "_supervise",
+      "reason": "hidden detached helper (ADR 0003)"
+    }
+  ]
+}

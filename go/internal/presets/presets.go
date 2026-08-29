@@ -1,0 +1,197 @@
+// Package presets ports src/core/preset-store.ts.
+package presets
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/json"
+	"time"
+
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/refs"
+)
+
+// Saved mirrors SavedPreset. A preset spec's model is limited to
+// explicit|omitted (unknown never persists).
+type Saved struct {
+	ID         string        `json:"id"`
+	Name       string        `json:"name"`
+	Revision   int           `json:"revision"`
+	Spec       bindings.Spec `json:"spec"`
+	CreatedAt  string        `json:"createdAt"`
+	UpdatedAt  string        `json:"updatedAt"`
+	LastUsedAt string        `json:"lastUsedAt,omitempty"`
+	UseCount   int           `json:"useCount"`
+}
+
+func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
+
+// Store owns the presets table.
+type Store struct{ DB *sql.DB }
+
+const columns = `id, name, revision, spec_json, created_at, updated_at, last_used_at, use_count`
+
+// List returns every saved preset ordered by name (TS listPresets).
+func (s *Store) List() ([]Saved, error) {
+	rows, err := s.DB.Query(`SELECT ` + columns + ` FROM presets ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Saved
+	for rows.Next() {
+		p, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+// ListContext is the context-aware variant.
+func (s *Store) ListContext(ctx context.Context) ([]Saved, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+columns+` FROM presets ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Saved
+	for rows.Next() {
+		p, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
+func scan(row rowScanner) (*Saved, error) {
+	var id, name, specJSON, createdAt, updatedAt string
+	var revision, useCount int
+	var lastUsed sql.NullString
+	if err := row.Scan(&id, &name, &revision, &specJSON, &createdAt, &updatedAt, &lastUsed, &useCount); err != nil {
+		return nil, err
+	}
+	p := &Saved{
+		ID: id, Name: name, Revision: revision,
+		CreatedAt: createdAt, UpdatedAt: updatedAt,
+		LastUsedAt: lastUsed.String, UseCount: useCount,
+	}
+	if err := json.Unmarshal([]byte(specJSON), &p.Spec); err != nil {
+		return nil, anyerr.Wrapf(err, "decode preset spec", "STATE_CONFLICT")
+	}
+	return p, nil
+}
+
+func (s *Store) GetByName(name string) (*Saved, error) {
+	return s.GetByNameContext(context.Background(), name)
+}
+
+func (s *Store) GetByNameContext(ctx context.Context, name string) (*Saved, error) {
+	row := s.DB.QueryRowContext(ctx, `SELECT `+columns+` FROM presets WHERE name = ?`, name)
+	p, err := scan(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return p, err
+}
+
+func (s *Store) Exists(name string) (bool, error) {
+	return s.ExistsContext(context.Background(), name)
+}
+
+func (s *Store) ExistsContext(ctx context.Context, name string) (bool, error) {
+	p, err := s.GetByNameContext(ctx, name)
+	return p != nil, err
+}
+
+// Upsert creates or bumps the revision of a named preset.
+func (s *Store) Upsert(name string, spec bindings.Spec) (Saved, error) {
+	return s.UpsertContext(context.Background(), name, spec)
+}
+
+func (s *Store) UpsertContext(ctx context.Context, name string, spec bindings.Spec) (Saved, error) {
+	now := nowISO()
+	existing, err := s.GetByNameContext(ctx, name)
+	if err != nil {
+		return Saved{}, err
+	}
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return Saved{}, err
+	}
+	if existing == nil {
+		id, err := newPresetID()
+		if err != nil {
+			return Saved{}, anyerr.Wrapf(err, "generate preset id", "DB_WRITE")
+		}
+		_, err = s.DB.ExecContext(ctx,
+			`INSERT INTO presets (id, name, revision, spec_json, created_at, updated_at, use_count)
+			 VALUES (?, ?, 1, ?, ?, ?, 0)`,
+			id, name, string(specJSON), now, now)
+		if err != nil {
+			return Saved{}, err
+		}
+		return Saved{ID: id, Name: name, Revision: 1, Spec: spec, CreatedAt: now, UpdatedAt: now}, nil
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`UPDATE presets SET spec_json = ?, updated_at = ?, revision = revision + 1 WHERE id = ?`,
+		string(specJSON), now, existing.ID)
+	if err != nil {
+		return Saved{}, err
+	}
+	existing.Spec = spec
+	existing.Revision++
+	existing.UpdatedAt = now
+	return *existing, nil
+}
+
+// MarkUsed records a successful activation of a preset.
+func (s *Store) MarkUsed(id string) error {
+	return s.MarkUsedContext(context.Background(), id)
+}
+
+func (s *Store) MarkUsedContext(ctx context.Context, id string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE presets SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?`,
+		nowISO(), id)
+	return err
+}
+
+func (s *Store) DeleteByName(name string) error {
+	return s.DeleteByNameContext(context.Background(), name)
+}
+
+func (s *Store) DeleteByNameContext(ctx context.Context, name string) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM presets WHERE name = ?`, name)
+	return err
+}
+
+// SourceRefOf returns the preset's source ref convenience helper.
+func SourceRefOf(p Saved) refs.Ref { return p.Spec.Source }
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func newPresetID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := randRead(b); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	const hex = "0123456789abcdef"
+	out := make([]byte, 0, 36)
+	for i, v := range b {
+		if i == 4 || i == 6 || i == 8 || i == 10 {
+			out = append(out, '-')
+		}
+		out = append(out, hex[v>>4], hex[v&0x0f])
+	}
+	return string(out), nil
+}
+
+func randRead(b []byte) (int, error) { return rand.Read(b) }

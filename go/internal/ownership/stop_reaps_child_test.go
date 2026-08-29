@@ -1,0 +1,64 @@
+package ownership
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+// Regression: Stop must actually reap the child it owns. Ownership
+// verification used to depend on shelling out to /bin/ps; wherever that binary
+// is blocked — sandboxed CI, a hardened runtime, a minimal container — every
+// verification failed closed, Stop refused to signal the child, and detached
+// services leaked for the lifetime of the machine. Identity now comes from
+// sysctl on darwin and /proc on Linux, neither of which needs an executable.
+func TestStopReapsOwnedChildWithoutExternalBinary(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "service.pid")
+	rec := spawnHelper(t, pidPath)
+	t.Cleanup(func() { _ = Stop(pidPath, StopOptions{}) })
+
+	waitFor(t, rec.Alive)
+
+	if rec.ProcessStart == 0 {
+		t.Fatal("spawn recorded no process start stamp: identity was not captured after exec")
+	}
+	if rec.Executable == "" {
+		t.Fatal("spawn recorded no executable path: identity was not captured after exec")
+	}
+
+	if !Stop(pidPath, StopOptions{Timeout: 5e9}) {
+		t.Fatal("Stop refused to stop a child it owns")
+	}
+	waitFor(t, func() bool { return !rec.Alive() })
+
+	if Load(pidPath) != nil {
+		t.Fatal("ownership record survived a successful stop")
+	}
+}
+
+// A recycled pid that happens to run the same command must not be signalled:
+// the start stamp is what separates it from the child we spawned.
+func TestStopRefusesRecycledPidWithMatchingArgv(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "service.pid")
+	rec := spawnHelper(t, pidPath)
+	t.Cleanup(func() { _ = Stop(pidPath, StopOptions{}) })
+
+	waitFor(t, rec.Alive)
+
+	recycled := *rec
+	recycled.ProcessStart = rec.ProcessStart + 1
+	if recycled.VerifyLive() {
+		t.Fatal("a process with a different start stamp verified as the owned child")
+	}
+
+	if err := writeAtomic(pidPath, &recycled); err != nil {
+		t.Fatal(err)
+	}
+	if Stop(pidPath, StopOptions{Timeout: 100e6}) {
+		t.Fatal("Stop signalled a process it could not prove ownership of")
+	}
+	if !rec.Alive() {
+		t.Fatal("the real child was killed by an unverified stop")
+	}
+}

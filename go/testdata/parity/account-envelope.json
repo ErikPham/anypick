@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "kind": "anypick-account",
+  "meta": {
+    "name": "work",
+    "provider": "codex",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-02T00:00:00.000Z",
+    "label": "Work login",
+    "identity": "{\"email\":\"user@example.com\"}",
+    "credentialKind": "native"
+  },
+  "proxy": {
+    "enabled": true,
+    "port": 9100,
+    "host": "127.0.0.1",
+    "options": { "upstreamUrl": "https://upstream.invalid" }
+  },
+  "files": {
+    "snapshot/auth.json": "eyJ0b2tlbnMiOnsiYWNjZXNzX3Rva2VuIjoiYWJjIn19",
+    "snapshot/config.toml": "bW9kZWwgPSAiZ3B0LTUuNi1zb2wiCg=="
+  }
+}

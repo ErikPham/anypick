@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "kind": "anypick-backup",
+  "createdAt": "2026-08-23T23:53:29.693Z",
+  "accounts": [
+    {
+      "provider": "codex",
+      "name": "personal",
+      "envelope": {
+        "version": 1,
+        "kind": "anypick-account",
+        "meta": {
+          "name": "personal",
+          "provider": "codex",
+          "createdAt": "2026-08-23T23:53:29.659Z",
+          "updatedAt": "2026-08-23T23:53:29.659Z",
+          "identity": "personal@example.test",
+          "credentialClass": "native_subscription"
+        },
+        "proxy": {
+          "enabled": false
+        },
+        "files": {
+          "auth.json": "eyJhdXRoX21vZGUiOiJjaGF0Z3B0IiwidG9rZW5zIjp7ImlkX3Rva2VuIjoiZXlKaGJHY2lPaUp1YjI1bElpd2lkSGx3SWpvaVNsZFVJbjAuZXlKbGJXRnBiQ0k2SW5CbGNuTnZibUZzUUdWNFlXMXdiR1V1ZEdWemRDSXNJbk4xWWlJNkltRjFkR2d3ZkhCaGNtbDBlUzF3WlhKemIyNWhiQ0o5LnNpZyIsImFjY2Vzc190b2tlbiI6InBhcml0eS1hY2Nlc3MtcGVyc29uYWwiLCJhY2NvdW50X2lkIjoicGFyaXR5LWFjY3QtcGVyc29uYWwifX0="
+        }
+      }
+    },
+    {
+      "provider": "codex",
+      "name": "work",
+      "envelope": {
+        "version": 1,
+        "kind": "anypick-account",
+        "meta": {
+          "name": "work",
+          "provider": "codex",
+          "createdAt": "2026-08-23T23:53:29.641Z",
+          "updatedAt": "2026-08-23T23:53:29.641Z",
+          "identity": "work@example.test",
+          "credentialClass": "native_subscription"
+        },
+        "proxy": {
+          "enabled": false
+        },
+        "files": {
+          "auth.json": "eyJhdXRoX21vZGUiOiJjaGF0Z3B0IiwidG9rZW5zIjp7ImlkX3Rva2VuIjoiZXlKaGJHY2lPaUp1YjI1bElpd2lkSGx3SWpvaVNsZFVJbjAuZXlKbGJXRnBiQ0k2SW5kdmNtdEFaWGhoYlhCc1pTNTBaWE4wSWl3aWMzVmlJam9pWVhWMGFEQjhjR0Z5YVhSNUxYZHZjbXNpZlEuc2lnIiwiYWNjZXNzX3Rva2VuIjoicGFyaXR5LWFjY2Vzcy13b3JrIiwiYWNjb3VudF9pZCI6InBhcml0eS1hY2N0LXdvcmsifX0="
+        }
+      }
+    }
+  ]
+}
