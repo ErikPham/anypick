@@ -93,11 +93,13 @@ go build -o /tmp/anypick ./cmd/anypick
 /tmp/anypick tui          # interactive terminal UI (bubbletea)
 ```
 
-`pnpm go …` wraps the same binary with repository defaults and file watching:
+Or use the Makefile, which builds the same binary and pins a writable module
+cache (see the note on `GOPATH` in `AGENTS.md`):
 
 ```bash
-pnpm go --help
-pnpm go tui
+make run ARGS="--help"
+make run ARGS="tui"
+make sandbox ARGS="providers"   # throwaway HOME + ANYPICK_HOME
 ```
 
 The terminal UI is `go/internal/tui`. It reads the services directly rather than
@@ -139,19 +141,27 @@ Capability pairs are policy, not a Cartesian product. Read `TransportFor` in
 ## Development commands
 
 ```bash
-pnpm check          # Go vet + Go tests + release sync + launcher + artifact scan
-pnpm go:test        # Go suite
-pnpm go:test:race   # Go suite under -race
-cd go && go test ./internal/tui/ -count=1
-cd docs && pnpm build   # documentation site (separate project)
+make test          # go test ./... -count=1
+make test-race     # the same under -race
+make vet
+make fmt-check     # fails if anything is not gofmt-clean
+make help          # the full list
 ```
 
-`GOPATH` must point at a writable module cache. If it points at another
-project's cache, tests that shell out to `go build` stall in module resolution
-and the package appears to hang:
+CI (`.github/workflows/ci.yml`) runs the same gates: format and vet and version
+sync, Go tests on Ubuntu and Windows, the macOS app and helper contract, and the
+docs site.
+
+> **If you run `go` directly, set `GOPATH`.** `~/.zshrc` on this machine exports
+> a `GOPATH` belonging to another project; tests that shell out to `go build`
+> then stall in module resolution and appear to hang. The Makefile pins
+> `GOPATH := $(HOME)/go` so `make` is always safe; otherwise use
+> `GOPATH=$HOME/go go test ./...` (warm once with `go mod download all`).
+
+The documentation site is a separate pnpm project:
 
 ```bash
-cd go && GOPATH=$HOME/go go test ./... -count=1     # warm once: go mod download all
+cd docs && pnpm install && pnpm build
 ```
 
 The local data directory is `~/.anypick`; `ANYPICK_HOME` overrides it. Account

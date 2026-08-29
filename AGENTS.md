@@ -15,38 +15,46 @@ different rules; `docs/AGENT.md` is the nimbus template's own authoring guide.
 
 ## Commands
 
+`make test` is `go test ./...`. Nothing wraps it. Run `make help` for the full
+list; the ones you will actually use:
+
 ```bash
-# engine
-cd go
-go build ./... && go vet ./...
-go test ./... -count=1            # ~2-4 min with a warm, writable module cache
-go test -race ./... -count=1
-go test ./internal/tui/ -count=1  # one package
+make test                      # go test ./... -count=1
+make test-race                 # the same under -race
+make vet
+make fmt-check                 # fails if anything is not gofmt-clean
+make build                     # -> go/bin/anypick-dev
 
-# dev entry (builds go/bin/anypick-dev, then runs it)
-scripts/dev.sh list
-scripts/dev.sh --sandbox list              # throwaway HOME + ANYPICK_HOME
-scripts/dev.sh --launch-app / --stop-app   # desktop supervisor
+make run ARGS="providers"      # build, then run a command
+make sandbox ARGS="providers"  # same, against a throwaway HOME + ANYPICK_HOME
 
-# release gates
-cd go && go run ./cmd/anypick-release check              # VERSION <-> Xcode
-cd go && go run ./cmd/anypick-artifact node-free <root>  # ADR 0020 §8 gate
+make release-check             # VERSION and Xcode MARKETING_VERSION agree
+make release-bump PART=patch   # also: make release-set VERSION=1.2.3
+make artifact-check ROOT=path  # ADR 0020 §8: no Node runtime in the artifact
+
+make app                       # open macos/AnyPick.xcodeproj
+make app-test                  # xcodebuild unit tests
 ```
 
 There is no root `package.json` and no pnpm workspace: this repository has no
-JavaScript build. `scripts/` is two shell scripts and nothing else. The only
-Node project is `docs/`, the documentation site, with its own lockfile.
+JavaScript build and no `scripts/` directory — a `Makefile` and Go tooling are
+all there is. The only Node project is `docs/`, the documentation site, with its
+own lockfile.
 
 CI (`.github/workflows/ci.yml`) runs five jobs: format/vet/version sync, Go
 tests on Ubuntu, Go tests on Windows, the macOS app and helper contract, and
 the docs site. Run the Go ones before you claim a change is done.
 
-> **GOPATH trap.** `GOPATH` must point at a writable module cache. If it points
-> at another project's cache, tests that shell out to `go build`
-> (`cmd/anypick`'s `requireBuiltCLI`) stall in module resolution and the package
-> times out after many minutes — which looks exactly like a change you just
-> broke. Use `GOPATH=$HOME/go go test ./...` (warm once with `go mod download
-> all`). This cost hours once; do not debug the code before checking it.
+> **GOPATH trap.** `~/.zshrc` currently exports `GOPATH="$HOME/workspace/ocg/go"`,
+> which is *another project's* module cache. Tests that shell out to `go build`
+> (`cmd/anypick`'s `requireBuiltCLI`) then stall in module resolution and the
+> package times out after many minutes — which looks exactly like a change you
+> just broke. It cost hours once; check this before debugging any code.
+>
+> The Makefile pins `GOPATH := $(HOME)/go`, so `make` targets are always safe.
+> If you run `go` directly, use `GOPATH=$HOME/go go test ./...` (warm once with
+> `go mod download all`). The real fix is to delete that export from `~/.zshrc`:
+> Go modules have not needed GOPATH since 1.16.
 
 The docs site is a **separate** pnpm project with its own lockfile:
 
