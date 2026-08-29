@@ -33,3 +33,9 @@ npm/*/bin/
 refs/
 .playwright-mcp/
 .workbuddy-ai/
+
+# Tauri desktop app (Linux/Windows) build output
+desktop/frontend/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/*.exe
+desktop/src-tauri/binaries/anypick-core-*

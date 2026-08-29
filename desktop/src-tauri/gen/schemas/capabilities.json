@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Minimum permissions for the AnyPick desktop app.","local":true,"windows":["main"],"permissions":["core:default","core:event:default","core:window:default",{"identifier":"shell:allow-spawn","allow":[{"args":["desktop-service","--stdio"],"name":"binaries/anypick-core","sidecar":true}]}]}}
