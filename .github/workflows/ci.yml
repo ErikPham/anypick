@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          go-version: '1.23'
+          go-version: '1.26'
           cache-dependency-path: go/go.sum
       - name: Vet
         working-directory: go
@@ -89,7 +89,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          go-version: '1.23'
+          go-version: '1.26'
           cache-dependency-path: go/go.sum
       - name: Test native Windows process, lock, proxy, and CLI paths
         working-directory: go
@@ -109,7 +109,7 @@ jobs:
           cache: pnpm
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          go-version: '1.23'
+          go-version: '1.26'
           cache-dependency-path: go/go.sum
       - run: pnpm install --frozen-lockfile
       - run: pnpm go:parity
@@ -121,7 +121,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          go-version: '1.23'
+          go-version: '1.26'
           cache-dependency-path: go/go.sum
       - name: Unit-test app and bundled helper contract
         run: >-
