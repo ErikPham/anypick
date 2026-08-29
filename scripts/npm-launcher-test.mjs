@@ -8,7 +8,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -176,15 +175,17 @@ function checkPackedManifest() {
     const launcher = entries.find(({ name }) => name === 'package/bin/anypick.js');
     assert.ok(launcher, 'packed launcher is missing');
     assert.notEqual(launcher.mode & 0o111, 0, 'packed launcher must be executable');
+    // ADR-0020: the root tarball is a distribution adapter. It carries the
+    // launcher and nothing that needs a Node runtime at run time.
     assert.equal(
-      entries.some(({ name }) => name === 'package/scripts/plugin-host.mjs'),
-      true,
-      'packed root manifest must include the isolated plugin host script',
+      entries.some(({ name }) => name.startsWith('package/scripts/')),
+      false,
+      'packed root manifest must not ship runtime scripts (plugin host was removed)',
     );
     assert.equal(
-      entries.some(({ name }) => name === 'package/plugins/popular-providers/anypick.plugin.json'),
-      true,
-      'packed root manifest must include bundled plugin packages',
+      entries.some(({ name }) => name.startsWith('package/plugins/')),
+      false,
+      'packed root manifest must not ship plugin packages',
     );
     assert.equal(
       entries.some(({ name }) => name.startsWith('package/npm/')),
@@ -205,8 +206,6 @@ function makeFixture() {
   const appDir = join(temp, 'node_modules', 'anypick');
   mkdirSync(join(appDir, 'bin'), { recursive: true });
   mkdirSync(join(appDir, 'dist'), { recursive: true });
-  mkdirSync(join(appDir, 'plugins'), { recursive: true });
-  mkdirSync(join(appDir, 'scripts'), { recursive: true });
   copyFileSync(join(root, 'bin', 'anypick.js'), join(appDir, 'bin', 'anypick.js'));
   writeFileSync(
     join(appDir, 'package.json'),
@@ -220,11 +219,6 @@ function makeFixture() {
       '',
     ].join('\n'),
   );
-  copyFileSync(
-    join(root, 'scripts', 'plugin-host.mjs'),
-    join(appDir, 'scripts', 'plugin-host.mjs'),
-  );
-
   const target = platformTarget();
   const platformDir = installedPackageDir(appDir, target.packageName);
   const binary = join(platformDir, ...target.binaryPath.split('/'));
@@ -255,7 +249,7 @@ function makeFixture() {
         "  process.stdin.setEncoding('utf8');",
         "  process.stdin.on('data', (chunk) => { input += chunk; });",
         "  process.stdin.on('end', () => {",
-        "    process.stdout.write(JSON.stringify({ engine: 'native', args, env: process.env.ANYPICK_LAUNCHER_PASSTHROUGH, bundledPlugins: process.env.ANYPICK_BUNDLED_PLUGINS, pluginHostNode: process.env.ANYPICK_PLUGIN_HOST_NODE, pluginHostScript: process.env.ANYPICK_PLUGIN_HOST_SCRIPT, input }) + '\\n');",
+        "    process.stdout.write(JSON.stringify({ engine: 'native', args, env: process.env.ANYPICK_LAUNCHER_PASSTHROUGH, injectedPluginEnv: ['ANYPICK_BUNDLED_PLUGINS', 'ANYPICK_PLUGIN_HOST_NODE', 'ANYPICK_PLUGIN_HOST_SCRIPT'].filter((key) => process.env[key]), input }) + '\\n');",
         '    if (process.env.ANYPICK_LAUNCHER_STDERR) process.stderr.write(process.env.ANYPICK_LAUNCHER_STDERR);',
         '    process.exit(Number(process.env.ANYPICK_LAUNCHER_FIXTURE_EXIT || 0));',
         '  });',
@@ -305,21 +299,18 @@ async function checkPassthrough() {
           ANYPICK_LAUNCHER_FIXTURE_EXIT: '23',
           ANYPICK_LAUNCHER_PASSTHROUGH: 'env value with spaces',
           ANYPICK_LAUNCHER_STDERR: 'native stderr\n',
-          ANYPICK_BUNDLED_PLUGINS: join(fixture.temp, 'untrusted-plugins'),
-          ANYPICK_PLUGIN_HOST_NODE: join(fixture.temp, 'untrusted-node'),
-          ANYPICK_PLUGIN_HOST_SCRIPT: join(fixture.temp, 'untrusted-host.mjs'),
         },
         'native stdin\n',
       );
       assert.equal(native.status, 23, native.stderr);
       assert.equal(native.stderr, 'native stderr\n');
+      // The launcher injects no runtime environment for the Go engine: no
+      // plugin host, no bundled plugin directory (ADR-0020 §4).
       assert.deepEqual(JSON.parse(native.stdout), {
         engine: 'native',
         args: ['--json', 'value with spaces', '--literal=$TOKEN'],
         env: 'env value with spaces',
-        bundledPlugins: realpathSync(join(fixture.appDir, 'plugins')),
-        pluginHostNode: process.execPath,
-        pluginHostScript: realpathSync(join(fixture.appDir, 'scripts', 'plugin-host.mjs')),
+        injectedPluginEnv: [],
         input: 'native stdin\n',
       });
 

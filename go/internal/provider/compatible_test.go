@@ -31,6 +31,38 @@ func TestCompatibleDefinitionValidation(t *testing.T) {
 	}
 }
 
+// TestEveryBuiltinCompatibleDefinitionIsValid guards the compiled-in vendor
+// table. Every entry is data, so a bad one — a duplicated credential kind, a
+// missing profile, an insecure endpoint — only surfaces at app startup without
+// this, and startup failures are the worst place to find out.
+func TestEveryBuiltinCompatibleDefinitionIsValid(t *testing.T) {
+	definitions := BuiltinDefinitions()
+	if len(definitions) == 0 {
+		t.Fatal("no built-in compatible providers")
+	}
+	seenID := make(map[string]bool, len(definitions))
+	for _, def := range definitions {
+		if seenID[def.ID] {
+			t.Fatalf("duplicate built-in compatible provider id %q", def.ID)
+		}
+		seenID[def.ID] = true
+		if _, err := NewCompatible(def); err != nil {
+			t.Fatalf("built-in %q does not validate: %v", def.ID, err)
+		}
+		for _, cred := range def.Credentials {
+			if cred.Label == "" {
+				t.Errorf("%s: credential %q has no label", def.ID, cred.Kind)
+			}
+			for _, profile := range cred.Profiles {
+				if !strings.HasPrefix(profile.OpenAIBase, "https://") {
+					t.Errorf("%s/%s/%s: openaiBase must be HTTPS, got %q",
+						def.ID, cred.Kind, profile.ID, profile.OpenAIBase)
+				}
+			}
+		}
+	}
+}
+
 func TestCompatibleBackupInputAndAdapter(t *testing.T) {
 	def := BuiltinDefinitions()[1] // deepseek
 	pv, err := NewCompatible(def)

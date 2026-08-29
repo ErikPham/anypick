@@ -260,7 +260,7 @@ func (a *App) compose() error {
 		Profiles: rt.Profiles, Catalog: catalogRegistry,
 	}
 	a.Deps = deps
-	a.pluginSup = newPluginSupervisor(a, gate)
+	a.pluginSup = newPluginSupervisor(a)
 	return nil
 }
 

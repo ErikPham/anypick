@@ -21,10 +21,6 @@ export class LauncherError extends Error {
 const require = createRequire(import.meta.url);
 const rootPackagePath = fileURLToPath(new URL('../package.json', import.meta.url));
 const rootPackage = parseRootPackage(readFileSync(rootPackagePath, 'utf8'));
-const bundledPluginsPath = realpathSync(fileURLToPath(new URL('../plugins', import.meta.url)));
-const pluginHostScriptPath = realpathSync(
-  fileURLToPath(new URL('../scripts/plugin-host.mjs', import.meta.url)),
-);
 
 /** @type {ReadonlyMap<string, readonly [string, string]>} */
 const TARGETS = new Map([
@@ -235,7 +231,6 @@ function signalExitCode(signal) {
 export async function runLauncher(args = process.argv.slice(2)) {
   let command;
   let childArgs;
-  let childEnvironment = process.env;
   if (isTuiInvocation(args)) {
     command = process.execPath;
     childArgs = [fileURLToPath(new URL('../dist/cli.js', import.meta.url)), ...args];
@@ -243,17 +238,14 @@ export async function runLauncher(args = process.argv.slice(2)) {
     const target = platformTarget();
     command = resolveNativeBinary(target);
     childArgs = args;
-    childEnvironment = {
-      ...process.env,
-      ANYPICK_BUNDLED_PLUGINS: bundledPluginsPath,
-      ANYPICK_PLUGIN_HOST_NODE: process.execPath,
-      ANYPICK_PLUGIN_HOST_SCRIPT: pluginHostScriptPath,
-    };
   }
 
   let outcome;
   try {
-    outcome = await spawnPassthrough(command, childArgs, spawn, childEnvironment);
+    // The Go engine owns everything except the TUI, so the native branch needs
+    // no injected environment: no Node path, no plugin host, no bundled plugin
+    // directory (ADR-0020).
+    outcome = await spawnPassthrough(command, childArgs, spawn);
   } catch {
     throw new LauncherError(
       'AnyPick could not start its installed command binary. Reinstall AnyPick and try again.',

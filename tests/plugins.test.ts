@@ -21,7 +21,7 @@ import {
   parseManifest,
   resolveEntry,
 } from '../src/core/plugin-loader';
-import { PluginService, resolvePluginDirectory } from '../src/core/plugin-service';
+import { PluginService } from '../src/core/plugin-service';
 import { PluginStore } from '../src/core/plugin-store';
 import { openDatabase } from '../src/core/db';
 import { migrateSchema } from '../src/core/db-schema';
@@ -79,12 +79,6 @@ describe('plugin manifest validation', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  it('resolves the shipped popular provider plugin by stable bundle name', () => {
-    expect(resolvePluginDirectory('bundled:popular-providers')).toMatch(
-      /plugins\/popular-providers$/,
-    );
   });
 
   it('refuses an entry that escapes the plugin directory', () => {
@@ -260,59 +254,6 @@ describe('plugin activation through createAppReady', () => {
     expect(app.pluginRuntime.failures).toEqual([]);
     expect(app.pluginRuntime.loaded.map((l) => l.record.name)).toEqual(['acme-plugin']);
     expect(app.catalog.get('acme-cloud')?.name).toBe('ACME Cloud');
-  });
-
-  it('loads the bundled compatible providers as first-class account adapters', async () => {
-    const bootstrap = await createAppReady({ root });
-    await bootstrap.plugins.add('bundled:popular-providers');
-    await bootstrap.plugins.setEnabled('popular-providers', true);
-    bootstrap.close();
-
-    app = await createAppReady({ root });
-    expect(app.pluginRuntime.failures).toEqual([]);
-    expect(app.pluginRuntime.loaded.map((entry) => entry.record.name)).toContain(
-      'popular-providers',
-    );
-    for (const id of [
-      'kimi',
-      'glm',
-      'minimax',
-      'mimo',
-      'deepseek',
-      'qwen',
-      'ark',
-      'tokenhub',
-      'openrouter',
-      'groq-cloud',
-      'mistral',
-      'together-ai',
-      'fireworks',
-      'cerebras',
-      'siliconflow',
-      'nvidia-nim',
-    ]) {
-      expect(app.accountRegistry.get(id)?.id).toBe(id);
-      expect(app.catalog.get(id)?.id).toBe(id);
-    }
-    expect(app.accountRegistry.get('kimi')?.credentialInputs).toEqual([
-      'api-key',
-      'subscription-key',
-    ]);
-    expect(app.accountRegistry.get('mimo')?.credentialInputFields?.('subscription-key')).toEqual([
-      expect.objectContaining({
-        name: 'profile',
-        choices: ['china', 'singapore', 'europe'],
-      }),
-    ]);
-    expect(app.accountRegistry.get('ark')?.credentialInputFields?.('subscription-key')).toEqual([
-      expect.objectContaining({
-        name: 'profile',
-        choices: ['china-coding', 'global-coding'],
-      }),
-    ]);
-    expect(app.catalog.get('openrouter')?.description).toBe(
-      'Multi-model OpenAI-compatible gateway',
-    );
   });
 
   it('surfaces an untrusted plugin as a doctor finding rather than a crash', async () => {

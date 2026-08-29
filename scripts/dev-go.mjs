@@ -80,9 +80,6 @@ if (build.status !== 0) {
 const env = {
   ...process.env,
   GOTOOLCHAIN: 'auto',
-  ANYPICK_BUNDLED_PLUGINS: join(root, 'plugins'),
-  ANYPICK_PLUGIN_HOST_NODE: process.execPath,
-  ANYPICK_PLUGIN_HOST_SCRIPT: join(root, 'scripts', 'plugin-host.mjs'),
 };
 if (sandbox) {
   const base = join(tmpdir(), 'anypick-go-sandbox');

@@ -31,9 +31,7 @@
   },
   "files": [
     "bin",
-    "dist",
-    "plugins",
-    "scripts/plugin-host.mjs"
+    "dist"
   ],
   "type": "module",
   "main": "./dist/index.js",

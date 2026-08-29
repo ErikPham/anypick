@@ -3,13 +3,11 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
-	"github.com/outof0/anypick/go/internal/pluginhost"
 )
 
 func writeCLIPlugin(t *testing.T, base string) string {
@@ -39,25 +37,11 @@ func runPluginCaptured(t *testing.T, args ...string) (int, string, string) {
 	return code, out, errOut
 }
 
+// The registry lifecycle (add → enable → list → trust → disable → remove) is
+// still fully supported. What changed with ADR-0020 §5 is that nothing executes
+// the package: list reports loaded=false with the removal reason, and doctor
+// reports an inactive host rather than a running one.
 func TestPluginCLIJSONLifecycleAndUntrustedFailure(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node is required for plugin-host integration")
-	}
-	node, err = filepath.Abs(node)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostScript, err := filepath.Abs(filepath.Join(cwd, "..", "..", "..", "scripts", "plugin-host.mjs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(pluginhost.EnvNodePath, node)
-	t.Setenv(pluginhost.EnvScriptPath, hostScript)
 	base := isolateEnv(t)
 	dir := writeCLIPlugin(t, base)
 
@@ -93,8 +77,17 @@ func TestPluginCLIJSONLifecycleAndUntrustedFailure(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed) != 1 {
 		t.Fatalf("list JSON = %#v err=%v", listed, err)
 	}
-	if listed[0]["loaded"] != true || listed[0]["failure"] != nil {
-		t.Fatalf("trusted plugin should be activated by the private host: %#v", listed[0])
+	// No host can load it, and the reason must say so rather than showing the
+	// package as healthy.
+	if listed[0]["loaded"] != false {
+		t.Fatalf("loaded = %#v, want false: this build has no plugin host", listed[0]["loaded"])
+	}
+	removalFailure, ok := listed[0]["failure"].(map[string]any)
+	if !ok || !strings.Contains(removalFailure["reason"].(string), "no plugin host") {
+		t.Fatalf("removal failure = %#v, want a reason naming the missing host", listed[0]["failure"])
+	}
+	if removalFailure["untrusted"] != false {
+		t.Fatalf("removal failure must not be reported as untrusted: %#v", removalFailure)
 	}
 	code, out, errOut = runPluginCaptured(t, "--json", "doctor")
 	if code != int(anyerr.Success) || errOut != "" {
@@ -109,9 +102,15 @@ func TestPluginCLIJSONLifecycleAndUntrustedFailure(t *testing.T) {
 		t.Fatalf("doctor plugins diagnostics = %#v", doctor["plugins"])
 	}
 	host, ok := pluginDiagnostics["host"].(map[string]any)
-	if !ok || host["state"] != "running" || host["loadedPlugins"] != float64(1) ||
-		host["activationCount"] != float64(1) {
-		t.Fatalf("doctor plugin host = %#v", pluginDiagnostics["host"])
+	if !ok || host["state"] != "inactive" || host["loadedPlugins"] != float64(0) {
+		t.Fatalf("doctor plugin host = %#v, want inactive/0", pluginDiagnostics["host"])
+	}
+	if host["error"] != nil && host["error"] != "" {
+		t.Fatalf("doctor host error = %#v, want empty: nothing crashed", host["error"])
+	}
+	if len(pluginDiagnostics["failures"].([]any)) != 1 {
+		t.Fatalf("doctor plugin failures = %#v, want the removal notice",
+			pluginDiagnostics["failures"])
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "helper.mjs"), []byte("tampered\n"), 0o600); err != nil {

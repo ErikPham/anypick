@@ -555,6 +555,150 @@ func BuiltinDefinitions() []CompatibleDefinition {
 				}},
 			}},
 		},
+
+		// ── Vendors ported from the removed popular-providers ESM pack ──────
+		// These shipped as executable plugin registrations before ADR-0020 §5
+		// removed the host. They were always inert data, so they compile in.
+		// The ids are preserved verbatim (including ark vs doubao, groq-cloud
+		// vs groq, together-ai vs together) because each pair was already
+		// registered simultaneously and each names a different product.
+		{
+			// Ark Coding Plan keys bill against a separate endpoint from the
+			// platform API key; the two must never drift onto each other.
+			ID: "ark", Name: "Volcengine Ark / BytePlus ModelArk", ShortName: "Ark",
+			Description:      "Ark pay-as-you-go APIs and separate Volcengine/BytePlus Coding Plan keys",
+			DefaultProxyPort: 4155,
+			Models:           []string{"ark-code-latest", "doubao-seed-2.0-code"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "Ark platform API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{
+					{ID: "china", Label: "Volcengine China",
+						OpenAIBase: "https://ark.cn-beijing.volces.com/api/v3"},
+					{ID: "global", Label: "BytePlus Singapore",
+						OpenAIBase: "https://ark.ap-southeast.bytepluses.com/api/v3"},
+				},
+			}, {
+				Kind: "subscription-key", Label: "Ark Coding Plan key",
+				CredentialClass: "coding_plan_key",
+				Profiles: []EndpointProfile{
+					{ID: "china-coding", Label: "Volcengine Coding Plan",
+						OpenAIBase:    "https://ark.cn-beijing.volces.com/api/coding/v3",
+						AnthropicBase: "https://ark.cn-beijing.volces.com/api/coding",
+						AnthropicAuth: AuthBearer},
+					{ID: "global-coding", Label: "BytePlus Coding Plan",
+						OpenAIBase:    "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+						AnthropicBase: "https://ark.ap-southeast.bytepluses.com/api/coding",
+						AnthropicAuth: AuthBearer},
+				},
+			}},
+			QuotaErrorPatterns: []string{
+				"coding plan.*quota", "套餐.*额度", "余额不足", "quota.*exceeded",
+			},
+		},
+		{
+			ID: "tokenhub", Name: "Tencent Cloud TokenHub", ShortName: "TokenHub",
+			Description:      "Tencent TokenHub pay-go API and separate Coding/Token Plan keys",
+			DefaultProxyPort: 4156,
+			Models:           []string{"glm-5", "kimi-k2.5", "minimax-m2.5"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "TokenHub API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID: "paygo", OpenAIBase: "https://tokenhub.tencentmaas.com/v1",
+				}},
+			}, {
+				Kind: "subscription-key", Label: "TokenHub Coding Plan key",
+				CredentialClass: "coding_plan_key",
+				Profiles: []EndpointProfile{{
+					ID:            "coding-plan",
+					OpenAIBase:    "https://api.lkeap.cloud.tencent.com/plan/v3",
+					AnthropicBase: "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+					AnthropicAuth: AuthBearer,
+				}},
+			}},
+			QuotaErrorPatterns: []string{
+				"coding plan.*quota", "token plan.*quota", "套餐.*额度", "余额不足",
+			},
+		},
+		{
+			ID: "groq-cloud", Name: "GroqCloud", ShortName: "Groq",
+			Description:      "GroqCloud fast inference API with native OpenAI Responses support",
+			DefaultProxyPort: 4148,
+			Models:           []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "Groq API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID:              "global",
+					OpenAIBase:      "https://api.groq.com/openai/v1",
+					NativeResponses: true,
+				}},
+			}},
+			QuotaErrorPatterns: []string{"rate_limit_exceeded", "quota.*exceeded"},
+		},
+		{
+			ID: "together-ai", Name: "Together AI", ShortName: "Together",
+			Description:      "Together AI serverless and dedicated inference API keys",
+			DefaultProxyPort: 4150,
+			Models:           []string{"MiniMaxAI/MiniMax-M3", "Qwen/Qwen3.5-9B", "openai/gpt-oss-120b"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "Together API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID: "global", OpenAIBase: "https://api.together.ai/v1",
+				}},
+			}},
+			QuotaErrorPatterns: []string{"insufficient.*credits", "quota.*exceeded"},
+		},
+		{
+			ID: "fireworks", Name: "Fireworks AI", ShortName: "Fireworks",
+			Description:      "Fireworks serverless API with native OpenAI Responses and Anthropic Messages",
+			DefaultProxyPort: 4151,
+			Models: []string{
+				"accounts/fireworks/models/kimi-k2p5",
+				"accounts/fireworks/models/deepseek-v3p1",
+			},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "Fireworks API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID:              "global",
+					OpenAIBase:      "https://api.fireworks.ai/inference/v1",
+					NativeResponses: true,
+					AnthropicBase:   "https://api.fireworks.ai/inference",
+				}},
+			}},
+			QuotaErrorPatterns: []string{"insufficient.*credits", "quota.*exceeded"},
+		},
+		{
+			ID: "cerebras", Name: "Cerebras Inference", ShortName: "Cerebras",
+			Description:      "Cerebras high-speed OpenAI-compatible inference API",
+			DefaultProxyPort: 4152,
+			Models:           []string{"gpt-oss-120b", "zai-glm-4.7"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "Cerebras API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID: "global", OpenAIBase: "https://api.cerebras.ai/v1",
+				}},
+			}},
+			QuotaErrorPatterns: []string{"quota.*exceeded", "rate_limit_exceeded"},
+		},
+		{
+			ID: "nvidia-nim", Name: "NVIDIA NIM", ShortName: "NVIDIA",
+			Description:      "NVIDIA hosted NIM OpenAI-compatible inference API",
+			DefaultProxyPort: 4154,
+			Models:           []string{"z-ai/glm5.1", "qwen/qwen3.5-122b-a10b"},
+			Credentials: []CredentialDefinition{{
+				Kind: "api-key", Label: "NVIDIA API key",
+				CredentialClass: "provider_api_key",
+				Profiles: []EndpointProfile{{
+					ID: "hosted", OpenAIBase: "https://integrate.api.nvidia.com/v1",
+				}},
+			}},
+			QuotaErrorPatterns: []string{"payment required", "quota.*exceeded", "rate.*limit"},
+		},
 	}
 }
 

@@ -9,8 +9,54 @@ import {
   validateCompatibleProviderDefinition,
 } from '../src/providers/compatible/definition';
 import { listenCompatibleProxy } from '../src/providers/compatible/server';
+import { PLUGIN_API_VERSION } from '../src/index';
 import { createAppReady } from '../src/core/app';
 import { buildProgram } from '../src/cli/commands';
+
+/**
+ * A subscription-shaped vendor registered the way a plugin author would. This
+ * used to come from the shipped popular-providers pack; that pack was removed
+ * together with the executable ESM host (ADR 0020 §5), so the test now owns
+ * its own fixture and no longer depends on anything shipped in the tarball.
+ */
+const SUBSCRIPTION_PLUGIN_ENTRY = `
+export default {
+  activate(ctx) {
+    ctx.registerCompatibleProvider({
+      id: 'acme-plan',
+      name: 'ACME Coding Plan',
+      description: 'Test subscription provider',
+      models: ['acme-coder'],
+      credentials: [
+        {
+          kind: 'subscription-key',
+          label: 'ACME Token Plan key',
+          profiles: [
+            { id: 'singapore', openaiBase: 'https://sg.example.com/v1' },
+            { id: 'global', openaiBase: 'https://api.example.com/v1' },
+          ],
+        },
+      ],
+      quotaErrorPatterns: ['plan quota'],
+    });
+  },
+};
+`;
+
+async function writeSubscriptionPlugin(dir: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, 'anypick.plugin.json'),
+    JSON.stringify({
+      name: 'acme-plan',
+      version: '1.0.0',
+      apiVersion: PLUGIN_API_VERSION,
+      main: 'index.mjs',
+    }),
+  );
+  await writeFile(join(dir, 'index.mjs'), SUBSCRIPTION_PLUGIN_ENTRY);
+  return dir;
+}
 
 const baseDefinition: CompatibleProviderDefinition = {
   id: 'acme-ai',
@@ -108,8 +154,8 @@ describe('compatible provider definition', () => {
     let app: Awaited<ReturnType<typeof createAppReady>> | undefined;
     try {
       const bootstrap = await createAppReady({ root });
-      await bootstrap.plugins.add('bundled:popular-providers');
-      await bootstrap.plugins.setEnabled('popular-providers', true);
+      await bootstrap.plugins.add(await writeSubscriptionPlugin(join(root, 'acme-plan-plugin')));
+      await bootstrap.plugins.setEnabled('acme-plan', true);
       bootstrap.close();
       app = await createAppReady({ root });
       const program = buildProgram(app);
@@ -120,7 +166,7 @@ describe('compatible provider definition', () => {
         '--no-input',
         'add',
         'account',
-        'mimo',
+        'acme-plan',
         '--credential',
         'subscription-key',
         '--secret',
@@ -130,10 +176,10 @@ describe('compatible provider definition', () => {
         '--option',
         'profile=singapore',
       ]);
-      const account = await app.accounts.get('mimo', 'plan');
+      const account = await app.accounts.get('acme-plan', 'plan');
       expect(account?.meta).toMatchObject({
         credentialKind: 'proxy-only',
-        label: 'MiMo Token Plan key · singapore',
+        label: 'ACME Token Plan key · singapore',
       });
       expect(output).toHaveBeenCalledWith(expect.stringContaining('"mode":"subscription-key"'));
     } finally {

@@ -12,7 +12,7 @@ func TestDigestPluginPackageMatchesTypeScriptVector(t *testing.T) {
 		"anypick.plugin.json":          `{"name":"acme-plugin","version":"1.0.0","apiVersion":1,"main":"index.mjs"}`,
 		"index.mjs":                    "export default { activate() {} };\n",
 		"lib/helper.mjs":               "export const helper = 1;\n",
-		"node_modules/pkg/index.mjs":  "export const dependency = true;\n",
+		"node_modules/pkg/index.mjs":   "export const dependency = true;\n",
 		"a-.txt":                       "dash",
 		"a_.txt":                       "underscore",
 		".git/config":                  "must be ignored",

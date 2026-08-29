@@ -78,11 +78,11 @@ type pluginRuntimeSource interface {
 }
 
 func servingRuntimeOf(pv provider.Provider) proxy.PluginRuntimeIdentity {
+	// The RPC branch that reached into rpcProxyCore went with the ESM host.
+	// No built-in implements pluginRuntimeSource today, so this reports the
+	// invalid identity and internal/proxy fails closed.
 	if src, ok := pv.(pluginRuntimeSource); ok {
 		return src.pluginRuntime()
-	}
-	if base, ok := rpcBaseOf(pv); ok && base != nil && base.proxy != nil {
-		return base.proxy.pluginRuntime()
 	}
 	return proxy.PluginRuntimeIdentity{}
 }
