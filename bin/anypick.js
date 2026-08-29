@@ -54,17 +54,6 @@ function parseRootPackage(raw) {
   return { version: value.version };
 }
 
-/** @param {readonly string[]} args @returns {boolean} */
-export function isTuiInvocation(args) {
-  const commandEnd = args.indexOf('--');
-  const commandArgs = commandEnd === -1 ? args : args.slice(0, commandEnd);
-  if (commandArgs.includes('--tui')) {
-    return true;
-  }
-  const firstPositional = commandArgs.find((arg) => arg !== '' && !arg.startsWith('-'));
-  return firstPositional === 'tui';
-}
-
 /**
  * @param {{ getReport?: () => { header?: { glibcVersionRuntime?: unknown } } } | undefined} report
  * @returns {'glibc' | 'non-glibc' | 'unknown'}
@@ -229,23 +218,16 @@ function signalExitCode(signal) {
 
 /** @param {readonly string[]} args @returns {Promise<void>} */
 export async function runLauncher(args = process.argv.slice(2)) {
-  let command;
-  let childArgs;
-  if (isTuiInvocation(args)) {
-    command = process.execPath;
-    childArgs = [fileURLToPath(new URL('../dist/cli.js', import.meta.url)), ...args];
-  } else {
-    const target = platformTarget();
-    command = resolveNativeBinary(target);
-    childArgs = args;
-  }
+  // Every invocation goes to the platform Go binary, the TUI included: it was
+  // ported to bubbletea in go/internal/tui, so there is no Node surface left
+  // to dispatch to (ADR-0020 §4/§5). Nothing is injected into the child
+  // environment — no Node path, no plugin host, no bundled plugin directory.
+  const target = platformTarget();
+  const command = resolveNativeBinary(target);
 
   let outcome;
   try {
-    // The Go engine owns everything except the TUI, so the native branch needs
-    // no injected environment: no Node path, no plugin host, no bundled plugin
-    // directory (ADR-0020).
-    outcome = await spawnPassthrough(command, childArgs, spawn);
+    outcome = await spawnPassthrough(command, args, spawn);
   } catch {
     throw new LauncherError(
       'AnyPick could not start its installed command binary. Reinstall AnyPick and try again.',

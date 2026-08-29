@@ -16,7 +16,6 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   LauncherError,
-  isTuiInvocation,
   platformTarget,
   resolveNativeBinary,
 } from '../bin/anypick.js';
@@ -63,16 +62,6 @@ function glibcReport() {
 }
 
 function checkContracts() {
-  assert.equal(isTuiInvocation(['tui']), true);
-  assert.equal(isTuiInvocation(['--json', 'tui']), true);
-  assert.equal(isTuiInvocation(['--tui']), true);
-  assert.equal(isTuiInvocation(['current', '--tui']), true);
-  assert.equal(isTuiInvocation(['--', 'tui']), false);
-  assert.equal(isTuiInvocation(['--tui=false']), false);
-  assert.equal(isTuiInvocation(['run', 'codex', '--', 'tui']), false);
-  assert.equal(isTuiInvocation(['run', 'codex', '--', '--tui']), false);
-  assert.equal(isTuiInvocation(['current']), false);
-
   assert.equal(
     platformTarget({ platform: 'darwin', arch: 'arm64' }).packageName,
     '@anypick/cli-darwin-arm64',
@@ -205,20 +194,15 @@ function makeFixture() {
   const temp = mkdtempSync(join(tmpdir(), 'anypick-npm-launcher-'));
   const appDir = join(temp, 'node_modules', 'anypick');
   mkdirSync(join(appDir, 'bin'), { recursive: true });
-  mkdirSync(join(appDir, 'dist'), { recursive: true });
   copyFileSync(join(root, 'bin', 'anypick.js'), join(appDir, 'bin', 'anypick.js'));
   writeFileSync(
     join(appDir, 'package.json'),
     JSON.stringify({ name: 'anypick', version: rootManifest.version, type: 'module' }),
   );
-  writeFileSync(
-    join(appDir, 'dist', 'cli.js'),
-    [
-      "process.stdout.write(JSON.stringify({ engine: 'tui', args: process.argv.slice(2) }) + '\\n');",
-      'process.exit(Number(process.env.ANYPICK_LAUNCHER_FIXTURE_EXIT || 0));',
-      '',
-    ].join('\n'),
-  );
+  // No dist/ is created on purpose. The launcher used to spawn
+  // dist/cli.js for `anypick tui`; the TUI is Go now, so if any code path
+  // still reaches for a Node entry point this fixture fails instead of
+  // quietly passing.
   const target = platformTarget();
   const platformDir = installedPackageDir(appDir, target.packageName);
   const binary = join(platformDir, ...target.binaryPath.split('/'));
@@ -287,11 +271,17 @@ function waitForExit(child) {
 async function checkPassthrough() {
   const fixture = makeFixture();
   try {
-    const tui = runFixture(fixture.launcher, ['tui', '--probe']);
-    assert.equal(tui.status, 0, tui.stderr);
-    assert.deepEqual(JSON.parse(tui.stdout), { engine: 'tui', args: ['tui', '--probe'] });
-
     if (process.platform !== 'win32') {
+      // The TUI is Go now (go/internal/tui), so it must reach the platform
+      // binary like every other command. There is no dist/cli.js in the
+      // fixture, so this fails loudly if a Node dispatch path ever comes back.
+      const tui = runFixture(fixture.launcher, ['tui', '--probe']);
+      assert.equal(tui.status, 0, tui.stderr);
+      const tuiOut = JSON.parse(tui.stdout);
+      assert.equal(tuiOut.engine, 'native', `tui must run on the Go engine, got ${tui.stdout}`);
+      assert.deepEqual(tuiOut.args, ['tui', '--probe']);
+      assert.deepEqual(tuiOut.injectedPluginEnv, []);
+
       const native = runFixture(
         fixture.launcher,
         ['--json', 'value with spaces', '--literal=$TOKEN'],
