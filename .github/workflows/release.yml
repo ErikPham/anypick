@@ -155,7 +155,7 @@ jobs:
 
       - name: Reject unexpected version edits
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(package.json|npm/cli-[^/]+/package.json|src/tray/tauri/src-tauri/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
+          unexpected="$(git diff --name-only | grep -Ev '^(package.json|npm/cli-[^/]+/package.json|src/tray/tauri/src-tauri/(Cargo.toml|Cargo.lock|tauri.conf.json)|macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
           test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
 
       - name: Format, lint, typecheck and test
@@ -225,7 +225,7 @@ jobs:
             src/tray/tauri/src-tauri/Cargo.toml
             src/tray/tauri/src-tauri/Cargo.lock
             src/tray/tauri/src-tauri/tauri.conf.json
-            src/macos/AnyPick.xcodeproj/project.pbxproj
+            macos/AnyPick.xcodeproj/project.pbxproj
           )
 
           if ! git diff --quiet -- "${version_files[@]}"; then

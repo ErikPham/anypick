@@ -1,5 +1,4 @@
 node_modules/
-dist/
 *.tgz
 *.log
 .DS_Store
@@ -10,12 +9,6 @@ docs/.astro/
 docs/dist/
 .claude/
 .pi/
-src/tray/tauri/src-tauri/gen/
-src/tray/tauri/src-tauri/target/
-src/tray/tauri/src-tauri/binaries/anypick-core-*
-
-# Tauri tray UI is built from ui/ into frontend/
-src/tray/tauri/frontend/
 
 # Local design mocks / ad-hoc screenshots — not product source
 design/

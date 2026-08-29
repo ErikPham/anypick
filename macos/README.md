@@ -2,9 +2,9 @@
 
 This directory is the **only Swift tree** for the macOS app: scenes, panes,
 sheets, menu-bar content, in-memory fixture, `TrayStore`, and
-`ProductionDesignModel`. `pnpm dev` and `pnpm macos:design` compile the same
-sources. Fixture vs live is a data source (`ANYPICK_MACOS_FIXTURE`), not a
-second app.
+`ProductionDesignModel`. There is no second build: fixture vs live is a data
+source chosen by environment variables (`ANYPICK_MACOS_FIXTURE`), read by
+`AppDelegate` in the same binary.
 
 The product is a full macOS Dock app whose **main window must look and behave
 like a first-party macOS System Settings window**, not a website, not a
@@ -43,30 +43,50 @@ or **System Settings → Battery**, it is the wrong change.
 ## One tree
 
 Edit this directory for chrome, panes, sheets, menu-bar content, store, and
-the production bridge. `src/tray/` is Node only (supervisor + protocol).
+the production bridge. Nothing outside this tree renders macOS chrome.
 
-| Command | Data |
-| --- | --- |
-| `pnpm dev` | Live `~/.anypick` through `ProductionDesignModel` |
-| `pnpm macos:design` | In-memory fixture. Same Swift. |
+## Fixture vs live
+
+One binary, two data sources. Run with no variables and the app talks to the
+Go service over `~/.anypick`; set `ANYPICK_MACOS_FIXTURE` (or
+`ANYPICK_MACOS_DESIGN=1`) and it renders an in-memory fixture instead, with no
+service and no disk access.
+
+Set them in the scheme (**Product → Scheme → Edit Scheme → Run → Arguments →
+Environment Variables**), then Run:
+
+| Variable | Values | Default |
+| --- | --- | --- |
+| `ANYPICK_MACOS_FIXTURE` | `ready`, `loading`, `empty`, `error` | — (unset = live data) |
+| `ANYPICK_MACOS_DESTINATION` | `overview`, `apps`, `accounts`, `proxyHub`, `proxies`, `activity`, `backups` | `overview` |
+| `ANYPICK_MACOS_FLOW` | `add-account`, `add-gateway`, `remove-account`, `published-models`, `hub-overlap`, `create-backup`, `restore-backup`, `import-backup`, `getting-started`, `tray`, `tray-attention`, `tray-use-with`, `tray-switching`, `tray-recovery`, `tray-first-run` | — |
+| `ANYPICK_MACOS_APPEARANCE` | `system`, `light`, `dark` | `system` |
+| `ANYPICK_MACOS_ACTIVITY_MODE` | `events`, `logs` | `events` |
+| `ANYPICK_MACOS_RENDER_PATH` | path — renders the window to a PNG and exits | — |
 
 Preview the fixture, not a screenshot of a previous session:
 
+```text
+ANYPICK_MACOS_FIXTURE=ready                     # populated Overview + tray Ready
+ANYPICK_MACOS_FIXTURE=empty                     # first-run Get Started + tray First Run
+ANYPICK_MACOS_FLOW=tray                         # board 29 Ready
+ANYPICK_MACOS_FLOW=tray-attention
+ANYPICK_MACOS_FLOW=tray-use-with
+ANYPICK_MACOS_FLOW=tray-switching
+ANYPICK_MACOS_FLOW=tray-recovery
+ANYPICK_MACOS_FLOW=tray-first-run
+ANYPICK_MACOS_FLOW=getting-started
+ANYPICK_MACOS_DESTINATION=proxies               # Hub + per-account proxies
+ANYPICK_MACOS_DESTINATION=apps
+ANYPICK_MACOS_FLOW=add-account
+ANYPICK_MACOS_APPEARANCE=dark
+```
+
+Compile-only check of the Swift tree:
+
 ```bash
-pnpm macos:design                    # populated Overview + tray Ready
-pnpm macos:design --empty            # first-run Get Started + tray First Run
-pnpm macos:design --flow tray        # board 29 Ready
-pnpm macos:design --flow tray-attention
-pnpm macos:design --flow tray-use-with
-pnpm macos:design --flow tray-switching
-pnpm macos:design --flow tray-recovery
-pnpm macos:design --flow tray-first-run
-pnpm macos:design --flow getting-started
-pnpm macos:design --destination proxies     # Hub + per-account proxies
-pnpm macos:design --destination apps
-pnpm macos:design --flow add-account
-pnpm macos:design --appearance dark
-pnpm macos:design:check              # swiftc only
+xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
+  -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
 ```
 
 Audit a change against System Settings with:

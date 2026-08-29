@@ -1,9 +1,13 @@
 # Working on AnyPick
 
-AnyPick is a Node CLI + Ink terminal UI that points AI coding clients at AI
-accounts you already have. It rewrites other tools' credential and config files
-and spawns local proxies, so a careless change corrupts a developer's real
-logins. Bias toward verifying over assuming.
+AnyPick points AI coding clients at AI accounts you already have. It rewrites
+other tools' credential and config files and spawns local proxies, so a careless
+change corrupts a developer's real logins. Bias toward verifying over assuming.
+
+The engine is **Go** (`go/`): CLI, terminal UI and desktop service all run from
+one bundled binary (ADR 0020). The macOS app is Swift (`macos/`). npm is a
+distribution adapter — `bin/anypick.js` resolves the platform Go binary and
+spawns it; it ships no TypeScript and needs no Node runtime to do real work.
 
 `CLAUDE.md` and `GEMINI.md` are symlinks to this file — edit this one.
 `docs/AGENTS.md` (symlinked the same way) covers the docs site, which has
@@ -12,22 +16,37 @@ different rules; `docs/AGENT.md` is the nimbus template's own authoring guide.
 ## Commands
 
 ```bash
-pnpm install
-pnpm dev --help   # single app entry from source (tsx); long-running cmds auto-watch
-pnpm check        # oxfmt --check + oxlint --type-aware + tsc (src & tests) + vitest
-pnpm test         # vitest run
-pnpm vitest run tests/<file>.test.ts   # one file
-pnpm format       # rewrite with oxfmt
-pnpm macos:design           # isolated System Settings + board 29 tray window
-pnpm macos:design --flow tray|tray-attention|tray-use-with|tray-first-run
-pnpm macos:design:check     # swiftc only
+# engine
+cd go
+go build ./... && go vet ./...
+go test ./... -count=1            # ~2-4 min with a warm, writable module cache
+go test -race ./... -count=1
+go test ./internal/tui/ -count=1  # one package
+
+# dev entry (builds go/bin/anypick-dev, then runs it)
+scripts/dev.sh list
+scripts/dev.sh --sandbox list              # throwaway HOME + ANYPICK_HOME
+scripts/dev.sh --launch-app / --stop-app   # desktop supervisor
+
+# release gates
+cd go && go run ./cmd/anypick-release check              # VERSION <-> Xcode
+cd go && go run ./cmd/anypick-artifact node-free <root>  # ADR 0020 §8 gate
 ```
 
-`pnpm dev …` is the only local app command — CLI, TUI, tray, proxies. It runs
-source via tsx (no rebuild). `tui` / `tray` / `proxy serve` enable file watch
-restart; force with `--watch` / disable with `--no-watch`.
+There is no root `package.json` and no pnpm workspace: this repository has no
+JavaScript build. `scripts/` is two shell scripts and nothing else. The only
+Node project is `docs/`, the documentation site, with its own lockfile.
 
-`pnpm check` is exactly what CI runs. Run it before you claim a change is done.
+CI (`.github/workflows/ci.yml`) runs five jobs: format/vet/version sync, Go
+tests on Ubuntu, Go tests on Windows, the macOS app and helper contract, and
+the docs site. Run the Go ones before you claim a change is done.
+
+> **GOPATH trap.** `GOPATH` must point at a writable module cache. If it points
+> at another project's cache, tests that shell out to `go build`
+> (`cmd/anypick`'s `requireBuiltCLI`) stall in module resolution and the package
+> times out after many minutes — which looks exactly like a change you just
+> broke. Use `GOPATH=$HOME/go go test ./...` (warm once with `go mod download
+> all`). This cost hours once; do not debug the code before checking it.
 
 The docs site is a **separate** pnpm project with its own lockfile:
 
@@ -36,20 +55,20 @@ cd docs && pnpm install && pnpm dev    # site only
 cd docs && pnpm build
 ```
 
-Your shell's working directory does not persist between tool calls. A bare
-`pnpm build` runs the *CLI* build, not the site — prefix every docs command with
-`cd docs &&` in the same invocation or you will silently test stale output.
+Your shell's working directory does not persist between tool calls, so prefix
+every docs command with `cd docs &&` in the same invocation or you will silently
+run it against the wrong project.
 
 ## Where the authority lives
 
 | Question | Read |
 | --- | --- |
 | How is this layered? What do I implement to add a client/provider? | `CONTRIBUTING.md` |
-| How does everything wire together? | `src/core/app.ts` — the composition root |
+| How does everything wire together? | `go/internal/app/app.go` — the composition root |
 | *Why* is it like this? | `adr/` — cite records by number |
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
-| How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
+| How must the macOS app look and behave? | `macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
 
 Do not edit an accepted ADR to reflect new thinking; write a new one and mark the
 old superseded.
@@ -58,17 +77,17 @@ old superseded.
 
 Breaking one of these is a correctness or security regression, not a style nit.
 
-1. **Capability pairs come from `transportFor`** in
-   `src/sources/account-adapters.ts`. `claude`, `codex`, and `opencode` may accept a source
-   from a different provider; `gemini` and `kiro` return `unsupported` for
-   anything but their own. `src/clients/index.ts` lists what *exists*, not what
-   is *allowed* — never infer a pairing from the registry, and never publish one
-   in docs or marketing copy without reading the adapter.
+1. **Capability pairs come from `TransportFor`** in `go/internal/transport`.
+   `claude`, `codex`, and `opencode` may accept a source from a different
+   provider; `gemini` and `kiro` return `unsupported` for anything but their
+   own. `go/internal/client` lists what *exists*, not what is *allowed* — never
+   infer a pairing from the registry, and never publish one in docs or marketing
+   copy without reading the adapter.
 2. **Proxy secrets never cross an output boundary.** Every local proxy
    authenticates each request with a per-instance secret (ADR 0006) and binds
-   loopback only (`assertLoopbackHost`). `publicProxyHandle` in
-   `src/cli/commands.ts` strips the token before anything is printed — JSON
-   output lands in CI logs.
+   loopback only. `StartResult.Token` is deliberately discarded by every
+   caller — the CLI, the TUI (`go/internal/tui/toggleProxyCmd`) and the desktop
+   protocol all surface the endpoint only. JSON output lands in CI logs.
 3. **Activation is planned, journalled, then executed.** `ActivationPlan.steps`
    is the single source of truth for both execution and rollback; the executor
    must not re-derive behavior from transport capability, or planner and executor
@@ -83,56 +102,63 @@ Breaking one of these is a correctness or security regression, not a style nit.
    (ADR 0011). Locks are re-entrant within one async context, so a service may
    lock a scope its caller already holds.
 6. **Never prompt without a TTY**, never guess a source, and keep `--json`
-   machine-readable on every command. Exit codes come from `ExitCode` in
-   `src/utils/errors.ts`.
+   machine-readable on every command. Exit codes come from `anyerr.ExitCode`.
+   The TUI's TTY guard must use `isatty.IsTerminal`, not
+   `Mode()&os.ModeCharDevice != 0` — see the trap below.
 7. **The data directory is `~/.anypick`** (`ANYPICK_HOME` overrides).
 
 ## Traps that have cost real time
 
-- `tests/golden.test.ts` snapshots the help text. Any edit to `afterHelpText()`
-  or command descriptions fails CI until
-  `pnpm vitest run tests/golden.test.ts -u`.
-- **A mutation scope is not a resource identity.** `mutationScopeForRef` (lock
-  scope, collapses accounts onto their provider) and `serializeRef` (precise
+- **`/dev/null` is a character device.** `Mode()&os.ModeCharDevice != 0` is not
+  a TTY test: it says yes for `/dev/null`, so the TUI starts, reads no
+  keystrokes and hangs under cron and CI. Use `isatty.IsTerminal(fd)`.
+- **A TTY guard must run before any service is touched.** `tui.Run` checks it
+  first, which is what lets a test pass a nil `*app.App` and assert the
+  fail-closed path.
+- **A mutation scope is not a resource identity.** `refs.ProviderScope` (lock
+  scope, collapses accounts onto their provider) and `refs.Serialize` (precise
   identity, used for journal `affectedResources`) look interchangeable and are
-  not. Using `serializeRef` for a lock silently splits one scope into many and
-  reintroduces the interleaving ADR 0011 closed.
-- **Error suggestions must live on the `AnyPickError` instance.**
-  `handleCliError` prints `err.toHuman()`, a *string*, so the `ERROR_HINTS` map
-  in `src/cli/ux.ts` is only consulted by the call sites that pass the error
-  object itself. Adding a key there does nothing for a thrown error.
-- `tests/setup.ts` repoints `HOME` at a temp directory as a safety net. Write
-  tests against a `mkdtemp` root via `createAppReady({ root, skipMigrate: true })`
-  — see `tests/provider-extension.test.ts` for the reference shape.
-- `.oxfmtrc.json` ignores `docs/**` and `*.md`. Do not run oxfmt on the site.
-- CI runs on `ubuntu-latest` only. Do not claim Windows support anywhere.
-- Node ≥22.5 is required for `node:sqlite`. `src/cli.ts` silences that
-  `ExperimentalWarning` *before* any import that touches sqlite — keep it first.
+  not. Using the precise identity for a lock silently splits one scope into many
+  and reintroduces the interleaving ADR 0011 closed.
+- **Error suggestions must live on the `anyerr.Error` instance**, via
+  `anyerr.WithSuggestions`. Callers that format an error into a string before
+  printing lose them.
+- **Isolate tests.** `cmd/anypick` has `isolateEnv(t)` (temp `HOME` +
+  `ANYPICK_HOME`) and `appReadyForTest`; the rest of the tree builds a root with
+  `t.TempDir()` and `app.Options{SkipMigrate: true}`. Never let a test reach the
+  developer's real `~/.anypick`.
+- **The help tree has a golden.** `cmd/anypick/help_parity_test.go` compares the
+  command tree against `go/testdata/parity/cli-tree.json`; adding or renaming a
+  command fails until the fixture is regenerated.
+- CI runs on `ubuntu-latest` and `windows-latest` for Go, plus macOS for the
+  app. Do not claim support for platforms the release matrix does not build.
 - The Codex desktop app keeps its own signed-in ChatGPT account and does **not**
   follow a switch of `~/.codex/auth.json`. AnyPick only detects the mismatch in
-  order to suppress the quota readout (`src/providers/codex.ts`).
-- **macOS chrome has one contract.** `src/macos/` is a System Settings
+  order to suppress the quota readout (`go/internal/provider/codex.go`).
+- **macOS chrome has one contract.** `macos/` is a System Settings
   clone (grouped `Form`, system controls, no cards). Pencil boards are IA/copy
   only. A prompt that says “native SwiftUI” is not enough if leftover tray
   cards or RGB tokens are treated as references.
 - **`MenuBarExtra` is the `.window` Power Quick Panel.** Production and the
-  fixture both host `src/macos/MenuBarMenu.swift`, matching Pencil node
-  `m0s8el`. Do not replace it with a text-only menu. Bare `pnpm dev` launches
-  the regular macOS app and main window; the menu-bar extra remains a
-  quick-access surface. Service rows must provide complete start/stop and
-  restart actions; detailed configuration stays in the full app.
+  fixture both host `macos/MenuBarMenu.swift`, matching Pencil node
+  `m0s8el`. Do not replace it with a text-only menu. With no fixture variables
+  set the app launches the regular macOS app and main window; the menu-bar extra
+  remains a quick-access surface. Service rows must provide complete start/stop
+  and restart actions; detailed configuration stays in the full app.
 - **String-scan app tests lag the contract.** If a test fights
-  `src/macos/README.md`, update the test.
-- **Native app bundles are Node-free (ADR 0020).** Do not copy `plugin-host.mjs`,
-  a private Node runtime, npm/pnpm/tsx, ESM plugin packs, or source-tree
-  absolute paths into `AnyPick.app`. Gate: `src/macos/scripts/check-node-free-app.sh`.
+  `macos/README.md`, update the test.
+- **Native app bundles are Node-free (ADR 0020).** Do not copy a private Node
+  runtime, an npm/pnpm/tsx shim, an ESM plugin pack, or source-tree absolute
+  paths into `AnyPick.app`. Two gates enforce it and both must reject the same
+  shapes: `macos/scripts/check-node-free-app.sh` (shell, used by Xcode) and
+  `go run ./cmd/anypick-artifact node-free <root>` (Go, used by CI).
 
 ## macOS SwiftUI (System Settings)
 
 The macOS app’s main window must look like an app Apple could ship:
 **System Settings structure**, not a website imitating macOS.
 
-- **Edit `src/macos/`** for the app scene, panes, sheets, menu-bar content,
+- **Edit `macos/`** for the app scene, panes, sheets, menu-bar content,
   and the production store/bridge. Fixture vs live is a data source, not a
   second app.
 - **Use** `NavigationSplitView`, `List` (`.sidebar`), `Form` (`.grouped`),
@@ -150,16 +176,16 @@ The macOS app’s main window must look like an app Apple could ship:
 - Preview with `pnpm macos:design`. Audit with the design-checklist skill
   routed `--surface desktop-app --artifact preferences --platform macos`.
 - Full allowed/forbidden list, pane recipe, IA table, and current
-  deviations: `src/macos/README.md`.
+  deviations: `macos/README.md`.
 
 ## Conventions
 
-- ESM, single quotes, 2-space indent, 100 columns, trailing commas — enforced, so
-  just run `pnpm format`.
+- Go is gofmt-clean and `go vet ./...` is clean. Run both before claiming a
+  change is done; CI enforces them.
 - Comments explain *why*, not what. Cite an ADR number when the constraint is
   load-bearing. Do not narrate the current task in a comment.
-- New `any` in `src/` is narrowed at the boundary, not suppressed; see the lint
-  policy in `CONTRIBUTING.md` for the two deliberate rule exceptions.
+- The docs site (`docs/`) has its own formatter and lint policy; `cd docs` before
+  running anything for it.
 - **Do not edit `CHANGELOG.md`.** It is frozen at 1.0.0; later notes are
   generated from commits by `changelogithub`. A behavior change is recorded by
   writing a Conventional Commit subject a release reader would understand —

@@ -15,7 +15,7 @@ tray-only utility. Two `Models.swift` files forced a `Design*` compile prefix.
 
 ## Decision
 
-1. All Swift for the macOS app lives in `src/macos/`. `src/tray/` keeps the
+1. All Swift for the macOS app lives in `macos/`. `src/tray/` keeps the
    Node supervisor, snapshot protocol, and compile/launch scripts.
 2. There is one `@main` (`AnyPickApp`). Fixture vs live is a data source
    (`MacOSDesignModel.fromEnvironment()` vs `ProductionDesignModel`), selected
@@ -27,7 +27,7 @@ tray-only utility. Two `Models.swift` files forced a `Design*` compile prefix.
 
 ## Consequences
 
-- UI work happens in `src/macos/`. Do not recreate panes under `src/tray/`.
+- UI work happens in `macos/`. Do not recreate panes under `src/tray/`.
 - Compile no longer prefixes files `Design*`.
 - Cached `AnyPick.app` fingerprints as `bundle:AnyPick.app/v3`.
 - `anypick tray run` stays as the hidden supervisor entry that launches this

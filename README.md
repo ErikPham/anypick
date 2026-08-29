@@ -43,13 +43,17 @@ transport is private, versioned stdio; it is not a public localhost API or a
 permanent daemon.
 
 See [ADR 0020](adr/0020-node-free-native-app-distribution.md) for the accepted
-cutover decision and [the macOS source contract](src/macos/README.md) for the UI
+cutover decision and [the macOS source contract](macos/README.md) for the UI
 and lifecycle implementation.
+
+AnyPick is one Go engine. The macOS app is Swift, the CLI and the terminal UI
+are Go, and npm is only a distribution adapter that resolves the platform
+binary. There is no second runtime: the repository ships no TypeScript engine
+(ADR 0020).
 
 ## Run from source
 
-There are two current developer flows. Neither creates a supported release
-artifact.
+Neither flow below creates a supported release artifact.
 
 ### Native macOS app
 
@@ -57,19 +61,19 @@ Requirements: macOS 14+, Xcode, and a Go launcher capable of selecting the
 toolchain pinned in `go/go.mod`.
 
 ```bash
-open src/macos/AnyPick.xcodeproj
+open macos/AnyPick.xcodeproj
 ```
 
 Select the shared **AnyPick** scheme and Run. The Xcode build phase compiles the
 pinned Go service for the target architecture, places it at
 `AnyPick.app/Contents/Helpers/anypick-core`, and signs the nested helper before
 the outer app when signing is enabled. The project references the Swift files in
-`src/macos/` directly; it does not keep a second production source tree.
+`macos/` directly; it does not keep a second production source tree.
 
 Useful checks:
 
 ```bash
-xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
+xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
 pnpm macos:design                  # in-memory UI fixture, not production launch
 pnpm macos:design:check
@@ -80,18 +84,25 @@ Users of a future distributed app will not compile Swift or Go at runtime.
 
 ### CLI and terminal UI
 
-Requirements: Node.js 22.5+ and pnpm.
+Requirements: the Go toolchain pinned in `go/go.mod` (Go 1.26+).
 
 ```bash
-pnpm install
-pnpm dev --help
-pnpm dev tui
+cd go
+go build -o /tmp/anypick ./cmd/anypick
+/tmp/anypick --help
+/tmp/anypick tui          # interactive terminal UI (bubbletea)
 ```
 
-`pnpm dev …` runs the TypeScript source through `tsx`; it is the current
-repository workflow for the CLI/TUI and compatibility commands. It is not the
-shipping desktop topology and should not be used as evidence that end users
-need Node in the native app.
+`pnpm go …` wraps the same binary with repository defaults and file watching:
+
+```bash
+pnpm go --help
+pnpm go tui
+```
+
+The terminal UI is `go/internal/tui`. It reads the services directly rather than
+shelling out to the CLI, and it refuses to start without a TTY on stdin so a
+piped invocation fails fast instead of hanging.
 
 ## Mental model
 
@@ -108,32 +119,39 @@ run   = launch with an effective binding
 link  = set a project-local binding
 ```
 
-Examples from the source CLI:
+Examples:
 
 ```bash
-pnpm dev add account codex --current --name personal
-pnpm dev use codex --with codex/personal
-pnpm dev run codex
+anypick add account codex --current --name personal
+anypick use codex --with codex/personal
+anypick run codex
 
-pnpm dev add gateway openrouter-work \
+anypick add gateway openrouter-work \
   --provider openrouter \
   --endpoint https://openrouter.ai/api/v1 \
   --api-key "$OPENROUTER_API_KEY"
-pnpm dev use claude --with openrouter-work
+anypick use claude --with openrouter-work
 ```
 
-Capability pairs are policy, not a Cartesian product. Read `transportFor` in
-`src/sources/account-adapters.ts` before documenting a new client/source
-combination.
+Capability pairs are policy, not a Cartesian product. Read `TransportFor` in
+`go/internal/transport` before documenting a new client/source combination.
 
 ## Development commands
 
 ```bash
-pnpm check                         # format, lint, types, release checks, tests
-pnpm test
-pnpm vitest run tests/<file>.test.ts
-pnpm go:test                       # Go race suite
-cd docs && pnpm build              # documentation site (separate project)
+pnpm check          # Go vet + Go tests + release sync + launcher + artifact scan
+pnpm go:test        # Go suite
+pnpm go:test:race   # Go suite under -race
+cd go && go test ./internal/tui/ -count=1
+cd docs && pnpm build   # documentation site (separate project)
+```
+
+`GOPATH` must point at a writable module cache. If it points at another
+project's cache, tests that shell out to `go build` stall in module resolution
+and the package appears to hang:
+
+```bash
+cd go && GOPATH=$HOME/go go test ./... -count=1     # warm once: go mod download all
 ```
 
 The local data directory is `~/.anypick`; `ANYPICK_HOME` overrides it. Account
@@ -144,10 +162,10 @@ isolated `ANYPICK_HOME` when experimenting.
 
 - The macOS 14+ SwiftUI target and bundled universal Go-helper build exist in
   source and are under active cutover testing.
-- The TypeScript CLI/TUI remains a source-development and compatibility path.
-- CI exercises TypeScript and Go on Ubuntu, the Go core on a real Windows
-  runner, and the Xcode app/helper contract on macOS. These source gates do not
-  make an installer a released product.
+- The CLI and the terminal UI are Go. There is no TypeScript engine; npm
+  installs a launcher plus the platform binary and ships no `dist/`.
+- CI exercises the Go core on Ubuntu and the Xcode app/helper contract on
+  macOS. These source gates do not make an installer a released product.
 - Native Windows/Linux applications and all signed installer channels remain
   planned work. Do not treat their ADR target entries as available downloads.
 

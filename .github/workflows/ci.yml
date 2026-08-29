@@ -15,52 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      tray: ${{ steps.filter.outputs.tray }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: filter
-        with:
-          filters: |
-            tray:
-              - 'src/tray/**'
-              - 'assets/**'
-              - 'brand/**'
-              - 'scripts/*tray*'
-              - 'scripts/smoke-tauri-tray.mjs'
-              - 'scripts/e2e-tray-ui.mjs'
-              - 'scripts/build-tauri-tray.mjs'
-              - 'scripts/demo-tauri-tray.mjs'
-              - 'scripts/check-native-tray.mjs'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/release.yml'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-
   check:
-    name: Format / Lint / Typecheck / Test
+    name: Format / Vet / Version sync
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          version: 9.12.0
+          go-version: '1.26'
+          cache-dependency-path: go/go.sum
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
+      - name: gofmt
+        run: |
+          cd go
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Vet
+        run: cd go && go vet ./...
 
-      - name: Run full check (format + lint + typecheck + test)
-        run: pnpm check
+      - name: Release versions are synchronized
+        run: cd go && go run ./cmd/anypick-release check
 
   go:
     name: Go / Vet & Test
@@ -95,25 +75,6 @@ jobs:
         working-directory: go
         run: go test ./... -count=1
 
-  parity:
-    name: Go / TypeScript live parity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
-        with:
-          go-version: '1.26'
-          cache-dependency-path: go/go.sum
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm go:parity
-
   macos-app:
     name: macOS app / Xcode & universal helper
     runs-on: macos-latest
@@ -125,17 +86,17 @@ jobs:
           cache-dependency-path: go/go.sum
       - name: Unit-test app and bundled helper contract
         run: >-
-          xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick
+          xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick
           -configuration Debug -destination 'platform=macOS'
           CODE_SIGNING_ALLOWED=NO test
       - name: Smoke-test the app-owned bundled service
         run: |
           app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/AnyPick.app' -print -quit)"
           test -n "$app"
-          src/macos/scripts/smoke-app-service.sh "$app"
+          macos/scripts/smoke-app-service.sh "$app"
       - name: Build unsigned universal structure
         run: >-
-          xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick
+          xcodebuild -project macos/AnyPick.xcodeproj -scheme AnyPick
           -configuration Release -destination 'generic/platform=macOS'
           ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
       - name: Verify both app and helper architectures
@@ -151,85 +112,7 @@ jobs:
             'x86_64 arm64'|'arm64 x86_64') ;;
             *) exit 1 ;;
           esac
-          src/macos/scripts/check-node-free-app.sh "$app"
-
-  minimum-node:
-    name: Minimum supported Node
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.5.0'
-          cache: pnpm
-
-      - name: Install dependencies at the advertised Node floor
-        run: pnpm install --frozen-lockfile
-
-      - name: Typecheck at the advertised Node floor
-        run: pnpm typecheck
-
-  dependency-audit:
-    name: Production dependency audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod --audit-level=high
-
-  pack:
-    name: Clean build / pack / consumer verification
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Clean build and pack tarball
-        run: pnpm package
-
-      - name: Smoke-test the tarball (CLI + root import + blocked deep import)
-        run: node scripts/pack-smoke.mjs
-
-      - name: Verify consumer fixtures against the tarball (NodeNext + Bundler)
-        run: |
-          cd tests/consumer/nodenext && npm install --no-save $(ls ../../../dist/anypick-*.tgz | head -1) && npm run typecheck
-          cd ../bundler && npm install --no-save $(ls ../../../dist/anypick-*.tgz | head -1) && npm run typecheck
-
-      - name: Upload verified tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: anypick-tarball
-          path: dist/anypick-*.tgz
-          if-no-files-found: error
+          macos/scripts/check-node-free-app.sh "$app"
 
   docs:
     name: Docs / Typecheck / Lint / Build
@@ -262,108 +145,3 @@ jobs:
       - name: Validate Cloudflare Pages configuration
         run: cd docs && pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
 
-  tray-ui-e2e:
-    name: Tray UI e2e / Linux
-    needs: changes
-    if: needs.changes.outputs.tray == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install Playwright Chromium
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm exec playwright install chromium --with-deps
-
-      - name: Install Playwright system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm exec playwright install-deps chromium
-
-      - name: Typecheck tray UI
-        run: pnpm tray:ui:check
-
-      - name: React UI e2e (demo fixture)
-        run: pnpm tray:e2e:ui
-
-  tauri-tray:
-    name: Tauri tray / Linux
-    needs: changes
-    if: needs.changes.outputs.tray == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Linux desktop dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-          cache: pnpm
-
-      - name: Install JS dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Select stable Rust with rustfmt
-        run: |
-          rustup default stable
-          rustup component add rustfmt
-
-      - name: Cache Rust (Tauri helper)
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src/tray/tauri/src-tauri -> src/tray/tauri/src-tauri/target
-          shared-key: anypick-tray
-          cache-on-failure: true
-
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src/tray/tauri/src-tauri/Cargo.toml -- --check
-
-      # generate_context! validates frontendDist at compile time, including tests.
-      - name: Typecheck and build tray UI
-        run: pnpm tray:ui:check && pnpm tray:ui:build
-
-      - name: Unit-test Tauri bridge protocol
-        run: cargo test --locked --manifest-path src/tray/tauri/src-tauri/Cargo.toml
-
-      - name: Build release tray helper
-        run: node scripts/build-tauri-tray.mjs
-
-      # One spawn covers seed + multi-command probe + quit (see scripts/smoke-tauri-tray.mjs).
-      - name: Protocol smoke suite
-        run: pnpm tray:smoke
-
-      - name: Upload tray helper artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: anypick-tray-linux-x64
-          path: dist/tray/bin/anypick-tray-linux-x64
-          if-no-files-found: error

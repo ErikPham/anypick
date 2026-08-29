@@ -752,7 +752,7 @@ target.
   6/6; `pnpm lint` 0 errors (pre-existing warnings only); `pnpm typecheck`
   clean; `pnpm release:check` 1.0.0 synchronized; `pnpm npm:launcher:test`
   PASSED; `pnpm test` 111 files / 1073 tests; `pnpm macos:design:check`
-  compiled; `git diff --check` clean; eight `src/macos/MenuBar*.swift` files
+  compiled; `git diff --check` clean; eight `macos/MenuBar*.swift` files
   byte-identical to `dist/macos`. `pnpm check` was not used as the green
   gate because `tests/opencode-proxy.test.ts` is a pre-existing user format
   deviation and was left untouched. M7 remains **partial** (catalog
@@ -767,7 +767,7 @@ target.
   files; oxfmt/oxlint/tsc/vitest pass on the touched tree (vitest 1073 tests;
   the one remaining oxfmt finding is a pre-existing user modification in
   tests/opencode-proxy.test.ts, untouched by this slice); `git diff --check`
-  clean; all eight src/macos/MenuBar*.swift byte-identical to dist/macos.
+  clean; all eight macos/MenuBar*.swift byte-identical to dist/macos.
 
 - Native-cutover tracker audit (2026-08-24):
   `go test ./internal/desktop ./internal/proxy ./cmd/anypick -count=1` passed;

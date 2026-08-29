@@ -36,7 +36,7 @@ Before editing anything, read these files completely:
 3. this file
 4. `go/PARITY_PLAN.md`
 5. `go/PARITY.md`
-6. `src/macos/README.md`
+6. `macos/README.md`
 7. `src/core/app.ts`
 8. `go/internal/app/app.go`
 9. the current persistent cutover tracker created by Milestone 0
@@ -417,7 +417,7 @@ Milestone 1.
 - Killing and restarting the service does not corrupt state or orphan owned
   children.
 
-## Milestone 3 — Make `src/macos` a first-class application
+## Milestone 3 — Make `macos` a first-class application
 
 ### Dependencies
 
@@ -426,14 +426,14 @@ Milestone 2.
 ### Preserve
 
 - The current System Settings-style main window and information architecture in
-  `src/macos/README.md`.
+  `macos/README.md`.
 - `Window`, `Settings`, and `MenuBarExtra` scenes.
 - The menu bar as a compact quick-control surface.
 - Fixture and production using the same Swift view tree.
 
 ### Deliverables
 
-- Add a real Xcode project/workspace and schemes under `src/macos` without
+- Add a real Xcode project/workspace and schemes under `macos` without
   creating a second Swift source tree.
 - Add production `Info.plist`, entitlements, asset catalogs/resources, unit-test
   target, UI-test target, and archive configuration.

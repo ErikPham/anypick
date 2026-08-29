@@ -62,7 +62,7 @@ Read the relevant TypeScript implementation and its tests before porting a featu
 - Doctor: `src/core/doctor*.ts`
 - Plugins: `src/core/plugin-loader.ts`, `src/core/plugin-service.ts`, `src/types/plugins.ts`
 - Desktop protocol: `src/tray/protocol.ts`, `src/tray/supervisor*.ts`, `src/tray/snapshot*.ts`
-- Native macOS consumer: `src/macos/`
+- Native macOS consumer: `macos/`
 - User-visible behavior: `README.md` and `docs/src/content/docs/`
 
 Do not use `docs/history/` as the current specification. It is provenance only.
@@ -409,7 +409,7 @@ Deliverables:
 - Complete cancellation ownership so cancelled commands cannot publish a late success.
 - Complete supervisor singleton/PID ownership, native process lifecycle, enabled-proxy startup,
   stop cleanup, signal forwarding, and crash recovery.
-- Keep `src/macos/` and the Tauri client as protocol consumers; do not duplicate UI-specific
+- Keep `macos/` and the Tauri client as protocol consumers; do not duplicate UI-specific
   business rules in Go.
 
 Acceptance gate:
