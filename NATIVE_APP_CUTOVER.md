@@ -110,8 +110,18 @@ release scope; the host was deleted rather than kept as provenance (decision
 native-cutover work. The 7 vendors that only existed in the deleted ESM pack
 (`ark`, `tokenhub`, `groq-cloud`, `together-ai`, `fireworks`, `cerebras`,
 `nvidia-nim`) were compiled into `provider.BuiltinDefinitions()` first
-(`a3646c3`, now 24 built-ins) so the deletion is not a silent regression;
-`TestEveryBuiltinCompatibleDefinitionIsValid` guards the table.
+(`a3646c3`) so the deletion is not a silent regression.
+
+Preserving those ids verbatim was a mistake that is now corrected: the pack
+registered vendors the built-in table already had, so the port shipped
+duplicate rows the user could not tell apart. `together-ai` was **dropped**
+(same name "Together AI" as the built-in `together`, whose `api.together.xyz`
+is the documented endpoint); `groq-cloud` was **renamed** to "GroqCloud (native
+/responses)" because it shares `api.groq.com` with `groq` but enables
+`NativeResponses`, which `groq` does not. `ark` stays — same host as `doubao`
+but a different product. Net: 24 → 23 built-ins.
+`TestEveryBuiltinCompatibleDefinitionIsValid` now fails on duplicate display
+names as well as duplicate ids, so this cannot recur.
 
 Acceptance gate: not met. Gate = every remaining in-scope GO-PARITY row complete +
 cross-runtime fixture alternation + `-race` green + injected version + refuses
@@ -193,7 +203,7 @@ its own artifact before those shells are release-ready (ADR 0020 §9).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Remove user-toolchain invocation from every production-native path | ADR 0020 §3 | launchers/build outputs | artifact scan fails on forbidden executables, scripts, dev absolute paths, or PATH expectations | restricted-PATH clean install | all | **partial** | JS and production shell scanners share `scripts/node-free-artifact-fixtures.mjs` and must agree. Cross-tests fail external/dangling symlinks, Node shebang, `/Users` after byte 4096, forbidden names, and stale plugin-host. Xcode/CI call the full shell contract. Clean-account restricted-PATH install remains |
 | Remove JavaScript plugin-host assets and activation from native composition | ADR 0020 §§3/5 | macOS bundle phase, Tauri resources/sidecar, Go desktop composition | build-tree and environment scan; built-ins/declarative compatible providers remain green | installed apps exercise first-party providers without Node present | all | **complete** | Xcode and Tauri stopped copying plugin-host.mjs/ESM packs and injecting ANYPICK_PLUGIN_HOST_* earlier; the host itself is now gone (decision 2026-08-29, `09ab7e1`). Cut in one Go+JS pass because `tests/plugins.test.ts` booted `plugins/popular-providers`: `go/internal/pluginhost` (2.117 LOC + 838 test), `app/plugin_runtime.go` (1.720), `app/plugin_supervisor.go` (1.016), `app/plugin_recovery_test.go` (1.407), `app/plugin_proxy_test.go` (750), `scripts/plugin-host.mjs` (729 + 399 test), `plugins/popular-providers/` (498), the `ANYPICK_PLUGIN_HOST_*`/`ANYPICK_BUNDLED_PLUGINS` injection in `bin/anypick.js` and `scripts/dev-go.mjs`, and the `package.json` `files` entries. `scripts/npm-launcher-test.mjs` now asserts the packed tarball ships **no** `package/plugins/` or `package/scripts/` and that the child receives `injectedPluginEnv: []`. `internal/plugins` stays as the inert registry — see the NATIVE-M1 row for the seam contract. Installed first-party e2e without Node remains open |
-| First-party and declarative extension coverage is Go-owned | ADR 0015; ADR 0020 §5 | internal/app providers/clients/catalog + declarative compatible definitions | composition and provider suites without plugin-host env | clean install covers account, activation, proxy, pool, Hub and backup flows | all | **partial → no executable-plugin dependence remains** | Product dependence on executable ESM plugins is gone: the 7 vendors that lived only in the deleted pack are compiled into `provider.BuiltinDefinitions()` (24 built-ins, `a3646c3`) and `TestEveryBuiltinCompatibleDefinitionIsValid` validates every row (unique id, `NewCompatible` accepts it, HTTPS-only endpoint profiles, non-empty credential labels). Still open: a Go-native executor for third-party declarative packages (`internal/plugins` registers but cannot activate them), and clean-install e2e for account/activation/proxy/pool/Hub/backup |
+| First-party and declarative extension coverage is Go-owned | ADR 0015; ADR 0020 §5 | internal/app providers/clients/catalog + declarative compatible definitions | composition and provider suites without plugin-host env | clean install covers account, activation, proxy, pool, Hub and backup flows | all | **partial → no executable-plugin dependence remains** | Product dependence on executable ESM plugins is gone: the 7 vendors that lived only in the deleted pack are compiled into `provider.BuiltinDefinitions()` (23 built-ins after dropping the duplicate `together-ai`, `a3646c3`), and `TestEveryBuiltinCompatibleDefinitionIsValid` validates every row (unique id, **unique display name**, `NewCompatible` accepts it, HTTPS-only endpoint profiles, non-empty credential labels). Still open: a Go-native executor for third-party declarative packages (`internal/plugins` registers but cannot activate them), and clean-install e2e for account/activation/proxy/pool/Hub/backup |
 | Node-free artifact attestation and clean-install smoke | ADR 0020 §8 | release inspection scripts + per-OS installed tests | recursive contents/import/dependency scan | launch and core workflows on a clean account with restricted PATH | all | **partial** | Production `.app` gate now matches the JS scanner (names, plugin-host, shebang, full-file path leak ≤512 KiB, symlink escape/dangling). Malicious shared fixtures fail both scanners. Notarized install + restricted-PATH clean-account smoke remain |
 
 Acceptance gate: not met. Every native artifact must pass the recursive scan and

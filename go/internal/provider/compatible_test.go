@@ -41,11 +41,21 @@ func TestEveryBuiltinCompatibleDefinitionIsValid(t *testing.T) {
 		t.Fatal("no built-in compatible providers")
 	}
 	seenID := make(map[string]bool, len(definitions))
+	seenName := make(map[string]string, len(definitions))
 	for _, def := range definitions {
 		if seenID[def.ID] {
 			t.Fatalf("duplicate built-in compatible provider id %q", def.ID)
 		}
 		seenID[def.ID] = true
+		// Two rows with the same display name are indistinguishable in every
+		// list, picker and account label the product renders. Porting the
+		// popular-providers pack verbatim shipped exactly that (together-ai
+		// alongside together), so the table is checked for it.
+		if other, dup := seenName[def.Name]; dup {
+			t.Errorf("duplicate display name %q on ids %s and %s: "+
+				"qualify the name or drop one of them", def.Name, other, def.ID)
+		}
+		seenName[def.Name] = def.ID
 		if _, err := NewCompatible(def); err != nil {
 			t.Fatalf("built-in %q does not validate: %v", def.ID, err)
 		}

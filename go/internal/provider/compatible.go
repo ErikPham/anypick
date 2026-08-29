@@ -559,9 +559,20 @@ func BuiltinDefinitions() []CompatibleDefinition {
 		// ── Vendors ported from the removed popular-providers ESM pack ──────
 		// These shipped as executable plugin registrations before ADR-0020 §5
 		// removed the host. They were always inert data, so they compile in.
-		// The ids are preserved verbatim (including ark vs doubao, groq-cloud
-		// vs groq, together-ai vs together) because each pair was already
-		// registered simultaneously and each names a different product.
+		//
+		// Ids were NOT all worth keeping. The pack registered several vendors
+		// the built-in table already had, and preserving those verbatim would
+		// have shipped duplicate rows the user cannot tell apart:
+		//   - together-ai was dropped: identical name ("Together AI") to the
+		//     built-in `together`, and the built-in's api.together.xyz is the
+		//     documented endpoint.
+		//   - groq-cloud is kept but renamed: same api.groq.com host as
+		//     `groq`, yet it enables NativeResponses, which `groq` does not.
+		//     The name says so instead of making the user guess.
+		//   - ark is kept: same host as `doubao` but a different product
+		//     (the Volcengine Ark platform vs the Doubao model API).
+		// This duplication existed in the TypeScript build too; porting it
+		// faithfully would have preserved a bug, not a feature.
 		{
 			// Ark Coding Plan keys bill against a separate endpoint from the
 			// platform API key; the two must never drift onto each other.
@@ -622,7 +633,9 @@ func BuiltinDefinitions() []CompatibleDefinition {
 			},
 		},
 		{
-			ID: "groq-cloud", Name: "GroqCloud", ShortName: "Groq",
+			// The trailing qualifier is load-bearing: without it this row is
+			// indistinguishable from `groq` in every list that shows a name.
+			ID: "groq-cloud", Name: "GroqCloud (native /responses)", ShortName: "GroqCloud",
 			Description:      "GroqCloud fast inference API with native OpenAI Responses support",
 			DefaultProxyPort: 4148,
 			Models:           []string{"openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"},
@@ -636,20 +649,6 @@ func BuiltinDefinitions() []CompatibleDefinition {
 				}},
 			}},
 			QuotaErrorPatterns: []string{"rate_limit_exceeded", "quota.*exceeded"},
-		},
-		{
-			ID: "together-ai", Name: "Together AI", ShortName: "Together",
-			Description:      "Together AI serverless and dedicated inference API keys",
-			DefaultProxyPort: 4150,
-			Models:           []string{"MiniMaxAI/MiniMax-M3", "Qwen/Qwen3.5-9B", "openai/gpt-oss-120b"},
-			Credentials: []CredentialDefinition{{
-				Kind: "api-key", Label: "Together API key",
-				CredentialClass: "provider_api_key",
-				Profiles: []EndpointProfile{{
-					ID: "global", OpenAIBase: "https://api.together.ai/v1",
-				}},
-			}},
-			QuotaErrorPatterns: []string{"insufficient.*credits", "quota.*exceeded"},
 		},
 		{
 			ID: "fireworks", Name: "Fireworks AI", ShortName: "Fireworks",
