@@ -15,8 +15,13 @@ import { join } from 'node:path';
 import { PLUGIN_API_VERSION } from '../src/index';
 import { createApp, createAppReady, type AnyPickApp } from '../src/testing';
 import type { LoadedPlugin } from '../src/types';
-import { loadPlugins, parseManifest, resolveEntry } from '../src/core/plugin-loader';
-import { PluginService } from '../src/core/plugin-service';
+import {
+  digestPluginPackage,
+  loadPlugins,
+  parseManifest,
+  resolveEntry,
+} from '../src/core/plugin-loader';
+import { PluginService, resolvePluginDirectory } from '../src/core/plugin-service';
 import { PluginStore } from '../src/core/plugin-store';
 import { openDatabase } from '../src/core/db';
 import { migrateSchema } from '../src/core/db-schema';
@@ -57,6 +62,31 @@ async function writePlugin(
 }
 
 describe('plugin manifest validation', () => {
+  it('pins executable dependencies under node_modules, not only the entry module', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anypick-plugin-digest-'));
+    try {
+      await writePlugin(
+        root,
+        {},
+        "import './node_modules/helper/index.mjs'; export default { activate() {} };",
+      );
+      const helper = join(root, 'node_modules', 'helper');
+      await mkdir(helper, { recursive: true });
+      await writeFile(join(helper, 'index.mjs'), 'export const value = 1;');
+      const before = await digestPluginPackage(root);
+      await writeFile(join(helper, 'index.mjs'), 'export const value = 2;');
+      expect(await digestPluginPackage(root)).not.toBe(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the shipped popular provider plugin by stable bundle name', () => {
+    expect(resolvePluginDirectory('bundled:popular-providers')).toMatch(
+      /plugins\/popular-providers$/,
+    );
+  });
+
   it('refuses an entry that escapes the plugin directory', () => {
     expect(() => resolveEntry('/plugins/acme', '../../evil.mjs')).toThrow(
       /outside the plugin directory/,
@@ -230,6 +260,59 @@ describe('plugin activation through createAppReady', () => {
     expect(app.pluginRuntime.failures).toEqual([]);
     expect(app.pluginRuntime.loaded.map((l) => l.record.name)).toEqual(['acme-plugin']);
     expect(app.catalog.get('acme-cloud')?.name).toBe('ACME Cloud');
+  });
+
+  it('loads the bundled compatible providers as first-class account adapters', async () => {
+    const bootstrap = await createAppReady({ root });
+    await bootstrap.plugins.add('bundled:popular-providers');
+    await bootstrap.plugins.setEnabled('popular-providers', true);
+    bootstrap.close();
+
+    app = await createAppReady({ root });
+    expect(app.pluginRuntime.failures).toEqual([]);
+    expect(app.pluginRuntime.loaded.map((entry) => entry.record.name)).toContain(
+      'popular-providers',
+    );
+    for (const id of [
+      'kimi',
+      'glm',
+      'minimax',
+      'mimo',
+      'deepseek',
+      'qwen',
+      'ark',
+      'tokenhub',
+      'openrouter',
+      'groq-cloud',
+      'mistral',
+      'together-ai',
+      'fireworks',
+      'cerebras',
+      'siliconflow',
+      'nvidia-nim',
+    ]) {
+      expect(app.accountRegistry.get(id)?.id).toBe(id);
+      expect(app.catalog.get(id)?.id).toBe(id);
+    }
+    expect(app.accountRegistry.get('kimi')?.credentialInputs).toEqual([
+      'api-key',
+      'subscription-key',
+    ]);
+    expect(app.accountRegistry.get('mimo')?.credentialInputFields?.('subscription-key')).toEqual([
+      expect.objectContaining({
+        name: 'profile',
+        choices: ['china', 'singapore', 'europe'],
+      }),
+    ]);
+    expect(app.accountRegistry.get('ark')?.credentialInputFields?.('subscription-key')).toEqual([
+      expect.objectContaining({
+        name: 'profile',
+        choices: ['china-coding', 'global-coding'],
+      }),
+    ]);
+    expect(app.catalog.get('openrouter')?.description).toBe(
+      'Multi-model OpenAI-compatible gateway',
+    );
   });
 
   it('surfaces an untrusted plugin as a doctor finding rather than a crash', async () => {

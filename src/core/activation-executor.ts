@@ -75,6 +75,8 @@ export interface ExecuteOptions {
   skipIfActive?: boolean;
   /** Budget for the WaitForHealth step. Lowered by tests; defaults to 5s. */
   healthTimeoutMs?: number;
+  /** Correlate this activation with an external operation/event stream. */
+  operationId?: string;
 }
 
 function bindingEqual(
@@ -202,6 +204,7 @@ async function executeActivationLocked(
   };
 
   const journal = deps.journal.create(`activate:${plan.mode}`, {
+    id: opts.operationId,
     affectedResources: affected,
     params: {
       client: plan.client,
@@ -244,9 +247,17 @@ async function executeActivationLocked(
       backupPaths: ctx.backupPaths,
     });
 
-    deps.journal.update(journal.id, { state: 'committed' });
+    // An ephemeral session still owns mutable resources until its child exits.
+    // Keep its journal recoverable rather than claiming the transaction is
+    // committed before cleanup has run (SIGKILL used to strand it forever).
+    if (plan.mode !== 'ephemeral') {
+      deps.journal.update(journal.id, { state: 'committed' });
+    }
 
-    const cleanup = plan.mode === 'ephemeral' ? makeEphemeralCleanup(ctx, deps) : undefined;
+    const cleanup =
+      plan.mode === 'ephemeral'
+        ? makeEphemeralCleanup(ctx, deps, mutationScopes(plan), journal.id)
+        : undefined;
 
     return {
       plan,
@@ -376,6 +387,23 @@ const STEP_HANDLERS = {
     }
     if (plan.resolvedSource.ref.kind === 'account') {
       const { provider, name } = plan.resolvedSource.ref;
+      const target = await deps.accounts.get(provider, name);
+      if (!target) {
+        throw anypickError(`Account ${provider}/${name} was not found.`, 'ACCOUNT_NOT_FOUND', {
+          exitCode: ExitCode.NOT_FOUND,
+        });
+      }
+      // Binding to the login that is already live must not rewrite native auth.
+      // Antigravity refuses a restore while the IDE is open, even when the
+      // requested account is the one currently signed in.
+      const current = await deps.accounts.current(provider);
+      if (current.account?.meta.name === name && current.isLiveMatch) {
+        return;
+      }
+      // This must run before checkpointing or changing a proxy/client file.
+      // Codex's keyring/auto store is one such case: auth.json is not the
+      // authoritative credential, so a file restore would be a false switch.
+      await deps.accountRegistry.get(provider).preflightRestore?.(target.snapshotDir);
       // Snapshot before invoking provider.restore. Mark mutation intent and
       // register undo before the call so a provider that writes one auth file
       // and then throws is still compensated.
@@ -711,9 +739,9 @@ async function waitForProxyHealth(plan: ActivationPlan, opts: ExecuteOptions): P
  * talking to the previous endpoint — the exact silent inconsistency the journal
  * exists to prevent.
  *
- * Non-fatal by design: a failed read-back is reported as a degraded-state event
- * rather than rolling back a correct write, because `inspect()` is a heuristic
- * and a false negative must not undo a good activation.
+ * Non-fatal by design: `inspect()` reads the client process's live home and is
+ * necessarily heuristic for adapters that use an AnyPick-managed env file or
+ * an isolated runtime. A false negative must not undo a correct activation.
  */
 async function verifyEffectiveState(plan: ActivationPlan, deps: ExecutorDeps): Promise<void> {
   if (plan.mode === 'ephemeral') {
@@ -794,6 +822,7 @@ async function startManagedProxy(
     if (!accountBefore) {
       throw anypickError(`Account not found: ${ref.provider}/${ref.name}`, 'NOT_FOUND');
     }
+    let activationLeaseId: string | undefined;
     if (plan.mode === 'ephemeral' && !accountBefore.proxy.enabled) {
       // `startProxy` needs an enabled account config. Restore the exact prior
       // config after the child exits so one-shot runs do not silently opt an
@@ -801,7 +830,12 @@ async function startManagedProxy(
       const priorConfig = accountBefore.proxy;
       ctx.mutated = true;
       ctx.undo.push(async () => {
-        await deps.proxy.restoreProxyConfig(ref.provider, ref.name, priorConfig);
+        await deps.proxy.restoreProxyConfigIfLeaseOwned(
+          ref.provider,
+          ref.name,
+          priorConfig,
+          activationLeaseId,
+        );
       });
     }
     try {
@@ -810,13 +844,17 @@ async function startManagedProxy(
       // may already be enabled
     }
     const started = await deps.proxy.startProxy(ref.provider, ref.name);
+    activationLeaseId = started.leaseId;
     if (started.startedNow) {
       ctx.startedProxies.push({ provider: ref.provider, account: ref.name });
     }
     ctx.mutated = true;
     if (started.startedNow) {
       ctx.undo.push(async () => {
-        await deps.proxy.stopProxy(ref.provider, ref.name);
+        await deps.proxy.stopProxyIfLeaseOwned(ref.provider, ref.name, {
+          instanceId: started.instanceId,
+          leaseId: started.leaseId,
+        });
       });
     }
     if (started.leaseId) {
@@ -989,20 +1027,28 @@ async function runUndo(ctx: ActivationContext): Promise<boolean> {
  * setup side effect (temporary home, native auth, proxy and lease). The closure
  * is idempotent because signal/error paths can race normal child exit.
  */
-function makeEphemeralCleanup(ctx: ActivationContext, deps: ExecutorDeps): () => Promise<void> {
+function makeEphemeralCleanup(
+  ctx: ActivationContext,
+  deps: ExecutorDeps,
+  scopes: string[],
+  journalId: string,
+): () => Promise<void> {
   let cleanup: Promise<void> | undefined;
   return async () => {
     cleanup ??= (async () => {
-      const restored = await runUndo(ctx);
-      for (const leaseId of ctx.leaseIds) {
-        deps.leases.release(leaseId);
-      }
-      if (!restored) {
-        throw anypickError(
-          'Ephemeral run cleanup could not restore all local state. Run anypick doctor before switching accounts.',
-          'EPHEMERAL_CLEANUP_FAILED',
-        );
-      }
+      await withMutationLocks(deps.runtime.root, scopes, async () => {
+        const restored = await runUndo(ctx);
+        for (const leaseId of ctx.leaseIds) {
+          deps.leases.release(leaseId);
+        }
+        await finalizeJournal(deps, journalId, restored);
+        if (!restored) {
+          throw anypickError(
+            'Ephemeral run cleanup could not restore all local state. Run anypick doctor before switching accounts.',
+            'EPHEMERAL_CLEANUP_FAILED',
+          );
+        }
+      });
     })();
     return cleanup;
   };
@@ -1021,10 +1067,45 @@ async function finalizeJournal(
 }
 
 export interface RecoveryDeps extends Pick<ExecutorDeps, 'journal'> {
+  /** AnyPick state root. Enables recovery to join the same mutation locks as execution. */
+  root?: string;
   /** When present, recovery re-resolves source adapters from journal ResourceRefs. */
   resolve?: ResolveSourceDeps;
   /** Structured event sink for refusing recovery that cannot be made exact (OBS-01). */
   events?: AnyPickEventSink;
+}
+
+function recoveryScopes(entry: { affectedResources: string[] }): string[] {
+  const scopes = new Set<string>();
+  for (const resource of entry.affectedResources) {
+    if (
+      resource.startsWith('client/') ||
+      resource.startsWith('gateway/') ||
+      resource.startsWith('hub/')
+    ) {
+      scopes.add(resource);
+      continue;
+    }
+    // Journal entries are serialized references. Recovery needs the same
+    // provider-wide account lock as activation, not a per-account lock.
+    const account = /^account\/([^/]+)\/[^/]+$/.exec(resource);
+    const pool = /^pool\/([^/]+)$/.exec(resource);
+    if (account?.[1]) {
+      scopes.add(`provider/${account[1]}`);
+    } else if (pool?.[1]) {
+      scopes.add(`provider/${pool[1]}`);
+    }
+  }
+  return [...scopes];
+}
+
+function isIncompleteState(state: string): boolean {
+  return (
+    state === 'planned' ||
+    state === 'executing' ||
+    state === 'verifying' ||
+    state === 'rolling_back'
+  );
 }
 
 export interface RecoveryResult {
@@ -1071,137 +1152,154 @@ export async function recoverIncompleteOperations(deps: RecoveryDeps): Promise<R
   let recovered = 0;
   const emit = makeEmitter(deps.events);
 
-  for (const entry of incomplete) {
-    // Re-resolve source adapter from stored canonical ref when possible
-    const sourceRef = sourceRefFromJournal(entry);
-    let reResolvedOk = true;
+  for (const listedEntry of incomplete) {
+    const recoverOne = async (): Promise<void> => {
+      // The entry may have committed while this process waited on an activation
+      // lock. Always re-read it under that lock before performing compensation.
+      const entry = deps.journal.get(listedEntry.id);
+      if (!entry || !isIncompleteState(entry.state)) {
+        return;
+      }
+      // Re-resolve source adapter from stored canonical ref when possible
+      const sourceRef = sourceRefFromJournal(entry);
+      let reResolvedOk = true;
 
-    if (sourceRef && deps.resolve) {
-      if (sourceRef.kind === 'preset') {
-        // Presets must never be forward-executed from journal; mark failed
-        reResolvedOk = false;
-      } else {
-        try {
-          const resolved = await materializeResolvedSource(sourceRef, deps.resolve);
-          const identity = serializeRef(resolved.ref);
-          const expected =
-            typeof entry.params?.source === 'string'
-              ? entry.params.source
-              : serializeRef(sourceRef);
-          if (identity !== expected) {
+      if (sourceRef && deps.resolve) {
+        if (sourceRef.kind === 'preset') {
+          // Presets must never be forward-executed from journal; mark failed
+          reResolvedOk = false;
+        } else {
+          try {
+            const resolved = await materializeResolvedSource(sourceRef, deps.resolve);
+            const identity = serializeRef(resolved.ref);
+            const expected =
+              typeof entry.params?.source === 'string'
+                ? entry.params.source
+                : serializeRef(sourceRef);
+            if (identity !== expected) {
+              reResolvedOk = false;
+            }
+            // Touch adapter.transportFor to ensure it is live (not a serialized object)
+            if (typeof resolved.adapter.transportFor !== 'function') {
+              reResolvedOk = false;
+            }
+          } catch {
             reResolvedOk = false;
           }
-          // Touch adapter.transportFor to ensure it is live (not a serialized object)
-          if (typeof resolved.adapter.transportFor !== 'function') {
-            reResolvedOk = false;
+        }
+      } else if (sourceRef && !deps.resolve) {
+        // Without resolve deps we cannot re-resolve — refuse forward paths later
+        reResolvedOk = false;
+      }
+
+      let restoredDurableState = false;
+
+      // Exact file rollback from recorded backups (no adapter substitution)
+      if (entry.backupPaths.length > 0) {
+        try {
+          let allRestored = true;
+          for (const backup of entry.backupPaths) {
+            // backupPaths entries are either "src=>dest" or plain backup file paths
+            if (backup.includes('=>')) {
+              const [src, dest] = backup.split('=>').map((s) => s.trim());
+              if (!src || !dest) {
+                allRestored = false;
+                break;
+              }
+              if (src === 'delete') {
+                const { rm } = await import('node:fs/promises');
+                await rm(dest, { force: true });
+                continue;
+              }
+              if (!(await pathExists(src))) {
+                allRestored = false;
+                break;
+              }
+              await mkdir(dirname(dest), { recursive: true });
+              await copyFile(src, dest);
+            } else if (!(await pathExists(backup))) {
+              allRestored = false;
+              break;
+            }
+          }
+          if (allRestored) {
+            restoredDurableState = true;
+          } else {
+            deps.journal.update(entry.id, { state: 'failed' });
+            failed.push(entry.id);
+            return;
           }
         } catch {
-          reResolvedOk = false;
-        }
-      }
-    } else if (sourceRef && !deps.resolve) {
-      // Without resolve deps we cannot re-resolve — refuse forward paths later
-      reResolvedOk = false;
-    }
-
-    let restoredDurableState = false;
-
-    // Exact file rollback from recorded backups (no adapter substitution)
-    if (entry.backupPaths.length > 0) {
-      try {
-        let allRestored = true;
-        for (const backup of entry.backupPaths) {
-          // backupPaths entries are either "src=>dest" or plain backup file paths
-          if (backup.includes('=>')) {
-            const [src, dest] = backup.split('=>').map((s) => s.trim());
-            if (!src || !dest) {
-              allRestored = false;
-              break;
-            }
-            if (src === 'delete') {
-              const { rm } = await import('node:fs/promises');
-              await rm(dest, { force: true });
-              continue;
-            }
-            if (!(await pathExists(src))) {
-              allRestored = false;
-              break;
-            }
-            await mkdir(dirname(dest), { recursive: true });
-            await copyFile(src, dest);
-          } else if (!(await pathExists(backup))) {
-            allRestored = false;
-            break;
-          }
-        }
-        if (allRestored) {
-          restoredDurableState = true;
-        } else {
           deps.journal.update(entry.id, { state: 'failed' });
           failed.push(entry.id);
-          continue;
+          return;
         }
-      } catch {
-        deps.journal.update(entry.id, { state: 'failed' });
-        failed.push(entry.id);
-        continue;
       }
-    }
 
-    // Persistent native-auth switches store their exact checkpoint before the
-    // provider is allowed to restore anything. Recover it after client config
-    // (reverse mutation order) and only then mark the journal terminal.
-    const rawCheckpoint = entry.params?.nativeAuthCheckpoint;
-    if (isLiveAuthCheckpoint(rawCheckpoint)) {
-      if (!deps.resolve) {
-        deps.journal.update(entry.id, { state: 'failed' });
-        failed.push(entry.id);
-        continue;
+      // Persistent native-auth switches store their exact checkpoint before the
+      // provider is allowed to restore anything. Recover it after client config
+      // (reverse mutation order) and only then mark the journal terminal.
+      const rawCheckpoint = entry.params?.nativeAuthCheckpoint;
+      if (isLiveAuthCheckpoint(rawCheckpoint)) {
+        if (!deps.resolve) {
+          deps.journal.update(entry.id, { state: 'failed' });
+          failed.push(entry.id);
+          return;
+        }
+        try {
+          const resolve = deps.resolve;
+          await resolve.accounts.restoreLiveAuthCheckpoint(rawCheckpoint);
+          await resolve.accounts.discardLiveAuthCheckpoint(rawCheckpoint);
+          restoredDurableState = true;
+        } catch {
+          deps.journal.update(entry.id, { state: 'failed' });
+          failed.push(entry.id);
+          return;
+        }
       }
-      try {
-        await deps.resolve.accounts.restoreLiveAuthCheckpoint(rawCheckpoint);
-        await deps.resolve.accounts.discardLiveAuthCheckpoint(rawCheckpoint);
-        restoredDurableState = true;
-      } catch {
-        deps.journal.update(entry.id, { state: 'failed' });
-        failed.push(entry.id);
-        continue;
+
+      if (restoredDurableState) {
+        deps.journal.update(entry.id, { state: 'rolled_back' });
+        recovered++;
+        return;
       }
-    }
 
-    if (restoredDurableState) {
-      deps.journal.update(entry.id, { state: 'rolled_back' });
-      recovered++;
-      continue;
-    }
+      // Never forward-execute when original source cannot be re-resolved exactly
+      if (sourceRef && !reResolvedOk) {
+        deps.journal.update(entry.id, { state: 'failed' });
+        refused.push(entry.id);
+        failed.push(entry.id);
+        emit(
+          'warn',
+          'recovery_refused',
+          'Journal recovery refused: source could not be re-resolved exactly',
+          {
+            opId: entry.id,
+            context: { reason: 'source-not-reresolvable', resourceIds: entry.affectedResources },
+          },
+        );
+        return;
+      }
 
-    // Never forward-execute when original source cannot be re-resolved exactly
-    if (sourceRef && !reResolvedOk) {
+      if (entry.state === 'planned') {
+        // Never started — mark failed, no mutation
+        deps.journal.update(entry.id, { state: 'failed' });
+        recovered++;
+        return;
+      }
+
+      // executing / verifying / rolling_back without backups: cannot safely continue
       deps.journal.update(entry.id, { state: 'failed' });
-      refused.push(entry.id);
       failed.push(entry.id);
-      emit(
-        'warn',
-        'recovery_refused',
-        'Journal recovery refused: source could not be re-resolved exactly',
-        {
-          opId: entry.id,
-          context: { reason: 'source-not-reresolvable', resourceIds: entry.affectedResources },
-        },
-      );
-      continue;
+    };
+    // An activation holds the same scopes for its whole journalled critical
+    // section. Waiting here prevents a second process from rolling back a
+    // still-running activation it observed during startup.
+    if (deps.root) {
+      await withMutationLocks(deps.root, recoveryScopes(listedEntry), recoverOne);
+    } else {
+      await recoverOne();
     }
-
-    if (entry.state === 'planned') {
-      // Never started — mark failed, no mutation
-      deps.journal.update(entry.id, { state: 'failed' });
-      recovered++;
-      continue;
-    }
-
-    // executing / verifying / rolling_back without backups: cannot safely continue
-    deps.journal.update(entry.id, { state: 'failed' });
-    failed.push(entry.id);
   }
 
   return { recovered, failed, refused };
@@ -1214,6 +1312,7 @@ function isLiveAuthCheckpoint(value: unknown): value is LiveAuthCheckpoint {
   const checkpoint = value as Partial<LiveAuthCheckpoint>;
   return (
     typeof checkpoint.providerId === 'string' &&
+    (checkpoint.source === undefined || typeof checkpoint.source === 'string') &&
     (typeof checkpoint.activeAccount === 'string' || checkpoint.activeAccount === null) &&
     typeof checkpoint.hadLiveAuth === 'boolean' &&
     typeof checkpoint.directory === 'string'

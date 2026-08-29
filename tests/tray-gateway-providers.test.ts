@@ -42,4 +42,20 @@ describe('tray gateway providers include api-key account providers', () => {
     // A catalog gateway is never mistaken for an api-key account.
     expect(gateways.every((provider) => provider.regions === undefined)).toBe(true);
   });
+
+  it('carries provider-owned endpoints and first-party client defaults', () => {
+    const providers = buildTrayGatewayProviders(app);
+
+    expect(providers.find((provider) => provider.id === 'openai')).toMatchObject({
+      providesEndpoint: true,
+      firstPartyClientIds: ['codex'],
+    });
+    expect(providers.find((provider) => provider.id === 'anthropic')).toMatchObject({
+      providesEndpoint: true,
+      firstPartyClientIds: ['claude'],
+    });
+    const custom = providers.find((provider) => provider.id === 'custom');
+    expect(custom).toMatchObject({ kind: 'custom' });
+    expect(custom).not.toHaveProperty('providesEndpoint');
+  });
 });

@@ -1,57 +1,64 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod protocol;
+mod sidecar;
+
+use sidecar::{graceful_quit, send_ui_command, start_owned_sidecar, BridgeState, ServiceStatus};
 use std::io::{self, BufRead, Write};
-use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
 
-const MAX_PROTOCOL_LINE_BYTES: usize = 16 * 1024;
+const MAX_FIXTURE_LINE_BYTES: usize = 64 * 1024;
 
-#[derive(Default)]
-struct BridgeState {
-    last_supervisor_line: Mutex<Option<String>>,
+#[tauri::command]
+fn send_command(
+    app: AppHandle,
+    command: String,
+    state: State<'_, BridgeState>,
+) -> Result<(), String> {
+    if is_fixture_mode() {
+        if !sidecar::valid_ui_command(&command) {
+            return Err("AnyPick rejected an invalid fixture command.".into());
+        }
+        return write_fixture_command(&command);
+    }
+    if command == "quit" {
+        graceful_quit(app);
+        return Ok(());
+    }
+    if state.status().phase == "stopped" {
+        return Err("AnyPick core is stopped. Restart the app to try again.".into());
+    }
+    send_ui_command(&app, &command)
 }
 
 #[tauri::command]
-fn send_command(command: String) -> Result<(), String> {
-    if !valid_ui_command(&command) {
-        return Err("AnyPick rejected an invalid tray command.".into());
-    }
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    writeln!(output, "{command}").map_err(|_| "AnyPick supervisor is unavailable.".to_string())?;
-    output
-        .flush()
-        .map_err(|_| "AnyPick supervisor is unavailable.".to_string())
+fn last_service_line(state: State<'_, BridgeState>) -> Option<String> {
+    state.last_service_line()
 }
 
 #[tauri::command]
 fn last_supervisor_line(state: State<'_, BridgeState>) -> Option<String> {
-    state
-        .last_supervisor_line
-        .lock()
-        .ok()
-        .and_then(|line| line.clone())
+    state.last_service_line()
 }
 
-fn valid_ui_command(command: &str) -> bool {
-    if command.is_empty()
-        || command.len() > MAX_PROTOCOL_LINE_BYTES
-        || command.contains('\n')
-        || command.contains('\r')
-    {
-        return false;
-    }
-    matches!(command, "open" | "refresh" | "restart" | "stop" | "quit")
-        // model-roles is required by the React tray UI (Claude Code role editor).
-        || ["invoke\t", "logs\t", "mutate\t", "model-roles\t", "navigate\t"]
-            .iter()
-            .any(|prefix| command.starts_with(prefix))
+#[tauri::command]
+fn service_status(state: State<'_, BridgeState>) -> ServiceStatus {
+    state.status()
 }
 
-fn valid_supervisor_line(line: &str) -> bool {
-    line.len() <= MAX_PROTOCOL_LINE_BYTES * 4
+fn write_fixture_command(command: &str) -> Result<(), String> {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    writeln!(output, "{command}").map_err(|_| "Fixture bridge is unavailable.".to_string())?;
+    output
+        .flush()
+        .map_err(|_| "Fixture bridge is unavailable.".to_string())
+}
+
+fn valid_fixture_line(line: &str) -> bool {
+    line.len() <= MAX_FIXTURE_LINE_BYTES
         && ["snapshot\t", "result\t", "logs\t", "status\t"]
             .iter()
             .any(|prefix| line.starts_with(prefix))
@@ -59,6 +66,10 @@ fn valid_supervisor_line(line: &str) -> bool {
 
 fn is_protocol_mode(smoke: bool, probe: bool) -> bool {
     smoke || probe
+}
+
+fn is_fixture_mode() -> bool {
+    std::env::var_os("ANYPICK_TRAY_DEMO").is_some()
 }
 
 fn command_for_probe(kind: &str) -> Option<&'static str> {
@@ -75,14 +86,14 @@ fn command_for_probe(kind: &str) -> Option<&'static str> {
 }
 
 fn run_protocol_mode(smoke: bool, probe: bool) {
-    // This path intentionally returns before Tauri/GTK/WebKit initialization.
-    // CI runners may have Xvfb without an accessibility D-Bus service.
+    // This explicit CI seam returns before Tauri/GTK/WebKit initialization.
+    // Production never reads its parent stdin or writes commands to stdout.
     let stdin = io::stdin();
     for line in stdin.lock().lines().map_while(Result::ok) {
         if probe {
             if let Some(kind) = line.strip_prefix("probe\t") {
                 if let Some(command) = command_for_probe(kind) {
-                    let _ = send_command(command.into());
+                    let _ = write_fixture_command(command);
                     if command == "quit" {
                         return;
                     }
@@ -90,8 +101,8 @@ fn run_protocol_mode(smoke: bool, probe: bool) {
                 continue;
             }
         }
-        if smoke && valid_supervisor_line(&line) {
-            let _ = send_command("refresh".into());
+        if smoke && valid_fixture_line(&line) {
+            let _ = write_fixture_command("refresh");
             return;
         }
     }
@@ -105,16 +116,12 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn read_supervisor(app: tauri::AppHandle) {
+fn read_fixture(app: tauri::AppHandle) {
     let stdin = io::stdin();
     for line in stdin.lock().lines().map_while(Result::ok) {
-        if !valid_supervisor_line(&line) {
-            continue;
+        if valid_fixture_line(&line) {
+            sidecar::deliver_fixture_line(&app, line);
         }
-        if let Ok(mut current) = app.state::<BridgeState>().last_supervisor_line.lock() {
-            *current = Some(line.clone());
-        }
-        let _ = app.emit("supervisor-line", line);
     }
     app.exit(0);
 }
@@ -127,9 +134,15 @@ fn main() {
         return;
     }
 
-    tauri::Builder::default()
-        .manage(BridgeState::default())
-        .invoke_handler(tauri::generate_handler![send_command, last_supervisor_line])
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .manage(BridgeState::new())
+        .invoke_handler(tauri::generate_handler![
+            send_command,
+            last_service_line,
+            last_supervisor_line,
+            service_status
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Open AnyPick", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
@@ -144,11 +157,13 @@ fn main() {
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => show_main_window(app),
                     "refresh" => {
-                        let _ = send_command("refresh".into());
+                        let _ = send_ui_command(app, "refresh");
                     }
                     "quit" => {
-                        let _ = send_command("quit".into());
-                        app.exit(0);
+                        if is_fixture_mode() {
+                            let _ = write_fixture_command("quit");
+                        }
+                        graceful_quit(app.clone());
                     }
                     _ => {}
                 })
@@ -165,9 +180,11 @@ fn main() {
                 .build(app)?;
 
             let handle = app.handle().clone();
-            std::thread::spawn(move || read_supervisor(handle));
-            if std::env::var_os("ANYPICK_TRAY_DEMO").is_some() {
-                show_main_window(app.handle());
+            if is_fixture_mode() {
+                sidecar::mark_fixture_ready(&handle);
+                std::thread::spawn(move || read_fixture(handle));
+            } else {
+                start_owned_sidecar(handle);
             }
             Ok(())
         })
@@ -177,8 +194,16 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run the AnyPick tray helper");
+        .build(tauri::generate_context!())
+        .expect("failed to build the AnyPick desktop app");
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { api, .. } = event {
+            if !app.state::<BridgeState>().is_shutting_down() {
+                api.prevent_exit();
+                graceful_quit(app.clone());
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -186,23 +211,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bridge_accepts_only_one_bounded_protocol_command() {
-        assert!(valid_ui_command("refresh"));
-        assert!(valid_ui_command("invoke\te30="));
-        assert!(valid_ui_command("model-roles\te30="));
-        assert!(!valid_ui_command("invoke\te30=\nquit"));
-        assert!(!valid_ui_command("unknown"));
+    fn fixture_accepts_only_bounded_service_output() {
+        assert!(valid_fixture_line("snapshot\te30="));
+        assert!(valid_fixture_line("result\te30="));
+        assert!(!valid_fixture_line("invoke\te30="));
+        assert!(!valid_fixture_line(&"x".repeat(MAX_FIXTURE_LINE_BYTES + 1)));
     }
 
     #[test]
-    fn bridge_accepts_only_supervisor_output_kinds() {
-        assert!(valid_supervisor_line("snapshot\te30="));
-        assert!(valid_supervisor_line("result\te30="));
-        assert!(!valid_supervisor_line("invoke\te30="));
-    }
-
-    #[test]
-    fn protocol_modes_bypass_interactive_tray_runtime() {
+    fn protocol_modes_bypass_interactive_runtime() {
         assert!(is_protocol_mode(true, false));
         assert!(is_protocol_mode(false, true));
         assert!(!is_protocol_mode(false, false));

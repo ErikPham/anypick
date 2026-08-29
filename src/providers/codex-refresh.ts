@@ -54,6 +54,8 @@ export async function refreshCodexAuth(
       accept: 'application/json',
     },
     body,
+    signal: AbortSignal.timeout(30_000),
+    redirect: 'manual',
   });
 
   if (!res.ok) {

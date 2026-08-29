@@ -26,7 +26,15 @@ import {
   type AnthropicMessageRequest,
   type OpenAIChatResponse,
 } from '../protocol/anthropic';
-import { HOP_BY_HOP, normalizeLocalApiUrl, readBody, requireProxyAuth } from '../proxy-shared';
+import {
+  HOP_BY_HOP,
+  isForwardableUpstreamHeader,
+  linkProxyRequestAbort,
+  normalizeLocalApiUrl,
+  readBody,
+  requireProxyAuth,
+  writeResponseChunk,
+} from '../proxy-shared';
 import { assertLoopbackHost } from '../../utils/network';
 import { classifyUpstreamFailure, CooldownRegistry } from '../upstream-policy';
 
@@ -342,6 +350,7 @@ export function createGrokProxyServer(opts: GrokProxyServerOptions): Server {
     res: ServerResponse,
   ): Promise<void> {
     log('POST /v1/messages (translate → chat/completions)');
+    const abort = linkProxyRequestAbort(req, res);
     try {
       const raw = await readBody(req);
       let body: AnthropicMessageRequest;
@@ -381,13 +390,13 @@ export function createGrokProxyServer(opts: GrokProxyServerOptions): Server {
       cached = session;
 
       const target = `${upstream}/v1/chat/completions`;
-      let upstreamRes = await fetchUpstream(target, token, payload);
+      let upstreamRes = await fetchUpstream(target, token, payload, abort.signal);
 
       if (upstreamRes.status === 401 && cached?.refreshToken) {
         log('  → 401, refreshing OIDC token…');
         const refreshed = await ensureAccessToken(opts.authPath);
         cached = refreshed.session;
-        upstreamRes = await fetchUpstream(target, refreshed.token, payload);
+        upstreamRes = await fetchUpstream(target, refreshed.token, payload, abort.signal);
       }
 
       log(`  ← ${upstreamRes.status} (via chat/completions)`);
@@ -425,10 +434,10 @@ export function createGrokProxyServer(opts: GrokProxyServerOptions): Server {
 
         await pipeOpenAIStreamToAnthropic(
           upstreamRes,
-          (chunk) => {
-            res.write(chunk);
-          },
+          (chunk) => writeResponseChunk(res, chunk, abort.signal),
           body.model,
+          undefined,
+          { signal: abort.signal },
         );
         res.end();
         return;
@@ -456,20 +465,30 @@ export function createGrokProxyServer(opts: GrokProxyServerOptions): Server {
       }
       json(res, upstreamRes.ok ? 200 : upstreamRes.status, converted);
     } catch (err) {
+      if (abort.signal.aborted && res.destroyed) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       log(`  ✗ anthropic ${msg}`);
       if (!res.headersSent) {
-        json(res, 502, {
+        json(res, abort.signal.aborted ? 504 : 502, {
           type: 'error',
           error: { type: 'proxy_error', message: msg },
         });
       } else {
         res.end();
       }
+    } finally {
+      abort.dispose();
     }
   }
 
-  async function fetchUpstream(target: string, token: string, payload: Buffer): Promise<Response> {
+  async function fetchUpstream(
+    target: string,
+    token: string,
+    payload: Buffer,
+    signal: AbortSignal,
+  ): Promise<Response> {
     return fetchGrok(
       target,
       {
@@ -483,7 +502,7 @@ export function createGrokProxyServer(opts: GrokProxyServerOptions): Server {
           'user-agent': `anypick-grok-proxy/${clientVersion}`,
         },
         body: new Uint8Array(payload),
-        signal: AbortSignal.timeout(600_000),
+        signal,
         redirect: 'manual',
       },
       `POST:${target}`,
@@ -565,16 +584,10 @@ function buildUpstreamHeaders(
 
   // Forward select client headers but never client Authorization / x-api-key
   for (const [k, v] of Object.entries(req.headers)) {
-    if (!v || HOP_BY_HOP.has(k.toLowerCase())) {
-      continue;
-    }
-    if (k.toLowerCase() === 'authorization') {
+    if (!v || !isForwardableUpstreamHeader(k)) {
       continue;
     }
     if (k.toLowerCase().startsWith('x-grok-')) {
-      continue;
-    }
-    if (k.toLowerCase() === 'x-api-key') {
       continue;
     }
     if (k.toLowerCase() === 'anthropic-version') {

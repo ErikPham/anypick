@@ -126,6 +126,10 @@ export interface CatalogProvider extends ModelPolicy {
   /** Wire protocols the gateway actually serves. Never infer this from its id. */
   readonly protocols?: readonly Protocol[];
   readonly defaultEndpoint?: string;
+  /** First-party clients this provider naturally backs; used only for smart UI defaults. */
+  readonly firstPartyClientIds?: readonly string[];
+  /** Picker grouping and endpoint editing behavior for gateway setup surfaces. */
+  readonly configurationKind?: 'hosted' | 'custom';
 }
 
 // ── Runtime profiles ─────────────────────────────────────────────
@@ -166,6 +170,8 @@ export interface RuntimeProfileMeta {
 export interface RuntimeProfileSecrets {
   apiKey?: string;
   headers?: Record<string, string>;
+  /** Per-client credential overrides; never serialize these through profile metadata. */
+  clientOverrides?: Record<string, { apiKey?: string; env?: Record<string, string> }>;
 }
 
 export interface RuntimeProfile {

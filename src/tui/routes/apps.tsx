@@ -151,7 +151,7 @@ export const appsRoute: Route = (ctx) => {
                 clientAdapter,
                 policyLookup,
               );
-              const current = app.bindings.getGlobal(screen.clientId);
+              const current = app.bindingService.globalBinding(screen.clientId);
               const sameSource =
                 current && serializeRef(current.spec.source) === serializeRef(source.ref);
               const stored = sameSource

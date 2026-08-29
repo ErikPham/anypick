@@ -209,6 +209,7 @@ const openai: CatalogProvider = {
   apiStyle: 'openai',
   protocols: ['openai'],
   defaultEndpoint: 'https://api.openai.com/v1',
+  firstPartyClientIds: ['codex'],
   suggestModels(): ModelMap {
     return { ...OPENAI_MODELS };
   },
@@ -239,6 +240,7 @@ const anthropic: CatalogProvider = {
   apiStyle: 'anthropic',
   protocols: ['anthropic'],
   defaultEndpoint: 'https://api.anthropic.com',
+  firstPartyClientIds: ['claude'],
   suggestModels(): ModelMap {
     return { ...ANTHROPIC_MODELS };
   },
@@ -298,6 +300,7 @@ const geminiApi: CatalogProvider = {
   apiStyle: 'custom',
   protocols: ['openai', 'anthropic'],
   defaultEndpoint: 'https://generativelanguage.googleapis.com',
+  firstPartyClientIds: ['gemini'],
   suggestModels(): ModelMap {
     return { ...GEMINI_MODELS };
   },
@@ -347,6 +350,7 @@ const litellm: CatalogProvider = {
   apiStyle: 'openai',
   protocols: ['openai', 'anthropic'],
   defaultEndpoint: 'http://127.0.0.1:4000',
+  configurationKind: 'custom',
   suggestModels(): ModelMap {
     // LiteLLM often re-exports upstream IDs as-is; ship a practical multi-provider set.
     return {
@@ -376,6 +380,7 @@ const localGateway: CatalogProvider = {
   apiStyle: 'openai',
   protocols: ['openai', 'anthropic'],
   defaultEndpoint: 'http://127.0.0.1:8080/v1',
+  configurationKind: 'custom',
   suggestModels(): ModelMap {
     return {
       default: 'default',
@@ -399,6 +404,7 @@ const custom: CatalogProvider = {
   description: 'Custom endpoint (you set URL and models)',
   apiStyle: 'custom',
   protocols: ['openai', 'anthropic'],
+  configurationKind: 'custom',
   suggestModels(): ModelMap {
     return {
       'claude-sonnet': 'claude-sonnet-5',

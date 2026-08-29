@@ -159,6 +159,45 @@ describe('service-owned mutation locks (ADR 0009)', () => {
     expect(provider.overlaps).toEqual([]);
   });
 
+  it('holds the selected provider scope for the complete backup export', async () => {
+    await app.accounts.save('slow', 'work', { force: true });
+    let signalAcquired!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      signalAcquired = resolve;
+    });
+    let releaseLock!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const holder = withMutationLock(root, providerScope('slow'), async () => {
+      signalAcquired();
+      await release;
+    });
+    await acquired;
+
+    let settled = false;
+    const exporting = app.accounts.exportAccountBackup(
+      [{ provider: 'slow', name: 'work' }],
+      join(root, 'locked.anypick-backup'),
+    );
+    void exporting.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    try {
+      expect(settled).toBe(false);
+    } finally {
+      releaseLock();
+    }
+    await holder;
+    await exporting;
+  });
+
   it('re-enters when the caller already holds the provider scope', async () => {
     // Exactly what activation-executor does: take the scope, then call the
     // service. Before re-entrancy this rejected with STATE_CONFLICT.

@@ -1090,7 +1090,7 @@ button:disabled {
   text-align: left;
 }
 
-.picker-row > span:nth-child(2) {
+.picker-row > span:not(.picker-check):not(.provider) {
   display: flex;
   min-width: 0;
   flex: 1;

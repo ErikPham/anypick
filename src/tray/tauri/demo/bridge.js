@@ -685,6 +685,7 @@ export const emptyDemoSnapshot = {
   proxies: [],
   hubSources: [],
   hubConflicts: [],
+  hubPublishedModels: [],
   logSources: [],
   accounts: [],
   gateways: [],

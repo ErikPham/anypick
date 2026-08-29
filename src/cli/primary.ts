@@ -49,11 +49,11 @@ function printDryRun(
 const API_KEY_INPUT = 'api-key';
 
 /**
- * Save an API key as an account. The key is credential material the user holds
- * rather than a login on this machine, so there is nothing to detect, stash, or
- * restore — the account exists only to be served through the provider's proxy.
+ * Save a provider-declared credential as an account. The secret is material the
+ * user holds rather than a login on this machine, so there is nothing to detect,
+ * stash, or restore — the account exists only behind the provider's proxy.
  */
-async function addApiKeyAccount(
+async function addCredentialAccount(
   accounts: AnyPickApp['accounts'],
   provider: string,
   opts: {
@@ -62,52 +62,129 @@ async function addApiKeyAccount(
     new?: boolean;
     apiKey?: string | boolean;
     region?: string;
+    credential?: string;
+    secret?: string | boolean;
+    option?: string[];
   },
   g: GlobalOpts,
 ): Promise<void> {
+  const usingLegacyApiKey = opts.apiKey != null || opts.region != null;
+  if (opts.credential && usingLegacyApiKey) {
+    throw anypickError('Use either --api-key or --credential, not both.', 'INVALID_USAGE', {
+      exitCode: ExitCode.INVALID_USAGE,
+    });
+  }
+  const kind = opts.credential?.trim() || (usingLegacyApiKey ? API_KEY_INPUT : '');
+  if (!kind) {
+    throw anypickError('--secret and --option require --credential <kind>.', 'INVALID_USAGE', {
+      exitCode: ExitCode.INVALID_USAGE,
+    });
+  }
   if (opts.current || opts.new) {
     throw anypickError(
-      '--api-key saves a key you already hold; drop --current and --new.',
+      `--credential ${kind} saves a secret you already hold; drop --current and --new.`,
       'INVALID_USAGE',
       { exitCode: ExitCode.INVALID_USAGE },
     );
   }
-  if (opts.apiKey == null) {
+  if (opts.region != null && opts.apiKey == null) {
     throw anypickError('--region only applies together with --api-key.', 'INVALID_USAGE', {
       exitCode: ExitCode.INVALID_USAGE,
     });
   }
 
   const target = accounts.provider(provider);
-  if (!target.credentialInputs?.includes(API_KEY_INPUT)) {
-    throw anypickError(`Provider "${provider}" does not accept an API key.`, 'INVALID_USAGE', {
-      exitCode: ExitCode.INVALID_USAGE,
-    });
+  if (!target.credentialInputs?.includes(kind)) {
+    const accepted = target.credentialInputs?.join(', ');
+    throw anypickError(
+      `Provider "${provider}" does not accept credential kind "${kind}".${accepted ? ` Accepted: ${accepted}.` : ''}`,
+      'INVALID_USAGE',
+      { exitCode: ExitCode.INVALID_USAGE },
+    );
   }
 
-  let secret = typeof opts.apiKey === 'string' ? opts.apiKey.trim() : '';
+  const rawSecret = usingLegacyApiKey ? opts.apiKey : opts.secret;
+  let secret = typeof rawSecret === 'string' ? rawSecret.trim() : '';
+  const label = target.credentialInputLabel?.(kind) ?? credentialKindLabel(kind);
   if (!secret) {
     if (!canPrompt(g)) {
       throw anypickError(
-        `An API key is required.\n\n  anypick add account ${provider} --api-key <key> --name work`,
+        `A ${label} is required.\n\n  anypick add account ${provider} --credential ${kind} --secret <secret> --name work`,
         'INVALID_USAGE',
         { exitCode: ExitCode.INVALID_USAGE },
       );
     }
     const { isCancel, password } = await import('@clack/prompts');
-    const entered = await password({ message: `${target.name} API key` });
+    const entered = await password({ message: `${target.name} ${label}` });
     if (isCancel(entered) || !entered.trim()) {
       process.exit(ExitCode.CANCELLED);
     }
     secret = entered.trim();
   }
 
-  const name = opts.name ?? API_KEY_INPUT;
+  const fields = target.credentialInputFields?.(kind) ?? [];
+  const fieldNames = new Set(fields.map((field) => field.name));
+  const options: Record<string, string> = {};
+  for (const raw of opts.option ?? []) {
+    const equals = raw.indexOf('=');
+    const key = equals > 0 ? raw.slice(0, equals).trim() : '';
+    const value = equals > 0 ? raw.slice(equals + 1).trim() : '';
+    if (!key || !value) {
+      throw anypickError(`Invalid --option "${raw}". Expected key=value.`, 'INVALID_USAGE', {
+        exitCode: ExitCode.INVALID_USAGE,
+      });
+    }
+    if (!fieldNames.has(key)) {
+      throw anypickError(
+        `Credential kind "${kind}" does not accept option "${key}".${fieldNames.size ? ` Accepted: ${[...fieldNames].join(', ')}.` : ''}`,
+        'INVALID_USAGE',
+        { exitCode: ExitCode.INVALID_USAGE },
+      );
+    }
+    options[key] = value;
+  }
+  if (opts.region) {
+    if (!fieldNames.has('region')) {
+      throw anypickError(`Provider "${provider}" does not accept an API region.`, 'INVALID_USAGE', {
+        exitCode: ExitCode.INVALID_USAGE,
+      });
+    }
+    options.region = opts.region;
+  }
+  for (const field of fields) {
+    if (options[field.name]) {
+      continue;
+    }
+    if (field.default) {
+      options[field.name] = field.default;
+      continue;
+    }
+    if (!canPrompt(g)) {
+      throw anypickError(
+        `${field.label} is required. Pass --option ${field.name}=<value>.`,
+        'INVALID_USAGE',
+        { exitCode: ExitCode.INVALID_USAGE },
+      );
+    }
+    const prompts = await import('@clack/prompts');
+    const entered = field.choices.length
+      ? await prompts.select({
+          message: field.label,
+          options: field.choices.map((choice) => ({ value: choice, label: choice })),
+        })
+      : await prompts.text({ message: field.label });
+    if (prompts.isCancel(entered) || typeof entered !== 'string' || !entered.trim()) {
+      process.exit(ExitCode.CANCELLED);
+    }
+    options[field.name] = entered.trim();
+  }
+
+  const name = opts.name ?? kind;
   if (g.dryRun) {
-    printDryRun(g, 'account.save', `Would save ${provider}/${name} from an API key`, {
+    printDryRun(g, 'account.save', `Would save ${provider}/${name} from ${label}`, {
       provider,
       name,
-      mode: API_KEY_INPUT,
+      mode: kind,
     });
     return;
   }
@@ -115,16 +192,20 @@ async function addApiKeyAccount(
   const meta = await accounts.save(provider, name, {
     force: true,
     input: {
-      kind: API_KEY_INPUT,
+      kind,
       secret,
-      ...(opts.region ? { options: { region: opts.region } } : {}),
+      ...(Object.keys(options).length ? { options } : {}),
     },
   });
   if (g.json) {
-    console.log(JSON.stringify({ saved: meta, mode: API_KEY_INPUT }));
+    console.log(JSON.stringify({ saved: meta, mode: kind }));
   } else {
     success(`Saved ${provider}/${meta.name}`);
   }
+}
+
+function credentialKindLabel(kind: string): string {
+  return kind.replace(/(^|-)api(?=-|$)/g, '$1API').replace(/-/g, ' ');
 }
 
 function transportLabel(plan: {
@@ -594,20 +675,31 @@ export function registerPrimaryCommands(
     .argument('[provider]', 'Auth provider (codex, grok, …)')
     .option('--current', 'Save the currently live login', false)
     .option('--new', 'Start a new login flow', false)
+    .option('--auth-method <id>', 'Provider-declared browser sign-in method')
     .option('--name <name>', 'Account name')
-    .option('--source <source>', 'Gemini sign-in source: gemini-cli|antigravity')
+    .option('--source <source>', 'Provider-declared sign-in source')
     .option('--api-key [key]', 'Save an API key instead of a login; omit the value to be prompted')
     .option('--region <region>', 'API region for --api-key')
+    .option(
+      '--credential <kind>',
+      'Provider-declared credential kind (for example subscription-key)',
+    )
+    .option('--secret [secret]', 'Secret for --credential; omit the value to be prompted')
+    .option('--option <key=value...>', 'Non-secret credential qualifiers declared by the provider')
     .action(
       async (
         provider: string | undefined,
         opts: {
           current?: boolean;
           new?: boolean;
+          authMethod?: string;
           name?: string;
           source?: string;
           apiKey?: string | boolean;
           region?: string;
+          credential?: string;
+          secret?: string | boolean;
+          option?: string[];
         },
       ) => {
         try {
@@ -640,25 +732,56 @@ export function registerPrimaryCommands(
             });
           }
 
-          if (opts.apiKey != null || opts.region != null) {
-            await addApiKeyAccount(accounts, provider, opts, g);
+          if (opts.current && opts.authMethod) {
+            throw anypickError(
+              '--auth-method starts a new login; drop --current.',
+              'INVALID_USAGE',
+              {
+                exitCode: ExitCode.INVALID_USAGE,
+              },
+            );
+          }
+
+          if (
+            opts.apiKey != null ||
+            opts.region != null ||
+            opts.credential != null ||
+            opts.secret != null ||
+            opts.option != null
+          ) {
+            if (opts.authMethod) {
+              throw anypickError(
+                '--auth-method cannot be combined with a supplied credential.',
+                'INVALID_USAGE',
+                { exitCode: ExitCode.INVALID_USAGE },
+              );
+            }
+            await addCredentialAccount(accounts, provider, opts, g);
             return;
           }
 
-          if (opts.source && opts.source !== 'gemini-cli' && opts.source !== 'antigravity') {
-            throw anypickError(
-              `Unknown source "${opts.source}". Use gemini-cli or antigravity.`,
-              'INVALID_USAGE',
-              { exitCode: ExitCode.INVALID_USAGE },
-            );
-          }
-          const source = opts.source as 'gemini-cli' | 'antigravity' | undefined;
-          if (source && !accounts.provider(provider).detectLiveSource) {
+          const source = opts.source?.trim() || undefined;
+          const sourceChoices = accounts.provider(provider).accountSources ?? [];
+          if (
+            source &&
+            (!accounts.provider(provider).detectLiveSource || sourceChoices.length === 0)
+          ) {
             throw anypickError(
               `Provider "${provider}" has a single sign-in source; drop --source.`,
               'INVALID_USAGE',
               { exitCode: ExitCode.INVALID_USAGE },
             );
+          }
+          if (source && !sourceChoices.some((choice) => choice.id === source)) {
+            throw anypickError(
+              `Unknown source "${source}". Choose one of: ${sourceChoices.map((choice) => choice.id).join(', ')}.`,
+              'INVALID_USAGE',
+              { exitCode: ExitCode.INVALID_USAGE },
+            );
+          }
+
+          if (opts.authMethod) {
+            opts.new = true;
           }
 
           if (!opts.current && !opts.new) {
@@ -697,10 +820,7 @@ export function registerPrimaryCommands(
           }
 
           if (opts.current) {
-            // A non-default source has no ~/.gemini identity to derive a name from.
-            const name = source
-              ? (opts.name ?? source)
-              : await accounts.resolveCurrentSaveName(provider, opts.name);
+            const name = await accounts.resolveCurrentSaveName(provider, opts.name, source);
             if (g.dryRun) {
               printDryRun(
                 g,
@@ -728,7 +848,67 @@ export function registerPrimaryCommands(
 
           if (opts.new) {
             const label = source ?? provider;
-            const nextName = opts.name ?? (source === 'antigravity' ? 'antigravity-2' : 'work');
+            const methods = await accounts.loginMethods(provider, source);
+            const availableMethods = methods.filter((method) => method.available !== false);
+            if (opts.authMethod || availableMethods.length > 0) {
+              const previewMethod = opts.authMethod
+                ? methods.find((method) => method.id === opts.authMethod)
+                : (availableMethods.find(
+                    (method) => method.provenance === 'official' && method.preferred,
+                  ) ??
+                  availableMethods.find((method) => method.provenance === 'official') ??
+                  availableMethods.find((method) => method.preferred) ??
+                  availableMethods[0]);
+              if (g.dryRun) {
+                printDryRun(
+                  g,
+                  'account.login',
+                  `Would open ${previewMethod?.label ?? opts.authMethod ?? provider} browser sign-in and save the resulting login`,
+                  {
+                    provider,
+                    mode: 'new',
+                    ...(opts.name ? { name: opts.name } : {}),
+                    ...(source ? { source } : {}),
+                    ...(previewMethod
+                      ? {
+                          method: {
+                            id: previewMethod.id,
+                            provenance: previewMethod.provenance,
+                          },
+                        }
+                      : {}),
+                  },
+                );
+                return;
+              }
+              const result = await accounts.login(provider, {
+                methodId: opts.authMethod,
+                source,
+                name: opts.name,
+              });
+              if (g.json) {
+                console.log(
+                  JSON.stringify({
+                    saved: result.account,
+                    mode: 'new',
+                    method: {
+                      id: result.method.id,
+                      provenance: result.method.provenance,
+                    },
+                    backedUpTo: result.backedUpTo,
+                  }),
+                );
+              } else {
+                const provenance =
+                  result.method.provenance === 'official' ? 'official, preferred' : 'community';
+                success(
+                  `Signed in and saved ${provider}/${result.account.name} via ${result.method.label} (${provenance})`,
+                );
+              }
+              return;
+            }
+
+            const nextName = opts.name ?? 'work';
             const next = `anypick add account ${provider} --current --name ${nextName}${
               source ? ` --source ${source}` : ''
             }`;
@@ -750,7 +930,7 @@ export function registerPrimaryCommands(
             await accounts.stash(provider, { source });
             if (!g.json) {
               info(
-                `Live ${label} auth cleared. Log in with the official tool, then re-run:\n  ${next}`,
+                `Live ${label} auth cleared. Sign in with a provider-supported tool, then re-run:\n  ${next}`,
               );
             } else {
               console.log(JSON.stringify({ mode: 'new', next }));

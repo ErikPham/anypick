@@ -37,7 +37,13 @@ import {
   type OpenAIResponsesRequest,
   type OpenAIResponsesResponse,
 } from '../protocol/gemini/translate';
-import { normalizeLocalApiUrl, readBody, requireProxyAuth } from '../proxy-shared';
+import {
+  linkProxyRequestAbort,
+  normalizeLocalApiUrl,
+  readBody,
+  requireProxyAuth,
+  writeResponseChunk,
+} from '../proxy-shared';
 import { assertLoopbackHost } from '../../utils/network';
 import {
   classifyUpstreamFailure,
@@ -779,6 +785,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
 
   async function handleOpenAI(req: IncomingMessage, res: ServerResponse): Promise<void> {
     log('POST /v1/chat/completions → Gemini');
+    const abort = linkProxyRequestAbort(req, res);
     try {
       const raw = await readBody(req);
       let body: OpenAIChatRequest;
@@ -817,6 +824,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
           geminiBody,
           false,
           modelEffort,
+          abort.signal,
         );
         const responseModel = result.resolution.id;
         const openai = geminiToOpenAI(result.response, responseModel);
@@ -832,7 +840,8 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
         const content = openai.choices?.[0]?.message?.content ?? '';
         const reasoning = openai.choices?.[0]?.message?.reasoning_content ?? '';
         if (reasoning) {
-          res.write(
+          await writeResponseChunk(
+            res,
             `data: ${JSON.stringify({
               id: openai.id,
               object: 'chat.completion.chunk',
@@ -845,25 +854,30 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
                 },
               ],
             })}\n\n`,
+            abort.signal,
           );
         }
-        res.write(
+        await writeResponseChunk(
+          res,
           `data: ${JSON.stringify({
             id: openai.id,
             object: 'chat.completion.chunk',
             model: responseModel,
             choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }],
           })}\n\n`,
+          abort.signal,
         );
-        res.write(
+        await writeResponseChunk(
+          res,
           `data: ${JSON.stringify({
             id: openai.id,
             object: 'chat.completion.chunk',
             model: responseModel,
             choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
           })}\n\n`,
+          abort.signal,
         );
-        res.write('data: [DONE]\n\n');
+        await writeResponseChunk(res, 'data: [DONE]\n\n', abort.signal);
         res.end();
         return;
       }
@@ -874,6 +888,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
         geminiBody,
         false,
         modelEffort,
+        abort.signal,
       );
       const openai = geminiToOpenAI(result.response, result.resolution.id);
       if (openai.error) {
@@ -882,14 +897,20 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
       }
       json(res, 200, openai);
     } catch (err) {
+      if (abort.signal.aborted && res.destroyed) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       log(`  ✗ ${msg}`);
       writeGeminiError(res, err, msg);
+    } finally {
+      abort.dispose();
     }
   }
 
   async function handleAnthropic(req: IncomingMessage, res: ServerResponse): Promise<void> {
     log('POST /v1/messages → Gemini');
+    const abort = linkProxyRequestAbort(req, res);
     try {
       const raw = await readBody(req);
       let body: AnthropicMessageRequest;
@@ -937,6 +958,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
         gemini,
         false,
         modelEffort,
+        abort.signal,
       );
       const responseModel = result.resolution.id;
       const anthropic = geminiToAnthropic(result.response, responseModel);
@@ -954,103 +976,169 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
           connection: 'keep-alive',
         });
         const id = msg.id ?? `msg_${Date.now()}`;
-        writeSse(res, 'message_start', {
-          type: 'message_start',
-          message: {
-            id,
-            type: 'message',
-            role: 'assistant',
-            model: responseModel,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: msg.usage?.input_tokens ?? 0, output_tokens: 0 },
+        await writeSse(
+          res,
+          'message_start',
+          {
+            type: 'message_start',
+            message: {
+              id,
+              type: 'message',
+              role: 'assistant',
+              model: responseModel,
+              content: [],
+              stop_reason: null,
+              stop_sequence: null,
+              usage: { input_tokens: msg.usage?.input_tokens ?? 0, output_tokens: 0 },
+            },
           },
-        });
-        msg.content.forEach((block, index) => {
+          abort.signal,
+        );
+        for (const [index, block] of msg.content.entries()) {
           if (block.type === 'thinking') {
-            writeSse(res, 'content_block_start', {
-              type: 'content_block_start',
-              index,
-              content_block: {
-                type: 'thinking',
-                thinking: '',
-                signature: '',
-              },
-            });
-            if (block.thinking) {
-              writeSse(res, 'content_block_delta', {
-                type: 'content_block_delta',
+            await writeSse(
+              res,
+              'content_block_start',
+              {
+                type: 'content_block_start',
                 index,
-                delta: { type: 'thinking_delta', thinking: block.thinking },
-              });
+                content_block: {
+                  type: 'thinking',
+                  thinking: '',
+                  signature: '',
+                },
+              },
+              abort.signal,
+            );
+            if (block.thinking) {
+              await writeSse(
+                res,
+                'content_block_delta',
+                {
+                  type: 'content_block_delta',
+                  index,
+                  delta: { type: 'thinking_delta', thinking: block.thinking },
+                },
+                abort.signal,
+              );
             }
             if (block.signature) {
-              writeSse(res, 'content_block_delta', {
-                type: 'content_block_delta',
-                index,
-                delta: { type: 'signature_delta', signature: block.signature },
-              });
+              await writeSse(
+                res,
+                'content_block_delta',
+                {
+                  type: 'content_block_delta',
+                  index,
+                  delta: { type: 'signature_delta', signature: block.signature },
+                },
+                abort.signal,
+              );
             }
           } else if (block.type === 'tool_use') {
-            writeSse(res, 'content_block_start', {
-              type: 'content_block_start',
-              index,
-              content_block: {
-                type: 'tool_use',
-                id: block.id,
-                name: block.name,
-                input: {},
-                ...(block.thought_signature ? { thought_signature: block.thought_signature } : {}),
+            await writeSse(
+              res,
+              'content_block_start',
+              {
+                type: 'content_block_start',
+                index,
+                content_block: {
+                  type: 'tool_use',
+                  id: block.id,
+                  name: block.name,
+                  input: {},
+                  ...(block.thought_signature
+                    ? { thought_signature: block.thought_signature }
+                    : {}),
+                },
               },
-            });
-            writeSse(res, 'content_block_delta', {
-              type: 'content_block_delta',
-              index,
-              delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-            });
-          } else if (block.type === 'redacted_thinking') {
-            writeSse(res, 'content_block_start', {
-              type: 'content_block_start',
-              index,
-              content_block: block,
-            });
-          } else {
-            writeSse(res, 'content_block_start', {
-              type: 'content_block_start',
-              index,
-              content_block: { type: 'text', text: '' },
-            });
-            if (block.text) {
-              writeSse(res, 'content_block_delta', {
+              abort.signal,
+            );
+            await writeSse(
+              res,
+              'content_block_delta',
+              {
                 type: 'content_block_delta',
                 index,
-                delta: { type: 'text_delta', text: block.text },
-              });
+                delta: {
+                  type: 'input_json_delta',
+                  partial_json: JSON.stringify(block.input ?? {}),
+                },
+              },
+              abort.signal,
+            );
+          } else if (block.type === 'redacted_thinking') {
+            await writeSse(
+              res,
+              'content_block_start',
+              {
+                type: 'content_block_start',
+                index,
+                content_block: block,
+              },
+              abort.signal,
+            );
+          } else {
+            await writeSse(
+              res,
+              'content_block_start',
+              {
+                type: 'content_block_start',
+                index,
+                content_block: { type: 'text', text: '' },
+              },
+              abort.signal,
+            );
+            if (block.text) {
+              await writeSse(
+                res,
+                'content_block_delta',
+                {
+                  type: 'content_block_delta',
+                  index,
+                  delta: { type: 'text_delta', text: block.text },
+                },
+                abort.signal,
+              );
             }
           }
-          writeSse(res, 'content_block_stop', { type: 'content_block_stop', index });
-        });
-        writeSse(res, 'message_delta', {
-          type: 'message_delta',
-          delta: { stop_reason: msg.stop_reason, stop_sequence: msg.stop_sequence },
-          usage: { output_tokens: msg.usage?.output_tokens ?? 0 },
-        });
-        writeSse(res, 'message_stop', { type: 'message_stop' });
+          await writeSse(
+            res,
+            'content_block_stop',
+            { type: 'content_block_stop', index },
+            abort.signal,
+          );
+        }
+        await writeSse(
+          res,
+          'message_delta',
+          {
+            type: 'message_delta',
+            delta: { stop_reason: msg.stop_reason, stop_sequence: msg.stop_sequence },
+            usage: { output_tokens: msg.usage?.output_tokens ?? 0 },
+          },
+          abort.signal,
+        );
+        await writeSse(res, 'message_stop', { type: 'message_stop' }, abort.signal);
         res.end();
         return;
       }
 
       json(res, 200, anthropic);
     } catch (err) {
+      if (abort.signal.aborted && res.destroyed) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       log(`  ✗ ${msg}`);
       writeGeminiError(res, err, msg, true);
+    } finally {
+      abort.dispose();
     }
   }
 
   async function handleResponses(req: IncomingMessage, res: ServerResponse): Promise<void> {
     log('POST /v1/responses → Gemini');
+    const abort = linkProxyRequestAbort(req, res);
     try {
       const raw = await readBody(req);
       let body: OpenAIResponsesRequest;
@@ -1085,17 +1173,23 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
         geminiBody,
         false,
         modelEffort,
+        abort.signal,
       );
       const response = geminiToOpenAIResponses(result.response, result.resolution.id);
       if (body.stream) {
-        writeOpenAIResponsesStream(res, response);
+        await writeOpenAIResponsesStream(res, response, abort.signal);
         return;
       }
       json(res, 200, response);
     } catch (err) {
+      if (abort.signal.aborted && res.destroyed) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       log(`  ✗ ${msg}`);
       writeGeminiError(res, err, msg);
+    } finally {
+      abort.dispose();
     }
   }
 
@@ -1105,10 +1199,11 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
     body: GeminiGenerateRequest,
     stream: boolean,
     effort?: ReasoningEffort,
+    signal?: AbortSignal,
   ): Promise<{ response: GeminiGenerateResponse; resolution: RoutedModelResolution }> {
     try {
       return {
-        response: await callGemini(resolution.route, resolution.id, body, stream),
+        response: await callGemini(resolution.route, resolution.id, body, stream, signal),
         resolution,
       };
     } catch (err) {
@@ -1151,7 +1246,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
       log(
         `  auth auto: ${resolution.route} returned ${err.status}; retrying ${requested ?? resolution.id} via antigravity as ${fallback.id}`,
       );
-      const response = await callGemini(fallback.route, fallback.id, body, stream);
+      const response = await callGemini(fallback.route, fallback.id, body, stream, signal);
       if ([401, 403].includes(err.status)) {
         activateAutoRoute('antigravity', `Gemini CLI returned ${err.status}`);
       }
@@ -1167,6 +1262,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
     model: string,
     body: GeminiGenerateRequest,
     stream: boolean,
+    signal?: AbortSignal,
   ): Promise<GeminiGenerateResponse> {
     const action = stream ? 'streamGenerateContent' : 'generateContent';
     const keyMode = route === 'api-key';
@@ -1220,7 +1316,7 @@ export function createGeminiProxyServer(opts: GeminiProxyServerOptions): Server 
                 }),
           },
           body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout(600_000),
+          signal: signal ?? AbortSignal.timeout(600_000),
           redirect: 'manual',
         });
       } catch (err) {
@@ -1348,20 +1444,29 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-function writeSse(res: ServerResponse, event: string, data: unknown): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+function writeSse(
+  res: ServerResponse,
+  event: string,
+  data: unknown,
+  signal?: AbortSignal,
+): Promise<void> {
+  return writeResponseChunk(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`, signal);
 }
 
 /** Emit the minimal complete Responses SSE lifecycle consumed by Codex. */
-function writeOpenAIResponsesStream(res: ServerResponse, response: OpenAIResponsesResponse): void {
+async function writeOpenAIResponsesStream(
+  res: ServerResponse,
+  response: OpenAIResponsesResponse,
+  signal?: AbortSignal,
+): Promise<void> {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive',
   });
   let sequence = 0;
-  const emit = (type: string, payload: Record<string, unknown>) => {
-    writeSse(res, type, { type, sequence_number: sequence++, ...payload });
+  const emit = async (type: string, payload: Record<string, unknown>) => {
+    await writeSse(res, type, { type, sequence_number: sequence++, ...payload }, signal);
   };
   const inProgressResponse = {
     ...response,
@@ -1369,10 +1474,10 @@ function writeOpenAIResponsesStream(res: ServerResponse, response: OpenAIRespons
     output: [],
     usage: null,
   };
-  emit('response.created', { response: inProgressResponse });
-  emit('response.in_progress', { response: inProgressResponse });
+  await emit('response.created', { response: inProgressResponse });
+  await emit('response.in_progress', { response: inProgressResponse });
 
-  response.output.forEach((item, outputIndex) => {
+  for (const [outputIndex, item] of response.output.entries()) {
     const addedItem: Record<string, unknown> = {
       ...item,
       status: 'in_progress',
@@ -1384,51 +1489,51 @@ function writeOpenAIResponsesStream(res: ServerResponse, response: OpenAIRespons
     } else if (item.type === 'function_call') {
       addedItem.arguments = '';
     }
-    emit('response.output_item.added', {
+    await emit('response.output_item.added', {
       output_index: outputIndex,
       item: addedItem,
     });
 
     if (item.type === 'reasoning') {
-      (item.summary ?? []).forEach((part, summaryIndex) => {
-        emit('response.reasoning_summary_part.added', {
+      for (const [summaryIndex, part] of (item.summary ?? []).entries()) {
+        await emit('response.reasoning_summary_part.added', {
           item_id: item.id,
           output_index: outputIndex,
           summary_index: summaryIndex,
           part: { type: 'summary_text', text: '' },
         });
         if (part.text) {
-          emit('response.reasoning_summary_text.delta', {
+          await emit('response.reasoning_summary_text.delta', {
             item_id: item.id,
             output_index: outputIndex,
             summary_index: summaryIndex,
             delta: part.text,
           });
         }
-        emit('response.reasoning_summary_text.done', {
+        await emit('response.reasoning_summary_text.done', {
           item_id: item.id,
           output_index: outputIndex,
           summary_index: summaryIndex,
           text: part.text,
         });
-        emit('response.reasoning_summary_part.done', {
+        await emit('response.reasoning_summary_part.done', {
           item_id: item.id,
           output_index: outputIndex,
           summary_index: summaryIndex,
           part,
         });
-      });
+      }
     } else if (item.type === 'message') {
-      (item.content ?? []).forEach((part, contentIndex) => {
+      for (const [contentIndex, part] of (item.content ?? []).entries()) {
         const emptyPart = { ...part, text: '' };
-        emit('response.content_part.added', {
+        await emit('response.content_part.added', {
           item_id: item.id,
           output_index: outputIndex,
           content_index: contentIndex,
           part: emptyPart,
         });
         if (part.text) {
-          emit('response.output_text.delta', {
+          await emit('response.output_text.delta', {
             item_id: item.id,
             output_index: outputIndex,
             content_index: contentIndex,
@@ -1436,38 +1541,38 @@ function writeOpenAIResponsesStream(res: ServerResponse, response: OpenAIRespons
             logprobs: [],
           });
         }
-        emit('response.output_text.done', {
+        await emit('response.output_text.done', {
           item_id: item.id,
           output_index: outputIndex,
           content_index: contentIndex,
           text: part.text,
           logprobs: [],
         });
-        emit('response.content_part.done', {
+        await emit('response.content_part.done', {
           item_id: item.id,
           output_index: outputIndex,
           content_index: contentIndex,
           part,
         });
-      });
+      }
     } else if (item.type === 'function_call') {
       if (item.arguments) {
-        emit('response.function_call_arguments.delta', {
+        await emit('response.function_call_arguments.delta', {
           item_id: item.id,
           output_index: outputIndex,
           delta: item.arguments,
         });
       }
-      emit('response.function_call_arguments.done', {
+      await emit('response.function_call_arguments.done', {
         item_id: item.id,
         output_index: outputIndex,
         arguments: item.arguments ?? '',
       });
     }
-    emit('response.output_item.done', { output_index: outputIndex, item });
-  });
+    await emit('response.output_item.done', { output_index: outputIndex, item });
+  }
 
-  emit('response.completed', { response });
+  await emit('response.completed', { response });
   res.end();
 }
 

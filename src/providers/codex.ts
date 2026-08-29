@@ -6,12 +6,18 @@ import type {
   AccountMeta,
   LiveAuthStatus,
   LiveUsage,
+  ProviderLoginContext,
+  ProxyContext,
+  ProxyHandle,
+  ProxyHubBackendContext,
+  ProxyHubBackendHandle,
+  ProxyStatus,
   Provider,
   SourceAdapter,
 } from '../types';
 import { parseCodexUsage } from './codex-usage';
 import { OPENAI_MODELS } from '../catalog/providers';
-import { codexAccountAdapter } from '../sources/account-adapters';
+import { codexAccountAdapter, poolAdapterFor } from '../sources/account-adapters';
 import {
   backupRequiredFile,
   expandHome,
@@ -23,6 +29,29 @@ import {
 import { refreshCodexAuth, type CodexAuthFile } from './codex-refresh';
 import { fingerprintLiveAuth, fingerprintSnapshot } from './auth-fingerprint';
 import { hasCodexAuth, codexAccountId, extractCodexIdentity } from './codex-identity';
+import {
+  codexProxyStatus,
+  readCodexProxyLogs,
+  startCodexProxy,
+  stopCodexProxy,
+} from './codex-proxy-lifecycle';
+import { listenCodexProxy } from './codex-proxy/server';
+import { closeProxyHubBackend } from './proxy-hub-backend';
+import { AnyPickError } from '../utils/errors';
+import {
+  loginMethodAvailability,
+  runBrowserLoginCommand,
+  type BrowserLoginCommand,
+  type BrowserLoginRunner,
+} from './browser-login';
+import {
+  codexCredentialStoreGuidance,
+  inspectCodexCredentialStore,
+  type CodexCredentialStoreStatus,
+} from './codex-credential-store';
+
+const DEFAULT_PROXY_PORT = 4140;
+const CODEX_LOGIN_METHOD = 'chatgpt-subscription';
 
 /**
  * OpenAI Codex CLI + Desktop
@@ -38,6 +67,8 @@ export class CodexProvider implements Provider {
   readonly name = 'OpenAI Codex';
   readonly shortName = 'Codex';
   readonly description = 'Manages ~/.codex/auth.json';
+  readonly defaultProxyPort = DEFAULT_PROXY_PORT;
+  readonly proxyCompatibility = 'OpenAI Responses API';
 
   roleDefaults(): Record<string, string> {
     return { default: 'gpt-5.6-sol' };
@@ -58,17 +89,107 @@ export class CodexProvider implements Provider {
   constructor(
     private readonly home = homedir(),
     private readonly fetchFn: typeof fetch = fetch,
+    private readonly loginRunner: BrowserLoginRunner = runBrowserLoginCommand,
   ) {}
+
+  private get loginCommand(): BrowserLoginCommand {
+    return {
+      names: [process.env.CODEX_BINARY, 'codex'].filter((value): value is string => Boolean(value)),
+      extraPaths: [
+        join(this.home, '.local', 'bin', 'codex'),
+        '/opt/homebrew/bin/codex',
+        '/usr/local/bin/codex',
+      ],
+      args: ['login'],
+    };
+  }
+
+  async loginMethods() {
+    return [
+      await loginMethodAvailability(
+        {
+          id: CODEX_LOGIN_METHOD,
+          label: 'ChatGPT subscription',
+          description: 'OpenAI Codex browser sign-in',
+          provenance: 'official',
+          preferred: true,
+          source: 'codex',
+        },
+        this.loginCommand,
+      ),
+    ];
+  }
+
+  async login(ctx: ProviderLoginContext): Promise<void> {
+    if (ctx.methodId !== CODEX_LOGIN_METHOD || (ctx.source && ctx.source !== 'codex')) {
+      throw new AnyPickError('Unknown Codex sign-in method.', 'PROVIDER_LOGIN_METHOD_UNKNOWN');
+    }
+    await this.assertFileCredentialStore();
+    await this.loginRunner(this.loginCommand, { home: this.home, signal: ctx.signal });
+  }
 
   sourceAdapter(account: Account): SourceAdapter {
     return codexAccountAdapter(account);
   }
 
+  poolSourceAdapter(): SourceAdapter {
+    // Codex OAuth upstream speaks Responses only; do not advertise it to
+    // Claude until an Anthropic translation boundary exists.
+    return poolAdapterFor(this.id, this, { acceptedClients: ['codex'] });
+  }
+
+  async createProxyHubBackend(ctx: ProxyHubBackendContext): Promise<ProxyHubBackendHandle> {
+    const [primary, ...rest] = ctx.accounts;
+    if (!primary) {
+      throw new Error('Codex Hub backend requires at least one account');
+    }
+    const options = primary.proxy.options ?? {};
+    const { server, endpoint } = await listenCodexProxy({
+      host: '127.0.0.1',
+      port: 0,
+      authPath: join(primary.snapshotDir, 'auth.json'),
+      authPaths: rest.map((account) => join(account.snapshotDir, 'auth.json')),
+      authAccountNames: ctx.accounts.map((account) => account.name),
+      upstream: typeof options.upstream === 'string' ? options.upstream : undefined,
+      token: ctx.token,
+      // Hub reads canonical snapshots. OAuth refresh stays in memory so the
+      // provider backend never mutates them outside the coordinator.
+      persistRefreshedAuth: false,
+      log: ctx.log,
+    });
+    return { endpoint, close: () => closeProxyHubBackend(server) };
+  }
+
   private get authPath(): string {
-    return process.env.CODEX_AUTH_PATH ?? join(this.home, '.codex', 'auth.json');
+    return process.env.CODEX_AUTH_PATH ?? join(this.codexHome, 'auth.json');
+  }
+
+  private get codexHome(): string {
+    return process.env.CODEX_HOME ?? join(this.home, '.codex');
+  }
+
+  private async assertFileCredentialStore(): Promise<CodexCredentialStoreStatus> {
+    const store = await inspectCodexCredentialStore(this.codexHome);
+    if (!store.supportsSnapshotSwitch) {
+      throw new AnyPickError(codexCredentialStoreGuidance(store), {
+        code: 'CODEX_CREDENTIAL_STORE_UNSUPPORTED',
+        suggestions: [
+          `Set cli_auth_credentials_store = "file" in ${store.configPath}.`,
+          'Run codex login again so auth.json becomes the authoritative credential.',
+        ],
+      });
+    }
+    return store;
   }
 
   async detectLive(): Promise<LiveAuthStatus> {
+    const store = await inspectCodexCredentialStore(this.codexHome);
+    if (!store.supportsSnapshotSwitch) {
+      return {
+        present: false,
+        details: `Credential store: ${store.mode}. ${codexCredentialStoreGuidance(store)}`,
+      };
+    }
     return this.detectFromAuthFile();
   }
 
@@ -220,6 +341,7 @@ export class CodexProvider implements Provider {
   async backup(
     destDir: string,
   ): Promise<Partial<Pick<AccountMeta, 'identity' | 'label' | 'notes'>>> {
+    await this.assertFileCredentialStore();
     const dest = join(destDir, 'auth.json');
     await backupRequiredFile(this.authPath, dest, 'Codex auth.json');
     try {
@@ -231,7 +353,12 @@ export class CodexProvider implements Provider {
   }
 
   async restore(srcDir: string): Promise<void> {
+    await this.assertFileCredentialStore();
     await restoreRequiredFile(join(srcDir, 'auth.json'), expandHome(this.authPath), 'auth.json');
+  }
+
+  async preflightRestore(_srcDir: string): Promise<void> {
+    await this.assertFileCredentialStore();
   }
 
   async describeSnapshot(
@@ -286,12 +413,34 @@ export class CodexProvider implements Provider {
    * snapshots of the same ChatGPT account are not both marked live.
    */
   async snapshotMatchesLive(snapshotDir: string): Promise<boolean> {
+    if (!(await inspectCodexCredentialStore(this.codexHome)).supportsSnapshotSwitch) {
+      return false;
+    }
     const liveFp = await fingerprintLiveAuth('codex', this.home);
     if (!liveFp) {
       return false;
     }
     const snap = await fingerprintSnapshot('codex', snapshotDir);
     return snap != null && snap === liveFp;
+  }
+
+  async startProxy(ctx: ProxyContext): Promise<ProxyHandle> {
+    return startCodexProxy(ctx, {
+      defaultPort: DEFAULT_PROXY_PORT,
+      compatibility: this.proxyCompatibility,
+    });
+  }
+
+  async stopProxy(ctx: ProxyContext): Promise<void> {
+    await stopCodexProxy(ctx);
+  }
+
+  async proxyStatus(ctx: ProxyContext): Promise<ProxyStatus> {
+    return codexProxyStatus(ctx, this.proxyCompatibility, DEFAULT_PROXY_PORT);
+  }
+
+  async readProxyLogs(ctx: ProxyContext, lines = 50): Promise<string> {
+    return readCodexProxyLogs(ctx, lines);
   }
 }
 

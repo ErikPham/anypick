@@ -11,7 +11,9 @@ export function displayIdentifier(value: string): string {
 }
 
 export function trayMutationError(err: unknown, payload?: Partial<TrayMutationCommand>): string {
-  const source = displayIdentifier(payload?.sourceId ?? payload?.providerId ?? 'selected app');
+  const sourceId = payload && 'sourceId' in payload ? payload.sourceId : undefined;
+  const providerId = payload && 'providerId' in payload ? payload.providerId : undefined;
+  const source = displayIdentifier(sourceId ?? providerId ?? 'selected app');
   if (isAnyPickError(err)) {
     switch (err.code) {
       case 'NO_LIVE_AUTH':
@@ -21,6 +23,16 @@ export function trayMutationError(err: unknown, payload?: Partial<TrayMutationCo
       case 'ACCOUNT_EXISTS':
       case 'PROFILE_EXISTS':
         return 'That name is already in use. Choose another name, or edit the existing item.';
+      case 'IMPORT_MISSING':
+      case 'IMPORT_FORMAT':
+      case 'IMPORT_LIMIT':
+        return 'The selected file is not a valid AnyPick account export.';
+      case 'BACKUP_EMPTY':
+        return 'There are no saved accounts to back up.';
+      case 'BACKUP_DESTINATION_EXISTS':
+        return 'A file already exists at that destination. Choose another name or confirm replacement.';
+      case 'BACKUP_INSPECTION_INVALID':
+        return 'This backup review expired. Review the file again before importing.';
       case 'CREDENTIAL_KIND_MISMATCH':
         return 'That saved item uses a different credential type. Choose another name.';
       case 'RESTORE_OWNER_RUNNING':
@@ -36,6 +48,21 @@ export function trayMutationError(err: unknown, payload?: Partial<TrayMutationCo
         return 'That item no longer exists. Refresh Manage and try again.';
       case 'UNSUPPORTED_CREDENTIAL_INPUT':
         return 'This provider does not accept that credential type.';
+      case 'PROVIDER_LOGIN_UNAVAILABLE':
+      case 'PROVIDER_LOGIN_UNSUPPORTED':
+        return 'That browser sign-in method is not available on this machine. Install its launcher or choose another method.';
+      case 'PROVIDER_LOGIN_METHOD_UNKNOWN':
+      case 'PROVIDER_LOGIN_METHOD_REQUIRED':
+        return 'That sign-in method is no longer available. Refresh the account form and choose again.';
+      case 'PROVIDER_LOGIN_CANCELLED':
+        return 'Browser sign-in was cancelled. The previous native login was restored.';
+      case 'PROVIDER_LOGIN_TIMEOUT':
+        return 'Browser sign-in timed out. The previous native login was restored; try again when you can finish the flow.';
+      case 'PROVIDER_LOGIN_NO_CREDENTIAL':
+      case 'PROVIDER_LOGIN_FAILED':
+        return 'Browser sign-in did not produce a usable login. The previous native login was restored.';
+      case 'PROVIDER_LOGIN_ROLLBACK_FAILED':
+        return 'Browser sign-in failed and AnyPick could not fully restore the previous native login. Check the provider app before continuing.';
       default:
         break;
     }
@@ -45,13 +72,28 @@ export function trayMutationError(err: unknown, payload?: Partial<TrayMutationCo
     case 'account-detect':
       return `AnyPick could not read the login from ${source}. Make sure the official app is installed and signed in.`;
     case 'account-save':
+    case 'account-save-current':
     case 'account-edit':
     case 'account-refresh':
       return 'AnyPick could not save that account. Nothing was changed; check the official app login and try again.';
+    case 'account-login':
+      return 'AnyPick could not complete browser sign-in. The previous native login was restored.';
+    case 'account-import':
+      return 'AnyPick could not import that account. Existing saved accounts were not changed.';
+    case 'account-export':
+      return 'AnyPick could not export that account. Choose another destination and try again.';
+    case 'account-backup-all':
+      return 'AnyPick could not back up saved accounts. No completed backup was published.';
+    case 'account-backup-export':
+      return 'AnyPick could not export that backup. No completed backup was published.';
+    case 'account-backup-import':
+      return 'AnyPick could not import that backup. Existing saved accounts were not changed.';
     case 'account-remove':
       return 'AnyPick could not remove that account. It is still saved; refresh Manage and try again.';
     case 'account-clear':
       return `AnyPick could not clear the live login from ${source}. The local app auth was left unchanged.`;
+    case 'gateway-test':
+      return 'The gateway did not return a live model catalog. Check its URL and API key, then try again.';
     case 'gateway-create':
     case 'gateway-edit':
     case 'gateway-refresh':
@@ -129,7 +171,9 @@ export function trayActionError(err: unknown): string {
   if (isAnyPickError(err)) {
     switch (err.code) {
       case 'RESTORE_OWNER_RUNNING':
-        return 'The target app is running. Quit it completely, then try again.';
+        return /antigravity/i.test(err.message)
+          ? 'Quit Antigravity completely, then switch again. It overwrites the login while it is open.'
+          : 'The target app is running. Quit it completely, then try again.';
       case 'MODEL_UNKNOWN':
         return 'Choose a model in AnyPick before switching this gateway.';
       case 'ACCOUNT_NOT_FOUND':

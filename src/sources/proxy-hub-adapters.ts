@@ -17,7 +17,7 @@ export function proxyHubAdapter(ref: ProxyHubResourceRef): SourceAdapter {
       requiresNativeAuthWrite: false,
     },
     transportFor(clientId: ClientId): TransportCapability {
-      return clientId === 'claude' || clientId === 'codex'
+      return clientId === 'claude' || clientId === 'codex' || clientId === 'opencode'
         ? 'managed_builtin_proxy'
         : 'unsupported';
     },

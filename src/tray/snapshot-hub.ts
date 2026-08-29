@@ -8,6 +8,7 @@ import { hubSourcePresentation } from './snapshot-helpers';
 import type {
   TrayActionRegistry,
   TrayHubConflictSnapshot,
+  TrayHubPublishedModelSnapshot,
   TrayHubSourceSnapshot,
   TrayManagedAccountSnapshot,
 } from './snapshot-types';
@@ -110,6 +111,54 @@ export function buildHubConflictGroups(
     });
   });
   return [...sourceChoices, ...modelOverlaps];
+}
+
+export function buildHubPublishedModels(
+  app: AnyPickApp,
+  accounts: readonly ListedAccount[],
+  managedAccounts: readonly TrayManagedAccountSnapshot[],
+  preview: ProxyHubPreview | null,
+  conflicts: readonly TrayHubConflictSnapshot[],
+): TrayHubPublishedModelSnapshot[] {
+  if (!preview) {
+    return [];
+  }
+  const items: TrayHubPublishedModelSnapshot[] = [];
+  const seen = new Set<string>();
+  for (const route of preview.routes) {
+    const presentation = hubSourcePresentation(app, accounts, route.source);
+    const source = route.source;
+    const account =
+      source.kind === 'account'
+        ? managedAccounts.find(
+            (candidate) =>
+              candidate.providerId === source.provider && candidate.name === source.name,
+          )
+        : undefined;
+    items.push({
+      id: route.model,
+      ...(account ? { ownerAccountId: account.id } : {}),
+      ownerLabel: presentation.label,
+      ownerProviderId: route.source.provider,
+      needsChoice: false,
+    });
+    seen.add(route.model);
+  }
+  for (const conflict of conflicts) {
+    for (const model of conflict.models) {
+      if (seen.has(model)) {
+        continue;
+      }
+      items.push({
+        id: model,
+        ownerLabel: 'Needs a choice',
+        ownerProviderId: conflict.candidates[0]?.providerId ?? '',
+        needsChoice: true,
+      });
+      seen.add(model);
+    }
+  }
+  return items.toSorted((left, right) => left.id.localeCompare(right.id));
 }
 
 function buildHubConflictSnapshot(

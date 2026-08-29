@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,8 +9,8 @@ import { trayRuntimeDir } from '../core/tray-runtime';
 import { ensureDir, pathExists } from '../utils/fs';
 import { AnyPickError } from '../utils/errors';
 import type { TraySnapshot } from './snapshot-types';
-import type { TrayProxyLogsResult } from './protocol';
-import { nativeTraySwiftFiles } from './native-sources';
+import type { TrayBackupPreviewResult, TrayProxyLogsResult } from './protocol';
+import { macosSwiftFiles } from './native-sources';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,10 +33,7 @@ export const nativeTrayIconsetEntries: ReadonlyArray<readonly [string, number]> 
 
 export function assertNativeTrayPlatform(): void {
   if (process.platform !== 'darwin') {
-    throw new AnyPickError(
-      'The native AnyPick menu-bar tray requires macOS.',
-      'UNSUPPORTED_PLATFORM',
-    );
+    throw new AnyPickError('The native AnyPick app requires macOS.', 'UNSUPPORTED_PLATFORM');
   }
 }
 
@@ -55,9 +52,14 @@ export async function nativeTrayBinary(root: string): Promise<string> {
   await ensureDir(macosDir);
   await ensureDir(resourcesDir);
   const iconDirectory = join(runtime, 'icons');
+  const bundledIconDirectory = join(resourcesDir, 'icons');
   await ensureDir(iconDirectory);
+  await ensureDir(bundledIconDirectory);
   await Promise.all(
-    assets.map((asset) => writeFile(join(iconDirectory, asset.name), asset.data, { mode: 0o600 })),
+    assets.flatMap((asset) => [
+      writeFile(join(iconDirectory, asset.name), asset.data, { mode: 0o600 }),
+      writeFile(join(bundledIconDirectory, asset.name), asset.data, { mode: 0o600 }),
+    ]),
   );
 
   const cachedHash = await readFile(hashPath, 'utf8').catch(() => '');
@@ -87,7 +89,7 @@ export async function nativeTrayBinary(root: string): Promise<string> {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new AnyPickError(
-      `Could not build the native macOS tray helper. Install Xcode Command Line Tools and retry. ${detail}`,
+      `Could not build the native AnyPick app. Install Xcode Command Line Tools and retry. ${detail}`,
       'TRAY_BUILD_FAILED',
     );
   }
@@ -121,35 +123,77 @@ export async function nativeTrayNeedsRestart(
   return cached.trim() !== hash;
 }
 
+const TRAY_BRAND_FILES = [
+  'claude-mark.png',
+  'codex-app-dark.png',
+  'codex-app-light.png',
+  'openai-mark-dark.png',
+  'openai-mark-light.png',
+  'gemini-mark-v2.png',
+  'gemini-mark.png',
+  'kiro-app.png',
+  'openrouter-glyph-dark.png',
+  'openrouter-glyph-light.png',
+  'grok-mark-dark.png',
+  'grok-mark-light.png',
+  'opencode-mark-dark.png',
+  'opencode-mark-light.png',
+  'claude.svg',
+  'openai.svg',
+  'googlegemini.svg',
+  'opencode.svg',
+  'openrouter.svg',
+  'kiro.svg',
+  'grok.svg',
+  'app-icon-32.png',
+  'app-icon-64.png',
+  'app-icon-128.png',
+] as const;
+
+async function loadTrayBrandAssets(): Promise<Array<{ name: string; data: Buffer }>> {
+  const directories = [
+    fileURLToPath(new URL('./icons/', import.meta.url)),
+    fileURLToPath(new URL('../../design/assets/brands/', import.meta.url)),
+    fileURLToPath(new URL('../../design/assets/anypick/', import.meta.url)),
+  ];
+  const wanted = new Set<string>(TRAY_BRAND_FILES);
+  const byName = new Map<string, Buffer>();
+  for (const directory of directories) {
+    let names: string[] = [];
+    try {
+      names = await readdir(directory);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!wanted.has(name) || byName.has(name)) {
+        continue;
+      }
+      try {
+        byName.set(name, await readFile(join(directory, name)));
+      } catch {
+        // optional asset
+      }
+    }
+  }
+  return [...byName.entries()].map(([name, data]) => ({ name, data }));
+}
+
 async function nativeTrayBundleFingerprint(): Promise<{
   sources: Array<{ name: string; data: string }>;
   assets: Array<{ name: string; data: Buffer }>;
   appIcons: Array<{ name: string; data: Buffer }>;
   hash: string;
 }> {
-  const nativePath = fileURLToPath(new URL('./native/', import.meta.url));
-  const files = await nativeTraySwiftFiles(nativePath);
+  const macosPath = fileURLToPath(new URL('../macos/', import.meta.url));
+  const files = await macosSwiftFiles(macosPath);
   const sources = await Promise.all(
     files.map(async (file) => ({
       name: basename(file),
       data: await readFile(file, 'utf8'),
     })),
   );
-  const iconNames = [
-    'claude.svg',
-    'openai.svg',
-    'googlegemini.svg',
-    'opencode.svg',
-    'openrouter.svg',
-    'kiro.svg',
-    'grok.svg',
-  ];
-  const assets = await Promise.all(
-    iconNames.map(async (name) => ({
-      name,
-      data: await readFile(new URL(`./icons/${name}`, import.meta.url)),
-    })),
-  );
+  const assets = await loadTrayBrandAssets();
   // App / Dock icon PNGs: dist build copies assets → dist/tray/app-icons;
   // under tsx/dev, fall back to repo assets/.
   const appIconNames = [
@@ -190,7 +234,7 @@ async function nativeTrayBundleFingerprint(): Promise<{
   for (const icon of appIcons) {
     hasher.update(icon.name).update(icon.data);
   }
-  hasher.update('bundle:AnyPick.app/v1');
+  hasher.update('bundle:AnyPick.app/v3');
   return { sources, assets, appIcons, hash: hasher.digest('hex') };
 }
 
@@ -221,8 +265,6 @@ function nativeTrayInfoPlist(): string {
   <string>AppIcon</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
-  <key>LSUIElement</key>
-  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>
@@ -281,7 +323,7 @@ export function sendSnapshot(native: ChildProcessWithoutNullStreams, snapshot: T
 export interface TrayCommandResult {
   version: 1;
   requestId: string;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'cancelled';
   message?: string;
 }
 
@@ -302,5 +344,15 @@ export function sendProxyLogs(
   if (native.stdin.writable) {
     const payload = Buffer.from(JSON.stringify(result), 'utf8').toString('base64');
     native.stdin.write(`logs\t${payload}\n`);
+  }
+}
+
+export function sendBackupPreview(
+  native: ChildProcessWithoutNullStreams,
+  result: TrayBackupPreviewResult,
+): void {
+  if (native.stdin.writable) {
+    const payload = Buffer.from(JSON.stringify(result), 'utf8').toString('base64');
+    native.stdin.write(`backup-preview\t${payload}\n`);
   }
 }

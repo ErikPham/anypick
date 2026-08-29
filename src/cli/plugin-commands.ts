@@ -122,7 +122,7 @@ export function registerPluginGroup(program: Command, app: AnyPickApp): void {
   group
     .command('add')
     .description('Install a plugin directory (disabled until you enable it)')
-    .argument('<dir>', `directory containing anypick.plugin.json`)
+    .argument('<dir>', `directory containing anypick.plugin.json, or bundled:<name>`)
     .action(async (dir: string) => {
       const record = await plugins.add(dir);
       if (jsonOut()) {

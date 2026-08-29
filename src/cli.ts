@@ -33,9 +33,14 @@ const openCodeProxyCommand =
   earlyArgs[0] === 'proxy' && earlyArgs[1] === 'serve' && earlyArgs[2] === 'opencode';
 const proxyHubCommand =
   earlyArgs[0] === 'proxy' && earlyArgs[1] === 'serve' && earlyArgs[2] === 'hub';
+const compatibleProxyCommand =
+  earlyArgs[0] === 'proxy' && earlyArgs[1] === 'serve' && earlyArgs[2] === 'compatible';
 if (openCodeProxyCommand) {
   const { runOpenCodeProxyCli } = await import('./providers/opencode-proxy/cli');
   await runOpenCodeProxyCli(earlyArgs.slice(3));
+} else if (compatibleProxyCommand) {
+  const { runCompatibleProxyCli } = await import('./providers/compatible/cli');
+  await runCompatibleProxyCli(earlyArgs.slice(3));
 } else if (proxyHubCommand) {
   const { runProxyHubCli } = await import('./core/proxy-hub-cli');
   await runProxyHubCli(earlyArgs.slice(3));

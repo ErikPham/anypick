@@ -30,6 +30,8 @@ export interface CredentialFormScreenProps {
   providerName: string;
   /** One of the provider's `credentialInputs`, e.g. `api-key`. */
   credentialKind: string;
+  /** Provider-owned product wording, e.g. “Kimi Code membership key”. */
+  credentialLabel?: string;
   fields: readonly CredentialInputField[];
   initial?: Partial<CredentialFormValues>;
   error?: string;
@@ -47,9 +49,9 @@ interface Row {
 const SECRET_ROW = 'secret';
 const NAME_ROW = 'name';
 
-/** `api-key` reads as an initialism, not a hyphenated word. */
+/** Common initialisms stay readable; provider-owned product names override this. */
 export function credentialKindLabel(kind: string): string {
-  return kind === 'api-key' ? 'API key' : kind.replace(/-/g, ' ');
+  return kind.replace(/(^|-)api(?=-|$)/g, '$1API').replace(/-/g, ' ');
 }
 
 function optionRowId(field: string): string {
@@ -66,7 +68,7 @@ function cycle(choices: readonly string[], current: string, delta: number): stri
 
 export function CredentialFormScreen(props: CredentialFormScreenProps) {
   const { fields, credentialKind, providerName } = props;
-  const secretLabel = credentialKindLabel(credentialKind);
+  const secretLabel = props.credentialLabel ?? credentialKindLabel(credentialKind);
 
   const rows = React.useMemo<Row[]>(
     () => [

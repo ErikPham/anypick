@@ -393,7 +393,7 @@ describe('§28.2 #50–52 doctor fix stale lock / orphan / refuse native', () =>
     await rm(root, { recursive: true, force: true });
   });
 
-  it('#50 deletes stale AnyPick-owned lock after verifying owner absent', async () => {
+  it('#50 leaves durable advisory-lock metadata alone after its owner exits', async () => {
     const app = await createAppReady({ root, skipMigrate: true });
     const lockPath = mutationLockPath(root, 'client/claude');
     await mkdir(join(lockPath, '..'), { recursive: true });
@@ -402,22 +402,19 @@ describe('§28.2 #50–52 doctor fix stale lock / orphan / refuse native', () =>
       JSON.stringify({ pid: 999999, startedAt: new Date().toISOString() }) + '\n',
       { mode: 0o600 },
     );
-    expect(await isLockStale(lockPath)).toBe(true);
+    // flock ownership is held by an open descriptor, not the JSON diagnostic
+    // record. A leftover file is a reusable coordination inode, not stale work
+    // for doctor to unlink (unlink would reintroduce the ABA lock split).
+    expect(await isLockStale(lockPath)).toBe(false);
 
     const report = await app.doctor.run();
     const stale = report.checks.filter((c) => c.fixable === 'delete_stale_lock' && !c.ok);
-    expect(stale.length).toBeGreaterThanOrEqual(1);
+    expect(stale).toHaveLength(0);
 
     const plan = await app.doctor.planFixes();
     const lockActions = plan.actions.filter((a) => a.kind === 'delete_stale_lock');
-    expect(lockActions.length).toBeGreaterThanOrEqual(1);
-
-    const result = await app.doctor.applyFixes(
-      { actions: lockActions, manual: [] },
-      { dryRun: false, yes: true },
-    );
-    expect(result.applied.every((a) => a.ok)).toBe(true);
-    expect(await pathExists(lockPath)).toBe(false);
+    expect(lockActions).toHaveLength(0);
+    expect(await pathExists(lockPath)).toBe(true);
   });
 
   it('#50 refuses to delete lock held by live process', async () => {
@@ -588,10 +585,19 @@ describe('§28.2 #67 concurrent mutations are locked', () => {
 
   it('second holder times out when lock held', async () => {
     const lockPath = join(root, 'held.lock');
-    await writeFile(
-      lockPath,
-      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + '\n',
-    );
+    let entered!: () => void;
+    const active = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = withFileLock(lockPath, async () => {
+      entered();
+      await hold;
+    });
+    await active;
 
     await expect(
       withFileLock(lockPath, async () => 'never', { timeoutMs: 80, pollMs: 20, resource: 'test' }),
@@ -599,5 +605,7 @@ describe('§28.2 #67 concurrent mutations are locked', () => {
       code: 'STATE_CONFLICT',
       exitCode: ExitCode.CAPABILITY_CONFLICT,
     });
+    release();
+    await first;
   });
 });

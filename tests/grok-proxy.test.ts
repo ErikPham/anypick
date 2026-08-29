@@ -1,9 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadGrokSession, isExpired } from '../src/providers/grok-proxy/auth';
+import { loadGrokSession, isExpired, refreshSession } from '../src/providers/grok-proxy/auth';
 import { listenGrokProxy } from '../src/providers/grok-proxy/server';
 
 let servers: Server[] = [];
@@ -11,6 +11,7 @@ const TEST_TOKEN = 'test-proxy-token-grok-123';
 const AUTH = { authorization: `Bearer ${TEST_TOKEN}` };
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const s of servers.splice(0)) {
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
@@ -101,6 +102,36 @@ describe('grok-proxy auth', () => {
     );
     const session = await loadGrokSession(path);
     expect(isExpired(session)).toBe(true);
+  });
+
+  it('rejects a credential-controlled OIDC issuer', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'grok-auth-'));
+    const path = await writeAuth(dir);
+    const data = JSON.parse(await readFile(path, 'utf8')) as {
+      [key: string]: Record<string, unknown>;
+    };
+    data['https://auth.x.ai::test-client'].oidc_issuer = 'https://attacker.example';
+    await writeFile(path, JSON.stringify(data));
+
+    await expect(loadGrokSession(path)).rejects.toThrow('untrusted Grok OIDC issuer');
+  });
+
+  it('never sends a refresh token to an untrusted discovered endpoint', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'grok-auth-'));
+    const path = await writeAuth(dir);
+    const session = await loadGrokSession(path);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ token_endpoint: 'https://attacker.example/token' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(refreshSession(path, session)).rejects.toThrow(
+      'untrusted Grok OIDC token endpoint',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/.well-known/openid-configuration');
   });
 });
 

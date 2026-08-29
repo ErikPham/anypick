@@ -4,6 +4,7 @@ import type {
   Account,
   AccountMeta,
   LiveAuthStatus,
+  LiveUsage,
   ModelDiscoveryContext,
   Provider,
   ProxyContext,
@@ -40,7 +41,13 @@ import {
 import { listenOpenCodeProxy } from './opencode-proxy/server';
 import { closeProxyHubBackend } from './proxy-hub-backend';
 import { fetchOpenAiStyleModels } from '../catalog/model-fetch';
-import { loadOpenCodeCredential } from './opencode-proxy/auth';
+import {
+  loadOpenCodeCredential,
+  opencodeDbPathFor,
+  readDbPlatformCredentials,
+  resolveOpenCodeCredentials,
+} from './opencode-proxy/auth';
+import { parseOpenCodeUsage } from './opencode-usage';
 
 /**
  * OpenCode CLI — multi-provider auth (like Codex) + optional Zen/Go proxy.
@@ -60,6 +67,10 @@ import { loadOpenCodeCredential } from './opencode-proxy/auth';
  *   Dual protocol for Codex + Claude Code.
  */
 const DEFAULT_PORT = 4120;
+
+interface OpenCodeProviderOptions {
+  fetchFn?: typeof fetch;
+}
 
 export class OpenCodeProvider implements Provider {
   readonly id = 'opencode';
@@ -99,7 +110,14 @@ export class OpenCodeProvider implements Provider {
     return [...new Set([...zenModels, ...goModels])];
   }
 
-  constructor(private readonly home = homedir()) {}
+  private readonly fetchFn: typeof fetch;
+
+  constructor(
+    private readonly home = homedir(),
+    opts: OpenCodeProviderOptions = {},
+  ) {
+    this.fetchFn = opts.fetchFn ?? fetch;
+  }
 
   sourceAdapter(account: Account): SourceAdapter {
     return opencodeAccountAdapter(account);
@@ -157,13 +175,17 @@ export class OpenCodeProvider implements Provider {
   }
 
   async detectLive(): Promise<LiveAuthStatus> {
+    // The beta CLI records logins only in its sqlite store; auth.json can be
+    // missing or stale while a live Zen/Go key exists. Check the db whenever
+    // the file does not already prove presence.
+    const dbCredentials = readDbPlatformCredentials(opencodeDbPathFor(this.authPath));
     if (!(await pathExists(this.authPath))) {
-      return { present: false };
+      return this.dbOnlyLiveStatus(dbCredentials);
     }
     try {
       const data = await readJsonFile<Record<string, unknown>>(this.authPath);
       if (!hasAnyAuth(data)) {
-        return { present: false };
+        return this.dbOnlyLiveStatus(dbCredentials);
       }
       return {
         present: true,
@@ -172,6 +194,44 @@ export class OpenCodeProvider implements Provider {
       };
     } catch {
       return { present: true, details: 'auth.json present (unreadable)' };
+    }
+  }
+
+  /** Present-but-fileless status derived from the beta CLI's credential rows. */
+  private dbOnlyLiveStatus(
+    credentials: Array<{ service: string; apiKey: string }>,
+  ): LiveAuthStatus {
+    if (credentials.length === 0) {
+      return { present: false };
+    }
+    const data = Object.fromEntries(
+      credentials.map(({ service, apiKey }) => [service, { type: 'api', key: apiKey }]),
+    );
+    return {
+      present: true,
+      identity: extractOpenCodeIdentity(data),
+      details: summarizeAuth(data),
+    };
+  }
+
+  async liveUsage(): Promise<LiveUsage | null> {
+    try {
+      // resolveOpenCodeCredentials covers the beta CLI's sqlite store and the
+      // legacy auth.json mirror, preferred (opencode-go) key first.
+      const credentials = await resolveOpenCodeCredentials([this.authPath], 'api');
+      for (const credential of credentials) {
+        const response = await this.fetchFn('https://opencode.ai/zen/go/v1/usage', {
+          headers: { authorization: `Bearer ${credential.apiKey}` },
+          signal: AbortSignal.timeout(5_000),
+          redirect: 'manual',
+        });
+        if (response.ok) {
+          return parseOpenCodeUsage(await response.json());
+        }
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 

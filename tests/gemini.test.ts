@@ -6,6 +6,7 @@ import { createGeminiClient } from '../src/clients/gemini';
 import { parseAntigravityOAuthCredential } from '../src/providers/gemini-antigravity-oauth';
 import { geminiAccountAdapter } from '../src/sources/account-adapters';
 import { createAppReady } from '../src/core/app';
+import { ProviderRegistry } from '../src/core/registry';
 import { openDatabase } from '../src/core/db';
 import { pathExists } from '../src/utils/fs';
 import type { Account } from '../src/types';
@@ -14,9 +15,8 @@ import { syntheticProxyProfile } from '../src/clients/isolation';
 // `detectLive` falls back to the OS credential store, so without this stub these
 // tests would read the developer's real Antigravity login and a cleared ~/.gemini
 // would still report present. Individual tests override the return value.
-// `deleteAntigravityOAuthCredential` is also stubbed: `restore()` now calls it
-// when switching to a Gemini CLI account, and the real implementation shells out
-// to the macOS Keychain (`security delete-generic-password`) which hangs in CI.
+// `deleteAntigravityOAuthCredential` is stubbed so an explicit clear never
+// shells out to the macOS Keychain (`security delete-generic-password`) in CI.
 const { credentialExists, deleteCred } = vi.hoisted(() => ({
   credentialExists: vi.fn(async () => false),
   deleteCred: vi.fn(async () => false),
@@ -105,6 +105,19 @@ describe('GeminiProvider', () => {
     expect(live.details).toMatch(/api-key/);
   });
 
+  it('detectLive uses the .env relay host when no Google email is stored', async () => {
+    const dir = join(home, '.gemini');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, '.env'),
+      'GEMINI_API_KEY=sk-relay\nGOOGLE_GEMINI_BASE_URL=https://api.example.test\n',
+      { mode: 0o600 },
+    );
+    const live = await provider.detectLive();
+    expect(live.present).toBe(true);
+    expect(live.identity).toBe('api.example.test');
+  });
+
   it('detectLive finds oauth_creds', async () => {
     await writeGeminiHome(home, {
       oauth: true,
@@ -142,12 +155,23 @@ describe('GeminiProvider', () => {
     expect(live.identity).not.toContain('durable-secret');
   });
 
-  it('detectLive prefers gemini-cli files over an Antigravity credential', async () => {
+  it('detectLive reports the Antigravity Google email even when a CLI .env exists', async () => {
     credentialExists.mockResolvedValue(true);
     await writeGeminiHome(home, { apiKey: 'sk-cli', email: 'cli@example.com' });
-    const live = await provider.detectLive();
-    expect(live.identity).toBe('cli@example.com');
-    expect(live.details).not.toMatch(/antigravity/);
+    const signedIn = new GeminiProvider(
+      home,
+      undefined,
+      undefined,
+      async () => false,
+      async () => ({
+        email: 'lentaunao@gmail.com',
+        token: { refresh_token: 'rt', token_type: 'Bearer' },
+      }),
+    );
+    const live = await signedIn.detectLive();
+    expect(live.identity).toBe('lentaunao@gmail.com');
+    expect(live.details).toMatch(/antigravity/);
+    expect(live.details).toMatch(/api-key/);
   });
 
   it('backup / restore round-trips api key account', async () => {
@@ -215,21 +239,16 @@ describe('GeminiProvider', () => {
     expect(noopSave).toHaveBeenCalledOnce();
   });
 
-  it('restoring a Gemini CLI snapshot clears the Antigravity keychain entry', async () => {
-    // Build a CLI snapshot.
+  it('restoring a Gemini CLI snapshot leaves the Antigravity Google login in place', async () => {
     await writeGeminiHome(home, { apiKey: 'sk-switch', email: 'work@example.com' });
     const snapCLI = join(home, 'snap-cli');
-
-    // Back up using the shared noop-delete provider, then restore with a
-    // separate provider that has an observable delete spy.
     await provider.backup(snapCLI);
 
     const deleteSpy = vi.fn(async () => false);
     const p2 = new GeminiProvider(home, undefined, undefined, deleteSpy);
     await p2.restore(snapCLI);
 
-    // restore() must have asked the keychain to drop the old Antigravity entry.
-    expect(deleteSpy).toHaveBeenCalledOnce();
+    expect(deleteSpy).not.toHaveBeenCalled();
   });
 
   it('clearLive strips auth keys but keeps unrelated .env lines', async () => {
@@ -255,7 +274,7 @@ describe('GeminiProvider', () => {
     await writeFile(credFile, JSON.stringify({ refresh_token: 'rt', token_type: 'Bearer' }));
     const destDir = join(home, 'snapshot');
     const meta = await provider.backupAntigravity(destDir, credFile);
-    expect(meta.notes).toMatch(/antigravity/i);
+    expect(meta.notes).toMatch(/gemini/i);
     expect(meta.identity).toMatch(/^antigravity:[a-f0-9]{12}$/);
 
     const written = JSON.parse(await readFile(join(destDir, 'antigravity_oauth.json'), 'utf8'));
@@ -264,17 +283,69 @@ describe('GeminiProvider', () => {
     expect(reparsed).toEqual({ refresh_token: 'rt', token_type: 'Bearer' });
     await expect(provider.accountSource(destDir)).resolves.toEqual({
       id: 'antigravity',
-      name: 'Antigravity',
+      name: 'Gemini',
     });
   });
 
-  it('labels a normal Gemini snapshot separately from Antigravity', async () => {
+  it('labels Gemini CLI and Antigravity snapshots as the same Gemini product', async () => {
     const snapshot = join(home, 'gemini-cli-snapshot');
     await mkdir(snapshot, { recursive: true });
     await expect(provider.accountSource(snapshot)).resolves.toEqual({
       id: 'gemini-cli',
-      name: 'Gemini CLI',
+      name: 'Gemini',
     });
+  });
+
+  it('describeSnapshot reports a relay host instead of an Antigravity hash', async () => {
+    const snapshot = join(home, 'relay-snapshot');
+    await mkdir(snapshot, { recursive: true });
+    await writeFile(
+      join(snapshot, '.env'),
+      'GEMINI_API_KEY=sk-relay\nGEMINI_API_BASE_URL=http://127.0.0.1:4131\n',
+      { mode: 0o600 },
+    );
+    await expect(provider.describeSnapshot(snapshot)).resolves.toMatchObject({
+      identity: '127.0.0.1:4131',
+      credentialClass: 'provider_api_key',
+    });
+  });
+
+  it('list replaces a leftover Antigravity identity on an .env-only snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'anypick-gemini-meta-'));
+    const providers = new ProviderRegistry();
+    providers.register(new GeminiProvider(home));
+    const app = await createAppReady({
+      root,
+      bare: true,
+      skipMigrate: true,
+      accountRegistry: providers,
+    });
+    try {
+      const dir = join(home, '.gemini');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, '.env'),
+        'GEMINI_API_KEY=sk-relay\nGOOGLE_GEMINI_BASE_URL=https://api.bddevlab.online\n',
+        { mode: 0o600 },
+      );
+      await app.accounts.save('gemini', 'stacktify');
+      await app.accountStore.patchAccountMeta('gemini', 'stacktify', {
+        identity: 'antigravity:fb7949a04658',
+        notes: 'Antigravity login',
+        credentialClass: 'native_subscription',
+      });
+      const listed = await app.accounts.list('gemini');
+      expect(listed).toEqual([
+        expect.objectContaining({
+          name: 'stacktify',
+          identity: 'api.bddevlab.online',
+        }),
+      ]);
+      expect(listed[0]?.identity).not.toMatch(/^antigravity:/);
+    } finally {
+      app.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('detectLiveSource(antigravity) reports present for a valid credential file', async () => {
@@ -323,6 +394,29 @@ describe('GeminiProvider', () => {
         JSON.stringify({ access_token: 'rotated', refresh_token: 'rt', token_type: 'Bearer' }),
       );
       expect(await provider.snapshotMatchesLive(snap)).toBe(true);
+    });
+
+    it('matches Gemini accounts by Google email when refresh tokens rotate', async () => {
+      const snap = join(home, 'snap-ag-email');
+      await mkdir(snap, { recursive: true });
+      await writeFile(
+        join(snap, 'antigravity_oauth.json'),
+        JSON.stringify({
+          email: 'work@example.com',
+          token: { refresh_token: 'old-refresh' },
+        }),
+      );
+      const stateProvider = new GeminiProvider(
+        home,
+        undefined,
+        undefined,
+        async () => false,
+        async () => ({
+          email: 'work@example.com',
+          token: { refresh_token: 'rotated-refresh' },
+        }),
+      );
+      await expect(stateProvider.snapshotMatchesLive(snap)).resolves.toBe(true);
     });
 
     it('matches an Antigravity snapshot against the local unified-state token', async () => {

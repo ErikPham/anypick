@@ -4,23 +4,26 @@ description: Point any supported AI client at any provider you already pay for.
 ---
 
 AnyPick answers one question for **Claude Code** and **Codex**: which login
-should power this app right now? You pick on the **Apps** screen; AnyPick
-handles auth snapshots, local proxies, and client config.
+should power this app right now? You pick on the native **Apps** screen or in
+the terminal UI; AnyPick handles auth snapshots, local proxies, and client
+config.
 
-Run `anypick` with no arguments. The subcommands mirror the same flows for
-scripts and CI.
+The project is currently a source preview, not a published installer. Start with
+[Getting started](/docs/getting-started) for the native macOS and CLI/TUI
+development flows. The subcommands mirror the same operations for scripts and
+CI.
 
 <CardGrid>
-  <Card title="Getting started" href="/docs/getting-started">
-    Install, open Apps, save a login, connect Claude or Codex.
+  <Card title="Getting started" href="/docs/getting-started" headingLevel={2}>
+    Run from source, open Apps, save a login, connect Claude or Codex.
   </Card>
-  <Card title="Apps & Terminal UI" href="/docs/guides/terminal-ui">
+  <Card title="Apps & Terminal UI" href="/docs/guides/terminal-ui" headingLevel={2}>
     Source → models → preview → activate — the route builder step by step.
   </Card>
-  <Card title="Desktop Tray" href="/docs/guides/tray">
-    Menu-bar routes, proxies, quota, and the background supervisor.
+  <Card title="macOS app and menu bar" href="/docs/guides/tray" headingLevel={2}>
+    Native lifecycle, bundled Go service, full window, and quick panel.
   </Card>
-  <Card title="Concepts" href="/docs/concepts">
+  <Card title="Concepts" href="/docs/concepts" headingLevel={2}>
     Clients, sources, bindings, and presets — the four words the CLI uses.
   </Card>
 </CardGrid>
@@ -35,7 +38,7 @@ scripts and CI.
     Bind a client to an OpenAI-compatible endpoint and API key.
   </Card>
   <Card title="Proxies" href="/docs/guides/proxies">
-    Translate between protocols, and let the supervisor keep them alive.
+    Translate between protocols and understand which current process owns them.
   </Card>
   <Card title="Project bindings" href="/docs/guides/projects">
     Give one repository its own source without touching your default.

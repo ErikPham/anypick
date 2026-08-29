@@ -107,14 +107,20 @@ anypick account refresh codex
 
 ### Proxies keep running after I close the UI
 
-Closing the TUI does not change existing proxy processes. To stop everything:
+Closing the native app's main window does not quit the app. Use **Quit AnyPick**
+from the app or menu-bar quick panel to stop its bundled Go service gracefully.
+
+Closing the source TUI also leaves existing compatibility processes unchanged.
+To stop that compatibility supervisor from this checkout:
 
 ```bash
-anypick tray stop
+pnpm dev tray stop
 ```
 
-The TUI starts a supervisor only when you explicitly press <kbd>Shift+D</kbd> or
-start it from the Tray runtime screen.
+`pnpm dev proxy stop` stops running account proxies directly. The TUI starts its
+compatibility supervisor only when you explicitly press <kbd>Shift+D</kbd> or
+start it from the tray runtime screen; it does not control a separately launched
+`AnyPick.app`.
 
 ### An activation failed halfway
 

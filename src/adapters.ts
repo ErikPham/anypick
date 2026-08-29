@@ -10,5 +10,9 @@ export type {
   SourceAdapter,
   SourceCapabilities,
   TransportCapability,
+  CompatibleProviderDefinition,
+  CompatibleCredentialDefinition,
+  CompatibleEndpointProfile,
+  CompatibleAuthScheme,
 } from './types';
 export { PLUGIN_API_VERSION } from './types';

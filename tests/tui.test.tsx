@@ -376,7 +376,7 @@ describe('tui model — with FakeProvider app', () => {
   });
 
   it('hides Antigravity credential fingerprints from display copy', () => {
-    expect(identityDisplayText('antigravity:79b6f7f4e95f')).toBe('Antigravity OAuth');
+    expect(identityDisplayText('antigravity:79b6f7f4e95f')).toBe('Gemini OAuth');
     expect(identityDisplayText('person@example.test')).toBe('person@example.test');
   });
 

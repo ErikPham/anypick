@@ -52,11 +52,13 @@ export interface AnyPickDatabase {
   exec(sql: string): void;
   close(): void;
   /**
-   * Run `fn` inside a SQLite transaction. Commits on success; rolls back if
-   * `fn` throws or rejects. Nested calls are not supported (SQLite has a single
-   * implicit transaction level) — callers must not nest.
+   * Run a synchronous callback inside a SQLite transaction. Commits on success
+   * and rolls back if it throws. Async callbacks are prohibited: committing
+   * before an awaited promise settles would make the advertised rollback lie.
+   * Nested calls are not supported (SQLite has a single implicit transaction
+   * level) — callers must not nest.
    */
-  transaction<T>(fn: () => T): T;
+  transaction<T>(fn: () => T extends Promise<unknown> ? never : T): T;
 }
 
 /** Adapter wrapping the experimental `node:sqlite` binding behind AnyPickDatabase. */
@@ -76,10 +78,13 @@ class NodeSqliteDatabase implements AnyPickDatabase {
     this.inner.exec(sql);
   }
 
-  transaction<T>(fn: () => T): T {
+  transaction<T>(fn: () => T extends Promise<unknown> ? never : T): T {
     this.inner.exec('BEGIN');
     try {
       const result = fn();
+      if (isThenable(result)) {
+        throw new Error('SQLite transaction callbacks must be synchronous.');
+      }
       this.inner.exec('COMMIT');
       return result;
     } catch (err) {
@@ -91,6 +96,14 @@ class NodeSqliteDatabase implements AnyPickDatabase {
   close(): void {
     this.inner.close();
   }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
 }
 
 /** Path to the SQLite database under the anypick root. */

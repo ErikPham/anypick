@@ -5,6 +5,7 @@ import {
   type OpenAIChatResponse,
 } from '../protocol/anthropic';
 import { STREAM_IDLE_MS } from './constants';
+import { writeResponseChunk } from '../proxy-shared';
 import { describeAbort, isAbortError } from './abort';
 import { formatUpstreamModelError, safeUpstreamErrorForLog } from './errors';
 import { json } from './http';
@@ -121,9 +122,9 @@ export async function pipeTranslatedStream(
   try {
     const result = await pipeOpenAIStreamToAnthropic(
       upstreamRes,
-      (chunk) => {
+      async (chunk) => {
         if (res.writableEnded || res.destroyed || signal.aborted) {
-          return;
+          throw new DOMException('Client response is closed', 'AbortError');
         }
         if (!res.headersSent) {
           res.writeHead(200, {
@@ -134,7 +135,7 @@ export async function pipeTranslatedStream(
           });
         }
         bytes += Buffer.byteLength(chunk);
-        res.write(chunk);
+        await writeResponseChunk(res, chunk, signal);
       },
       model ?? 'unknown',
       undefined,

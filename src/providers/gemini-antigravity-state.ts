@@ -518,9 +518,9 @@ export async function assertAntigravityStateSafeToMutate(
       // race. Returning no paths makes the caller update only the keyring mirror.
       return [];
     }
-    throw new Error(
-      'Antigravity is running. Quit Antigravity completely, switch again, then reopen it.',
-    );
+    // Gemini and Antigravity share one Google login. AnyPick is the switcher —
+    // refusing the write left Gemini stuck whenever Antigravity happened to be
+    // open. Write the state DB anyway; Antigravity reloads it on next start.
   }
   return paths;
 }

@@ -89,6 +89,8 @@ async function mockUpstream(
 async function mockDualCatalog(opts: {
   zenModels: Array<string | { id: string; provider?: { npm: string } }>;
   goModels: Array<string | { id: string; provider?: { npm: string } }>;
+  /** Status for GET /go/v1/usage — the Go entitlement probe. Default 404 (unknown). */
+  goUsageStatus?: number;
   onRequest?: (catalog: string, path: string, body: string) => void;
 }): Promise<{ zenBase: string; goBase: string; server: Server }> {
   const server = createServer((req, res) => {
@@ -101,6 +103,20 @@ async function mockDualCatalog(opts: {
       const catalog = isGo ? 'go' : 'zen';
       const path = url.replace(/^\/(zen|go)/, '') || '/';
       opts.onRequest?.(catalog, path, body);
+
+      if (path.endsWith('/usage')) {
+        const status = isGo ? (opts.goUsageStatus ?? 404) : 404;
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(
+          status === 200
+            ? JSON.stringify({ usage: {} })
+            : JSON.stringify({
+                type: 'error',
+                error: { type: 'EntitlementError', message: 'OpenCode Go subscription required.' },
+              }),
+        );
+        return;
+      }
 
       if (path.startsWith('/v1/models') || path === '/v1/models') {
         const ids = isGo ? opts.goModels : opts.zenModels;
@@ -260,6 +276,71 @@ describe('opencode-proxy catalog refresh', () => {
     // Refresh bypasses the TTL and surfaces the new model.
     expect(await list(true)).toContain('model-b');
     expect(fetches).toBe(afterFirst + 1);
+  });
+});
+
+describe('opencode-proxy key scoping', () => {
+  /** Boots a proxy over a split zen/go mock and returns helpers. */
+  async function setupScoped(goUsageStatus: number) {
+    const dir = await mkdtemp(join(tmpdir(), 'oc-scope-'));
+    const authPath = await writeAuth(dir, {
+      opencode: { type: 'api', key: 'sk-key' },
+    });
+    const routed: string[] = [];
+    const up = await mockDualCatalog({
+      zenModels: ['claude-sonnet-4-5', 'kimi-k3'],
+      goModels: ['kimi-k3', 'ox-alpha-free'],
+      goUsageStatus,
+      onRequest: (catalog, path) => {
+        if (path.includes('chat/completions')) {
+          routed.push(catalog);
+        }
+      },
+    });
+    const { server, endpoint } = await listenOpenCodeProxy({
+      host: '127.0.0.1',
+      port: 0,
+      authPath,
+      zenUpstream: up.zenBase,
+      goUpstream: up.goBase,
+      modelMetadataUrl: false,
+      quiet: true,
+      token: TEST_TOKEN,
+    });
+    servers.push(server);
+    servers.push(up.server);
+
+    const sendMessage = async (model: string) => {
+      const res = await fetch(`${endpoint}/v1/messages`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ model, max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      const body = (await res.json()) as { content?: Array<{ text?: string }> };
+      return body.content?.[0]?.text ?? '';
+    };
+    const listModels = async () => {
+      const res = await fetch(`${endpoint}/v1/models`, { headers: AUTH });
+      const body = (await res.json()) as { data?: Array<{ id?: string }> };
+      return (body.data ?? []).map((m) => m.id);
+    };
+    return { listModels, sendMessage, routed };
+  }
+
+  it('a Go-subscribed key lists and routes only the Go catalog', async () => {
+    const { listModels, sendMessage, routed } = await setupScoped(200);
+
+    expect(await listModels()).toEqual(['kimi-k3', 'ox-alpha-free']);
+    expect(await sendMessage('kimi-k3')).toBe('from-go');
+    expect(routed).toEqual(['go']);
+  });
+
+  it('a Zen-only key lists and routes only the Zen catalog', async () => {
+    const { listModels, sendMessage, routed } = await setupScoped(403);
+
+    expect(await listModels()).toEqual(['claude-sonnet-4-5', 'kimi-k3']);
+    expect(await sendMessage('kimi-k3')).toBe('from-zen');
+    expect(routed).toEqual(['zen']);
   });
 });
 
@@ -1633,5 +1714,139 @@ describe('opencode-proxy server', () => {
     expect(assistantMsg?.reasoning_content).toBe('Let me think...');
     expect(assistantMsg?.reasoning_signature).toBe('sig123');
     expect(assistantMsg?.content).toBe('Hello there!');
+  });
+});
+
+describe('opencode-proxy credential failover', () => {
+  it('walks to the next ring member when the first key is rejected with CreditsError', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'oc-failover-'));
+    const authPath = await writeAuth(dir, {
+      opencode: { type: 'api', key: 'sk-dead-key' },
+    });
+    const dir2 = await mkdtemp(join(tmpdir(), 'oc-failover-live-'));
+    const liveAuthPath = join(dir2, 'auth.json');
+    await writeFile(liveAuthPath, JSON.stringify({ opencode: { type: 'api', key: 'sk-live-key' } }), {
+      mode: 0o600,
+    });
+
+    const seenKeys: string[] = [];
+    const up = await mockUpstream((url, headers) => {
+      const key = String(headers.authorization ?? '').replace('Bearer ', '');
+      if (url.startsWith('/models')) {
+        return { status: 200, body: JSON.stringify({ data: [{ id: 'qwen3-coder' }] }) };
+      }
+      seenKeys.push(key);
+      if (key === 'sk-dead-key') {
+        return {
+          status: 401,
+          body: JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'CreditsError',
+              message:
+                'No payment method. Add a payment method here: https://opencode.ai/workspace/wrk_1/billing',
+            },
+          }),
+        };
+      }
+      return {
+        status: 200,
+        body: JSON.stringify({
+          id: 'c1',
+          object: 'chat.completion',
+          choices: [{ message: { role: 'assistant', content: 'from-live-key' }, finish_reason: 'stop' }],
+        }),
+      };
+    });
+
+    const { server, endpoint } = await listenOpenCodeProxy({
+      host: '127.0.0.1',
+      port: 0,
+      authPath,
+      authPaths: [liveAuthPath],
+      upstream: up.url,
+      log: () => {},
+      token: TEST_TOKEN,
+    });
+    servers.push(server);
+
+    const res = await fetch(`${endpoint}/v1/messages`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3-coder',
+        stream: false,
+        max_tokens: 32,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(seenKeys).toEqual(['sk-dead-key', 'sk-live-key']);
+  });
+
+  it('picks up a re-login without a restart after its cached key was rejected', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'oc-relogin-'));
+    const authPath = await writeAuth(dir, {
+      opencode: { type: 'api', key: 'sk-stale-key' },
+    });
+
+    const up = await mockUpstream((url, headers) => {
+      const key = String(headers.authorization ?? '').replace('Bearer ', '');
+      if (url.startsWith('/models')) {
+        return { status: 200, body: JSON.stringify({ data: [{ id: 'qwen3-coder' }] }) };
+      }
+      if (key === 'sk-stale-key') {
+        return {
+          status: 401,
+          body: JSON.stringify({
+            type: 'error',
+            error: { type: 'CreditsError', message: 'No payment method.' },
+          }),
+        };
+      }
+      return {
+        status: 200,
+        body: JSON.stringify({
+          id: 'c1',
+          object: 'chat.completion',
+          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        }),
+      };
+    });
+
+    const { server, endpoint } = await listenOpenCodeProxy({
+      host: '127.0.0.1',
+      port: 0,
+      authPath,
+      upstream: up.url,
+      log: () => {},
+      token: TEST_TOKEN,
+    });
+    servers.push(server);
+
+    const post = () =>
+      fetch(`${endpoint}/v1/messages`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'qwen3-coder',
+          stream: false,
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+
+    // The process cached the stale key before the re-login happened.
+    const first = await post();
+    expect(first.status).toBe(401);
+
+    // "Re-login": the store on disk now holds a different key.
+    await writeFile(authPath, JSON.stringify({ opencode: { type: 'api', key: 'sk-fresh-key' } }), {
+      mode: 0o600,
+    });
+
+    const second = await post();
+    expect(second.status).toBe(200);
   });
 });

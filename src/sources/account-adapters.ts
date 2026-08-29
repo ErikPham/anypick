@@ -47,8 +47,18 @@ export function codexAccountAdapter(account: Account): SourceAdapter {
       if (clientId === 'codex') {
         return 'direct';
       }
-      // Codex native auth is not a gateway for Claude/Kiro
+      // Codex native auth is not a gateway for Claude/Kiro without its proxy.
       return 'unsupported';
+    },
+    transportForPolicy(clientId, policy): TransportCapability {
+      if (clientId !== 'codex') {
+        return 'unsupported';
+      }
+      if (policy === 'direct') {
+        return 'direct';
+      }
+      // Policy selects an available path; it cannot enable a service itself.
+      return account.proxy.enabled ? 'managed_builtin_proxy' : 'unsupported';
     },
   };
 }
@@ -84,7 +94,7 @@ export function geminiAccountAdapter(account: Account): SourceAdapter {
       if (clientId === 'gemini') {
         return 'direct';
       }
-      if (clientId === 'claude' || clientId === 'codex') {
+      if (clientId === 'claude' || clientId === 'codex' || clientId === 'opencode') {
         return 'managed_builtin_proxy';
       }
       return 'unsupported';
@@ -92,7 +102,7 @@ export function geminiAccountAdapter(account: Account): SourceAdapter {
   };
 }
 
-/** Grok: built-in dual-protocol proxy for Claude/Codex. */
+/** Grok: built-in dual-protocol proxy for compatible routing clients. */
 export function grokAccountAdapter(account: Account): SourceAdapter {
   const sourceRef = accountRef(account.meta.provider, account.meta.name);
   return {
@@ -103,7 +113,7 @@ export function grokAccountAdapter(account: Account): SourceAdapter {
       canRefresh: false,
     }),
     transportFor(clientId: ClientId): TransportCapability {
-      if (clientId === 'claude' || clientId === 'codex') {
+      if (clientId === 'claude' || clientId === 'codex' || clientId === 'opencode') {
         return 'managed_builtin_proxy';
       }
       return 'unsupported';
@@ -111,17 +121,21 @@ export function grokAccountAdapter(account: Account): SourceAdapter {
   };
 }
 
-/** OpenCode: built-in Zen/Go proxy for Claude/Codex when API keys present. */
+/** OpenCode login: direct for OpenCode; its Zen/Go keys can also back a proxy. */
 export function opencodeAccountAdapter(account: Account): SourceAdapter {
   const sourceRef = accountRef(account.meta.provider, account.meta.name);
   return {
     sourceRef,
     capabilities: baseAccountCapabilities('opencode', {
-      nativeClients: [],
+      nativeClients: ['opencode'],
       protocols: ['openai', 'anthropic'],
       canRefresh: true,
+      requiresNativeAuthWrite: true,
     }),
     transportFor(clientId: ClientId): TransportCapability {
+      if (clientId === 'opencode') {
+        return 'direct';
+      }
       if (clientId === 'claude' || clientId === 'codex') {
         return 'managed_builtin_proxy';
       }
@@ -156,7 +170,7 @@ export function kiroAccountAdapter(
       if (clientId === 'kiro') {
         return 'direct';
       }
-      if (clientId === 'claude' || clientId === 'codex') {
+      if (clientId === 'claude' || clientId === 'codex' || clientId === 'opencode') {
         // The test seam bypasses env-driven discovery; the live path caches.
         const command = opts.findExecutable
           ? resolveKiroProxyCommand({ findExecutable: opts.findExecutable })
@@ -181,16 +195,20 @@ export type PoolProxyTransport = Extract<
  * A pool only ever serves a *borrowing* client through a proxy, so the single
  * axis of variation is which proxy the provider manages — passed in by the
  * provider's own `poolSourceAdapter()` rather than branched on here. Invariant:
- * only `claude` and `codex` accept a source from another provider, so every
+ * `claude`, `codex`, and `opencode` accept compatible cross-provider sources, so every
  * other client is `unsupported` regardless of the pool.
  */
 export function poolAdapterFor(
   providerId: string,
   provider: Provider,
-  opts: { proxyTransport?: PoolProxyTransport } = {},
+  opts: {
+    proxyTransport?: PoolProxyTransport;
+    acceptedClients?: readonly ClientId[];
+  } = {},
 ): SourceAdapter {
   const sourceRef = { kind: 'account-pool' as const, provider: providerId };
   const proxyTransport = opts.proxyTransport ?? 'managed_builtin_proxy';
+  const acceptedClients = new Set(opts.acceptedClients ?? ['claude', 'codex', 'opencode']);
   return {
     sourceRef,
     capabilities: baseAccountCapabilities(providerId, {
@@ -203,7 +221,7 @@ export function poolAdapterFor(
       if (!providerCanProxy(provider)) {
         return 'unsupported';
       }
-      return clientId === 'claude' || clientId === 'codex' ? proxyTransport : 'unsupported';
+      return acceptedClients.has(clientId) ? proxyTransport : 'unsupported';
     },
   };
 }
@@ -227,7 +245,10 @@ export function genericAccountAdapter(
       // Cross-provider account transport is deliberately narrow. The client
       // registry says what exists; this adapter remains the authority for what
       // is safe to pair (ADR 0011 / account-adapter invariant).
-      if (providerCanProxy(provider) && (clientId === 'claude' || clientId === 'codex')) {
+      if (
+        providerCanProxy(provider) &&
+        (clientId === 'claude' || clientId === 'codex' || clientId === 'opencode')
+      ) {
         return 'managed_builtin_proxy';
       }
       return 'unsupported';

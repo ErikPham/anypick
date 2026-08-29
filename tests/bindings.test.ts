@@ -3,18 +3,22 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAppReady } from '../src/core/app';
+import { registerBuiltinCatalog, CatalogRegistry } from '../src/catalog/providers';
+import { registerBuiltinClients } from '../src/clients';
+import { ProviderRegistry } from '../src/core/registry';
 import { gatewayRef, parseRef } from '../src/core/refs';
 import {
   codexAccountAdapter,
   grokAccountAdapter,
   kiroAccountAdapter,
+  opencodeAccountAdapter,
 } from '../src/sources/account-adapters';
 import { gatewayAdapterFromProfile } from '../src/sources/gateway-adapters';
 import type { Account, RuntimeProfile } from '../src/types';
 import { ClientRegistry } from '../src/clients/registry';
 import { createClaudeCodeClient } from '../src/clients/claude-code';
 import { createCodexClient } from '../src/clients/codex';
-import { createTestEnv } from './helpers';
+import { createTestEnv, FakeProvider } from './helpers';
 
 describe('binding store + presets', () => {
   let root: string;
@@ -62,6 +66,42 @@ describe('binding store + presets', () => {
     expect(loaded.affectedResources).toEqual(['client/claude', 'account/grok/work']);
     expect(JSON.stringify(loaded)).not.toMatch(/function|adapter/i);
   });
+
+  it('accounts.use moves the native client binding onto the live login', async () => {
+    const providers = new ProviderRegistry();
+    const gemini = new FakeProvider('gemini', join(root, 'live', 'gemini'));
+    providers.register(gemini);
+    const clients = new ClientRegistry();
+    registerBuiltinClients(clients);
+    const catalog = new CatalogRegistry();
+    registerBuiltinCatalog(catalog);
+    const app = await createAppReady({
+      root,
+      bare: true,
+      skipMigrate: true,
+      accountRegistry: providers,
+      clients,
+      catalog,
+    });
+    await gemini.setLive({ email: 'lenta@example.test', token: 'lenta-secret' });
+    await app.accounts.save('gemini', 'lentaunao');
+    await app.bindingService.use('gemini', { with: 'gemini/lentaunao' });
+    expect(app.bindings.getGlobal('gemini')?.spec.source).toEqual({
+      kind: 'account',
+      provider: 'gemini',
+      name: 'lentaunao',
+    });
+
+    await gemini.setLive({ email: 'stack@example.test', token: 'stack-secret' });
+    await app.accounts.save('gemini', 'stacktify');
+    await app.accounts.use('gemini', 'stacktify', { noProxy: true });
+    expect(app.bindings.getGlobal('gemini')?.spec.source).toEqual({
+      kind: 'account',
+      provider: 'gemini',
+      name: 'stacktify',
+    });
+    app.close();
+  });
 });
 
 function fakeAccount(provider: string, name: string): Account {
@@ -83,6 +123,7 @@ describe('source adapters transportFor', () => {
     const a = grokAccountAdapter(fakeAccount('grok', 'work'));
     expect(a.transportFor('claude')).toBe('managed_builtin_proxy');
     expect(a.transportFor('codex')).toBe('managed_builtin_proxy');
+    expect(a.transportFor('opencode')).toBe('managed_builtin_proxy');
   });
 
   it('codex native → codex is direct; claude unsupported', () => {
@@ -92,12 +133,30 @@ describe('source adapters transportFor', () => {
     expect(a.capabilities.requiresNativeAuthWrite).toBe(true);
   });
 
+  it('codex proxy opt-in keeps auto direct and exposes the managed proxy explicitly', () => {
+    const account = fakeAccount('codex', 'personal');
+    account.proxy.enabled = true;
+    const adapter = codexAccountAdapter(account);
+    expect(adapter.transportFor('codex')).toBe('direct');
+    expect(adapter.transportForPolicy?.('codex', 'proxy')).toBe('managed_builtin_proxy');
+    expect(adapter.transportFor('claude')).toBe('unsupported');
+  });
+
   it('kiro missing executable → external_manual_proxy for claude', () => {
     const a = kiroAccountAdapter(fakeAccount('kiro', 'work'), {
       findExecutable: () => null,
     });
     expect(a.transportFor('claude')).toBe('external_manual_proxy');
+    expect(a.transportFor('opencode')).toBe('external_manual_proxy');
     expect(a.transportFor('kiro')).toBe('direct');
+  });
+
+  it('OpenCode account is native for OpenCode and proxy-backed for Claude/Codex', () => {
+    const adapter = opencodeAccountAdapter(fakeAccount('opencode', 'personal'));
+    expect(adapter.transportFor('opencode')).toBe('direct');
+    expect(adapter.transportFor('claude')).toBe('managed_builtin_proxy');
+    expect(adapter.transportFor('codex')).toBe('managed_builtin_proxy');
+    expect(adapter.capabilities.nativeClients).toEqual(['opencode']);
   });
 
   it('gateway adapter classifies by protocol', () => {

@@ -17,7 +17,10 @@ import { listAuthEntries } from './opencode-auth';
 export function liveAuthPath(providerId: string, home = homedir()): string | null {
   switch (providerId) {
     case 'codex':
-      return process.env.CODEX_AUTH_PATH ?? join(home, '.codex', 'auth.json');
+      return (
+        process.env.CODEX_AUTH_PATH ??
+        join(process.env.CODEX_HOME ?? join(home, '.codex'), 'auth.json')
+      );
     case 'opencode': {
       if (process.env.OPENCODE_AUTH_PATH) {
         return process.env.OPENCODE_AUTH_PATH;

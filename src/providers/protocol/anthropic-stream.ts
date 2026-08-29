@@ -9,7 +9,7 @@ import { createIdleStreamReader } from './anthropic-stream-reader';
 
 export async function pipeOpenAIStreamToAnthropic(
   upstream: Response,
-  write: (chunk: string) => void,
+  write: (chunk: string) => void | Promise<void>,
   model: string,
   messageId = `msg_${randomId()}`,
   options: PipeOpenAIStreamOptions = {},
@@ -52,12 +52,16 @@ export async function pipeOpenAIStreamToAnthropic(
   let buffer = '';
   const idleReader = createIdleStreamReader(reader, options);
 
-  const ensureMessageStart = () => {
+  const emit = async (chunk: string): Promise<void> => {
+    await write(chunk);
+  };
+
+  const ensureMessageStart = async (): Promise<void> => {
     if (messageStarted) {
       return;
     }
     messageStarted = true;
-    write(
+    await emit(
       sse('message_start', {
         type: 'message_start',
         message: {
@@ -74,17 +78,17 @@ export async function pipeOpenAIStreamToAnthropic(
     );
   };
 
-  const ensureTextBlock = () => {
-    ensureMessageStart();
+  const ensureTextBlock = async (): Promise<void> => {
+    await ensureMessageStart();
     if (thinkingBlockOpen) {
-      write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+      await emit(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
       thinkingBlockOpen = false;
       blockIndex += 1;
     }
     if (blockOpen) {
       return;
     }
-    write(
+    await emit(
       sse('content_block_start', {
         type: 'content_block_start',
         index: blockIndex,
@@ -94,17 +98,17 @@ export async function pipeOpenAIStreamToAnthropic(
     blockOpen = true;
   };
 
-  const ensureThinkingBlock = () => {
-    ensureMessageStart();
+  const ensureThinkingBlock = async (): Promise<void> => {
+    await ensureMessageStart();
     if (thinkingBlockOpen) {
       return;
     }
     if (blockOpen) {
-      write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+      await emit(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
       blockOpen = false;
       blockIndex += 1;
     }
-    write(
+    await emit(
       sse('content_block_start', {
         type: 'content_block_start',
         index: blockIndex,
@@ -148,7 +152,7 @@ export async function pipeOpenAIStreamToAnthropic(
 
         if (chunk.error) {
           idleReader.markProgress();
-          ensureMessageStart();
+          await ensureMessageStart();
           const providerError = {
             type:
               chunk.error.code === 'context_length_exceeded'
@@ -158,7 +162,7 @@ export async function pipeOpenAIStreamToAnthropic(
             ...(chunk.error.code ? { code: chunk.error.code } : {}),
           };
           streamError = options.mapError?.(providerError) ?? providerError;
-          write(
+          await emit(
             sse('error', {
               type: 'error',
               error: streamError,
@@ -197,8 +201,8 @@ export async function pipeOpenAIStreamToAnthropic(
         if (reasoning) {
           outputChars += reasoning.length;
           hadThinking = true;
-          ensureThinkingBlock();
-          write(
+          await ensureThinkingBlock();
+          await emit(
             sse('content_block_delta', {
               type: 'content_block_delta',
               index: blockIndex,
@@ -210,8 +214,8 @@ export async function pipeOpenAIStreamToAnthropic(
         if (delta?.content) {
           outputChars += delta.content.length;
           hadText = true;
-          ensureTextBlock();
-          write(
+          await ensureTextBlock();
+          await emit(
             sse('content_block_delta', {
               type: 'content_block_delta',
               index: blockIndex,
@@ -221,14 +225,18 @@ export async function pipeOpenAIStreamToAnthropic(
         }
 
         if (delta?.tool_calls?.length) {
-          ensureMessageStart();
+          await ensureMessageStart();
           if (thinkingBlockOpen) {
-            write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+            await emit(
+              sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }),
+            );
             thinkingBlockOpen = false;
             blockIndex += 1;
           }
           if (blockOpen) {
-            write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+            await emit(
+              sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }),
+            );
             blockOpen = false;
             blockIndex += 1;
           }
@@ -244,7 +252,7 @@ export async function pipeOpenAIStreamToAnthropic(
                 anthropicIndex: blockIndex,
               };
               toolBlocks.set(idx, state);
-              write(
+              await emit(
                 sse('content_block_start', {
                   type: 'content_block_start',
                   index: state.anthropicIndex,
@@ -313,16 +321,16 @@ export async function pipeOpenAIStreamToAnthropic(
 
   // Close blocks + finish message (only when we actually streamed content).
   if (blockOpen) {
-    write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+    await emit(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
   }
   if (thinkingBlockOpen) {
-    write(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
+    await emit(sse('content_block_stop', { type: 'content_block_stop', index: blockIndex }));
   }
   for (const [idx, state] of toolBlocks) {
     const buffered = toolArgBuffers.get(idx) ?? state.args;
     if (buffered) {
       const sanitized = escapeJsonControlCharacters(buffered);
-      write(
+      await emit(
         sse('content_block_delta', {
           type: 'content_block_delta',
           index: state.anthropicIndex,
@@ -333,16 +341,18 @@ export async function pipeOpenAIStreamToAnthropic(
         }),
       );
     }
-    write(sse('content_block_stop', { type: 'content_block_stop', index: state.anthropicIndex }));
+    await emit(
+      sse('content_block_stop', { type: 'content_block_stop', index: state.anthropicIndex }),
+    );
   }
-  write(
+  await emit(
     sse('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: stopReason, stop_sequence: null },
       usage: { input_tokens: inputTokens, output_tokens: outputTokens },
     }),
   );
-  write(sse('message_stop', { type: 'message_stop' }));
+  await emit(sse('message_stop', { type: 'message_stop' }));
 
   return {
     hadText,

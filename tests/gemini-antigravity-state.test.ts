@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -181,10 +181,9 @@ describe('Antigravity unified OAuth state', () => {
     }
   });
 
-  it('blocks a real account change while Antigravity is running', async () => {
+  it('allows a Gemini account change while Antigravity is running', async () => {
     const path = await makeStateDatabase();
     await writeAntigravityStateOAuthPayload(payload('current-refresh'), { paths: [path] });
-    const before = await readFile(path);
 
     await expect(
       assertAntigravityStateSafeToMutate({
@@ -192,8 +191,7 @@ describe('Antigravity unified OAuth state', () => {
         expectedPayload: payload('different-refresh'),
         isAppRunning: async () => true,
       }),
-    ).rejects.toThrow('Quit Antigravity completely');
-    expect(await readFile(path)).toEqual(before);
+    ).resolves.toEqual([path]);
   });
 
   it('allows an idempotent restore while Antigravity is running', async () => {

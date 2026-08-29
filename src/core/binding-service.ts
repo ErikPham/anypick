@@ -2,7 +2,15 @@
  * Orchestration for use / run / link / reset / current (spec primary verbs).
  */
 
-import type { ActivationPlan, BindingProvenance, BindingSpec, ClientId } from '../types';
+import type {
+  ActivationPlan,
+  BindingProvenance,
+  BindingSpec,
+  ClientId,
+  GlobalBinding,
+  SavedPreset,
+  SourceResume,
+} from '../types';
 import { anypickError, ExitCode } from '../utils/errors';
 import { planActivation, planFromWith } from './activation-planner';
 import { executeActivation, type ExecuteResult, type ExecutorDeps } from './activation-executor';
@@ -49,6 +57,26 @@ export interface LinkOptions {
 
 export class BindingService {
   constructor(private readonly deps: BindingServiceDeps) {}
+
+  /** Read-only binding view for presentation layers. */
+  globalBinding(client: ClientId): GlobalBinding | null {
+    return this.deps.bindings.getGlobal(client);
+  }
+
+  /** Read-only preset view for presentation layers. */
+  listPresets(): SavedPreset[] {
+    return this.deps.presets.list();
+  }
+
+  /** Read one saved setup without exposing the persistence implementation. */
+  getPreset(name: string): SavedPreset | null {
+    return this.deps.presets.getByName(name);
+  }
+
+  /** Successful setup history is advisory UI state, not a raw-store concern. */
+  listSourceResumes(source: BindingSpec['source']): SourceResume[] {
+    return this.deps.bindings.listSourceResumes(source);
+  }
 
   /**
    * anypick use <client> [--with <source|@preset> | --current]

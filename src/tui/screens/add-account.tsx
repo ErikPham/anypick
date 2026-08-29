@@ -5,6 +5,7 @@
 import { Box, Text, useInput } from 'ink';
 import { EmptyState, Picker, ScreenShell, type StatusKind } from '../components/chrome';
 import type { ProviderPoolRow } from '../model';
+import type { AccountSource } from '../../types';
 
 /**
  * The command a user runs to sign in with each provider's own tool, before
@@ -16,14 +17,7 @@ const SIGN_IN_COMMANDS: Record<string, string> = {
 };
 
 /** Instruction line for signing in with the provider's tool. */
-export function signInInstruction(
-  providerId: string,
-  displayName: string,
-  source?: string,
-): string {
-  if (source === 'antigravity') {
-    return 'Open the Antigravity app and sign in with the other account.';
-  }
+export function signInInstruction(providerId: string, displayName: string): string {
   const cmd = SIGN_IN_COMMANDS[providerId];
   return cmd
     ? `In another terminal, run:  ${cmd}`
@@ -110,24 +104,18 @@ export function AddProviderScreen(props: AddProviderScreenProps) {
   );
 }
 
-export type GeminiSource = 'gemini-cli' | 'antigravity';
-
 export interface AddSourceScreenProps {
   displayName: string;
+  sources: readonly AccountSource[];
   selectedIndex: number;
   onMove: (delta: number) => void;
-  onSelect: (source: GeminiSource) => void;
+  onSelect: (source: string) => void;
   onBack: () => void;
 }
 
 /** Choose which sign-in source to add for a provider that has more than one. */
 export function AddSourceScreen(props: AddSourceScreenProps) {
-  const { displayName, selectedIndex, onMove, onSelect, onBack } = props;
-
-  const options: Array<{ id: GeminiSource; label: string; hint: string }> = [
-    { id: 'gemini-cli', label: 'Gemini CLI', hint: 'API key or Google login under ~/.gemini' },
-    { id: 'antigravity', label: 'Antigravity', hint: 'OAuth from your OS credential store' },
-  ];
+  const { displayName, sources, selectedIndex, onMove, onSelect, onBack } = props;
 
   useInput((input, key) => {
     if (key.escape) {
@@ -143,14 +131,14 @@ export function AddSourceScreen(props: AddSourceScreenProps) {
       return;
     }
     if (key.return) {
-      const o = options[selectedIndex];
+      const o = sources[selectedIndex];
       if (o) {
         onSelect(o.id);
       }
     }
   });
 
-  const focused = options[selectedIndex];
+  const focused = sources[selectedIndex];
 
   return (
     <ScreenShell
@@ -166,7 +154,7 @@ export function AddSourceScreen(props: AddSourceScreenProps) {
         <Text bold> How do you sign in to {displayName}?</Text>
         <Text> </Text>
         <Picker
-          items={options.map((o) => ({ id: o.id, label: o.label }))}
+          items={sources.map((o) => ({ id: o.id, label: o.label }))}
           selectedIndex={selectedIndex}
         />
       </Box>
@@ -174,20 +162,39 @@ export function AddSourceScreen(props: AddSourceScreenProps) {
   );
 }
 
-export type AddMode = 'save' | 'add-another' | 'login-help' | 'api-key';
+export type AddMode = 'save' | 'add-another' | 'login-help' | `credential:${string}`;
 
-const ADD_MODE_ACTIONS: Record<AddMode, string> = {
-  save: 'save this login',
-  'add-another': 'add another login',
-  'login-help': 'check again',
-  'api-key': 'enter an API key',
-};
+export function credentialAddMode(kind: string): AddMode {
+  return `credential:${kind}`;
+}
+
+export function credentialKindFromAddMode(mode: AddMode): string | undefined {
+  return mode.startsWith('credential:') ? mode.slice('credential:'.length) : undefined;
+}
+
+function addModeAction(mode: AddMode, label?: string): string {
+  if (mode === 'save') {
+    return 'save this login';
+  }
+  if (mode === 'add-another') {
+    return 'add another login';
+  }
+  if (mode === 'login-help') {
+    return 'check again';
+  }
+  return `enter ${label ?? 'a credential'}`;
+}
+
+export interface AddCredentialOption {
+  kind: string;
+  label: string;
+}
 
 export interface AddModeOptionInput {
   livePresent: boolean;
   canClearLive: boolean;
-  /** The provider accepts a credential the user types instead of a login. */
-  canUseApiKey: boolean;
+  /** Credentials the provider accepts from the user instead of a native login. */
+  credentials: readonly AddCredentialOption[];
 }
 
 /**
@@ -204,7 +211,13 @@ export function addModeOptions(input: AddModeOptionInput): Array<{ id: AddMode; 
             : []),
         ]
       : [{ id: 'login-help' as const, label: 'Check again' }]),
-    ...(input.canUseApiKey ? [{ id: 'api-key' as const, label: 'Use an API key instead' }] : []),
+    ...input.credentials.map((credential) => ({
+      id: credentialAddMode(credential.kind),
+      label:
+        credential.label === 'API key'
+          ? 'Use an API key instead'
+          : `Use ${credential.label} instead`,
+    })),
   ];
 }
 
@@ -214,7 +227,7 @@ export interface AddModeScreenProps {
   livePresent: boolean;
   liveIdentity?: string;
   canClearLive: boolean;
-  canUseApiKey: boolean;
+  credentials: readonly AddCredentialOption[];
   source?: string;
   selectedIndex: number;
   onMove: (delta: number) => void;
@@ -228,14 +241,14 @@ export function AddModeScreen(props: AddModeScreenProps) {
     livePresent,
     liveIdentity,
     canClearLive,
-    canUseApiKey,
+    credentials,
     selectedIndex,
     onMove,
     onSelect,
     onBack,
   } = props;
 
-  const options = addModeOptions({ livePresent, canClearLive, canUseApiKey });
+  const options = addModeOptions({ livePresent, canClearLive, credentials });
 
   useInput((input, key) => {
     if (key.escape) {
@@ -259,7 +272,12 @@ export function AddModeScreen(props: AddModeScreenProps) {
   });
 
   const focused = options[selectedIndex];
-  const action = focused ? ADD_MODE_ACTIONS[focused.id] : undefined;
+  const action = focused
+    ? addModeAction(
+        focused.id,
+        credentials.find((credential) => credentialAddMode(credential.kind) === focused.id)?.label,
+      )
+    : undefined;
   // With no login to save and nothing else on offer, the single row would say
   // exactly what the enter hint already says.
   const showPicker = livePresent || options.length > 1;
@@ -284,7 +302,7 @@ export function AddModeScreen(props: AddModeScreenProps) {
           <>
             <Text bold> Sign in to {displayName}</Text>
             <Text> </Text>
-            <Text> {signInInstruction(props.providerId, displayName, props.source)}</Text>
+            <Text> {signInInstruction(props.providerId, displayName)}</Text>
             <Text> When sign-in finishes, return here.</Text>
           </>
         )}
@@ -342,7 +360,7 @@ export function StashResultScreen(props: StashResultScreenProps) {
       <Box flexDirection="column">
         <Text bold> Sign in to {props.displayName}</Text>
         <Text> </Text>
-        <Text> {signInInstruction(props.providerId, props.displayName, props.source)}</Text>
+        <Text> {signInInstruction(props.providerId, props.displayName)}</Text>
         <Text> When sign-in finishes, return here.</Text>
         <Text> </Text>
         {props.skippedBackup ? (

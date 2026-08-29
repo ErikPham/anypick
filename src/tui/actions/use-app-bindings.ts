@@ -22,7 +22,7 @@ import { errorText, type TuiShell } from '../use-tui-shell';
 import type { TuiNav } from '../use-tui-nav';
 import type { ModelRoleEditor } from './use-model-role-editor';
 import { ensureProxyUp } from './ensure-proxy-up';
-import { fetchModelsFromProxyEndpoint, mergeProxyModelSuggestions } from '../proxy-models-fetch';
+import { mergeProxyModelSuggestions } from '../proxy-models-fetch';
 
 /** A previously verified setup offered back to the user as a one-key resume. */
 export interface SourceResumeCandidate {
@@ -127,28 +127,6 @@ export function useAppBindings(
   const { withBusy, go, setSelectedIndex, setReceipt, reportOk } = shell;
   const { apps, proxyRows, setApps, openGateways, openProxy } = nav;
 
-  /**
-   * Model discovery uses the proxy's per-instance token. The token is stored
-   * in proxy_state for lifecycle reuse but is intentionally not exposed by
-   * proxyStatus (or rendered in the TUI). Passing the placeholder key makes
-   * /v1/models return 401, which looks like an empty catalog to the picker.
-   */
-  const proxyModelListToken = async (
-    providerId: string,
-    name: string,
-  ): Promise<string | undefined> => {
-    let accountName = name;
-    if (name === 'pool' || name === '*') {
-      const pool = await app.proxy.getPool(providerId);
-      accountName = pool.members.find((member) => member.enabled)?.account ?? '';
-    }
-    if (!accountName) {
-      return undefined;
-    }
-    const state = await app.accountStore.readProxyState(providerId, accountName);
-    return state?.token;
-  };
-
   const resolveProxyRow = (providerId: string, name: string, fallbackRunning = true): ProxyRow => {
     const live = proxyRows.find(
       (r) =>
@@ -182,7 +160,7 @@ export function useAppBindings(
   ): SourceResumeCandidate | undefined => {
     try {
       const ref = parseRef(source);
-      const recent = app.bindings
+      const recent = app.bindingService
         .listSourceResumes(ref)
         .find((entry) => entry.client === appRow.clientId);
       if (!recent) {
@@ -213,7 +191,7 @@ export function useAppBindings(
     try {
       const byClient = new Map(appsForSource.map((appRow) => [appRow.clientId, appRow]));
       const ref = parseRef(source);
-      for (const recent of app.bindings.listSourceResumes(ref)) {
+      for (const recent of app.bindingService.listSourceResumes(ref)) {
         const appRow = byClient.get(recent.client);
         if (!appRow) {
           continue;
@@ -273,17 +251,10 @@ export function useAppBindings(
         let suggestionsSource: ModelSuggestionsSource = 'empty';
         if (opts.providerId !== 'gateway') {
           try {
-            const st =
-              opts.name === 'pool' || opts.name === '*'
-                ? await app.proxy.poolProxyStatus(opts.providerId)
-                : await app.proxy.proxyStatus(opts.providerId, opts.name);
-            const endpoint = st.endpoint;
-            if (endpoint && st.running) {
-              const apiKey = await proxyModelListToken(opts.providerId, opts.name);
-              const fetched = await fetchModelsFromProxyEndpoint(endpoint, {
-                apiKey,
-                refresh: opts.forceRefresh,
-              });
+            const fetched = await app.proxy.listModels(opts.providerId, opts.name, {
+              refresh: opts.forceRefresh,
+            });
+            if (fetched.models.length > 0) {
               const merged = mergeProxyModelSuggestions(opts.providerId, fetched.models, {
                 includeStaticFallback: false,
                 policy: policyLookup,

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AnyPick Tray",
+  "productName": "AnyPick",
   "version": "1.0.0",
-  "identifier": "dev.anypick.tray",
+  "identifier": "dev.anypick.desktop",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -12,14 +12,14 @@
       {
         "label": "main",
         "title": "AnyPick",
-        "width": 520,
-        "height": 640,
-        "minWidth": 460,
-        "minHeight": 520,
+        "width": 1040,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 560,
         "resizable": true,
-        "visible": false,
+        "visible": true,
         "center": true,
-        "skipTaskbar": true
+        "skipTaskbar": false
       }
     ],
     "security": {
@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/anypick-core"],
     "icon": [
       "../../../../assets/icon-32.png",
       "../../../../assets/icon-128.png",

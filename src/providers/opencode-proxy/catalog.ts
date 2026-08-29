@@ -13,6 +13,7 @@ import {
   CATALOG_STALE_MAX_MS,
   CATALOG_TTL_MS,
   DEFAULT_MODEL_METADATA_URL,
+  ENTITLEMENT_TTL_MS,
   MODELS_FETCH_MS,
   USER_AGENT,
 } from './constants';
@@ -33,6 +34,8 @@ export interface OpenCodeCatalogOptions {
 export class CatalogStore implements OpenCodeCatalogStore {
   private cache?: CatalogCache;
   private inflight?: Promise<CatalogCache>;
+  /** Definitive Go-entitlement probe result for the current key, if any. */
+  private entitlement?: { hasGo: boolean; checkedAt: number };
   private readonly forcedUpstream?: string;
   private readonly zenBase: string;
   private readonly goBase: string;
@@ -62,7 +65,8 @@ export class CatalogStore implements OpenCodeCatalogStore {
 
   async route(modelId: string): Promise<{ catalog: OpenCodeCatalogKind; base: string }> {
     const cache = await this.live();
-    const catalog = cache.byModel.get(modelId)?.catalog ?? 'zen';
+    const scopedDefault = this.entitlement?.hasGo ? 'go' : 'zen';
+    const catalog = cache.byModel.get(modelId)?.catalog ?? scopedDefault;
     return { catalog, base: this.baseFor(catalog) };
   }
 
@@ -75,6 +79,7 @@ export class CatalogStore implements OpenCodeCatalogStore {
   invalidate(): void {
     this.cache = undefined;
     this.inflight = undefined;
+    this.entitlement = undefined;
   }
 
   async live(): Promise<CatalogCache> {
@@ -102,15 +107,16 @@ export class CatalogStore implements OpenCodeCatalogStore {
     }
     this.inflight = (async () => {
       const cred = await this.opts.credential();
-      const [lists, metadata] = await Promise.all([
-        Promise.all(
-          this.catalogs(cred).map(async (catalog) => ({
-            catalog,
-            list: await this.fetchModels(catalog, cred.apiKey),
-          })),
-        ),
+      const [hasGo, metadata] = await Promise.all([
+        this.resolveGoEntitlement(cred),
         this.fetchMetadata(),
       ]);
+      const lists = await Promise.all(
+        this.catalogs(hasGo, cred).map(async (catalog) => ({
+          catalog,
+          list: await this.fetchModels(catalog, cred.apiKey),
+        })),
+      );
       const byModel = new Map<string, CatalogModel>();
       const ids: string[] = [];
       const metadataByModel = new Map(
@@ -135,7 +141,7 @@ export class CatalogStore implements OpenCodeCatalogStore {
       }
       const next = { byModel, ids, fetchedAt: Date.now() };
       this.cache = next;
-      this.opts.log(`models list ← ${ids.length} (zen+go)`);
+      this.opts.log(`models list ← ${ids.length} (${this.catalogs(hasGo, cred).join('+')})`);
       return next;
     })().finally(() => {
       this.inflight = undefined;
@@ -143,8 +149,59 @@ export class CatalogStore implements OpenCodeCatalogStore {
     return this.inflight;
   }
 
-  private catalogs(cred: OpenCodeCredential): OpenCodeCatalogKind[] {
-    return this.forcedUpstream || cred.mode === 'public' ? ['zen'] : ['zen', 'go'];
+  /**
+   * Which catalogs this key may serve. The Go usage endpoint doubles as an
+   * entitlement probe: 200 means the key holds a Go subscription, 403 means it
+   * does not. Only a definitive answer narrows the scope; anything else keeps
+   * the legacy both-catalog behavior.
+   */
+  private catalogs(hasGo: boolean | undefined, cred: OpenCodeCredential): OpenCodeCatalogKind[] {
+    // A forced upstream merges everything into one base anyway; public mode has
+    // no key to entitle. Unknown entitlement must keep serving both lists
+    // rather than hide models.
+    if (this.forcedUpstream || cred.mode === 'public') {
+      return ['zen'];
+    }
+    if (hasGo === undefined) {
+      return ['zen', 'go'];
+    }
+    return hasGo ? ['go'] : ['zen'];
+  }
+
+  private async resolveGoEntitlement(cred: OpenCodeCredential): Promise<boolean | undefined> {
+    if (cred.mode === 'public' || this.forcedUpstream) {
+      return undefined;
+    }
+    if (this.entitlement && Date.now() - this.entitlement.checkedAt < ENTITLEMENT_TTL_MS) {
+      return this.entitlement.hasGo;
+    }
+    let hasGo: boolean | undefined;
+    try {
+      const response = await this.opts.egress.fetch(
+        `${this.goBase}/usage`,
+        {
+          headers: {
+            accept: 'application/json',
+            authorization: `Bearer ${cred.apiKey}`,
+            'user-agent': USER_AGENT,
+          },
+          signal: AbortSignal.timeout(MODELS_FETCH_MS),
+        },
+        { operation: 'catalog' },
+      );
+      if (response.ok) {
+        hasGo = true;
+      } else if (response.status === 403) {
+        // EntitlementError — the key definitively lacks a Go subscription.
+        hasGo = false;
+      }
+    } catch {
+      // Network trouble: leave unknown so both catalogs stay available.
+    }
+    if (hasGo !== undefined) {
+      this.entitlement = { hasGo, checkedAt: Date.now() };
+    }
+    return hasGo;
   }
 
   private async fetchModels(

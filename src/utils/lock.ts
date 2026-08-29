@@ -1,14 +1,16 @@
 /**
  * Scoped file locks for concurrent mutations (spec §23.3).
  *
- * Lock file content: `{ "pid": number, "startedAt": string }`
- * Stale locks (dead owner PID) are stolen after a brief wait.
+ * Lock files are durable coordination points, not ownership records.  The
+ * actual exclusion is an advisory `flock(2)` on the open file descriptor, so
+ * the kernel releases it if a process dies.  Keeping the inode in place avoids
+ * the ABA race inherent in `read stale pid → unlink lock → create lock`.
  */
 
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { isProcessRunning } from './process';
+import { flock } from 'fs-ext';
 import { anypickError, ExitCode } from './errors';
 
 export interface LockInfo {
@@ -26,6 +28,12 @@ export interface WithFileLockOptions {
   /** Human label for errors. */
   resource?: string;
 }
+
+// flock(2) excludes other processes, but some kernels treat locks acquired by
+// different descriptors in the *same* process as one owner. Keep a tiny local
+// queue as well so concurrent promises in a CLI/TUI process cannot bypass the
+// coordinator before the advisory lock protects cross-process callers.
+const localTails = new Map<string, Promise<void>>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -48,24 +56,92 @@ export async function readLockInfo(lockPath: string): Promise<LockInfo | null> {
   }
 }
 
-/** True when lock file is absent or owner process is dead. */
+/**
+ * Advisory locks disappear with their file descriptors, including after a
+ * crash, so there is no stale-lock takeover path.  Kept for doctor callers
+ * that support pre-1.0 dot-lock records; a durable lock file is harmless when
+ * no descriptor holds it.
+ */
 export async function isLockStale(lockPath: string): Promise<boolean> {
-  const info = await readLockInfo(lockPath);
-  if (!info) {
-    // corrupt or unreadable — treat as stale so doctor can delete
-    try {
-      await readFile(lockPath);
-      return true;
-    } catch {
-      return true; // missing
+  void lockPath;
+  return false;
+}
+
+function lock(fd: number, flags: 'exnb' | 'un'): Promise<void> {
+  return new Promise((resolve, reject) => {
+    flock(fd, flags, (err) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+function lockUnavailable(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    'code' in err &&
+    (err.code === 'EAGAIN' || err.code === 'EACCES' || err.code === 'EWOULDBLOCK')
+  );
+}
+
+async function enterLocalQueue(
+  lockPath: string,
+  deadline: number,
+  resource: string,
+): Promise<() => void> {
+  const previous = localTails.get(lockPath);
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  localTails.set(lockPath, mine);
+
+  if (previous) {
+    const remaining = deadline - Date.now();
+    const acquired =
+      remaining > 0
+        ? await Promise.race([previous.then(() => true), sleep(remaining).then(() => false)])
+        : false;
+    if (!acquired) {
+      // Do not unlink this queue node: later waiters may already be waiting on
+      // it. Release it only after its predecessor leaves, preserving FIFO even
+      // though this caller has timed out.
+      void previous.finally(release);
+      const info = await readLockInfo(lockPath);
+      throw stateConflict(lockPath, resource, info);
     }
   }
-  return !isProcessRunning(info.pid);
+
+  return () => {
+    release();
+    if (localTails.get(lockPath) === mine) {
+      localTails.delete(lockPath);
+    }
+  };
+}
+
+function stateConflict(lockPath: string, resource: string, info: LockInfo | null): Error {
+  return anypickError(
+    `Resource locked: ${resource}` +
+      (info ? ` (held by pid ${info.pid})` : '') +
+      '. Retry after the other anypick process finishes.',
+    'STATE_CONFLICT',
+    {
+      exitCode: ExitCode.CAPABILITY_CONFLICT,
+      details: { lockPath, ownerPid: info?.pid },
+    },
+  );
 }
 
 /**
- * Acquire an exclusive lock via O_EXCL create, run fn, release.
- * Retries while another live process holds the lock.
+ * Acquire an exclusive advisory lock, run fn, then release it.  The lock file
+ * deliberately remains on disk after release: unlinking a pathname while a
+ * waiter still has its inode open can split one logical lock into two files.
+ * Kernel-managed ownership makes stale PID detection and lock stealing
+ * unnecessary.
  */
 export async function withFileLock<T>(
   lockPath: string,
@@ -78,63 +154,50 @@ export async function withFileLock<T>(
   const deadline = Date.now() + timeoutMs;
 
   await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+  const leaveLocalQueue = await enterLocalQueue(lockPath, deadline, resource);
   const ownerId = randomUUID();
-
-  while (true) {
-    try {
-      const handle = await open(lockPath, 'wx', 0o600);
-      const info: LockInfo = {
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-        ownerId,
-      };
-      try {
-        await handle.writeFile(JSON.stringify(info) + '\n', { encoding: 'utf8' });
-      } finally {
-        await handle.close();
-      }
-      break;
-    } catch (err) {
-      const code = err && typeof err === 'object' && 'code' in err ? String(err.code) : '';
-      if (code !== 'EEXIST') {
-        throw err;
-      }
-
-      const info = await readLockInfo(lockPath);
-      if (info && !isProcessRunning(info.pid)) {
-        // Stale — remove and retry
-        await rm(lockPath, { force: true });
-        continue;
-      }
-
-      if (Date.now() >= deadline) {
-        throw anypickError(
-          `Resource locked: ${resource}` +
-            (info ? ` (held by pid ${info.pid})` : '') +
-            '. Retry after the other anypick process finishes.',
-          'STATE_CONFLICT',
-          {
-            exitCode: ExitCode.CAPABILITY_CONFLICT,
-            details: { lockPath, ownerPid: info?.pid },
-          },
-        );
-      }
-      await sleep(pollMs);
-    }
-  }
-
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
+    handle = await open(lockPath, 'a+', 0o600);
+    while (true) {
+      try {
+        await lock(handle.fd, 'exnb');
+        break;
+      } catch (err) {
+        if (!lockUnavailable(err)) {
+          throw err;
+        }
+        if (Date.now() >= deadline) {
+          const info = await readLockInfo(lockPath);
+          throw stateConflict(lockPath, resource, info);
+        }
+        await sleep(pollMs);
+      }
+    }
+
+    const info: LockInfo = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      ownerId,
+    };
+    await handle.truncate(0);
+    await handle.writeFile(JSON.stringify(info) + '\n', { encoding: 'utf8' });
+    await handle.sync();
     return await fn();
   } finally {
-    try {
-      const info = await readLockInfo(lockPath);
-      // Only release if we still own it
-      if (info?.ownerId === ownerId) {
-        await rm(lockPath, { force: true });
+    if (handle) {
+      try {
+        await lock(handle.fd, 'un');
+      } catch {
+        // Closing the descriptor still releases an advisory lock.
       }
-    } catch {
-      // best-effort
+      try {
+        await handle.close();
+      } catch {
+        // best-effort close during shutdown
+      }
     }
+    leaveLocalQueue();
   }
 }
 

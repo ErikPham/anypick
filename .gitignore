@@ -9,8 +9,10 @@ coverage/
 docs/.astro/
 docs/dist/
 .claude/
+.pi/
 src/tray/tauri/src-tauri/gen/
 src/tray/tauri/src-tauri/target/
+src/tray/tauri/src-tauri/binaries/anypick-core-*
 
 # Tauri tray UI is built from ui/ into frontend/
 src/tray/tauri/frontend/
@@ -22,3 +24,19 @@ design/
 /*.jpg
 /*.jpeg
 /*.webp
+go/bin/
+go/anypick
+/go/anypick.exe
+go/go/
+npm/*/bin/
+*.db-wal
+*.db-shm
+
+# Compiled artifacts never belong in the tree (project is Go-first)
+*.exe
+*.profraw
+
+# Local scratch: ad-hoc screenshots, browser probes, assistant data
+refs/
+.playwright-mcp/
+.workbuddy-ai/

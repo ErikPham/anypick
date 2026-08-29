@@ -49,6 +49,8 @@ export function isContextWindowError(raw: string): boolean {
     /prompt too long; exceeded (?:max )?context length/i,
     /too large for model with \d+ maximum context length/i,
     /model_context_window_exceeded/i,
+    /prompt exceeds max length/i,
+    /\[1261\]/,
   ].some((pattern) => pattern.test(message));
 }
 

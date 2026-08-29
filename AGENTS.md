@@ -18,6 +18,9 @@ pnpm check        # oxfmt --check + oxlint --type-aware + tsc (src & tests) + vi
 pnpm test         # vitest run
 pnpm vitest run tests/<file>.test.ts   # one file
 pnpm format       # rewrite with oxfmt
+pnpm macos:design           # isolated System Settings + board 29 tray window
+pnpm macos:design --flow tray|tray-attention|tray-use-with|tray-first-run
+pnpm macos:design:check     # swiftc only
 ```
 
 `pnpm dev …` is the only local app command — CLI, TUI, tray, proxies. It runs
@@ -43,9 +46,10 @@ Your shell's working directory does not persist between tool calls. A bare
 | --- | --- |
 | How is this layered? What do I implement to add a client/provider? | `CONTRIBUTING.md` |
 | How does everything wire together? | `src/core/app.ts` — the composition root |
-| *Why* is it like this? | `adr/` — 10 accepted ADRs, cite them by number |
+| *Why* is it like this? | `adr/` — cite records by number |
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
+| How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
 
 Do not edit an accepted ADR to reflect new thinking; write a new one and mark the
 old superseded.
@@ -55,7 +59,7 @@ old superseded.
 Breaking one of these is a correctness or security regression, not a style nit.
 
 1. **Capability pairs come from `transportFor`** in
-   `src/sources/account-adapters.ts`. Only `claude` and `codex` accept a source
+   `src/sources/account-adapters.ts`. `claude`, `codex`, and `opencode` may accept a source
    from a different provider; `gemini` and `kiro` return `unsupported` for
    anything but their own. `src/clients/index.ts` lists what *exists*, not what
    is *allowed* — never infer a pairing from the registry, and never publish one
@@ -107,6 +111,46 @@ Breaking one of these is a correctness or security regression, not a style nit.
 - The Codex desktop app keeps its own signed-in ChatGPT account and does **not**
   follow a switch of `~/.codex/auth.json`. AnyPick only detects the mismatch in
   order to suppress the quota readout (`src/providers/codex.ts`).
+- **macOS chrome has one contract.** `src/macos/` is a System Settings
+  clone (grouped `Form`, system controls, no cards). Pencil boards are IA/copy
+  only. A prompt that says “native SwiftUI” is not enough if leftover tray
+  cards or RGB tokens are treated as references.
+- **`MenuBarExtra` is the `.window` Power Quick Panel.** Production and the
+  fixture both host `src/macos/MenuBarMenu.swift`, matching Pencil node
+  `m0s8el`. Do not replace it with a text-only menu. Bare `pnpm dev` launches
+  the regular macOS app and main window; the menu-bar extra remains a
+  quick-access surface. Service rows must provide complete start/stop and
+  restart actions; detailed configuration stays in the full app.
+- **String-scan app tests lag the contract.** If a test fights
+  `src/macos/README.md`, update the test.
+- **Native app bundles are Node-free (ADR 0020).** Do not copy `plugin-host.mjs`,
+  a private Node runtime, npm/pnpm/tsx, ESM plugin packs, or source-tree
+  absolute paths into `AnyPick.app`. Gate: `src/macos/scripts/check-node-free-app.sh`.
+
+## macOS SwiftUI (System Settings)
+
+The macOS app’s main window must look like an app Apple could ship:
+**System Settings structure**, not a website imitating macOS.
+
+- **Edit `src/macos/`** for the app scene, panes, sheets, menu-bar content,
+  and the production store/bridge. Fixture vs live is a data source, not a
+  second app.
+- **Use** `NavigationSplitView`, `List` (`.sidebar`), `Form` (`.grouped`),
+  `Section`, `Toggle`, `Picker`, `TextField`, `Button`, native `Toolbar`,
+  `Settings { }`, `ContentUnavailableView`. Platform-default fonts, spacing,
+  colors, materials. Instant-apply toggles.
+- **Do not use** custom cards, rounded containers, gradients, chip strips,
+  handmade sidebars, RGB tokens, `TraySpacing` / `QuickPanelMetrics`, or
+  pixel-perfect CSS-like padding. If SwiftUI cannot do a System Settings
+  behavior, bridge AppKit (`NSAlert`, `NSOpenPanel`, `NSSavePanel`, `NSMenu`)
+  instead of faking the control.
+- **Settings (⌘,) is a `Settings` scene**, not a main-sidebar destination.
+  Main sidebar: Overview, Apps, Accounts & APIs, Proxy Hub, Proxies,
+  Activity, Account Backups.
+- Preview with `pnpm macos:design`. Audit with the design-checklist skill
+  routed `--surface desktop-app --artifact preferences --platform macos`.
+- Full allowed/forbidden list, pane recipe, IA table, and current
+  deviations: `src/macos/README.md`.
 
 ## Conventions
 

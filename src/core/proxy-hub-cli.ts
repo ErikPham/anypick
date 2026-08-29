@@ -1,7 +1,8 @@
 import { parseArgs } from 'node:util';
 import { createAppReady } from './app';
 import { ProxyHubServer } from './proxy-hub-server';
-import { proxyHubLogPath } from './paths';
+import { join } from 'node:path';
+import { proxyHubLogPath, proxyHubRuntimeDir } from './paths';
 
 /** Internal detached-process entry. Never exposes Hub route tokens. */
 export async function runProxyHubCli(args: string[]): Promise<void> {
@@ -33,6 +34,7 @@ export async function runProxyHubCli(args: string[]): Promise<void> {
       name,
       host,
       port,
+      runtimeDir: join(proxyHubRuntimeDir(app.root, name), 'backend-runtime'),
       instanceId: process.env.ANYPICK_INSTANCE_ID,
       log: (line) => process.stderr.write(`${line}\n`),
     },

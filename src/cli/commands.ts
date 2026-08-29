@@ -249,14 +249,14 @@ export function buildProgram(app: AnyPickApp): Command {
 
   const tray = program
     .command('tray')
-    .description('Open the AnyPick Tray or manage its background supervisor')
+    .description('Open the AnyPick desktop app or manage its background supervisor')
     .action(async () => {
       await openTray(app, Boolean(globals(program).json));
     });
 
   tray
     .command('start')
-    .description('Start the AnyPick proxy supervisor (menu-bar icon on macOS)')
+    .description('Start the AnyPick proxy supervisor (desktop app on macOS)')
     .action(async () => {
       const g = globals(program);
       if (g.dryRun) {
@@ -270,7 +270,7 @@ export function buildProgram(app: AnyPickApp): Command {
           console.log(JSON.stringify({ running: true, ...result }));
           return;
         }
-        const subject = process.platform === 'darwin' ? 'AnyPick tray' : 'AnyPick supervisor';
+        const subject = process.platform === 'darwin' ? 'AnyPick app' : 'AnyPick supervisor';
         success(
           result.started
             ? `${subject} started (pid ${result.pid})`
@@ -293,9 +293,7 @@ export function buildProgram(app: AnyPickApp): Command {
         return;
       }
       if (!status.running) {
-        info(
-          `${process.platform === 'darwin' ? 'AnyPick tray' : 'AnyPick supervisor'} is stopped.`,
-        );
+        info(`${process.platform === 'darwin' ? 'AnyPick app' : 'AnyPick supervisor'} is stopped.`);
         return;
       }
       const mode =
@@ -303,7 +301,7 @@ export function buildProgram(app: AnyPickApp): Command {
           ? 'headless'
           : status.mode === 'tauri'
             ? 'Tauri tray'
-            : 'menu-bar';
+            : 'macOS app';
       success(
         `AnyPick supervisor running (pid ${status.pid}, ${status.proxyCount ?? '?'} proxies, ${mode})`,
       );
@@ -330,11 +328,11 @@ export function buildProgram(app: AnyPickApp): Command {
       }
       if (stopped) {
         success(
-          `${process.platform === 'darwin' ? 'AnyPick tray' : 'AnyPick supervisor'} and proxies stopped.`,
+          `${process.platform === 'darwin' ? 'AnyPick app' : 'AnyPick supervisor'} and proxies stopped.`,
         );
       } else {
         info(
-          `${process.platform === 'darwin' ? 'AnyPick tray' : 'AnyPick supervisor'} is not running.`,
+          `${process.platform === 'darwin' ? 'AnyPick app' : 'AnyPick supervisor'} is not running.`,
         );
       }
     });
@@ -1249,7 +1247,7 @@ function registerProxyGroup(program: Command, app: AnyPickApp): void {
           `${provider} pool multi  ${p.members.filter((m) => m.enabled).length}/${p.members.length} accounts` +
             (started?.endpoint ? `  ${pc.cyan(started.endpoint)}` : ''),
         );
-        info(`Bind apps with: anypick use claude --with pool:${provider}`);
+        info(`Bind an app with: anypick use <client> --with pool:${provider}`);
       } catch (err) {
         printError(err);
         process.exitCode = 1;

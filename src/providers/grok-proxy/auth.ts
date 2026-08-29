@@ -23,6 +23,8 @@ export interface GrokAuthFile {
 }
 
 const REFRESH_SKEW_MS = 60_000; // refresh 1 min before expiry
+const XAI_OIDC_ISSUER = 'https://auth.x.ai';
+const OIDC_TIMEOUT_MS = 30_000;
 
 export async function loadGrokSession(authPath: string): Promise<GrokSession> {
   if (!(await pathExists(authPath))) {
@@ -39,8 +41,9 @@ export async function loadGrokSession(authPath: string): Promise<GrokSession> {
     (typeof raw.access_token === 'string' && raw.access_token) ||
     '';
   const refreshToken = (typeof raw.refresh_token === 'string' && raw.refresh_token) || '';
-  const oidcIssuer =
-    (typeof raw.oidc_issuer === 'string' && raw.oidc_issuer) || 'https://auth.x.ai';
+  const oidcIssuer = validateIssuer(
+    (typeof raw.oidc_issuer === 'string' && raw.oidc_issuer) || XAI_OIDC_ISSUER,
+  );
   const oidcClientId =
     (typeof raw.oidc_client_id === 'string' && raw.oidc_client_id) ||
     storageKey.split('::')[1] ||
@@ -144,6 +147,8 @@ async function refreshSessionUnlocked(
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(OIDC_TIMEOUT_MS),
+    redirect: 'manual',
   });
 
   if (!res.ok) {
@@ -184,20 +189,69 @@ async function refreshSessionUnlocked(
 }
 
 async function resolveTokenEndpoint(issuer: string): Promise<string> {
+  const safeIssuer = validateIssuer(issuer);
   try {
-    const res = await fetch(`${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`, {
+    const res = await fetch(`${safeIssuer}/.well-known/openid-configuration`, {
       signal: AbortSignal.timeout(10_000),
+      redirect: 'manual',
     });
     if (res.ok) {
       const conf = (await res.json()) as { token_endpoint?: string };
       if (conf.token_endpoint) {
-        return conf.token_endpoint;
+        return validateTokenEndpoint(conf.token_endpoint);
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsafeOidcEndpointError) {
+      throw error;
+    }
     // fall through
   }
-  return `${issuer.replace(/\/$/, '')}/oauth2/token`;
+  return `${safeIssuer}/oauth2/token`;
+}
+
+class UnsafeOidcEndpointError extends Error {}
+
+function validateIssuer(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new UnsafeOidcEndpointError('Grok OIDC issuer is invalid. Sign in with Grok again.');
+  }
+  const normalized = `${url.protocol}//${url.host}${url.pathname.replace(/\/$/u, '')}`;
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    normalized !== XAI_OIDC_ISSUER
+  ) {
+    throw new UnsafeOidcEndpointError(
+      `Refusing untrusted Grok OIDC issuer ${url.origin}. Sign in with Grok again.`,
+    );
+  }
+  return XAI_OIDC_ISSUER;
+}
+
+function validateTokenEndpoint(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new UnsafeOidcEndpointError('Grok OIDC discovery returned an invalid token endpoint.');
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.origin !== XAI_OIDC_ISSUER ||
+    url.username ||
+    url.password ||
+    url.hash
+  ) {
+    throw new UnsafeOidcEndpointError(`Refusing untrusted Grok OIDC token endpoint ${url.origin}.`);
+  }
+  return url.toString();
 }
 
 async function writeSession(authPath: string, session: GrokSession): Promise<void> {

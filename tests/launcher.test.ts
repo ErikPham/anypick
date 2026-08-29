@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAppReady } from '../src/core/app';
+import { isolatedChildEnvironment } from '../src/cli/launch-client';
 import { accountRef, gatewayRef } from '../src/core/refs';
 import { buildLauncherModel, SECTION_ORDER } from '../src/cli/launcher-model';
 import {
@@ -28,6 +29,21 @@ async function seedAccount(
     updatedAt: new Date().toISOString(),
   });
 }
+
+describe('isolated child environment', () => {
+  it('does not inherit unrelated ambient credentials', () => {
+    expect(
+      isolatedChildEnvironment({
+        PATH: '/bin',
+        LANG: 'en_US.UTF-8',
+        GH_TOKEN: 'github-secret',
+        ANTHROPIC_AUTH_TOKEN: 'anthropic-secret',
+        SSH_AUTH_SOCK: '/tmp/agent.sock',
+        DOCKER_AUTH_CONFIG: '{"auths":{}}',
+      }),
+    ).toEqual({ PATH: '/bin', LANG: 'en_US.UTF-8' });
+  });
+});
 
 describe('launcher layout breakpoints', () => {
   it('classifies wide / medium / narrow', () => {

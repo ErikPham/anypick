@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import type { ProxyHubBackendHandle, ProxyHubSourceRef } from '../types';
 import { sanitizeInferenceToolSchemas } from '../providers/protocol/json-schema';
 import { normalizeLocalApiUrl } from '../providers/proxy-shared';
@@ -38,6 +39,7 @@ export interface ProxyHubServerOptions {
   name: string;
   host: string;
   port: number;
+  runtimeDir: string;
   instanceId?: string;
   log?: (line: string) => void;
 }
@@ -54,6 +56,7 @@ export class ProxyHubBackendRegistry {
   constructor(
     private readonly deps: ProxyHubServerDeps,
     private readonly log: (line: string) => void,
+    private readonly runtimeRoot: string,
   ) {}
 
   async open(source: ProxyHubSourceRef): Promise<ProxyHubBackendSession> {
@@ -71,6 +74,10 @@ export class ProxyHubBackendRegistry {
     const handle = await provider.createProxyHubBackend({
       source,
       accounts,
+      runtimeDir: join(
+        this.runtimeRoot,
+        createHash('sha256').update(sourceId).digest('hex').slice(0, 20),
+      ),
       token,
       log: (line) => this.log(`[${displayRef(source)}] ${line}`),
     });
@@ -137,7 +144,7 @@ export class ProxyHubServer {
     assertLoopbackHost(opts.host);
     this.instanceId = opts.instanceId ?? randomUUID();
     this.log = opts.log ?? (() => {});
-    this.backends = new ProxyHubBackendRegistry(deps, this.log);
+    this.backends = new ProxyHubBackendRegistry(deps, this.log, opts.runtimeDir);
     this.server = createServer((req, res) => {
       void this.handle(req, res).catch((error) => this.fail(res, error));
     });

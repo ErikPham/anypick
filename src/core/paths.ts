@@ -38,6 +38,15 @@ export function accountSnapshotDir(root: string, providerId: string, accountName
   return join(accountDir(root, providerId, accountName), 'snapshot');
 }
 
+/**
+ * A private, per-operation work area for snapshot backup/import.  It must
+ * never share the materialized snapshot cache: readers are allowed to rebuild
+ * that cache from SQLite at any time.
+ */
+export function snapshotStagingDir(root: string): string {
+  return join(root, 'staging', 'snapshots');
+}
+
 /** File holding the name of the currently active account for a provider. */
 export function activePointerPath(root: string, providerId: string): string {
   return join(providerDir(root, providerId), 'active');

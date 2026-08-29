@@ -18,12 +18,13 @@ interface Props {
    * shouldn't show a button that opens an empty dialog. Default `true`.
    */
   showSidebar?: boolean;
+  appearance?: "docs" | "landing";
 }
 
 // `entryId` is part of Props as a forward-compat hook (the version-switcher
 // recipe reads it) but the base Header doesn't use it — leave it off the
 // destructure to avoid an unused-var warning.
-const { collection, showSidebar = true } = Astro.props;
+const { collection, showSidebar = true, appearance = "docs" } = Astro.props;
 
 // Normalize trailing slash so isActive matches sidebar hrefs.
 const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
@@ -35,82 +36,122 @@ const showSections = sections.length >= 2;
 const docsIsActive = currentSlug === "/docs" || currentSlug.startsWith("/docs/");
 ---
 
-<header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
-  <div class="mx-auto flex items-center justify-between h-14 px-4 lg:px-6">
-    <div class="flex items-center gap-3">
-      {showSidebar && (
-        <Button
-          variant="ghost"
-          shape="square"
-          size="sm"
-          icon="ph:list"
-          aria-label="Open navigation"
-          data-menu-btn
-          class="lg:hidden text-muted-foreground"
-        />
-      )}
-
-      <a href="/" class="group flex items-center gap-2 no-underline">
-        <img src="/favicon.svg" alt="" width="20" height="20" class="shrink-0" />
-        <span class="font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
-          {config.title}
-        </span>
+{appearance === "landing" ? (
+  <header class="sticky top-0 z-30 border-b border-white/10 bg-[#0B0F19]/82 backdrop-blur-xl">
+    <div class="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-5 sm:px-8">
+      <a
+        href="/"
+        aria-label={`${config.title} home`}
+        class="rounded-md no-underline outline-none focus-visible:ring-2 focus-visible:ring-[#A78BFA] focus-visible:ring-offset-4 focus-visible:ring-offset-[#0B0F19]"
+      >
+        <img src="/logo-dark.svg" alt={config.title} width="98" height="20" />
       </a>
 
-      {!showSections && (
-        <nav aria-label="Sections" class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
+      <nav aria-label="Primary" class="flex items-center gap-1 sm:gap-2">
+        <a
+          href="/docs"
+          class="rounded-lg px-3 py-2 text-sm font-medium text-[#98A2B3] no-underline transition-colors hover:bg-white/5 hover:text-[#F8FAFC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A78BFA]"
+        >
+          Docs
+        </a>
+        {config.github && (
           <a
-            href="/docs"
-            aria-current={docsIsActive ? "page" : undefined}
-            class:list={[
-              "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
-              docsIsActive
-                ? "text-foreground bg-accent"
-                : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
-            ]}
+            href={config.github}
+            target="_blank"
+            rel="noopener"
+            aria-label="GitHub"
+            class="hidden rounded-lg p-2 text-[#98A2B3] transition-colors hover:bg-white/5 hover:text-[#F8FAFC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A78BFA] sm:inline-flex"
           >
-            Docs
+            <Icon name="ph:github-logo" class="h-4 w-4" />
           </a>
-        </nav>
-      )}
+        )}
+        <a
+          href="/docs/getting-started"
+          class="ml-1 rounded-lg bg-[#7C3AED] px-3.5 py-2 text-sm font-semibold text-white no-underline shadow-lg shadow-[#7C3AED]/20 transition-colors hover:bg-[#8B5CF6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#C4B5FD] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0F19]"
+        >
+          Get started
+        </a>
+      </nav>
+    </div>
+  </header>
+) : (
+  <header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
+    <div class="mx-auto flex h-14 items-center justify-between px-4 lg:px-6">
+      <div class="flex items-center gap-3">
+        {showSidebar && (
+          <Button
+            variant="ghost"
+            shape="square"
+            size="sm"
+            icon="ph:list"
+            aria-label="Open navigation"
+            data-menu-btn
+            class="text-muted-foreground lg:hidden"
+          />
+        )}
 
-      {showSections && (
-        <nav aria-label="Sections" class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
-          {sections.map((section) => (
+        <a href="/" class="group flex items-center gap-2 no-underline">
+          <img src="/favicon.svg" alt="" width="20" height="20" class="shrink-0" />
+          <span class="text-sm font-semibold text-foreground transition-colors group-hover:text-primary">
+            {config.title}
+          </span>
+        </a>
+
+        {!showSections && (
+          <nav aria-label="Sections" class="ml-4 hidden h-6 items-center gap-1 border-l border-border pl-4 md:flex">
             <a
-              href={section.href}
-              aria-current={section.isActive ? "page" : undefined}
+              href="/docs"
+              aria-current={docsIsActive ? "page" : undefined}
               class:list={[
-                "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
-                section.isActive
-                  ? "text-foreground bg-accent"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+                "rounded-md px-2 py-1 text-[0.8125rem] font-medium no-underline transition-colors",
+                docsIsActive
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
               ]}
             >
-              {section.label}
+              Docs
             </a>
-          ))}
-        </nav>
-      )}
-    </div>
+          </nav>
+        )}
 
-    <div class="flex items-center gap-2">
-      {config.search !== false && <SearchTrigger />}
-      {config.github && (
-        <LinkButton
-          href={config.github}
-          variant="minimal"
-          shape="square"
-          size="sm"
-          aria-label="GitHub"
-          target="_blank"
-          rel="noopener"
-          class="text-muted-foreground"
-        >
-          <Icon name="ph:github-logo" class="w-4 h-4" />
-        </LinkButton>
-      )}
-      <ThemeToggle />
+        {showSections && (
+          <nav aria-label="Sections" class="ml-4 hidden h-6 items-center gap-1 border-l border-border pl-4 md:flex">
+            {sections.map((section) => (
+              <a
+                href={section.href}
+                aria-current={section.isActive ? "page" : undefined}
+                class:list={[
+                  "rounded-md px-2 py-1 text-[0.8125rem] font-medium no-underline transition-colors",
+                  section.isActive
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                ]}
+              >
+                {section.label}
+              </a>
+            ))}
+          </nav>
+        )}
+      </div>
+
+      <div class="flex items-center gap-2">
+        {config.search !== false && <SearchTrigger />}
+        {config.github && (
+          <LinkButton
+            href={config.github}
+            variant="minimal"
+            shape="square"
+            size="sm"
+            aria-label="GitHub"
+            target="_blank"
+            rel="noopener"
+            class="text-muted-foreground"
+          >
+            <Icon name="ph:github-logo" class="h-4 w-4" />
+          </LinkButton>
+        )}
+        <ThemeToggle />
+      </div>
     </div>
-  </div>
-</header>
+  </header>
+)}

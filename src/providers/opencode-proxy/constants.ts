@@ -3,6 +3,8 @@ export const USER_AGENT = 'anypick-opencode-proxy/0.8';
 export const DEFAULT_MODEL_METADATA_URL = 'https://models.dev/api.json';
 export const CATALOG_TTL_MS = 10 * 60_000;
 export const CATALOG_STALE_MAX_MS = 60 * 60_000;
+/** How long a resolved key entitlement (Go subscription or not) is trusted. */
+export const ENTITLEMENT_TTL_MS = 10 * 60_000;
 export const MODELS_FETCH_MS = 8_000;
 export const UPSTREAM_TIMEOUT_MS = 600_000;
 export const STREAM_IDLE_MS = 25_000;

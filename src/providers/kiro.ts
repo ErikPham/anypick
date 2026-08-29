@@ -7,7 +7,9 @@ import type {
   CredentialInput,
   CredentialInputField,
   LiveAuthStatus,
+  LiveUsage,
   Provider,
+  ProviderLoginContext,
   ProxyContext,
   ProxyHandle,
   ProxyStatus,
@@ -41,6 +43,13 @@ import {
 } from './proxy-process';
 import { snapshotMatchesLiveByFiles } from './auth-fingerprint';
 import { rolesFromLiveDiscovery } from './model-policy';
+import {
+  loginMethodAvailability,
+  runBrowserLoginCommand,
+  type BrowserLoginCommand,
+  type BrowserLoginRunner,
+} from './browser-login';
+import { parseKiroUsage } from './kiro-usage';
 
 /**
  * AWS Kiro (CLI + IDE social/Builder ID session tokens)
@@ -81,6 +90,12 @@ const MIN_API_KEY_BYTES = 16;
 const API_REGIONS = ['us-east-1', 'eu-central-1', 'ap-southeast-1', 'ap-northeast-1'] as const;
 
 const DEFAULT_PORT = 4119;
+const KIRO_LOGIN_METHOD = 'builder-id';
+
+interface KiroProviderOptions {
+  loginRunner?: BrowserLoginRunner;
+  fetchFn?: typeof fetch;
+}
 
 type TokenFile = { name: string; path: string; expiresAt: number };
 
@@ -122,7 +137,52 @@ export class KiroProvider implements Provider {
     ];
   }
 
-  constructor(private readonly home = homedir()) {}
+  private readonly loginRunner: BrowserLoginRunner;
+  private readonly fetchFn: typeof fetch;
+
+  constructor(
+    private readonly home = homedir(),
+    opts: KiroProviderOptions = {},
+  ) {
+    this.loginRunner = opts.loginRunner ?? runBrowserLoginCommand;
+    this.fetchFn = opts.fetchFn ?? fetch;
+  }
+
+  private get loginCommand(): BrowserLoginCommand {
+    return {
+      names: [process.env.KIRO_BINARY, 'kiro-cli', 'kiro'].filter((value): value is string =>
+        Boolean(value),
+      ),
+      extraPaths: [
+        join(this.home, '.local', 'bin', 'kiro-cli'),
+        '/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli',
+      ],
+      args: ['login', '--license', 'free'],
+    };
+  }
+
+  async loginMethods() {
+    return [
+      await loginMethodAvailability(
+        {
+          id: KIRO_LOGIN_METHOD,
+          label: 'Builder ID or social login',
+          description: 'Kiro browser sign-in',
+          provenance: 'official',
+          preferred: true,
+          source: 'kiro',
+        },
+        this.loginCommand,
+      ),
+    ];
+  }
+
+  async login(ctx: ProviderLoginContext): Promise<void> {
+    if (ctx.methodId !== KIRO_LOGIN_METHOD || (ctx.source && ctx.source !== 'kiro')) {
+      throw new AnyPickError('Unknown Kiro sign-in method.', 'PROVIDER_LOGIN_METHOD_UNKNOWN');
+    }
+    await this.loginRunner(this.loginCommand, { home: this.home, signal: ctx.signal });
+  }
 
   sourceAdapter(account: Account): SourceAdapter {
     return kiroAccountAdapter(account);
@@ -203,6 +263,41 @@ export class KiroProvider implements Provider {
     return { present: true, identity, details: where.join(', ') };
   }
 
+  async liveUsage(): Promise<LiveUsage | null> {
+    try {
+      const [secrets, files] = await Promise.all([
+        readKiroSecrets(this.home),
+        this.liveTokenFiles(),
+      ]);
+      const candidates = [
+        ...Object.values(secrets),
+        ...(await Promise.all(files.map((file) => readFileText(file.path)))),
+      ];
+      for (const candidate of candidates) {
+        const auth = parseKiroUsageAuth(candidate);
+        if (!auth) {
+          continue;
+        }
+        const response = await this.fetchFn(`https://q.${auth.region}.amazonaws.com`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${auth.accessToken}`,
+            'content-type': 'application/x-amz-json-1.0',
+            'x-amz-target': 'AmazonCodeWhispererService.GetUsageLimits',
+          },
+          body: JSON.stringify(auth.profileArn ? { profileArn: auth.profileArn } : {}),
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (response.ok) {
+          return parseKiroUsage(await response.json());
+        }
+      }
+    } catch {
+      // Usage is optional and must never make account switching unavailable.
+    }
+    return null;
+  }
+
   async snapshotMatchesLive(snapshotDir: string): Promise<boolean> {
     // An API key is never on disk as a Kiro login, and its snapshot carries no
     // token files — which the file comparison below would read as a vacuous
@@ -280,7 +375,11 @@ export class KiroProvider implements Provider {
     const snapshot: ApiKeySnapshot = { kiroApiKey, apiRegion };
     await writeJsonFile(join(destDir, API_KEY_FILE), snapshot);
 
-    return { identity: apiKeyIdentity(kiroApiKey), credentialKind: 'proxy-only' };
+    return {
+      identity: apiKeyIdentity(kiroApiKey),
+      credentialKind: 'proxy-only',
+      credentialClass: 'provider_api_key',
+    };
   }
 
   async backup(
@@ -329,21 +428,29 @@ export class KiroProvider implements Provider {
       throw new AnyPickError(`Kiro snapshot has no credentials in ${srcDir}`, 'EMPTY_SNAPSHOT');
     }
 
-    // Another account's cache file left in place would still be picked up — the
-    // proxy chooses by expiry, not by name — so the switch has to remove what it
-    // is not restoring rather than just overwriting.
-    for (const file of await this.liveTokenFiles()) {
-      if (!names.includes(file.name)) {
-        await removePath(file.path);
-      }
-    }
-
-    await ensureDir(this.cacheDir);
-    for (const name of names) {
-      await restoreRequiredFile(join(srcDir, name), this.livePath(name), name);
-    }
-
+    const previousSecrets = await readKiroSecrets(this.home);
+    // Kiro reads Keychain before its cache files. Establish and verify that
+    // authoritative credential first, so an ACL/locked-keychain failure cannot
+    // partially replace the cache and then claim a successful switch.
     await writeKiroSecrets(secrets ?? {}, this.home);
+    try {
+      // Another account's cache file left in place would still be picked up —
+      // the proxy chooses by expiry, not by name — so remove what is not being
+      // restored rather than only overwriting selected paths.
+      for (const file of await this.liveTokenFiles()) {
+        if (!names.includes(file.name)) {
+          await removePath(file.path);
+        }
+      }
+
+      await ensureDir(this.cacheDir);
+      for (const name of names) {
+        await restoreRequiredFile(join(srcDir, name), this.livePath(name), name);
+      }
+    } catch (err) {
+      await writeKiroSecrets(previousSecrets, this.home).catch(() => {});
+      throw err;
+    }
   }
 
   async describeSnapshot(
@@ -460,6 +567,37 @@ export class KiroProvider implements Provider {
     }
     const [freshest] = await this.liveTokenFiles();
     return freshest?.path;
+  }
+}
+
+async function readFileText(path: string): Promise<string> {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    return await readFile(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function parseKiroUsageAuth(raw: string): {
+  accessToken: string;
+  profileArn?: string;
+  region: string;
+} | null {
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const accessToken = value.accessToken ?? value.access_token;
+    if (typeof accessToken !== 'string' || !accessToken) {
+      return null;
+    }
+    const profile = value.profileArn ?? value.profile_arn;
+    const profileArn = typeof profile === 'string' ? profile : undefined;
+    const explicitRegion = value.region;
+    const arnRegion = profileArn?.split(':')[3];
+    const region = typeof explicitRegion === 'string' ? explicitRegion : arnRegion || 'us-east-1';
+    return { accessToken, profileArn, region };
+  } catch {
+    return null;
   }
 }
 

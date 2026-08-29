@@ -18,16 +18,19 @@ async function pickProvider(accounts: AnyPickApp['accounts']): Promise<string | 
 async function pickSource(
   accounts: AnyPickApp['accounts'],
   provider: string,
-): Promise<'gemini-cli' | 'antigravity' | null | undefined> {
-  if (provider !== 'gemini' || !accounts.provider(provider).detectLiveSource) {
+): Promise<string | null | undefined> {
+  const target = accounts.provider(provider);
+  const sources = target.accountSources ?? [];
+  if (sources.length < 2 || !target.detectLiveSource) {
     return undefined;
   }
   const choice = await p.select({
-    message: 'How do you sign in to Gemini?',
-    options: [
-      { value: 'gemini-cli', label: 'Gemini CLI', hint: 'API key or Google login under ~/.gemini' },
-      { value: 'antigravity', label: 'Antigravity', hint: 'OAuth from your OS credential store' },
-    ],
+    message: `How do you sign in to ${target.name}?`,
+    options: sources.map((source) => ({
+      value: source.id,
+      label: source.label,
+      hint: source.hint,
+    })),
   });
   return p.isCancel(choice) ? null : choice;
 }

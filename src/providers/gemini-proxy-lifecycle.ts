@@ -13,6 +13,7 @@ import {
   waitForHttp,
 } from '../utils/process';
 import { resolveProxyMain } from './gemini-proxy-entry';
+import { geminiAuthFingerprint, materializeGeminiRuntimeAuth } from './gemini-runtime-auth';
 
 export interface GeminiProxyLifecycleOptions {
   liveDir: string;
@@ -40,15 +41,14 @@ export async function startGeminiProxy(
   const pidPath = join(ctx.runtimeDir, 'proxy.pid');
   await writeFile(logPath, '', { mode: 0o600 });
 
-  // Prefer snapshot (account-scoped key); fall back to live ~/.gemini
-  const snapshotEnv = join(ctx.snapshotDir, '.env');
-  const liveEnv = join(opts.liveDir, '.env');
-  let authDir = ctx.snapshotDir;
-  if (!(await pathExists(snapshotEnv)) && (await pathExists(liveEnv))) {
-    authDir = opts.liveDir;
-  }
+  // Prefer every kind of account-scoped snapshot, not just API-key .env.
+  // Falling back based only on .env could silently swap an OAuth account for
+  // unrelated live CLI authority.
+  const sourceAuthDir = (await geminiAuthFingerprint(ctx.snapshotDir))
+    ? ctx.snapshotDir
+    : opts.liveDir;
 
-  const poolDirs = Array.isArray(ctx.config.options?.authDirs)
+  const sourcePoolDirs = Array.isArray(ctx.config.options?.authDirs)
     ? (ctx.config.options.authDirs as unknown[]).filter(
         (d): d is string => typeof d === 'string' && d.length > 0,
       )
@@ -66,16 +66,20 @@ export async function startGeminiProxy(
   // Auto-select the antigravity source and point the proxy at that file so the
   // account "just works" when switched to — no absolute path stored in config.
   // An explicit gemini-cli source still wins (operator opted out of Antigravity).
-  const snapshotAntigravityFile = join(authDir, 'antigravity_oauth.json');
+  const sourceAntigravityFile = join(sourceAuthDir, 'antigravity_oauth.json');
   const hasSnapshotAntigravity =
-    oauthSource !== 'gemini-cli' && (await pathExists(snapshotAntigravityFile));
+    oauthSource !== 'gemini-cli' && (await pathExists(sourceAntigravityFile));
   const effectiveOAuthSource = hasSnapshotAntigravity ? 'antigravity' : oauthSource;
 
   const hasOAuth =
     effectiveOAuthSource === 'antigravity' ||
     effectiveOAuthSource === 'auto' ||
-    (await pathExists(join(authDir, 'oauth_creds.json')));
-  if (poolDirs.length === 0 && !(await pathExists(join(authDir, '.env'))) && !hasOAuth) {
+    (await pathExists(join(sourceAuthDir, 'oauth_creds.json')));
+  if (
+    sourcePoolDirs.length === 0 &&
+    !(await pathExists(join(sourceAuthDir, '.env'))) &&
+    !hasOAuth
+  ) {
     throw new AnyPickError(
       'Gemini proxy needs GEMINI_API_KEY.\n\nPut the key in ~/.gemini/.env, then:\n  anypick add account gemini --current --name <name>\n\nOAuth-only logins work for the Gemini CLI, but not for Claude/Codex via this proxy.',
       'NO_LIVE_AUTH',
@@ -88,9 +92,11 @@ export async function startGeminiProxy(
   const key =
     process.env.GEMINI_API_KEY?.trim() ||
     process.env.GOOGLE_API_KEY?.trim() ||
-    (await readGeminiApiKeyFromEnvFile(join(authDir, '.env'))) ||
-    (poolDirs[0] ? await readGeminiApiKeyFromEnvFile(join(poolDirs[0], '.env')) : undefined);
-  if (!key && poolDirs.length === 0 && !hasOAuth) {
+    (await readGeminiApiKeyFromEnvFile(join(sourceAuthDir, '.env'))) ||
+    (sourcePoolDirs[0]
+      ? await readGeminiApiKeyFromEnvFile(join(sourcePoolDirs[0], '.env'))
+      : undefined);
+  if (!key && sourcePoolDirs.length === 0 && !hasOAuth) {
     throw new AnyPickError(
       'This Gemini login has no usable API key. OAuth subscription accounts use the Code Assist transport automatically; refresh the Gemini login if oauth_creds.json is expired.',
       'NO_LIVE_AUTH',
@@ -101,6 +107,14 @@ export async function startGeminiProxy(
     (typeof ctx.config.options?.upstream === 'string' ? ctx.config.options.upstream : undefined) ??
     process.env.GEMINI_PROXY_UPSTREAM ??
     'https://generativelanguage.googleapis.com';
+
+  const authDir = await materializeGeminiRuntimeAuth(sourceAuthDir, ctx.runtimeDir, 'primary');
+  const poolDirs = await Promise.all(
+    sourcePoolDirs.map((dir, index) =>
+      materializeGeminiRuntimeAuth(dir, ctx.runtimeDir, `pool-${index}`),
+    ),
+  );
+  const runtimeAntigravityFile = join(authDir, 'antigravity_oauth.json');
 
   const args = [
     mainJs,
@@ -124,9 +138,13 @@ export async function startGeminiProxy(
   }
   // Explicit config path wins; otherwise fall back to the snapshotted credential.
   if (typeof ctx.config.options?.antigravityOAuthFile === 'string') {
-    args.push('--antigravity-oauth-file', ctx.config.options.antigravityOAuthFile);
+    // A configured source is imported through the account snapshot. Never let
+    // a background proxy refresh or otherwise depend on an external live path.
+    if (await pathExists(runtimeAntigravityFile)) {
+      args.push('--antigravity-oauth-file', runtimeAntigravityFile);
+    }
   } else if (hasSnapshotAntigravity) {
-    args.push('--antigravity-oauth-file', snapshotAntigravityFile);
+    args.push('--antigravity-oauth-file', runtimeAntigravityFile);
   }
   if (poolDirs.length > 0) {
     args.push('--auth-dirs', poolDirs.join(','));

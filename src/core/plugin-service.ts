@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { PluginRecord } from '../types';
 import { anypickError, ExitCode } from '../utils/errors';
 import { withMutationLock } from './mutation-lock';
@@ -7,6 +8,22 @@ import type { PluginStore } from './plugin-store';
 
 /** All plugin mutations serialize on one scope: the set is read as a whole at startup. */
 const PLUGIN_SCOPE = 'plugins';
+const BUNDLED_PREFIX = 'bundled:';
+const BUNDLED_NAME = /^[a-z0-9][a-z0-9-]{1,63}$/;
+
+/** Resolve a shipped plugin without making callers locate the npm package root. */
+export function resolvePluginDirectory(input: string): string {
+  if (!input.startsWith(BUNDLED_PREFIX)) {
+    return resolve(input);
+  }
+  const name = input.slice(BUNDLED_PREFIX.length);
+  if (!BUNDLED_NAME.test(name)) {
+    throw anypickError(`Invalid bundled plugin name "${name}".`, 'PLUGIN_INVALID', {
+      exitCode: ExitCode.INVALID_USAGE,
+    });
+  }
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins', name);
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -42,7 +59,7 @@ export class PluginService {
 
   /** Read the manifest at `dir`, record it disabled, and pin its package digest. */
   async add(dir: string): Promise<PluginRecord> {
-    const path = resolve(dir);
+    const path = resolvePluginDirectory(dir);
     const manifest = await readManifest(path);
     const digest = await digestPluginPackage(path);
     return withMutationLock(this.root, PLUGIN_SCOPE, async () => {

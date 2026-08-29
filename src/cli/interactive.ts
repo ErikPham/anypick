@@ -129,7 +129,7 @@ async function wizardChangeDefault(app: AnyPickApp, preselectedClient?: string):
     const picked = await p.select({
       message: 'Which client?',
       options: clients.list().map((c) => {
-        const b = app.bindings.getGlobal(c.id);
+        const b = bindingService.globalBinding(c.id);
         return {
           value: c.id,
           label: c.name,
@@ -186,7 +186,7 @@ async function pickSource(app: AnyPickApp, client: string): Promise<string | nul
       hint: `gateway · ${g.meta.provider}`,
     });
   }
-  for (const pr of app.presets.list()) {
+  for (const pr of app.bindingService.listPresets()) {
     if (pr.spec.client === client) {
       options.push({
         value: `@${pr.name}`,

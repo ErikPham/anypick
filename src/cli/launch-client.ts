@@ -89,16 +89,7 @@ export async function launchClient(
   const bin = clientBinary(app, client);
   const childArgs = [...(result.isolated?.args ?? []), ...(opts.childArgs ?? [])];
   const { spawn } = await import('node:child_process');
-  const inherited = result.isolated
-    ? Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([key]) =>
-            !/(?:API[_-]?KEY|ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|SECRET|PASSWORD|CREDENTIAL|AWS_|GOOGLE_|AZURE_)/i.test(
-              key,
-            ),
-        ),
-      )
-    : process.env;
+  const inherited = result.isolated ? isolatedChildEnvironment(process.env) : process.env;
   const env: NodeJS.ProcessEnv = {
     ...inherited,
     ...result.isolated?.environment,
@@ -180,4 +171,37 @@ export async function launchClient(
     process.off('SIGTERM', onSigTerm);
     await cleanup();
   }
+}
+
+/**
+ * A `run` child gets only execution/terminal context plus the adapter's
+ * deliberate environment. Inheriting and trying to blacklist tokens leaves
+ * ambient authority such as GH_TOKEN, SSH_AUTH_SOCK, Docker config, or a
+ * provider-specific credential that can silently select the wrong account.
+ */
+export function isolatedChildEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const safe = new Set([
+    'PATH',
+    'PATHEXT',
+    'SYSTEMROOT',
+    'COMSPEC',
+    'WINDIR',
+    'TERM',
+    'COLORTERM',
+    'TERM_PROGRAM',
+    'TERM_PROGRAM_VERSION',
+    'LANG',
+    'LANGUAGE',
+    'LC_ALL',
+    'LC_CTYPE',
+    'NO_COLOR',
+    'FORCE_COLOR',
+    'CI',
+    'TMPDIR',
+    'TMP',
+    'TEMP',
+  ]);
+  return Object.fromEntries(
+    Object.entries(source).filter(([key, value]) => safe.has(key) && value !== undefined),
+  );
 }

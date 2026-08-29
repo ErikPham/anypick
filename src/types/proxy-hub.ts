@@ -111,6 +111,8 @@ export interface ProxyHubBackendAccount {
 export interface ProxyHubBackendContext {
   source: ProxyHubSourceRef;
   accounts: readonly ProxyHubBackendAccount[];
+  /** Owner-only scratch space. Refreshable credentials must be materialized here. */
+  runtimeDir: string;
   token: string;
   log: (line: string) => void;
 }

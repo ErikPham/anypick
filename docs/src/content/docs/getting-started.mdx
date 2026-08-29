@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install AnyPick, open Apps, connect Claude or Codex to a login you already have.
+description: Run AnyPick from source, open Apps, and connect Claude or Codex to a login you already have.
 ---
 
 AnyPick answers one everyday question:
@@ -12,19 +12,21 @@ those logins, starts a local translator when the tools speak different
 protocols, and writes the client config — so you pick once in **Apps** instead
 of editing files by hand.
 
-## Install
+## Run the development preview
 
 <Render file="install" />
 
 ## Open Apps
 
-```bash
-anypick
-```
+The native macOS target opens its regular main window automatically. Its
+menu-bar quick panel is part of the same app and remains available when the main
+window is closed.
 
-The first interactive run asks whether future bare `anypick` should open the
-**Terminal UI** or the **Desktop Tray** (macOS), then remembers the choice.
-Either way you can always force the terminal with `anypick tui`.
+For the terminal workflow from a source checkout:
+
+```bash
+pnpm dev tui
+```
 
 You land on **Apps**:
 
@@ -50,24 +52,27 @@ Three habits that make the UI safe for non-experts:
 - **Nothing is saved until a preview says so.** You can always <kbd>esc</kbd>
   back.
 
+The command examples below show AnyPick's CLI grammar. Until a supported CLI
+package is published, run the same arguments from this checkout with
+`pnpm dev …`; for example, `pnpm dev list accounts`.
+
 Full walkthrough of source → models → preview:
 [Terminal UI · Apps](/docs/guides/terminal-ui#build-a-route-the-main-flow).
 
 ## Save a login once
 
-AnyPick never signs you in. Use the provider's own tool first, then snapshot.
+AnyPick can start a provider-owned browser sign-in; it does not implement or
+imitate the provider's OAuth flow itself.
 
 In the UI: <kbd>a</kbd> **Accounts** → <kbd>a</kbd> **add**. Or:
 
 <Steps>
-<Step title="Log in with the provider's CLI">
+<Step title="Add the login">
 ```bash
-codex login
-# or: gemini, grok's CLI, … — whatever you already use
-```
-</Step>
-<Step title="Save that live login under a name">
-```bash
+anypick add account codex --new --name personal
+# opens Codex browser Auth and saves the result
+
+# If Codex is already signed in, snapshot it instead:
 anypick add account codex --current --name personal
 ```
 </Step>
@@ -83,7 +88,9 @@ The pair `provider/name` (for example `codex/personal` or `grok/work`) is the
 
 <Aside type="tip" title="Second login on the same provider">
 `anypick add account codex --new --name work` stashes the current credential,
-lets the provider CLI prompt again, and keeps the first account saved.
+opens the provider's browser Auth, saves the result, and keeps the first account
+saved. Official Auth is preferred; provider-declared community methods remain
+selectable.
 </Aside>
 
 ## Connect an app (Apps UI)
@@ -135,16 +142,17 @@ anypick add gateway openrouter-work \
 anypick use claude --with openrouter-work
 ```
 
-## After setup: Tray or stay in the terminal
+## After setup: app or terminal
 
-On macOS, the [Desktop Tray](/docs/guides/tray) is the quick daily surface —
-switch routes from the menu bar, see quota, keep proxies alive. From Apps:
+On macOS, the [native app and menu bar](/docs/guides/tray) are the app-first
+daily surface. Use the full window for management and the menu-bar quick panel
+for route and service actions. Closing the main window leaves the app running;
+explicit **Quit AnyPick** stops its bundled service and exits.
 
-| Key | Effect |
-| --- | --- |
-| <kbd>t</kbd> | Tray runtime — start/stop, flip bare-`anypick` default |
-| <kbd>Shift+D</kbd> | Start or reuse Tray, close the terminal UI |
-| <kbd>q</kbd> | Close the terminal UI only (background unchanged) |
+The terminal UI remains a separate source-development surface. Its
+<kbd>t</kbd> and <kbd>Shift+D</kbd> shortcuts exercise the compatibility tray
+supervisor during the cutover; they do not own or stop a separately launched
+native app.
 
 <Aside type="note" title="No TTY, no UI">
 Piped or non-interactive runs never open Apps. Bare `anypick` in a script
@@ -165,8 +173,8 @@ prints help and exits so nothing hangs waiting for a key.
   <Card title="Apps & Terminal UI" href="/docs/guides/terminal-ui">
     Full route builder: source groups, models, preview, every key.
   </Card>
-  <Card title="Desktop Tray" href="/docs/guides/tray">
-    Menu-bar routes, proxies, quota, and supervisor lifecycle.
+  <Card title="macOS app and menu bar" href="/docs/guides/tray">
+    Native app lifecycle, bundled Go service, and quick panel.
   </Card>
   <Card title="Concepts" href="/docs/concepts">
     Client, source, binding, preset — four words behind the UI.

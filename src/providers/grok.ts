@@ -6,7 +6,9 @@ import type {
   Account,
   AccountMeta,
   LiveAuthStatus,
+  LiveUsage,
   Provider,
+  ProviderLoginContext,
   ProxyContext,
   ProxyHubBackendContext,
   ProxyHubBackendHandle,
@@ -15,7 +17,14 @@ import type {
   SourceAdapter,
 } from '../types';
 import { grokAccountAdapter, poolAdapterFor } from '../sources/account-adapters';
-import { backupRequiredFile, pathExists, readJsonFile, restoreRequiredFile } from '../utils/fs';
+import {
+  backupRequiredFile,
+  ensureDir,
+  pathExists,
+  readJsonFile,
+  restoreRequiredFile,
+  writeJsonFile,
+} from '../utils/fs';
 import {
   isProcessRunning,
   readPidFile,
@@ -24,13 +33,20 @@ import {
   waitForHttp,
 } from '../utils/process';
 import { AnyPickError } from '../utils/errors';
-import { snapshotMatchesLiveDefault } from './auth-fingerprint';
-import { ensureDir } from '../utils/fs';
+import { fingerprintGrokAuth, snapshotMatchesLiveDefault } from './auth-fingerprint';
 import { writeFile } from 'node:fs/promises';
 import { assertLoopbackHost } from '../utils/network';
 import { rolesFromLiveDiscovery } from './model-policy';
 import { listenGrokProxy } from './grok-proxy/server';
 import { closeProxyHubBackend } from './proxy-hub-backend';
+import {
+  loginMethodAvailability,
+  runBrowserLoginCommand,
+  type BrowserLoginCommand,
+  type BrowserLoginRunner,
+} from './browser-login';
+import { isExpired, loadGrokSession } from './grok-proxy/auth';
+import { parseGrokUsage } from './grok-usage';
 
 /**
  * xAI Grok CLI / Grok Build
@@ -44,6 +60,12 @@ import { closeProxyHubBackend } from './proxy-hub-backend';
  * No external binary required.
  */
 const DEFAULT_PORT = 8080;
+const GROK_LOGIN_METHOD = 'grok-subscription';
+
+interface GrokProviderOptions {
+  loginRunner?: BrowserLoginRunner;
+  fetchFn?: typeof fetch;
+}
 
 export class GrokProvider implements Provider {
   readonly id = 'grok';
@@ -73,7 +95,46 @@ export class GrokProvider implements Provider {
     return [];
   }
 
-  constructor(private readonly home = homedir()) {}
+  private readonly loginRunner: BrowserLoginRunner;
+  private readonly fetchFn: typeof fetch;
+
+  constructor(
+    private readonly home = homedir(),
+    opts: GrokProviderOptions = {},
+  ) {
+    this.loginRunner = opts.loginRunner ?? runBrowserLoginCommand;
+    this.fetchFn = opts.fetchFn ?? fetch;
+  }
+
+  private get loginCommand(): BrowserLoginCommand {
+    return {
+      names: [process.env.GROK_BINARY, 'grok'].filter((value): value is string => Boolean(value)),
+      extraPaths: [join(this.home, '.grok', 'bin', 'grok')],
+      args: ['login', '--oauth'],
+    };
+  }
+
+  async loginMethods() {
+    return [
+      await loginMethodAvailability(
+        {
+          id: GROK_LOGIN_METHOD,
+          label: 'Grok subscription',
+          description: 'Grok browser sign-in through auth.x.ai',
+          provenance: 'official',
+          preferred: true,
+        },
+        this.loginCommand,
+      ),
+    ];
+  }
+
+  async login(ctx: ProviderLoginContext): Promise<void> {
+    if (ctx.methodId !== GROK_LOGIN_METHOD || ctx.source) {
+      throw new AnyPickError('Unknown Grok sign-in method.', 'PROVIDER_LOGIN_METHOD_UNKNOWN');
+    }
+    await this.loginRunner(this.loginCommand, { home: this.home, signal: ctx.signal });
+  }
 
   sourceAdapter(account: Account): SourceAdapter {
     return grokAccountAdapter(account);
@@ -92,10 +153,14 @@ export class GrokProvider implements Provider {
     }
     const account = ctx.accounts[0];
     const options = account.proxy.options ?? {};
+    const authPath = await materializeGrokRuntimeAuth(
+      join(account.snapshotDir, 'auth.json'),
+      ctx.runtimeDir,
+    );
     const { server, endpoint } = await listenGrokProxy({
       host: '127.0.0.1',
       port: 0,
-      authPath: join(account.snapshotDir, 'auth.json'),
+      authPath,
       upstream: typeof options.upstream === 'string' ? options.upstream : undefined,
       clientVersion: typeof options.clientVersion === 'string' ? options.clientVersion : undefined,
       token: ctx.token,
@@ -126,6 +191,37 @@ export class GrokProvider implements Provider {
       return { present: true, identity };
     } catch {
       return { present: true, details: 'auth.json present (unreadable)' };
+    }
+  }
+
+  async liveUsage(): Promise<LiveUsage | null> {
+    try {
+      const session = await loadGrokSession(this.authPath);
+      if (!session.accessToken || isExpired(session)) {
+        return null;
+      }
+      const userId =
+        typeof session.raw.user_id === 'string'
+          ? session.raw.user_id
+          : typeof session.raw.userId === 'string'
+            ? session.raw.userId
+            : undefined;
+      const response = await this.fetchFn(
+        'https://cli-chat-proxy.grok.com/v1/billing?format=credits',
+        {
+          headers: {
+            authorization: `Bearer ${session.accessToken}`,
+            'x-xai-token-auth': 'xai-grok-cli',
+            ...(userId ? { 'x-userid': userId } : {}),
+            'x-grok-client-version': process.env.GROK_CLIENT_VERSION ?? '0.2.101',
+          },
+          signal: AbortSignal.timeout(5_000),
+          redirect: 'manual',
+        },
+      );
+      return response.ok ? parseGrokUsage(await response.json()) : null;
+    } catch {
+      return null;
     }
   }
 
@@ -193,8 +289,9 @@ export class GrokProvider implements Provider {
     if (!(await pathExists(path))) {
       throw new Error(`No auth.json in ${authDir}`);
     }
-    const { loadGrokSession, refreshSession } = await import('./grok-proxy/auth');
-    const session = await loadGrokSession(path);
+    const { loadGrokSession: loadSavedGrokSession, refreshSession } =
+      await import('./grok-proxy/auth');
+    const session = await loadSavedGrokSession(path);
     const updated = await refreshSession(path, session);
     return { identity: updated.email };
   }
@@ -223,16 +320,17 @@ export class GrokProvider implements Provider {
     await writeFile(logPath, '', { mode: 0o600 });
 
     // Prefer live auth (already restored on switch); fall back to snapshot.
-    const authPath = (await pathExists(this.authPath))
+    const sourceAuthPath = (await pathExists(this.authPath))
       ? this.authPath
       : join(ctx.snapshotDir, 'auth.json');
 
-    if (!(await pathExists(authPath))) {
+    if (!(await pathExists(sourceAuthPath))) {
       throw new AnyPickError(
         'No Grok auth available to start proxy. Save/login first.',
         'NO_LIVE_AUTH',
       );
     }
+    const authPath = await materializeGrokRuntimeAuth(sourceAuthPath, ctx.runtimeDir);
 
     const clientVersion =
       (typeof ctx.config.options?.clientVersion === 'string'
@@ -349,6 +447,44 @@ export class GrokProvider implements Provider {
     const raw = await readFile(logPath, 'utf8');
     return raw.split(/\r?\n/).slice(-lines).join('\n');
   }
+}
+
+interface GrokRuntimeAuthOrigin {
+  version: 1;
+  sourceFingerprint: string;
+}
+
+/** Keep refresh-token rotation inside the proxy runtime, outside authoritative account state. */
+export async function materializeGrokRuntimeAuth(
+  sourcePath: string,
+  runtimeDir: string,
+): Promise<string> {
+  const source = await readJsonFile<Record<string, unknown>>(sourcePath);
+  const sourceFingerprint = fingerprintGrokAuth(source);
+  if (!sourceFingerprint) {
+    throw new AnyPickError('Saved Grok auth.json has no usable credentials.', 'INVALID_CREDENTIAL');
+  }
+  await ensureDir(runtimeDir);
+  const runtimePath = join(runtimeDir, 'grok-auth.json');
+  const originPath = join(runtimeDir, 'grok-auth-origin.json');
+  let canReuse = false;
+  if ((await pathExists(runtimePath)) && (await pathExists(originPath))) {
+    try {
+      const origin = await readJsonFile<GrokRuntimeAuthOrigin>(originPath);
+      canReuse = origin.version === 1 && origin.sourceFingerprint === sourceFingerprint;
+    } catch {
+      canReuse = false;
+    }
+  }
+  if (!canReuse) {
+    await writeJsonFile(runtimePath, source, 0o600);
+    await writeJsonFile(
+      originPath,
+      { version: 1, sourceFingerprint } satisfies GrokRuntimeAuthOrigin,
+      0o600,
+    );
+  }
+  return runtimePath;
 }
 
 function resolveProxyMain(): string {

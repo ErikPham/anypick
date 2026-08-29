@@ -8,6 +8,8 @@ export interface TrayRouteSnapshot {
   source?: string;
   model?: string;
   status: 'ready' | 'attention' | 'native' | 'unbound';
+  /** Why this route is in attention. Omitted when the route is healthy. */
+  attentionReason?: string;
 }
 
 export type TrayActionKind = 'native' | 'gateway';
@@ -133,6 +135,8 @@ export interface TrayManagedAccountSnapshot {
   detail: string;
   active: boolean;
   canRefresh: boolean;
+  /** Opaque supervisor action for making this the provider's live account. */
+  switchActionId: string;
 }
 
 /**
@@ -168,6 +172,14 @@ export interface TrayHubConflictSnapshot {
   candidates: TrayHubConflictCandidateSnapshot[];
 }
 
+export interface TrayHubPublishedModelSnapshot {
+  id: string;
+  ownerAccountId?: string;
+  ownerLabel: string;
+  ownerProviderId: string;
+  needsChoice: boolean;
+}
+
 export interface TrayLogSourceSnapshot {
   id: string;
   label: string;
@@ -185,6 +197,16 @@ export interface TrayGatewaySnapshot {
   defaultModel?: string;
 }
 
+export interface TrayProviderLoginMethodSnapshot {
+  id: string;
+  label: string;
+  detail?: string;
+  provenance: 'official' | 'community';
+  preferred: boolean;
+  available: boolean;
+  unavailableReason?: string;
+}
+
 export interface TrayAccountProviderSnapshot {
   id: string;
   providerId: string;
@@ -194,6 +216,12 @@ export interface TrayAccountProviderSnapshot {
   label: string;
   detail: string;
   installed: boolean;
+  /** A current local login exists for this exact provider/source. No auth material crosses. */
+  livePresent: boolean;
+  /** Non-secret display identity reported by the provider, when available. */
+  liveIdentity?: string;
+  /** Provider-owned browser sign-ins. Official methods sort first but community methods remain usable. */
+  loginMethods: TrayProviderLoginMethodSnapshot[];
   /**
    * Provider can clear the live app login (local wipe only — not a remote
    * logout). Used by the tray form so a second login can be signed in.
@@ -205,12 +233,16 @@ export interface TrayGatewayProviderSnapshot {
   id: string;
   label: string;
   detail: string;
+  /** The catalog owns an endpoint; setup must not ask for or serialize it. */
+  providesEndpoint?: boolean;
+  /** First-party client ids that can select this provider as a context-aware default. */
+  firstPartyClientIds?: string[];
   /**
    * How a selection is saved. `gateway` (default) creates a catalog profile;
    * `account-api-key` is a proxy-only account provider (e.g. Kiro) whose key is
    * saved through account-save with an api-key credential, not gateway-create.
    */
-  kind?: 'gateway' | 'account-api-key';
+  kind?: 'gateway' | 'custom' | 'account-api-key';
   /** For `account-api-key`: region choices from the provider's credential input. */
   regions?: string[];
   regionDefault?: string;
@@ -251,6 +283,7 @@ export interface TraySnapshot {
   accounts: TrayManagedAccountSnapshot[];
   hubSources: TrayHubSourceSnapshot[];
   hubConflicts: TrayHubConflictSnapshot[];
+  hubPublishedModels?: TrayHubPublishedModelSnapshot[];
   logSources: TrayLogSourceSnapshot[];
   gateways: TrayGatewaySnapshot[];
   accountProviders: TrayAccountProviderSnapshot[];

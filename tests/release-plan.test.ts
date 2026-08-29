@@ -105,6 +105,13 @@ describe('release plan', () => {
     expect(mutation).toBeGreaterThan(preflight);
   });
 
+  it('allows and commits the Xcode marketing version prepared by the planner', () => {
+    expect(releaseWorkflow).toContain('src/macos/AnyPick.xcodeproj/project.pbxproj');
+    expect(releaseWorkflow).toMatch(
+      /grep -Ev '[^\n]*src\/macos\/AnyPick\.xcodeproj\/project\.pbxproj/,
+    );
+  });
+
   it('publishes and deploys before exposing the GitHub Release', () => {
     const publish = releaseWorkflow.indexOf('- name: Publish the verified tarball to npm');
     const deploy = releaseWorkflow.indexOf('- name: Deploy verified docs to Cloudflare Pages');

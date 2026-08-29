@@ -1,7 +1,11 @@
 import type { AnyPickApp } from '../core/app';
 import { buildTrayClientSnapshots } from './snapshot-client-routes';
 import { accountProviderPriority } from './snapshot-helpers';
-import { buildHubConflictGroups, buildTrayHubSources } from './snapshot-hub';
+import {
+  buildHubConflictGroups,
+  buildHubPublishedModels,
+  buildTrayHubSources,
+} from './snapshot-hub';
 import {
   buildProviderSwitchActions,
   buildTrayAccountProviders,
@@ -36,15 +40,17 @@ export async function buildTraySnapshot(
   const { proxies, hubRunning, proxyRows } = await buildTrayProxySnapshots(app, routes, registry);
   const gateways = await buildTrayGateways(app);
   const accountProviders = await buildTrayAccountProviders(app, opts);
-  const managedAccounts = await buildTrayManagedAccounts(app, listedAccounts);
-  const providerSwitchActions = buildProviderSwitchActions(
+  const managedAccounts = await buildTrayManagedAccounts(app, listedAccounts, registry);
+  const providerSwitchActions = buildProviderSwitchActions(app, listedAccounts, managedAccounts);
+  const hubSources = buildTrayHubSources(app, managedAccounts, hubConfig, hubPreview);
+  const hubConflicts = buildHubConflictGroups(app, listedAccounts, hubPreview, registry);
+  const hubPublishedModels = buildHubPublishedModels(
     app,
     listedAccounts,
     managedAccounts,
-    registry,
+    hubPreview,
+    hubConflicts,
   );
-  const hubSources = buildTrayHubSources(app, managedAccounts, hubConfig, hubPreview);
-  const hubConflicts = buildHubConflictGroups(app, listedAccounts, hubPreview, registry);
   const logSources = buildTrayLogSources(app, hubConfig, proxyRows);
 
   return {
@@ -65,6 +71,7 @@ export async function buildTraySnapshot(
     accounts: managedAccounts,
     hubSources,
     hubConflicts,
+    hubPublishedModels,
     logSources,
     gateways,
     accountProviders,

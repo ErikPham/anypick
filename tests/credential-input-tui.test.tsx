@@ -106,16 +106,16 @@ describe('addModeOptions', () => {
     const ids = addModeOptions({
       livePresent: false,
       canClearLive: false,
-      canUseApiKey: true,
+      credentials: [{ kind: 'api-key', label: 'API key' }],
     }).map((o) => o.id);
-    expect(ids).toEqual(['login-help', 'api-key']);
+    expect(ids).toEqual(['login-help', 'credential:api-key']);
   });
 
   it('leaves a provider that takes no typed credential untouched', () => {
     const ids = addModeOptions({
       livePresent: true,
       canClearLive: true,
-      canUseApiKey: false,
+      credentials: [],
     }).map((o) => o.id);
     expect(ids).toEqual(['save', 'add-another']);
   });

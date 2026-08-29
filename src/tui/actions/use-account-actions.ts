@@ -16,6 +16,16 @@ import type { CredentialDraft, Screen } from '../model/screen';
 import { errorText, type TuiShell } from '../use-tui-shell';
 import type { TuiNav } from '../use-tui-nav';
 
+function sourceDescriptor(app: AnyPickApp, providerId: string, source?: string) {
+  return source
+    ? (app.accounts.provider(providerId).accountSources ?? []).find((entry) => entry.id === source)
+    : undefined;
+}
+
+function sourceLabel(app: AnyPickApp, providerId: string, source?: string): string {
+  return sourceDescriptor(app, providerId, source)?.label ?? app.accounts.provider(providerId).name;
+}
+
 /**
  * Saved-login lifecycle: switch, refresh, save the live login, and prepare a
  * provider for another sign-in.
@@ -34,12 +44,12 @@ export interface AccountActions {
   doSwitch: (providerId: string, name: string) => Promise<void>;
   doRefresh: (row: AnyPickHomeRow, all?: boolean) => Promise<void>;
   confirmSaveCurrent: (row: AnyPickHomeRow) => void;
-  doSave: (providerId: string, rawName: string, opts?: { source?: 'antigravity' }) => Promise<void>;
+  doSave: (providerId: string, rawName: string, opts?: { source?: string }) => Promise<void>;
   doSaveCredential: (draft: CredentialDraft) => Promise<void>;
   startCredentialInput: (providerId: string, kind: string) => void;
-  doPrepareAnother: (providerId: string, source?: 'antigravity') => Promise<void>;
-  startSaveName: (providerId: string, identity?: string, source?: 'antigravity') => void;
-  recheckLogin: (providerId: string, source?: 'antigravity') => Promise<void>;
+  doPrepareAnother: (providerId: string, source?: string) => Promise<void>;
+  startSaveName: (providerId: string, identity?: string, source?: string) => void;
+  recheckLogin: (providerId: string, source?: string) => Promise<void>;
   confirmDelete: (row: AnyPickHomeRow, usingApps: readonly string[]) => void;
 }
 
@@ -296,11 +306,7 @@ export function useAccountActions(app: AnyPickApp, shell: TuiShell, nav: TuiNav)
     });
   };
 
-  const doSave = async (
-    providerId: string,
-    rawName: string,
-    opts: { source?: 'antigravity' } = {},
-  ) => {
+  const doSave = async (providerId: string, rawName: string, opts: { source?: string } = {}) => {
     let name: string;
     try {
       name = normalizeAccountName(rawName);
@@ -472,9 +478,8 @@ export function useAccountActions(app: AnyPickApp, shell: TuiShell, nav: TuiNav)
     await commit();
   };
 
-  const doPrepareAnother = async (providerId: string, source?: 'antigravity') => {
-    const displayName =
-      source === 'antigravity' ? 'Antigravity' : app.accounts.provider(providerId).name;
+  const doPrepareAnother = async (providerId: string, source?: string) => {
+    const displayName = sourceLabel(app, providerId, source);
     await withBusy(`Preparing ${displayName} for another login`, async () => {
       try {
         const result = await app.accounts.stash(providerId, { source });
@@ -543,8 +548,9 @@ export function useAccountActions(app: AnyPickApp, shell: TuiShell, nav: TuiNav)
     });
   };
 
-  const startSaveName = (providerId: string, identity?: string, source?: 'antigravity') => {
-    const slug = source === 'antigravity' ? 'antigravity' : suggestAccountSlug(identity);
+  const startSaveName = (providerId: string, identity?: string, source?: string) => {
+    const descriptor = sourceDescriptor(app, providerId, source);
+    const slug = source ? suggestAccountSlug(identity ?? source) : suggestAccountSlug(identity);
     go({
       kind: 'text-input',
       purpose: 'save-name',
@@ -552,10 +558,7 @@ export function useAccountActions(app: AnyPickApp, shell: TuiShell, nav: TuiNav)
       source,
       label: 'Name',
       initial: slug,
-      hint:
-        source === 'antigravity'
-          ? 'Reads the Antigravity login from your OS credential store.'
-          : `${providerId} stays signed in.`,
+      hint: descriptor?.saveNameHint ?? `${providerId} stays signed in.`,
       preview: `Saved as ${providerId}/${slug}`,
       back: { kind: 'add-mode', providerId, source },
     });
@@ -568,10 +571,10 @@ export function useAccountActions(app: AnyPickApp, shell: TuiShell, nav: TuiNav)
    * successful detection lands the user one keystroke from saving; a miss stays
    * on the same screen rather than navigating, because nothing has changed.
    */
-  const recheckLogin = async (providerId: string, source?: 'antigravity') => {
+  const recheckLogin = async (providerId: string, source?: string) => {
     await withBusy('Checking logins', async () => {
       const provider = app.accounts.provider(providerId);
-      const label = source === 'antigravity' ? 'Antigravity' : provider.name;
+      const label = sourceLabel(app, providerId, source);
       const live =
         source && provider.detectLiveSource
           ? await provider.detectLiveSource(source)

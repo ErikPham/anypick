@@ -1,5 +1,6 @@
 import { LoadingView } from '../components/chrome';
 import { AddModeGate } from '../components';
+import { credentialKindFromAddMode } from '../screens/add-account';
 import { AnyPickHomeScreen } from '../screens/anypick-home';
 import { AccountsHomeScreen } from '../screens/accounts-home';
 import { AccountDetailScreen } from '../screens/account-detail';
@@ -54,15 +55,13 @@ export const accountRoute: Route = (ctx) => {
             });
             return;
           }
-          let needsSourcePick = false;
+          let sources: readonly import('../../types').AccountSource[] = [];
           try {
-            needsSourcePick = Boolean(
-              app.accounts.provider(row.providerId).requiresAccountSourcePick,
-            );
+            sources = app.accounts.provider(row.providerId).accountSources ?? [];
           } catch {
-            needsSourcePick = false;
+            sources = [];
           }
-          if (needsSourcePick) {
+          if (sources.length > 1) {
             go({ kind: 'add-source', providerId: row.providerId });
             return;
           }
@@ -77,19 +76,21 @@ export const accountRoute: Route = (ctx) => {
 
   if (screen.kind === 'add-source') {
     const providerId = screen.providerId;
+    const sources = app.accounts.provider(providerId).accountSources ?? [];
     const displayName =
       providerPickRows.find((r) => r.providerId === providerId)?.displayName ?? providerId;
     return (
       <AddSourceScreen
         displayName={displayName}
-        selectedIndex={clampIndex(selectedIndex, 2)}
-        onMove={(d) => setSelectedIndex((i) => clampIndex(i + d, 2))}
+        sources={sources}
+        selectedIndex={clampIndex(selectedIndex, sources.length)}
+        onMove={(d) => setSelectedIndex((i) => clampIndex(i + d, sources.length))}
         onSelect={(source) => {
           setSelectedIndex(0);
           go({
             kind: 'add-mode',
             providerId,
-            source: source === 'antigravity' ? 'antigravity' : undefined,
+            source,
           });
         }}
         onBack={() => {
@@ -112,8 +113,8 @@ export const accountRoute: Route = (ctx) => {
             accounts.startSaveName(screen.providerId, identity, screen.source);
           } else if (mode === 'add-another') {
             void accounts.doPrepareAnother(screen.providerId, screen.source);
-          } else if (mode === 'api-key') {
-            accounts.startCredentialInput(screen.providerId, 'api-key');
+          } else if (credentialKindFromAddMode(mode)) {
+            accounts.startCredentialInput(screen.providerId, credentialKindFromAddMode(mode)!);
           } else {
             void accounts.recheckLogin(screen.providerId, screen.source);
           }
@@ -136,6 +137,7 @@ export const accountRoute: Route = (ctx) => {
       <CredentialFormScreen
         providerName={provider.name}
         credentialKind={credentialKind}
+        credentialLabel={provider.credentialInputLabel?.(credentialKind)}
         fields={provider.credentialInputFields?.(credentialKind) ?? []}
         initial={screen.draft}
         error={error}

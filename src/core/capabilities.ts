@@ -43,7 +43,7 @@ export function providerCapabilities(provider: Provider): ProviderCapabilities {
     canBackupInput: typeof provider.backupInput === 'function',
     canHubBackend: typeof provider.createProxyHubBackend === 'function',
     canPool: typeof provider.poolSourceAdapter === 'function',
-    requiresAccountSourcePick: provider.requiresAccountSourcePick === true,
+    requiresAccountSourcePick: (provider.accountSources?.length ?? 0) > 1,
     proxyRequiresApiKey: provider.proxyRequiresApiKey === true,
   };
 }

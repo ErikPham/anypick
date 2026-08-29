@@ -117,10 +117,12 @@ export default {
 
 `activate` is synchronous and runs inside the window where the built-ins
 register, immediately before the registries seal — so do all registration there
-and never hold onto `ctx` for later. `PluginContext` is deliberately only the
-three register functions: there is no database, no store, and no data root. If
-you need something more, open an issue; widening it is a security decision
-(ADR-0012), not an ergonomics one.
+and never hold onto `ctx` for later. `PluginContext` is deliberately only adapter
+registration plus the declarative `registerCompatibleProvider` factory: there
+is no database, store, service, or data root. Compatible API plugins should use
+that factory so core owns snapshots, proxy auth, translation, pools, and Hub
+support (ADR-0015). If you need something more, open an issue; widening it is a
+security decision (ADR-0012), not an ergonomics one.
 
 ```bash
 anypick plugin add ./acme-provider   # installs it disabled
@@ -181,7 +183,7 @@ locally and never publishes.
 
 ### One-time release setup
 
-Create a GitHub environment named `release` and protect it with the desired
+Create a GitHub environment named `production` and protect it with the desired
 reviewers. The workflow needs:
 
 - permission for `github-actions[bot]` to push the generated release commit and
@@ -192,7 +194,7 @@ reviewers. The workflow needs:
 - for the first npm publish only, an `NPM_TOKEN` environment secret that can
   publish `anypick`. After the package exists, configure npm Trusted Publishing
   for repository `outof0/anypick`, workflow `release.yml`, environment
-  `release`, then delete `NPM_TOKEN`. Subsequent publishes use GitHub OIDC and
+  `production`, then delete `NPM_TOKEN`. Subsequent publishes use GitHub OIDC and
   include provenance automatically.
 
 `GITHUB_TOKEN` is provided by Actions; do not create or commit a GitHub token.

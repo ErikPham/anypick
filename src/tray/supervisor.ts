@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { AnyPickApp } from '../core/app';
 import {
@@ -14,13 +14,14 @@ import {
   type TrayRuntimeState,
 } from '../core/tray-runtime';
 import { ensureDir, writeJsonFile } from '../utils/fs';
-import { isProcessRunning, spawnDetached, stopPidFile } from '../utils/process';
+import { isProcessRunning, spawnDetached, stopPidFile, writePidRecord } from '../utils/process';
 import { AnyPickError } from '../utils/errors';
 import { openAnyPickTerminal } from './terminal-launcher';
 import {
   assertNativeTrayPlatform,
   nativeTrayBinary,
   nativeTrayNeedsRestart,
+  sendBackupPreview,
   sendProxyLogs,
   sendSnapshot,
 } from './supervisor-native';
@@ -31,6 +32,7 @@ import { decodeTrayCommand } from './protocol';
 import type { TrayLogsCommand } from './protocol';
 import { trayLaunchAtLoginEnabled, trayPreferences } from './settings';
 import { TrayActivityService } from './activity';
+import { TrayBackupInspectionManager } from './backup-inspections';
 import { tauriTrayBinary } from './supervisor-tauri';
 import { invokeTrayAction, invokeTrayModelRoles, type TrayActionSet } from './supervisor-actions';
 import { recordTrayActivity } from './supervisor-activity';
@@ -114,6 +116,15 @@ export async function startTray(
   // new supervisor attempt so startup errors never report stale diagnostics
   // from an already-fixed source asset.
   await writeFile(trayLogPath(root), '', { mode: 0o600 });
+  // Build the Swift helper here so the detached child is not compiling inside
+  // the ready-wait. A full macos+native swiftc often exceeds 20s, and the
+  // parent then kills a still-compiling supervisor.
+  if (process.platform === 'darwin') {
+    if (await nativeTrayNeedsRestart(root).catch(() => true)) {
+      process.stderr.write('Building the AnyPick macOS app…\n');
+    }
+    await nativeTrayBinary(root);
+  }
   const entry = resolve(cliEntry);
   // `pnpm dev tray start` passes a .ts entry. Detached child must load TS via
   // `node --import tsx` (same PID as state.json) — never bare `node src/cli.ts`
@@ -130,7 +141,7 @@ export async function startTray(
     },
   });
 
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     if (!isProcessRunning(pid)) {
       const log = await readFile(trayLogPath(root), 'utf8').catch(() => '');
@@ -150,7 +161,11 @@ export async function startTray(
   // The tray proves ownership through its ready-state file rather than HTTP.
   // Keep the same explicit exception used by stopTray for timeout cleanup.
   await stopPidFile(trayPidPath(root), { graceMs: 5000, verifyHealth: false });
-  throw new AnyPickError('Timed out waiting for the AnyPick supervisor.', 'TRAY_START_TIMEOUT');
+  const log = await readFile(trayLogPath(root), 'utf8').catch(() => '');
+  throw new AnyPickError(
+    `Timed out waiting for the AnyPick supervisor.${log ? `\n${log.slice(-2000)}` : ''}`,
+    'TRAY_START_TIMEOUT',
+  );
 }
 
 export async function stopTray(root: string): Promise<boolean> {
@@ -167,10 +182,9 @@ export async function stopTray(root: string): Promise<boolean> {
   return stopped;
 }
 
-/** Keep proxy ownership alive when no desktop tray helper is installed. */
+/** Keep proxy ownership alive when no desktop app surface is installed. */
 async function runHeadlessSupervisor(app: AnyPickApp): Promise<void> {
-  await startConfiguredProxies(app);
-  let proxyCount = await totalRunningProxyCount(app, await app.proxy.adoptRunningProxies());
+  let proxyCount = 0;
   const startedAt = new Date().toISOString();
   const writeState = async (ready: boolean) => {
     const state: TrayRuntimeState = {
@@ -181,7 +195,12 @@ async function runHeadlessSupervisor(app: AnyPickApp): Promise<void> {
       mode: 'headless',
     };
     await writeJsonFile(trayStatePath(app.root), state);
+    claimTrayPid(app.root);
   };
+  // Unblock `startTray` before proxy boot — that can exceed the ready-wait.
+  await writeState(true);
+  await startConfiguredProxies(app);
+  proxyCount = await totalRunningProxyCount(app, await app.proxy.adoptRunningProxies());
   await writeState(true);
 
   let operation = Promise.resolve();
@@ -206,6 +225,7 @@ async function runHeadlessSupervisor(app: AnyPickApp): Promise<void> {
       }
       await stopAllProxies(app).catch(() => {});
       await unlink(trayStatePath(app.root)).catch(() => {});
+      releaseTrayPid(app.root);
     })();
     return shutdownPromise;
   };
@@ -219,7 +239,7 @@ async function runHeadlessSupervisor(app: AnyPickApp): Promise<void> {
   });
 }
 
-/** Long-running owner for enabled proxies and the platform desktop tray helper. */
+/** Long-running owner for enabled proxies and the platform desktop app. */
 export async function runTraySupervisor(app: AnyPickApp): Promise<void> {
   let binary: string | undefined;
   let trayMode: 'native' | 'tauri';
@@ -238,14 +258,8 @@ export async function runTraySupervisor(app: AnyPickApp): Promise<void> {
     }
     trayMode = 'tauri';
   }
-  await startConfiguredProxies(app);
-  let proxyCount = await totalRunningProxyCount(app, await app.proxy.adoptRunningProxies());
-  const native = spawn(binary, [String(proxyCount)], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
-  });
   const startedAt = new Date().toISOString();
-  const activity = new TrayActivityService(app.root);
+  let proxyCount = 0;
   const writeState = async (ready: boolean) => {
     const state: TrayRuntimeState = {
       pid: process.pid,
@@ -255,7 +269,21 @@ export async function runTraySupervisor(app: AnyPickApp): Promise<void> {
       mode: trayMode,
     };
     await writeJsonFile(trayStatePath(app.root), state);
+    claimTrayPid(app.root);
   };
+  // Unblock `startTray` before proxy boot and the first snapshot refresh.
+  await writeState(true);
+  await startConfiguredProxies(app);
+  proxyCount = await totalRunningProxyCount(app, await app.proxy.adoptRunningProxies());
+  const native = spawn(binary, [String(proxyCount)], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      ANYPICK_TRAY_ICON_DIR: join(trayRuntimeDir(app.root), 'icons'),
+    },
+  });
+  const activity = new TrayActivityService(app.root);
+  const backupInspections = new TrayBackupInspectionManager();
   await writeState(true);
 
   // Action ids are intentionally process-local and opaque. The native helper
@@ -401,92 +429,132 @@ export async function runTraySupervisor(app: AnyPickApp): Promise<void> {
         native.kill('SIGTERM');
       }
       await unlink(trayStatePath(app.root)).catch(() => {});
+      releaseTrayPid(app.root);
     })();
     return shutdownPromise;
   };
 
   const cliEntry = process.env.ANYPICK_TRAY_CLI_ENTRY || process.argv[1] || '';
+  const cancellableMutations = new Map<string, AbortController>();
   const lines = createInterface({ input: native.stdout });
   lines.on('line', (line) => {
     const command = decodeTrayCommand(line);
     if (!command) {
       return;
     }
+    // Cancellation cannot join the serialized mutation queue: it must reach
+    // the provider process while the queued login is still awaiting OAuth.
+    if (command.kind === 'cancel') {
+      cancellableMutations.get(command.payload.requestId)?.abort();
+      return;
+    }
+    const cancellation =
+      command.kind === 'mutate' && command.payload.operation === 'account-login'
+        ? new AbortController()
+        : undefined;
+    if (cancellation && command.kind === 'mutate') {
+      cancellableMutations.set(command.payload.requestId, cancellation);
+    }
     operation = operation
       .then(async () => {
-        switch (command.kind) {
-          case 'open':
-            await openAnyPickTerminal(cliEntry);
-            break;
-          case 'navigate':
-            await openAnyPickTerminal(cliEntry, command.screen);
-            break;
-          case 'refresh':
-            usageGeneration += 1;
-            usageStale = true;
-            await refresh();
-            break;
-          case 'restart':
-            await stopAllProxies(app);
-            await startEnabledProxies(app);
-            await recordTrayActivity(activity, 'Restarted enabled proxies.', false, 'proxy');
-            await refresh();
-            break;
-          case 'stop':
-            await stopAllProxies(app);
-            await recordTrayActivity(activity, 'Stopped all proxies.', false, 'proxy');
-            await refresh();
-            break;
-          case 'quit':
-            void shutdown(false);
-            break;
-          case 'invoke':
-            await invokeTrayAction(
-              app,
-              native,
-              command.payload,
-              actionSets,
-              activity,
-              refresh,
-              () => {
-                usageGeneration += 1;
-                usageStale = true;
-              },
-            );
-            break;
-          case 'apply-model-roles':
-            await invokeTrayModelRoles(
-              app,
-              native,
-              command.payload,
-              actionSets,
-              activity,
-              refresh,
-              () => {
-                usageGeneration += 1;
-                usageStale = true;
-              },
-            );
-            break;
-          case 'logs':
-            await sendTrayProxyLogs(app, native, command.payload);
-            break;
-          case 'mutate':
-            await invokeTrayMutation(
-              app,
-              native,
-              command.payload,
-              cliEntry,
-              activity,
-              refresh,
-              () => {
-                usageGeneration += 1;
-                usageStale = true;
-              },
-            );
-            break;
-          default:
-            break;
+        try {
+          switch (command.kind) {
+            case 'open':
+              await openAnyPickTerminal(cliEntry);
+              break;
+            case 'navigate':
+              await openAnyPickTerminal(cliEntry, command.screen);
+              break;
+            case 'refresh':
+              usageGeneration += 1;
+              usageStale = true;
+              await refresh();
+              break;
+            case 'restart':
+              await stopAllProxies(app);
+              await startEnabledProxies(app);
+              await recordTrayActivity(activity, 'Restarted enabled proxies.', false, 'proxy');
+              await refresh();
+              break;
+            case 'stop':
+              await stopAllProxies(app);
+              await recordTrayActivity(activity, 'Stopped all proxies.', false, 'proxy');
+              await refresh();
+              break;
+            case 'quit':
+              void shutdown(false);
+              break;
+            case 'invoke':
+              await invokeTrayAction(
+                app,
+                native,
+                command.payload,
+                actionSets,
+                activity,
+                refresh,
+                () => {
+                  usageGeneration += 1;
+                  usageStale = true;
+                },
+              );
+              break;
+            case 'apply-model-roles':
+              await invokeTrayModelRoles(
+                app,
+                native,
+                command.payload,
+                actionSets,
+                activity,
+                refresh,
+                () => {
+                  usageGeneration += 1;
+                  usageStale = true;
+                },
+              );
+              break;
+            case 'logs':
+              await sendTrayProxyLogs(app, native, command.payload);
+              break;
+            case 'backup-inspect': {
+              try {
+                const preview = await backupInspections.inspect(app.accounts, command.payload.path);
+                sendBackupPreview(native, {
+                  version: 1,
+                  requestId: command.payload.requestId,
+                  status: 'ready',
+                  ...preview,
+                });
+              } catch (error) {
+                sendBackupPreview(
+                  native,
+                  backupInspections.errorResult(command.payload.requestId, error),
+                );
+              }
+              break;
+            }
+            case 'mutate':
+              await invokeTrayMutation(
+                app,
+                native,
+                command.payload,
+                cliEntry,
+                activity,
+                backupInspections,
+                refresh,
+                () => {
+                  usageGeneration += 1;
+                  usageStale = true;
+                },
+                cancellation?.signal,
+              );
+              break;
+            default:
+              break;
+          }
+        } finally {
+          if (cancellation && command.kind === 'mutate') {
+            cancellableMutations.delete(command.payload.requestId);
+          }
         }
       })
       .catch((err: unknown) => {
@@ -511,4 +579,18 @@ async function sendTrayProxyLogs(
   payload: TrayLogsCommand,
 ): Promise<void> {
   sendProxyLogs(native, await resolveTrayProxyLogs(app, payload));
+}
+
+const traySupervisorInstanceId = randomUUID();
+
+function claimTrayPid(root: string): void {
+  writePidRecord(trayPidPath(root), {
+    instanceId: traySupervisorInstanceId,
+    pid: process.pid,
+    command: process.execPath,
+  });
+}
+
+function releaseTrayPid(root: string): void {
+  void unlink(trayPidPath(root)).catch(() => {});
 }

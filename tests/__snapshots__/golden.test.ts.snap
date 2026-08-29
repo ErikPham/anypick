@@ -104,6 +104,13 @@ exports[`§28.4 dry-run plan + doctor report golden > doctor report shape is sta
     {
       "fixable": undefined,
       "forbidden": undefined,
+      "id": "client:opencode",
+      "message": "opencode: mode=none",
+      "ok": true,
+    },
+    {
+      "fixable": undefined,
+      "forbidden": undefined,
       "id": "plugins",
       "message": "Plugins: 0 loaded, 0 disabled",
       "ok": true,

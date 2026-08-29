@@ -484,6 +484,11 @@ describe('Proxy Hub routes', () => {
     expect(preview).toHaveBeenCalledTimes(1);
     expect(tray.hubConflicts).toHaveLength(1);
     expect(tray.hubConflicts[0].models).toHaveLength(54);
+    const publishedModels = tray.hubPublishedModels ?? [];
+    expect(publishedModels.filter((model) => model.needsChoice)).toHaveLength(54);
+    expect(publishedModels.filter((model) => !model.needsChoice)).toEqual([
+      expect.objectContaining({ id: 'work-only', ownerLabel: expect.any(String) }),
+    ]);
     expect(tray.hubConflicts[0].candidates).toHaveLength(2);
     for (const candidate of tray.hubConflicts[0].candidates) {
       expect(targets.get(candidate.actionId)).toMatchObject({

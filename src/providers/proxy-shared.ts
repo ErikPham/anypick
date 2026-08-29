@@ -29,6 +29,122 @@ export function isHopByHop(name: string): boolean {
   return HOP_BY_HOP.has(name.toLowerCase());
 }
 
+const FORWARDABLE_UPSTREAM_HEADERS = new Set([
+  'accept',
+  'accept-language',
+  'anthropic-beta',
+  'anthropic-version',
+  'content-type',
+  'openai-beta',
+  'openai-organization',
+  'openai-project',
+  'request-id',
+  'traceparent',
+  'tracestate',
+  'user-agent',
+  'x-client-request-id',
+  'x-opencode-client',
+  'x-opencode-project',
+  'x-opencode-request',
+  'x-opencode-session',
+  'x-request-id',
+]);
+
+/**
+ * Request metadata safe to copy from an untrusted local client to a remote API.
+ * Credential, browser ambient-authority, forwarding, and provider auth headers
+ * are deliberately absent; provider servers inject their own authority later.
+ */
+export function isForwardableUpstreamHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return FORWARDABLE_UPSTREAM_HEADERS.has(lower) || lower.startsWith('x-stainless-');
+}
+
+export interface ProxyRequestAbort {
+  signal: AbortSignal;
+  dispose(): void;
+}
+
+/** Link client disconnect and the request deadline to one upstream abort signal. */
+export function linkProxyRequestAbort(
+  req: IncomingMessage,
+  res: ServerResponse,
+  timeoutMs = 600_000,
+): ProxyRequestAbort {
+  const controller = new AbortController();
+  const abort = (reason: string) => {
+    if (!controller.signal.aborted) {
+      controller.abort(new DOMException(reason, 'AbortError'));
+    }
+  };
+  const onRequestAborted = () => abort('Client request aborted');
+  const onResponseClose = () => {
+    if (!res.writableFinished) {
+      abort('Client response closed');
+    }
+  };
+  req.once('aborted', onRequestAborted);
+  res.once('close', onResponseClose);
+  const timeout = setTimeout(() => abort('Upstream request timed out'), timeoutMs);
+  timeout.unref?.();
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timeout);
+      req.off('aborted', onRequestAborted);
+      res.off('close', onResponseClose);
+    },
+  };
+}
+
+/** Write one translated stream chunk while respecting Node response backpressure. */
+export async function writeResponseChunk(
+  res: ServerResponse,
+  chunk: string | Uint8Array,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted || res.destroyed || res.writableEnded) {
+    throw new DOMException('Client response is closed', 'AbortError');
+  }
+  if (res.write(chunk)) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      res.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new DOMException('Client response is closed', 'AbortError'));
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason ?? new DOMException('Request aborted', 'AbortError'));
+    };
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+    res.once('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // Close/abort may race with listener registration after res.write(false).
+    if (signal?.aborted) {
+      onAbort();
+    } else if (res.destroyed || res.writableEnded) {
+      onClose();
+    }
+  });
+}
+
 /**
  * Codex model-provider `base_url` is a prefix and calls `/responses`, while
  * OpenAI SDK base URLs commonly call `/v1/responses`. Accept both spellings at

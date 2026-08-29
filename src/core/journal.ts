@@ -53,6 +53,8 @@ export class OperationJournal {
   create(
     type: string,
     opts: {
+      /** Caller-supplied correlation id for an externally owned operation. */
+      id?: string;
       affectedResources?: string[];
       backupPaths?: string[];
       params?: Record<string, unknown>;
@@ -61,7 +63,7 @@ export class OperationJournal {
   ): OperationJournalEntry {
     const ts = nowIso();
     const entry: OperationJournalEntry = {
-      id: randomUUID(),
+      id: opts.id ?? randomUUID(),
       type,
       state: opts.state ?? 'planned',
       affectedResources: opts.affectedResources ?? [],

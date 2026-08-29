@@ -176,6 +176,7 @@ describe('user-supplied credentials', () => {
     const meta = await saveKey();
 
     expect(meta.credentialKind).toBe('proxy-only');
+    expect(meta.credentialClass).toBe('proxy_only');
     expect(meta.identity).toBe('api-key:1234');
   });
 

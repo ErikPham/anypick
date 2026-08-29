@@ -1,6 +1,7 @@
 import type { Provider } from './account';
 import type { ClientAdapter } from './clients';
 import type { CatalogProvider } from './catalog';
+import type { CompatibleProviderDefinition } from './compatible-provider';
 
 /**
  * The plugin API generation this build understands.
@@ -27,7 +28,7 @@ export interface PluginManifest {
 /**
  * What a plugin is allowed to do.
  *
- * Deliberately three register functions and nothing else — no database, no
+ * Deliberately registration functions and nothing else — no database, no
  * stores, no data root. A plugin extends the *composition graph*; it does not
  * get an ambient capability to read the credential snapshots that graph
  * manages. Widening this is a security decision, not an ergonomics one.
@@ -39,6 +40,11 @@ export interface PluginContext {
   registerProvider: (provider: Provider) => void;
   registerClient: (client: ClientAdapter) => void;
   registerCatalogProvider: (provider: CatalogProvider) => void;
+  /**
+   * Register an official OpenAI/Anthropic-compatible API from inert endpoint
+   * data. Core owns credential storage and proxy execution for this path.
+   */
+  registerCompatibleProvider: (provider: CompatibleProviderDefinition) => void;
 }
 
 /**

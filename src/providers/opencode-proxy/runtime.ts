@@ -10,6 +10,7 @@ import {
   classifyUpstreamFailure,
   CooldownRegistry,
   isCredentialQuotaFailure,
+  isCredentialRejectedFailure,
   isInsufficientBalanceFailure,
   parseRetryAfter,
 } from '../upstream-policy';
@@ -113,11 +114,22 @@ export class OpenCodeRuntime {
       }
     }
     const ring = await this.credentials();
-    const candidates = (await this.quotaGuard.ordered([preferredCredential, ...ring])).filter(
+    let candidates = (await this.quotaGuard.ordered([preferredCredential, ...ring])).filter(
       (candidate, index, all) =>
         !this.exhaustedCredentials.has(candidate.apiKey) &&
         all.findIndex((entry) => entry.apiKey === candidate.apiKey) === index,
     );
+    if (candidates.length === 0) {
+      // Every known key is marked exhausted, but the stores may hold a fresher
+      // login than this process cached (the beta CLI writes only its sqlite
+      // db). Give the ring one real attempt instead of cooling down forever.
+      this.cachedCreds = undefined;
+      this.exhaustedCredentials.clear();
+      candidates = (await this.quotaGuard.ordered(await this.credentials())).filter(
+        (candidate, index, all) =>
+          all.findIndex((entry) => entry.apiKey === candidate.apiKey) === index,
+      );
+    }
     if (candidates.length === 0) {
       return coolingResponse(60_000);
     }
@@ -182,6 +194,9 @@ export class OpenCodeRuntime {
             failure.retryAfterMs,
           );
           this.exhaustedCredentials.add(candidate.apiKey);
+          // The dead key may have been replaced on disk (re-login); drop the
+          // cached ring so the next request sees the fresh store.
+          this.cachedCreds = undefined;
           lastBalanceResponse = new Response(body, {
             status: response.status,
             headers: response.headers,
@@ -190,7 +205,7 @@ export class OpenCodeRuntime {
         }
         return new Response(body, { status: response.status, headers: response.headers });
       }
-      if (response.status !== 402 && response.status !== 403) {
+      if (response.status !== 402 && response.status !== 403 && response.status !== 401) {
         return response;
       }
       const body = await response.arrayBuffer();
@@ -200,21 +215,32 @@ export class OpenCodeRuntime {
         statusText: response.statusText,
         headers: response.headers,
       });
-      if (!isInsufficientBalanceFailure(response.status, bodyText)) {
+      if (
+        !isInsufficientBalanceFailure(response.status, bodyText) &&
+        !isCredentialRejectedFailure(response.status, bodyText)
+      ) {
         return replayable;
       }
+      const rejected = isCredentialRejectedFailure(response.status, bodyText);
       if (isOpenCodeFreeTierModel(model)) {
         const retryAfter =
           parseRetryAfter(response.headers.get('retry-after')) ?? FREE_TIER_IP_COOLDOWN_MS;
         this.cooldowns.set(freeTierKey, retryAfter);
         return freeTierIpLimitResponse(retryAfter);
       }
-      if (!this.quotaGuard.enabled) {
+      // Balance exhaustion keeps its legacy opt-in behavior: without the pool
+      // guard there is no failover state to maintain. A rejected credential is
+      // different — its replacement may already sit in the auth stores (the
+      // beta CLI writes only its sqlite db), so always walk to the next member.
+      if (!rejected && !this.quotaGuard.enabled) {
         return replayable;
       }
       const next = candidates.find((entry) => entry.apiKey !== candidate.apiKey);
-      await this.quotaGuard.exhausted(candidate.accountName, next?.accountName);
+      if (this.quotaGuard.enabled) {
+        await this.quotaGuard.exhausted(candidate.accountName, next?.accountName);
+      }
       this.exhaustedCredentials.add(candidate.apiKey);
+      this.cachedCreds = undefined;
       lastBalanceResponse = replayable;
     }
     return lastBalanceResponse!;

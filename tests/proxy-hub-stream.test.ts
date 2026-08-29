@@ -132,6 +132,7 @@ describe('Proxy Hub streaming', () => {
         name: 'default',
         host: '127.0.0.1',
         port: 0,
+        runtimeDir: join(root, 'hub-runtime'),
         log: (line) => logs.push(line),
       },
     );

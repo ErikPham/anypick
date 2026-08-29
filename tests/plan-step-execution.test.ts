@@ -261,4 +261,27 @@ describe('plan step execution', () => {
       expect(codes).not.toContain('effective_state_mismatch');
     });
   });
+
+  describe('WriteNativeAuth', () => {
+    it('skips a native restore when the requested account is already live', async () => {
+      await makeApp(true);
+      const provider = app.accountRegistry.get('p') as FakeProvider;
+      await provider.setLive({ email: 'work@test', token: 'w' });
+      await app.accounts.save('p', 'work');
+      provider.restore = async () => {
+        throw new Error('restore should not run for an already-live account');
+      };
+
+      const resolved: ResolvedSource = {
+        kind: 'account',
+        ref: accountRef('p', 'work'),
+        adapter: directAdapter('p', 'work', false),
+        display: 'p/work',
+      };
+      const plan = planWith([{ kind: 'WriteNativeAuth' }], resolved);
+
+      await expect(executeActivation(plan, app, {})).resolves.toBeDefined();
+      expect(await provider.readLive()).toEqual({ email: 'work@test', token: 'w' });
+    });
+  });
 });

@@ -467,6 +467,11 @@ export async function buildTrayClientSnapshots(
               : native
                 ? ('native' as const)
                 : ('unbound' as const),
+          ...(nativeBindingMismatch && currentRow && liveNativeRow
+            ? {
+                attentionReason: `${shortClient} is bound to ${currentRow.label}, but ${liveNativeRow.label} is signed in.`,
+              }
+            : {}),
         },
         actions,
         modelConfig,

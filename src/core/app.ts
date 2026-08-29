@@ -27,6 +27,7 @@ import {
 } from './events';
 import { withFileLock } from '../utils/lock';
 import { BindingStore } from './binding-store';
+import { realignNativeClientBinding } from './realign-native-bindings';
 import { PresetStore } from './preset-store';
 import { OperationJournal } from './journal';
 import { LeaseStore } from './lease-store';
@@ -51,6 +52,7 @@ import {
 import { quotaGuardPolicy } from './quota-guard-policy';
 import { loadPlugins, pluginsDisabledByEnv } from './plugin-loader';
 import { PLUGIN_API_VERSION, type LoadedPlugin, type PluginLoadFailure } from '../types';
+import { CompatibleProvider } from '../providers/compatible/provider';
 
 /**
  * The supported programmatic surface: services, registries, and lifecycle.
@@ -158,12 +160,9 @@ export interface CreateAppOptions {
 /**
  * Run each plugin's `activate`, collecting any that throw as failures.
  *
- * A plugin that throws here is dropped, but everything it registered before
- * throwing is already in the registry. Registration is idempotent per id and
- * the adapters are inert until something resolves them, so a partial
- * contribution is reported rather than unwound — unwinding would mean removing
- * items from a registry, which is precisely the mutable-graph behavior sealing
- * exists to prevent.
+ * A plugin that throws here is dropped and its registrations are restored to
+ * the pre-activation checkpoint. This prevents a failed plugin from leaving a
+ * partially registered provider or client before registry sealing.
  */
 function activatePlugins(
   plugins: LoadedPlugin[],
@@ -188,6 +187,28 @@ function activatePlugins(
         registerProvider: (p) => registries.accountRegistry.register(p),
         registerClient: (c) => registries.clients.register(c),
         registerCatalogProvider: (p) => registries.catalog.register(p),
+        registerCompatibleProvider: (definition) => {
+          const provider = new CompatibleProvider(definition);
+          registries.accountRegistry.register(provider);
+          if (registries.catalog.has(provider.id)) {
+            // An account backend may intentionally reuse a built-in gateway
+            // catalog (OpenRouter is the canonical case). Keep the catalog's
+            // richer model policy while adding managed credentials and pools.
+            return;
+          }
+          const defaultEndpoint = definition.credentials[0]?.profiles[0]?.openaiBase;
+          registries.catalog.register({
+            id: provider.id,
+            name: provider.name,
+            description: provider.description,
+            apiStyle: 'openai',
+            protocols: ['openai', 'anthropic'],
+            defaultEndpoint,
+            roleDefaults: () => provider.roleDefaults(),
+            roleFriendlyModels: () => provider.roleFriendlyModels(),
+            staticFallbackModels: () => provider.roleFriendlyModels(),
+          });
+        },
       });
       loaded.push(entry);
     } catch (err) {
@@ -293,6 +314,9 @@ export function createApp(opts: CreateAppOptions = {}): AnyPickApp {
     async () => quotaGuardPolicy(await configStore.read()),
   );
   const accounts = new AccountService(accountStore, accountRegistry, proxy);
+  accounts.setAfterSwitch(async (providerId, accountName) => {
+    realignNativeClientBinding(bindings, providerId, accountName);
+  });
   const hub = new ProxyHubService(root, hubStore, {
     hubs: hubStore,
     accounts,
@@ -496,6 +520,7 @@ export function createApp(opts: CreateAppOptions = {}): AnyPickApp {
 export async function createAppReady(opts: CreateAppOptions = {}): Promise<AnyPickApp> {
   const root = getAnyPickRoot(opts.root);
   let app: AnyPickApp | undefined;
+  let openedDatabase: AnyPickDatabase | undefined;
   const ownsDatabase = !opts.db;
 
   try {
@@ -507,6 +532,7 @@ export async function createAppReady(opts: CreateAppOptions = {}): Promise<AnyPi
         migrateLegacyRootIfPristine(root, join(dirname(root), '.hotplug'));
       }
       const db = opts.db ?? openDatabase(root);
+      openedDatabase = db;
       // Plugins must be imported before `createApp`, which seals the registries
       // the moment it returns. `bare` builds (tests) skip this so a stray
       // installed plugin cannot leak into an isolated fixture.
@@ -530,8 +556,13 @@ export async function createAppReady(opts: CreateAppOptions = {}): Promise<AnyPi
       }
     });
   } catch (err) {
-    if (app && ownsDatabase) {
-      app.db.close();
+    if (app) {
+      // Plugins may have been activated before a later bootstrap step fails.
+      // Use the composition-root lifecycle to dispose them in reverse order.
+      app.close();
+    } else if (ownsDatabase) {
+      // createApp can throw after openDatabase but before assigning `app`.
+      openedDatabase?.close();
     }
     throw err;
   }
@@ -554,6 +585,7 @@ export async function createAppReady(opts: CreateAppOptions = {}): Promise<AnyPi
   try {
     await recoverIncompleteOperations({
       journal: app.journal,
+      root: app.root,
       events: app.events.sink,
       resolve: {
         accounts: app.accounts,

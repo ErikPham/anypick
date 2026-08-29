@@ -11,7 +11,13 @@ export {
   DEFAULT_GLOBAL_CONFIG,
   PLUGIN_API_VERSION,
 } from './types';
-export { createAnyPickApp, type CreateAnyPickAppOptions, type AnyPick } from './public';
+export {
+  createAnyPickApp,
+  createAnyPickBackend,
+  type CreateAnyPickAppOptions,
+  type AnyPick,
+  type BackendApi,
+} from './public';
 export { AnyPickError } from './utils/errors';
 export {
   InMemoryEventSink,

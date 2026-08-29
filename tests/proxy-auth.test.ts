@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { listenGeminiProxy } from '../src/providers/gemini-proxy/server';
 import { listenGrokProxy } from '../src/providers/grok-proxy/server';
 import { listenOpenCodeProxy } from '../src/providers/opencode-proxy/server';
+import { listenCodexProxy } from '../src/providers/codex-proxy/server';
+import { isForwardableUpstreamHeader } from '../src/providers/proxy-shared';
 
 // PROXY-01 regression: every local credentialed proxy must authenticate the
 // caller before exercising upstream credential authority. A local process that
@@ -15,6 +17,24 @@ import { listenOpenCodeProxy } from '../src/providers/opencode-proxy/server';
 
 const SECRET = 'regression-proxy-secret-abc123';
 const AUTH = { authorization: `Bearer ${SECRET}` };
+
+describe('upstream request header policy', () => {
+  it('allows protocol metadata but rejects ambient browser and credential authority', () => {
+    expect(isForwardableUpstreamHeader('anthropic-version')).toBe(true);
+    expect(isForwardableUpstreamHeader('x-stainless-runtime')).toBe(true);
+    for (const name of [
+      'authorization',
+      'cookie',
+      'origin',
+      'referer',
+      'proxy-authorization',
+      'x-api-key',
+      'x-forwarded-for',
+    ]) {
+      expect(isForwardableUpstreamHeader(name), name).toBe(false);
+    }
+  });
+});
 
 let servers: Server[] = [];
 const dirs: string[] = [];
@@ -81,9 +101,40 @@ async function openCodeDir(): Promise<string> {
   return path;
 }
 
-type ProxyName = 'gemini' | 'grok' | 'opencode';
+async function codexDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'proxy-auth-codex-'));
+  dirs.push(dir);
+  const path = join(dir, 'auth.json');
+  await writeFile(
+    path,
+    JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: 'codex-access-token',
+        refresh_token: 'codex-refresh-token',
+        account_id: 'codex-account-id',
+      },
+    }),
+    { mode: 0o600 },
+  );
+  return path;
+}
+
+type ProxyName = 'codex' | 'gemini' | 'grok' | 'opencode';
 
 async function startProxy(name: ProxyName, upstream: string): Promise<string> {
+  if (name === 'codex') {
+    const { endpoint, server } = await listenCodexProxy({
+      host: '127.0.0.1',
+      port: 0,
+      authPath: await codexDir(),
+      upstream,
+      token: SECRET,
+      quiet: true,
+    });
+    servers.push(server);
+    return endpoint;
+  }
   if (name === 'gemini') {
     const { endpoint, server } = await listenGeminiProxy({
       host: '127.0.0.1',
@@ -121,7 +172,7 @@ async function startProxy(name: ProxyName, upstream: string): Promise<string> {
   return endpoint;
 }
 
-for (const name of ['gemini', 'grok', 'opencode'] as ProxyName[]) {
+for (const name of ['codex', 'gemini', 'grok', 'opencode'] as ProxyName[]) {
   describe(`proxy authentication — ${name}`, () => {
     it('rejects missing credentials with 401 and never contacts upstream', async () => {
       const up = await recordingUpstream();

@@ -3,28 +3,44 @@ import { shortClientName } from '../presentation/client-name';
 import type { TrayUsageSnapshot, TrayUsageWindow } from './snapshot-types';
 
 /**
- * Read quota only for provider credentials that are live on disk. Never
- * restores or authenticates with a saved AnyPick account just to populate the
- * tray, so a usage card can never belong to a hidden account.
+ * Read quota only for provider credentials that are live on disk. This also
+ * covers a native login that has not been saved into AnyPick yet; no snapshot
+ * is restored or authenticated just to populate the tray.
  */
 export async function buildTrayUsage(app: AnyPickApp): Promise<TrayUsageSnapshot[]> {
   const listedAccounts = await app.accounts.list().catch(() => []);
   const liveAccounts = listedAccounts.filter((account) => account.isLiveMatch);
   const clients = app.clients.list();
-  const providers = [...new Set(liveAccounts.map((account) => account.provider))];
+  const providerRegistry = app.accountRegistry;
+  const savedLiveProviders = new Set(liveAccounts.map((account) => account.provider));
+  const unsavedLiveProviders = (
+    await Promise.all(
+      app.accounts
+        .listProviders()
+        .filter((provider) => !savedLiveProviders.has(provider.id) && provider.liveUsage)
+        .map(async (provider) =>
+          (await provider.detectLive().catch(() => ({ present: false }))).present
+            ? provider.id
+            : null,
+        ),
+    )
+  ).filter((provider): provider is string => provider !== null);
+  const providers = [...savedLiveProviders, ...unsavedLiveProviders];
   const cards = await Promise.all(
     providers.map(async (providerId): Promise<TrayUsageSnapshot | null> => {
-      const client = clients.find((candidate) => candidate.id === providerId);
-      if (!client) {
-        return null;
-      }
       const usage = await app.accounts.liveUsage(providerId).catch(() => null);
       if (!usage?.windows.length) {
         return null;
       }
       const account = liveAccounts.find((candidate) => candidate.provider === providerId);
+      const client = clients.find((candidate) => candidate.id === providerId);
+      const provider = providerRegistry.has(providerId)
+        ? providerRegistry.get(providerId)
+        : undefined;
       return {
-        client: shortClientName(client.id, client.name, client.shortName),
+        client: client
+          ? shortClientName(client.id, client.name, client.shortName)
+          : (provider?.shortName ?? provider?.name ?? providerId),
         account: account?.label ?? account?.name ?? providerId,
         windows: usage.windows
           .filter((window) => window.label.trim())

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../src/core/app';
 import type { AnyPickApp } from '../src/core/app';
+import { resolveRuntime } from '../src/clients/resolve';
 
 describe('ProfileService', () => {
   let root: string;
@@ -57,5 +58,28 @@ describe('ProfileService', () => {
     await expect(app.profiles.create('x', { provider: 'nope', apiKey: 'k' })).rejects.toThrow(
       /Unknown catalog provider/,
     );
+  });
+
+  it('keeps client override credentials in secrets and redacts legacy-shaped metadata', async () => {
+    const created = await app.profiles.create('private-overlay', {
+      provider: 'custom',
+      clientOverrides: {
+        claude: {
+          apiKey: 'sk-client-secret',
+          env: { ANTHROPIC_AUTH_TOKEN: 'token-secret', LOG_LEVEL: 'debug' },
+        },
+      },
+    });
+
+    expect(created.meta.clientOverrides?.claude).toEqual({ env: { LOG_LEVEL: 'debug' } });
+    expect(created.secrets.clientOverrides?.claude).toEqual({
+      apiKey: 'sk-client-secret',
+      env: { ANTHROPIC_AUTH_TOKEN: 'token-secret' },
+    });
+    expect(resolveRuntime(created, 'claude').apiKey).toBe('sk-client-secret');
+
+    const shown = app.profiles.redact(created);
+    expect(JSON.stringify(shown)).not.toContain('client-secret');
+    expect(JSON.stringify(shown)).not.toContain('token-secret');
   });
 });

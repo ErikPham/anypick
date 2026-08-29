@@ -4,16 +4,30 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { readFile, rm } from 'node:fs/promises';
-import type { Account, LiveAuthStatus, Provider, SnapshotMeta, SourceAdapter } from '../types';
+import type {
+  Account,
+  LiveAuthStatus,
+  Provider,
+  ProviderLoginContext,
+  SnapshotMeta,
+  SourceAdapter,
+} from '../types';
 import { claudeAccountAdapter } from '../sources/account-adapters';
 import { AnyPickError } from '../utils/errors';
 import { pathExists, readJsonFile, writeJsonFile, writeTextFile } from '../utils/fs';
+import {
+  loginMethodAvailability,
+  runBrowserLoginCommand,
+  type BrowserLoginCommand,
+  type BrowserLoginRunner,
+} from './browser-login';
 
 const execFileAsync = promisify(execFile);
 const SECURITY_BIN = '/usr/bin/security';
 const SECURITY_TIMEOUT_MS = 5_000;
 const CLAUDE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const SNAPSHOT_FILE = 'credentials.json';
+const CLAUDE_LOGIN_METHOD = 'claude-subscription';
 
 interface ClaudeCredentialSnapshot {
   version: 1;
@@ -30,6 +44,7 @@ export interface ClaudeCredentialStore {
 interface ClaudeProviderOptions {
   credentialStore?: ClaudeCredentialStore;
   isOwnerRunning?: () => Promise<boolean>;
+  loginRunner?: BrowserLoginRunner;
 }
 
 /**
@@ -106,10 +121,51 @@ export class ClaudeProvider implements Provider {
 
   private readonly credentials: ClaudeCredentialStore;
   private readonly isOwnerRunning: () => Promise<boolean>;
+  private readonly loginRunner: BrowserLoginRunner;
+  private readonly home: string;
 
   constructor(home = homedir(), opts: ClaudeProviderOptions = {}) {
+    this.home = home;
     this.credentials = opts.credentialStore ?? createClaudeCredentialStore(home);
     this.isOwnerRunning = opts.isOwnerRunning ?? claudeCodeApplicationRunning;
+    this.loginRunner = opts.loginRunner ?? runBrowserLoginCommand;
+  }
+
+  private get loginCommand(): BrowserLoginCommand {
+    return {
+      names: [process.env.CLAUDE_BINARY, 'claude'].filter((value): value is string =>
+        Boolean(value),
+      ),
+      extraPaths: [
+        join(this.home, '.local', 'bin', 'claude'),
+        '/opt/homebrew/bin/claude',
+        '/usr/local/bin/claude',
+      ],
+      args: ['auth', 'login', '--claudeai'],
+    };
+  }
+
+  async loginMethods() {
+    return [
+      await loginMethodAvailability(
+        {
+          id: CLAUDE_LOGIN_METHOD,
+          label: 'Claude subscription',
+          description: 'Claude Code browser sign-in for Pro, Max, Team, or Enterprise',
+          provenance: 'official',
+          preferred: true,
+          source: 'claude-code',
+        },
+        this.loginCommand,
+      ),
+    ];
+  }
+
+  async login(ctx: ProviderLoginContext): Promise<void> {
+    if (ctx.methodId !== CLAUDE_LOGIN_METHOD || (ctx.source && ctx.source !== 'claude-code')) {
+      throw new AnyPickError('Unknown Claude sign-in method.', 'PROVIDER_LOGIN_METHOD_UNKNOWN');
+    }
+    await this.loginRunner(this.loginCommand, { home: this.home, signal: ctx.signal });
   }
 
   sourceAdapter(account: Account): SourceAdapter {

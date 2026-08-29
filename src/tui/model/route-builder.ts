@@ -2,6 +2,7 @@ import type { AnyPickApp } from '../../core/app';
 import type { ActivationPlan, ResourceRef, TransportCapability } from '../../types';
 import { accountAdapterFor } from '../../sources/account-adapters';
 import { gatewayAdapterFromProfile } from '../../sources/gateway-adapters';
+import { providerCanProxy } from '../../core/capabilities';
 import { displayRef, serializeRef } from '../../core/refs';
 import { materializeResolvedSource } from '../../core/resolve-source';
 import { identityDisplayText } from './identity';
@@ -77,8 +78,8 @@ export async function loadCompatibleSources(
     });
   }
 
-  for (const provider of app.accounts.listProviders()) {
-    const pool = await app.pools.get(provider.id);
+  for (const provider of app.accounts.listProviders().filter(providerCanProxy)) {
+    const pool = await app.proxy.getPool(provider.id);
     if (!pool || pool.mode !== 'multi') {
       continue;
     }
@@ -148,7 +149,7 @@ export async function loadCompatibleSources(
     }
   }
 
-  for (const preset of app.presets.list()) {
+  for (const preset of app.bindingService.listPresets()) {
     if (preset.spec.client !== clientId) {
       continue;
     }
@@ -214,7 +215,7 @@ export async function modelSuggestionsForRoute(
   let defaultModel: string | undefined;
 
   if (row.ref.kind === 'preset') {
-    const preset = app.presets.getByName(row.ref.name);
+    const preset = app.bindingService.getPreset(row.ref.name);
     if (preset?.spec.model.mode === 'explicit') {
       defaultModel = preset.spec.model.id;
       values.push(defaultModel);

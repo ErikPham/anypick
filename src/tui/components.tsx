@@ -8,13 +8,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnyPickApp } from '../core/app';
 import { G, LoadingView, ScreenShell } from './components/chrome';
 import { AddModeScreen, addModeOptions, type AddMode } from './screens/add-account';
+import { credentialKindLabel } from './screens/credential-form';
 import { clampIndex } from './app-ui-helpers';
 
 export function AddModeGate(props: {
   app: AnyPickApp;
   providerId: string;
-  /** Sign-in source for providers with more than one (e.g. Gemini's Antigravity). */
-  source?: 'antigravity';
+  /** Provider-owned sign-in source for providers with more than one. */
+  source?: string;
   selectedIndex: number;
   onMove: (d: number) => void;
   onSelectMode: (mode: AddMode, identity?: string) => void;
@@ -23,7 +24,7 @@ export function AddModeGate(props: {
   const [liveIdentity, setLiveIdentity] = useState<string | undefined>();
   const [livePresent, setLivePresent] = useState(false);
   const [canClearLive, setCanClearLive] = useState(false);
-  const [canUseApiKey, setCanUseApiKey] = useState(false);
+  const [credentials, setCredentials] = useState<Array<{ kind: string; label: string }>>([]);
   const [ready, setReady] = useState(false);
   const { source } = props;
 
@@ -32,7 +33,12 @@ export function AddModeGate(props: {
     void (async () => {
       try {
         const provider = props.app.accounts.provider(props.providerId);
-        setCanUseApiKey(provider.credentialInputs?.includes('api-key') ?? false);
+        setCredentials(
+          (provider.credentialInputs ?? []).map((kind) => ({
+            kind,
+            label: provider.credentialInputLabel?.(kind) ?? credentialKindLabel(kind),
+          })),
+        );
         if (source) {
           const live = provider.detectLiveSource
             ? await provider.detectLiveSource(source)
@@ -67,20 +73,22 @@ export function AddModeGate(props: {
     return <LoadingView label="Checking logins" />;
   }
 
-  const optionCount = addModeOptions({ livePresent, canClearLive, canUseApiKey }).length;
+  const optionCount = addModeOptions({ livePresent, canClearLive, credentials }).length;
 
   return (
     <AddModeScreen
       providerId={props.providerId}
       displayName={
-        source === 'antigravity'
-          ? 'Antigravity'
+        source
+          ? ((props.app.accounts.provider(props.providerId).accountSources ?? []).find(
+              (entry) => entry.id === source,
+            )?.label ?? props.app.accounts.provider(props.providerId).name)
           : props.app.accounts.provider(props.providerId).name
       }
       livePresent={livePresent}
       liveIdentity={liveIdentity}
       canClearLive={canClearLive}
-      canUseApiKey={canUseApiKey}
+      credentials={credentials}
       source={source}
       selectedIndex={clampIndex(props.selectedIndex, optionCount)}
       onMove={props.onMove}

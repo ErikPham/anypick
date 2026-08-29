@@ -23,13 +23,20 @@ import { DEFAULT_PROXY_CONFIG } from '../types';
 import { AnyPickError } from '../utils/errors';
 import { pathExists } from '../utils/fs';
 import { normalizeAccountName } from '../utils/slug';
-import { decodeAccountEnvelope, MAX_IMPORT_ENVELOPE_BYTES, stagedFilePath } from './account-codec';
+import {
+  decodeAccountEnvelope,
+  MAX_IMPORT_ENVELOPE_BYTES,
+  stagedFilePath,
+  type DecodedAccountEnvelope,
+} from './account-codec';
 import type { AccountStore } from './store';
 
 export async function collectSnapshotFiles(root: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   async function walk(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
+    const entries = (await readdir(dir, { withFileTypes: true })).toSorted((a, b) =>
+      a.name.localeCompare(b.name),
+    );
     for (const entry of entries) {
       const full = join(dir, entry.name);
       const rel = relative(root, full).split('\\').join('/');
@@ -60,6 +67,24 @@ export async function writeSnapshotFiles(
   }
 }
 
+export type AccountEnvelopeV1 = DecodedAccountEnvelope;
+
+/** Build an account envelope in memory for both single and package exports. */
+export async function buildAccountEnvelope(
+  store: AccountStore,
+  providerId: string,
+  name: string,
+): Promise<AccountEnvelopeV1> {
+  const account = await store.requireAccount(providerId, normalizeAccountName(name));
+  return {
+    version: 1,
+    kind: 'anypick-account',
+    meta: account.meta,
+    proxy: account.proxy,
+    files: await collectSnapshotFiles(account.snapshotDir),
+  };
+}
+
 /** Serialize a saved account to a portable, owner-only JSON envelope. */
 export async function exportAccountEnvelope(
   store: AccountStore,
@@ -67,15 +92,7 @@ export async function exportAccountEnvelope(
   name: string,
   outPath: string,
 ): Promise<void> {
-  const account = await store.requireAccount(providerId, normalizeAccountName(name));
-  const files = await collectSnapshotFiles(account.snapshotDir);
-  const payload = {
-    version: 1 as const,
-    kind: 'anypick-account' as const,
-    meta: account.meta,
-    proxy: account.proxy,
-    files,
-  };
+  const payload = await buildAccountEnvelope(store, providerId, name);
 
   // SEC-01: write to an owner-only temp file, then atomically rename.
   // Tighten the final mode even when overwriting an existing (permissive) file.
@@ -90,7 +107,7 @@ export async function exportAccountEnvelope(
   }
   // Warn: the artifact carries live credentials.
   process.stderr.write(
-    `Warning: exported account "${account.meta.name}" contains credentials. Store ${outPath} safely.\n`,
+    `Warning: exported account "${payload.meta.name}" contains credentials. Store ${outPath} safely.\n`,
   );
 }
 
@@ -185,23 +202,29 @@ export async function importAccountEnvelope(
   );
   existing = await deps.store.getAccount(providerId, accountName);
 
-  // Stage into the live snapshot dir only after full validation and identity
-  // conflict checks.
+  // Stage outside the materialized cache. A UI reader may rebuild that cache
+  // while an import is running, but can never mutate these bytes.
   const { snapshotDir } = await deps.store.prepareSnapshot(providerId, accountName);
-  await writeSnapshotFiles(snapshotDir, envelope.files);
+  let meta: AccountMeta;
+  try {
+    await writeSnapshotFiles(snapshotDir, envelope.files);
 
-  const now = new Date().toISOString();
-  const meta: AccountMeta = {
-    name: accountName,
-    provider: providerId,
-    createdAt: existing?.meta.createdAt ?? envelope.meta.createdAt ?? now,
-    updatedAt: now,
-    label,
-    identity,
-    notes: envelope.meta.notes,
-    credentialKind: envelope.meta.credentialKind,
-  };
-  await deps.store.writeMeta(meta);
+    const now = new Date().toISOString();
+    meta = {
+      name: accountName,
+      provider: providerId,
+      createdAt: existing?.meta.createdAt ?? envelope.meta.createdAt ?? now,
+      updatedAt: now,
+      label,
+      identity,
+      notes: envelope.meta.notes,
+      credentialKind: envelope.meta.credentialKind,
+      credentialClass: envelope.meta.credentialClass,
+    };
+    await deps.store.writeMeta(meta, snapshotDir);
+  } finally {
+    await deps.store.discardPreparedSnapshot(snapshotDir).catch(() => {});
+  }
 
   // Imported proxies are always disabled and provider-specific options are
   // intentionally dropped by the codec. Starting a proxy is an explicit
@@ -215,5 +238,5 @@ export async function importAccountEnvelope(
     });
   }
 
-  return meta;
+  return meta!;
 }

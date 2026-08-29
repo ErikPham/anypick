@@ -355,6 +355,7 @@ export class ProxyService {
       endpoint: handle.endpoint,
       compatibility: handle.compatibility ?? provider.proxyCompatibility,
       pid: handle.pid,
+      instanceId: handle.instanceId,
       logPath: handle.logPath,
       startedAt: new Date().toISOString(),
       token: poolToken,
@@ -453,6 +454,83 @@ export class ProxyService {
       enabled: pool.enabled,
       running: false,
     };
+  }
+
+  /**
+   * Read models from a running managed proxy without exposing its per-instance
+   * bearer token to a CLI/TUI caller. The token remains a lifecycle secret in
+   * proxy_state (ADR 0006); presentation receives only model ids and a safe
+   * diagnostic string.
+   */
+  async listModels(
+    providerId: string,
+    name: string,
+    opts: { refresh?: boolean; timeoutMs?: number } = {},
+  ): Promise<{ models: string[]; endpoint?: string; error?: string }> {
+    const isPool = name === 'pool' || name === '*';
+    let accountName = name;
+    let status: ProxyStatus;
+    if (isPool) {
+      const pool = await this.getPool(providerId);
+      accountName = pool.members.find((member) => member.enabled)?.account ?? '';
+      status = await this.poolProxyStatus(providerId);
+    } else {
+      accountName = normalizeAccountName(name);
+      status = await this.proxyStatus(providerId, accountName);
+    }
+    if (!accountName || !status.running || !status.endpoint) {
+      return { models: [], endpoint: status.endpoint, error: 'proxy is not running' };
+    }
+
+    const state = await this.store.readProxyState(providerId, accountName);
+    if (!state?.token) {
+      return { models: [], endpoint: status.endpoint, error: 'proxy credentials are unavailable' };
+    }
+
+    const endpoint = status.endpoint.replace(/\/$/, '');
+    try {
+      const response = await fetch(`${endpoint}/v1/models${opts.refresh ? '?refresh=1' : ''}`, {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${state.token}`,
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+      });
+      if (!response.ok) {
+        return { models: [], endpoint, error: `HTTP ${response.status}` };
+      }
+      const payload = (await response.json()) as {
+        data?: Array<{ id?: unknown; name?: unknown }>;
+        models?: unknown[];
+      };
+      const models: string[] = [];
+      const seen = new Set<string>();
+      const add = (value: unknown) => {
+        if (typeof value !== 'string' || !value.trim() || seen.has(value)) {
+          return;
+        }
+        seen.add(value);
+        models.push(value);
+      };
+      for (const item of payload.data ?? []) {
+        add(item?.id ?? item?.name);
+      }
+      for (const item of payload.models ?? []) {
+        const record =
+          typeof item === 'object' && item !== null
+            ? (item as { id?: unknown; name?: unknown })
+            : undefined;
+        add(record?.id ?? record?.name ?? item);
+      }
+      return { models, endpoint };
+    } catch (err) {
+      return {
+        models: [],
+        endpoint,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   // ── Proxy commands ──────────────────────────────────────────────
@@ -666,6 +744,78 @@ export class ProxyService {
     await this.store.requireAccount(providerId, accountName);
     await this.stopProxyInternal(provider, accountName);
     void this.syncCodexLiveConfig();
+  }
+
+  /**
+   * Undo only the exact lifecycle this activation created. A later activation
+   * can reuse the same endpoint and replace its lease; stopping by account name
+   * alone would then tear down the newer client's live proxy.
+   */
+  async stopProxyIfLeaseOwned(
+    providerId: string,
+    name: string,
+    opts: { instanceId?: string; leaseId?: string },
+  ): Promise<boolean> {
+    const provider = this.requireProxyProvider(providerId);
+    const accountName = normalizeAccountName(name);
+    return withMutationLock(this.store.root, `proxy/${providerId}/${accountName}`, async () => {
+      if (opts.leaseId && this.leases?.get(opts.leaseId) == null) {
+        return false;
+      }
+      const state = await this.store.readProxyState(providerId, accountName);
+      if (opts.instanceId && state?.instanceId !== opts.instanceId) {
+        return false;
+      }
+      // Without a lease (e.g. a minimal embedder), never stop a process that a
+      // persistent global binding now owns. The original ephemeral operation
+      // has no such binding, so this remains safe for its normal cleanup.
+      if (!opts.leaseId && this.realign) {
+        const inUse = this.realign.bindings
+          .listGlobal()
+          .some(
+            (binding) =>
+              binding.spec.source.kind === 'account' &&
+              binding.spec.source.provider === providerId &&
+              binding.spec.source.name === accountName,
+          );
+        if (inUse) {
+          return false;
+        }
+      }
+      await this.stopProxyInternalUnlocked(provider, accountName);
+      void this.syncCodexLiveConfig();
+      return true;
+    });
+  }
+
+  /** Restore a temporary proxy preference only while its lease is still ours. */
+  async restoreProxyConfigIfLeaseOwned(
+    providerId: string,
+    name: string,
+    config: AccountProxyConfig,
+    leaseId?: string,
+  ): Promise<boolean> {
+    const accountName = normalizeAccountName(name);
+    return withMutationLock(this.store.root, `proxy/${providerId}/${accountName}`, async () => {
+      if (leaseId && this.leases?.get(leaseId) == null) {
+        return false;
+      }
+      if (!leaseId && this.realign) {
+        const inUse = this.realign.bindings
+          .listGlobal()
+          .some(
+            (binding) =>
+              binding.spec.source.kind === 'account' &&
+              binding.spec.source.provider === providerId &&
+              binding.spec.source.name === accountName,
+          );
+        if (inUse) {
+          return false;
+        }
+      }
+      await this.store.setProxyConfig(providerId, accountName, config);
+      return true;
+    });
   }
 
   async proxyStatus(providerId: string, name?: string): Promise<ProxyStatus> {
@@ -1099,18 +1249,21 @@ export class ProxyService {
     assertLoopbackHost(host);
     let port = effective.port ?? provider.defaultProxyPort ?? 8080;
     const pidPath = this.store.pidPath(provider.id, accountName);
-    const existingPid = await readPidFile(pidPath);
+    const existingRecord = await readPidRecord(pidPath);
+    const existingPid = existingRecord?.pid ?? null;
     const previousState = await this.store.readProxyState(provider.id, accountName);
 
     // Per-instance high-entropy secret (PROXY-01). Reuse a prior token so a
     // process-reuse realign binds clients to the already-running child's secret.
-    const proxyToken =
-      previousState?.token && previousState.token.length > 0
-        ? previousState.token
-        : randomBytes(32).toString('hex');
+    const canReuseExisting =
+      existingRecord != null &&
+      previousState?.instanceId === existingRecord.instanceId &&
+      typeof previousState.token === 'string' &&
+      previousState.token.length > 0;
+    const proxyToken = canReuseExisting ? previousState.token : randomBytes(32).toString('hex');
 
     // Already healthy on our pid → reuse process, still realign clients (port/config drift)
-    if (existingPid != null && isProcessRunning(existingPid) && port !== 0) {
+    if (canReuseExisting && existingRecord && isProcessRunning(existingRecord.pid) && port !== 0) {
       const candidates = [previousState?.endpoint, `http://${host}:${port}`].filter(
         (value, index, all): value is string => Boolean(value) && all.indexOf(value) === index,
       );
@@ -1119,7 +1272,8 @@ export class ProxyService {
           const { waitForHttp } = await import('../utils/process');
           const ok = await waitForHttp(candidate, {
             timeoutMs: 800,
-            requirePid: existingPid,
+            requirePid: existingRecord.pid,
+            expectInstanceId: existingRecord.instanceId,
           });
           if (!ok) {
             continue;
@@ -1135,7 +1289,8 @@ export class ProxyService {
           const handle: ProxyHandle = {
             endpoint: candidate,
             compatibility: provider.proxyCompatibility,
-            pid: existingPid,
+            pid: existingRecord.pid,
+            instanceId: existingRecord.instanceId,
             logPath: this.store.logPath(provider.id, accountName),
             startedNow: false,
             token: proxyToken,
@@ -1145,6 +1300,7 @@ export class ProxyService {
             endpoint: handle.endpoint,
             compatibility: handle.compatibility,
             pid: handle.pid,
+            instanceId: handle.instanceId,
             logPath: handle.logPath,
             startedAt: new Date().toISOString(),
             token: proxyToken,
@@ -1198,6 +1354,7 @@ export class ProxyService {
             endpoint: retry.endpoint,
             compatibility: retry.compatibility ?? provider.proxyCompatibility,
             pid: retry.pid,
+            instanceId: retry.instanceId,
             logPath: retry.logPath ?? this.store.logPath(provider.id, accountName),
             startedAt: new Date().toISOString(),
             token: proxyToken,
@@ -1225,6 +1382,7 @@ export class ProxyService {
       endpoint: handle.endpoint,
       compatibility: handle.compatibility ?? provider.proxyCompatibility,
       pid: handle.pid,
+      instanceId: handle.instanceId,
       logPath: handle.logPath ?? this.store.logPath(provider.id, accountName),
       startedAt: new Date().toISOString(),
       token: proxyToken,

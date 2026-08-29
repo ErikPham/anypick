@@ -45,6 +45,7 @@ export default defineConfig({
         types: resolve(root, 'src/public-types.ts'),
         testing: resolve(root, 'src/testing.ts'),
         cli: resolve(root, 'src/cli.ts'),
+        'providers/codex-proxy/main': resolve(root, 'src/providers/codex-proxy/main.ts'),
         'providers/gemini-proxy/main': resolve(root, 'src/providers/gemini-proxy/main.ts'),
         'providers/grok-proxy/main': resolve(root, 'src/providers/grok-proxy/main.ts'),
       },

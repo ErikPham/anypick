@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { HOP_BY_HOP } from '../proxy-shared';
+import { isForwardableUpstreamHeader } from '../proxy-shared';
 import { USER_AGENT } from './constants';
 
 export function withUpstreamCredential(init: RequestInit, apiKey: string): RequestInit {
@@ -53,11 +53,11 @@ export function buildUpstreamHeaders(
     headers['content-type'] = 'application/json';
   }
   for (const [key, value] of Object.entries(req.headers)) {
-    if (!value || HOP_BY_HOP.has(key.toLowerCase())) {
+    if (!value || !isForwardableUpstreamHeader(key)) {
       continue;
     }
     const lower = key.toLowerCase();
-    if (['authorization', 'x-api-key', 'anthropic-version', 'anthropic-beta'].includes(lower)) {
+    if (['anthropic-version', 'anthropic-beta'].includes(lower)) {
       continue;
     }
     headers[key] = Array.isArray(value) ? value.join(', ') : value;

@@ -21,6 +21,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { openForeignDatabase } from '../core/db';
+import { AnyPickError } from '../utils/errors';
 
 /** Login kinds kiro-cli stores, each under its own keychain service name. */
 export const KIRO_SECRET_KEYS = [
@@ -84,32 +85,38 @@ export async function readKiroSecrets(home = homedir()): Promise<KiroSecrets> {
   return secrets;
 }
 
-/** Replace the stored login. Writes both tiers; the keychain is best-effort. */
+/**
+ * Replace the stored login in both stores. Kiro reads Keychain first, so a
+ * Keychain denial is a failed switch, never a successful database-only write.
+ */
 export async function writeKiroSecrets(secrets: KiroSecrets, home = homedir()): Promise<void> {
-  writeAuthKv(kiroSecretDbPath(home), secrets);
-
   if (!keychainEnabled()) {
+    writeAuthKv(kiroSecretDbPath(home), secrets);
     return;
   }
-  for (const key of KIRO_SECRET_KEYS) {
-    const value = secrets[key];
-    if (value) {
-      await keychainWrite(key, value);
-    } else {
-      await keychainDelete(key);
+
+  const before = await readKeychainSecrets();
+  try {
+    await writeKeychainSecrets(secrets);
+    const effective = await readKeychainSecrets();
+    if (!sameSecrets(effective, secrets)) {
+      throw new AnyPickError(
+        'Kiro Keychain did not retain the selected credentials.',
+        'KIRO_KEYCHAIN_WRITE_FAILED',
+      );
     }
+    writeAuthKv(kiroSecretDbPath(home), secrets);
+  } catch (err) {
+    // Best-effort compensation keeps an unsuccessful activation from silently
+    // changing what the upstream CLI reads. Preserve the original error.
+    await writeKeychainSecrets(before).catch(() => {});
+    throw err;
   }
 }
 
 /** Forget the local login. Does not call Kiro/AWS logout. */
 export async function clearKiroSecrets(home = homedir()): Promise<void> {
-  writeAuthKv(kiroSecretDbPath(home), {});
-  if (!keychainEnabled()) {
-    return;
-  }
-  for (const key of KIRO_SECRET_KEYS) {
-    await keychainDelete(key);
-  }
+  await writeKiroSecrets({}, home);
 }
 
 /**
@@ -180,8 +187,16 @@ function writeAuthKv(dbPath: string, secrets: KiroSecrets): void {
   try {
     db = openForeignDatabase(dbPath);
   } catch {
-    // kiro-cli has never run here; it will create the database on next login.
-    return;
+    if (Object.values(secrets).every((value) => !value)) {
+      // A file-only Kiro login has no auth_kv tier to clear. This is safe only
+      // for an empty update; importing/restoring actual secrets must never be a
+      // successful no-op on a machine without the authoritative store.
+      return;
+    }
+    throw new AnyPickError(
+      'Kiro credential database could not be opened; refusing a partial credential switch.',
+      'KIRO_SECRET_STORE_UNAVAILABLE',
+    );
   }
   try {
     db.exec('CREATE TABLE IF NOT EXISTS auth_kv (key TEXT PRIMARY KEY, value TEXT)');
@@ -203,16 +218,57 @@ function writeAuthKv(dbPath: string, secrets: KiroSecrets): void {
 }
 
 function keychainRead(service: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       SECURITY_BIN,
       ['find-generic-password', '-s', service, '-w'],
       { timeout: SECURITY_TIMEOUT_MS },
-      // A missing item and an unreadable keychain are both "nothing here"; the
-      // database mirror is the fallback either way.
-      (err, stdout) => resolve(err ? undefined : stdout.trim() || undefined),
+      (err, stdout, stderr) => {
+        if (!err) {
+          resolve(stdout.trim() || undefined);
+          return;
+        }
+        // Missing is the only expected read failure. A locked/denied keychain
+        // is not equivalent to an empty credential and must surface.
+        if (/could not be found|item not found/i.test(stderr)) {
+          resolve(undefined);
+          return;
+        }
+        reject(
+          new AnyPickError(
+            'macOS Keychain could not read Kiro credentials.',
+            'KIRO_KEYCHAIN_READ_FAILED',
+          ),
+        );
+      },
     );
   });
+}
+
+async function readKeychainSecrets(): Promise<KiroSecrets> {
+  const secrets: KiroSecrets = {};
+  for (const key of KIRO_SECRET_KEYS) {
+    const value = await keychainRead(key);
+    if (value) {
+      secrets[key] = value;
+    }
+  }
+  return secrets;
+}
+
+async function writeKeychainSecrets(secrets: KiroSecrets): Promise<void> {
+  for (const key of KIRO_SECRET_KEYS) {
+    const value = secrets[key];
+    if (value) {
+      await keychainWrite(key, value);
+    } else {
+      await keychainDelete(key);
+    }
+  }
+}
+
+function sameSecrets(actual: KiroSecrets, expected: KiroSecrets): boolean {
+  return KIRO_SECRET_KEYS.every((key) => actual[key] === expected[key]);
 }
 
 function keychainWrite(service: string, value: string): Promise<void> {
@@ -222,18 +278,46 @@ function keychainWrite(service: string, value: string): Promise<void> {
   return securityStdin(`add-generic-password -U -s "${service}" -a "" -X ${hex}\n`);
 }
 
-function keychainDelete(service: string): Promise<void> {
-  return securityStdin(`delete-generic-password -s "${service}"\n`);
+async function keychainDelete(service: string): Promise<void> {
+  try {
+    await securityStdin(`delete-generic-password -s "${service}"\n`);
+  } catch (err) {
+    // Empty slots are expected when restoring a partial login. Everything else
+    // (locked keychain, ACL denial, timeout) must abort the switch.
+    if (err instanceof AnyPickError && err.code === 'KIRO_KEYCHAIN_ITEM_MISSING') {
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
  * Drive `security(1)` through its batch mode so the secret is never an argument.
- * Failures are swallowed: the database mirror is already written, and a locked
- * or absent keychain must not fail an otherwise complete switch.
+ * A locked or denied Keychain makes the switch fail closed; callers then undo
+ * their activation checkpoint rather than report a credential that Kiro cannot
+ * actually use.
  */
 function securityStdin(command: string): Promise<void> {
-  return new Promise((resolve) => {
-    const child = execFile(SECURITY_BIN, ['-i'], { timeout: SECURITY_TIMEOUT_MS }, () => resolve());
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      SECURITY_BIN,
+      ['-i'],
+      { timeout: SECURITY_TIMEOUT_MS },
+      (err, _stdout, stderr) => {
+        if (!err) {
+          resolve();
+          return;
+        }
+        reject(
+          new AnyPickError(
+            'macOS Keychain rejected the Kiro credential update.',
+            /could not be found|item not found/i.test(stderr)
+              ? 'KIRO_KEYCHAIN_ITEM_MISSING'
+              : 'KIRO_KEYCHAIN_WRITE_FAILED',
+          ),
+        );
+      },
+    );
     child.stdin?.end(command);
   });
 }

@@ -1,8 +1,9 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { AnyPickApp } from '../core/app';
 import { serializeRef } from '../core/refs';
-import { AnyPickError } from '../utils/errors';
+import { AnyPickError, isAnyPickError } from '../utils/errors';
 import type { TrayActivityService } from './activity';
+import type { TrayBackupInspectionManager } from './backup-inspections';
 import type { TrayMutationCommand } from './protocol';
 import { activityKindForMutation, recordTrayActivity } from './supervisor-activity';
 import { displayIdentifier, trayMutationError } from './supervisor-errors';
@@ -13,6 +14,16 @@ import { startEnabledProxies, stopAllProxies } from './supervisor-proxies';
 function cleanOptional(value: string | undefined): string | undefined {
   const cleaned = value?.trim();
   return cleaned ? cleaned : undefined;
+}
+
+function assertTrayBackupSelection(accounts: Array<{ provider: string; name: string }>): void {
+  const keys = accounts.map(({ provider, name }) => `${provider}\0${name}`);
+  if (accounts.length === 0 || accounts.length > 64 || new Set(keys).size !== keys.length) {
+    throw new AnyPickError('The backup account selection is invalid.', {
+      code: 'BACKUP_SELECTION_INVALID',
+      mutated: false,
+    });
+  }
 }
 
 /**
@@ -41,7 +52,7 @@ export async function setTrayHubSourceEnabled(
   }
 }
 
-/** Read-only login probe used before the tray allows a snapshot to be saved. */
+/** Read-only local login probe; it does not verify upstream availability. */
 export async function detectTrayAccount(
   app: Pick<AnyPickApp, 'accountRegistry'>,
   providerId: string,
@@ -62,14 +73,39 @@ export async function detectTrayAccount(
     : `Detected the current login in ${location}.`;
 }
 
+export async function testTrayGateway(
+  app: Pick<AnyPickApp, 'catalog' | 'modelDiscovery'>,
+  providerId: string,
+  endpoint?: string,
+  apiKey?: string,
+): Promise<string> {
+  app.catalog.get(providerId);
+  const result = await app.modelDiscovery.list({
+    providerId,
+    endpoint: cleanOptional(endpoint),
+    apiKey: cleanOptional(apiKey),
+    refresh: true,
+  });
+  if (result.source !== 'live') {
+    throw new AnyPickError(
+      'The gateway did not return a live model catalog.',
+      'GATEWAY_TEST_FAILED',
+    );
+  }
+  const noun = result.models.length === 1 ? 'model' : 'models';
+  return `Connection available: ${result.models.length} ${noun} returned.`;
+}
+
 export async function invokeTrayMutation(
   app: AnyPickApp,
   native: ChildProcessWithoutNullStreams,
   payload: TrayMutationCommand,
   cliEntry: string,
   activity: TrayActivityService,
+  backupInspections: TrayBackupInspectionManager,
   refresh: () => Promise<void>,
   invalidateUsage: () => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const respond = (result: Omit<TrayCommandResult, 'version' | 'requestId'>) => {
     sendResult(native, { version: 1, requestId: payload.requestId, ...result });
@@ -80,6 +116,58 @@ export async function invokeTrayMutation(
     switch (payload.operation) {
       case 'account-detect': {
         message = await detectTrayAccount(app, payload.providerId!, payload.sourceId);
+        break;
+      }
+      case 'account-login': {
+        const result = await app.accounts.login(payload.providerId, {
+          methodId: payload.methodId,
+          source: cleanOptional(payload.sourceId),
+          name: cleanOptional(payload.name),
+          label: cleanOptional(payload.label),
+          signal,
+        });
+        message = `Signed in with ${result.method.label} and saved ${result.account.provider}/${result.account.name}.`;
+        invalidateUsage();
+        break;
+      }
+      case 'account-import': {
+        const imported = await app.accounts.importAccount(
+          payload.providerId,
+          payload.name,
+          payload.path,
+          { force: payload.overwrite === true },
+        );
+        message = `Imported ${imported.provider}/${imported.name}.`;
+        invalidateUsage();
+        break;
+      }
+      case 'account-export': {
+        await app.accounts.exportAccount(payload.providerId, payload.name, payload.path);
+        message = `Exported ${payload.providerId}/${payload.name}.`;
+        break;
+      }
+      case 'account-backup-all': {
+        const result = await app.accounts.backupSavedAccounts(payload.path);
+        message = `Backed up ${result.accountCount} saved ${result.accountCount === 1 ? 'account' : 'accounts'}.`;
+        break;
+      }
+      case 'account-backup-export': {
+        assertTrayBackupSelection(payload.accounts);
+        const result = await app.accounts.exportAccountBackup(payload.accounts, payload.path, {
+          overwrite: payload.overwrite,
+        });
+        message = `Exported ${result.accountCount} ${result.accountCount === 1 ? 'account' : 'accounts'}.`;
+        break;
+      }
+      case 'account-backup-import': {
+        const count = await backupInspections.restore(
+          app.accounts,
+          payload.inspectionId,
+          payload.entryIds,
+          payload.overwriteConfirmed,
+        );
+        message = `Imported ${count} ${count === 1 ? 'account' : 'accounts'}.`;
+        invalidateUsage();
         break;
       }
       case 'account-save': {
@@ -103,6 +191,18 @@ export async function invokeTrayMutation(
               }
             : { source: cleanOptional(payload.sourceId) }),
         });
+        message = `Saved ${saved.label ?? saved.name}.`;
+        invalidateUsage();
+        break;
+      }
+      case 'account-save-current': {
+        const providerId = payload.providerId;
+        app.accountRegistry.get(providerId);
+        const saved = await app.accounts.saveCurrent(
+          providerId,
+          cleanOptional(payload.name),
+          cleanOptional(payload.sourceId),
+        );
         message = `Saved ${saved.label ?? saved.name}.`;
         invalidateUsage();
         break;
@@ -140,9 +240,7 @@ export async function invokeTrayMutation(
         const providerId = payload.providerId!;
         app.accountRegistry.get(providerId);
         const source = cleanOptional(payload.sourceId);
-        const result = await app.accounts.stash(providerId, {
-          ...(source === 'antigravity' || source === 'gemini-cli' ? { source } : {}),
-        });
+        const result = await app.accounts.stash(providerId, { source });
         const where = source ? displayIdentifier(source) : providerId;
         if (result.backedUpTo) {
           message = result.matchedByIdentity
@@ -167,6 +265,10 @@ export async function invokeTrayMutation(
           label: cleanOptional(payload.label),
         });
         message = `Created ${profile.meta.label ?? profile.meta.name}.`;
+        break;
+      }
+      case 'gateway-test': {
+        message = await testTrayGateway(app, payload.providerId!, payload.endpoint, payload.apiKey);
         break;
       }
       case 'gateway-edit': {
@@ -262,7 +364,7 @@ export async function invokeTrayMutation(
         break;
       }
       default: {
-        const exhaustive: never = payload.operation;
+        const exhaustive: never = payload;
         return exhaustive;
       }
     }
@@ -278,9 +380,17 @@ export async function invokeTrayMutation(
     respond({ status: 'success', message });
   } catch (err) {
     const message = trayMutationError(err, payload);
-    process.stderr.write(`[tray] ${message}\n`);
-    await recordTrayActivity(activity, message, true, activityKindForMutation(payload.operation));
+    const cancelled = isAnyPickError(err) && err.code === 'PROVIDER_LOGIN_CANCELLED';
+    if (!cancelled) {
+      process.stderr.write(`[tray] ${message}\n`);
+    }
+    await recordTrayActivity(
+      activity,
+      message,
+      !cancelled,
+      activityKindForMutation(payload.operation),
+    );
     await refresh().catch(() => {});
-    respond({ status: 'error', message });
+    respond({ status: cancelled ? 'cancelled' : 'error', message });
   }
 }

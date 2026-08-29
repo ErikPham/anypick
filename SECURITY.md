@@ -18,7 +18,7 @@ AnyPick intentionally handles local credentials and client configuration. It wri
 
 AnyPick can load third-party plugins into its own process, where they run alongside code that reads and rewrites live credential files. That boundary is deliberately narrow (see [ADR-0012](adr/0012-plugin-trust-boundary.md)):
 
-- AnyPick never downloads, installs, or updates a plugin. There is no registry and no auto-discovery — you install a local directory by path with `anypick plugin add`.
+- AnyPick never downloads or updates a plugin. There is no network registry or auto-discovery — `plugin add` records either a local directory or a reviewed `bundled:<name>` directory shipped in the AnyPick package.
 - Installing does not enable. A plugin is recorded disabled and does not load until you run `anypick plugin enable <name>`, which is the point where you grant in-process execution.
 - Enabling pins a SHA-256 digest of the **entire plugin package** (manifest + every shipped file under the plugin directory, excluding VCS/dev dirs). The digest is verified *before* the entry module is imported; if any file changes — not only `main` — the plugin is refused until you review it and run `anypick plugin trust <name>`.
 - `ANYPICK_NO_PLUGINS=1` disables plugin loading entirely.

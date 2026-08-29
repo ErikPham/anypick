@@ -19,6 +19,12 @@ export interface DecodedAccountMeta {
   identity?: string;
   notes?: string;
   credentialKind?: 'native' | 'proxy-only';
+  credentialClass?:
+    | 'native_subscription'
+    | 'provider_api_key'
+    | 'coding_plan_key'
+    | 'external_oauth'
+    | 'proxy_only';
 }
 
 export function decodeAccountMeta(v: unknown, key: string): DecoderResult<DecodedAccountMeta> {
@@ -49,7 +55,20 @@ export function decodeAccountMeta(v: unknown, key: string): DecoderResult<Decode
     // proxy-only account is exempted from paths that touch the live login, and
     // wrongly exempting one is how a real login stops being switchable.
     credentialKind: v.credentialKind === 'proxy-only' ? 'proxy-only' : undefined,
+    credentialClass: isCredentialClass(v.credentialClass) ? v.credentialClass : undefined,
   });
+}
+
+function isCredentialClass(
+  value: unknown,
+): value is NonNullable<DecodedAccountMeta['credentialClass']> {
+  return (
+    value === 'native_subscription' ||
+    value === 'provider_api_key' ||
+    value === 'coding_plan_key' ||
+    value === 'external_oauth' ||
+    value === 'proxy_only'
+  );
 }
 
 // ── AccountProxyConfig (v0) ───────────────────────────────────
@@ -86,6 +105,7 @@ export interface DecodedProxyRuntimeState {
   endpoint: string;
   compatibility?: string;
   pid?: number;
+  instanceId?: string;
   logPath?: string;
   startedAt: string;
   token?: string;
@@ -112,6 +132,7 @@ export function decodeProxyRuntimeState(
     endpoint: v.endpoint,
     compatibility: isOptionalString(v.compatibility) ? v.compatibility : undefined,
     pid: isOptionalNumber(v.pid) ? v.pid : undefined,
+    instanceId: isOptionalString(v.instanceId) ? v.instanceId : undefined,
     logPath: isOptionalString(v.logPath) ? v.logPath : undefined,
     startedAt: v.startedAt,
     token: isOptionalString(v.token) ? v.token : undefined,

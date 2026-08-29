@@ -42,7 +42,20 @@ export function resolveRuntime(
     provider = catalog.get(profile.meta.provider);
   }
 
-  const overlay = profile.meta.clientOverrides?.[clientId] ?? {};
+  const metaOverlay = profile.meta.clientOverrides?.[clientId] ?? {};
+  const secretOverlay = profile.secrets.clientOverrides?.[clientId];
+  const overlay: Record<string, unknown> = {
+    ...metaOverlay,
+    ...(secretOverlay?.apiKey !== undefined ? { apiKey: secretOverlay.apiKey } : {}),
+    ...(secretOverlay?.env
+      ? {
+          env: {
+            ...(isRecord(metaOverlay.env) ? metaOverlay.env : {}),
+            ...secretOverlay.env,
+          },
+        }
+      : {}),
+  };
   const models = { ...profile.meta.models };
   const headers = { ...profile.secrets.headers };
 
@@ -95,6 +108,10 @@ export function resolveRuntime(
     roles,
     overlay,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function resolveFromContext(ctx: ApplyContext, catalog?: CatalogRegistry): ResolvedRuntime {

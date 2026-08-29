@@ -1,9 +1,22 @@
+<Aside type="caution" title="Development preview">
+AnyPick does not currently publish a signed native app or supported installer.
+Build and run it from this repository; release channels named in ADR 0020 are
+planned targets, not available downloads.
+</Aside>
+
+For the native macOS source target (macOS 14+, Xcode, and Go required):
+
 ```bash
-npm install -g anypick
+open src/macos/AnyPick.xcodeproj
 ```
 
-The binary installs as `anypick`. AnyPick needs
-Node.js 22.5 or newer, because it stores its data in SQLite through
-`node:sqlite`.
+Select the shared **AnyPick** scheme and Run. The build bundles the Go service
+inside the app; it does not compile Swift or Go when the app launches.
 
-Later, `anypick update` upgrades an npm-installed copy in place.
+For the current CLI and terminal UI source workflow (Node.js 22.5+ and pnpm):
+
+```bash
+pnpm install
+pnpm dev --help
+pnpm dev tui
+```

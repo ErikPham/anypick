@@ -281,6 +281,8 @@ async function refreshOpenAiOauth(
       'user-agent': 'anypick-opencode/0.8',
     },
     body,
+    signal: AbortSignal.timeout(30_000),
+    redirect: 'manual',
   });
 
   if (!res.ok) {

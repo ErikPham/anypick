@@ -5,6 +5,7 @@ import type {
   LiveAuthStatus,
   LiveUsage,
   Provider,
+  ProviderLoginMethod,
 } from '../types';
 import { AnyPickError, isAnyPickError } from '../utils/errors';
 import { displayLabelFromName, normalizeAccountName } from '../utils/slug';
@@ -17,6 +18,19 @@ import { providerScope } from './refs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import {
+  exportSelectedAccountBackup,
+  validateBackupSelection,
+  type SavedAccountBackupEntry,
+  type SavedAccountBackupOptions,
+  type SavedAccountBackupResult,
+} from './account-backup';
+import {
+  inspectAccountBackup,
+  restoreSelectedAccountBackup,
+  type AccountRestoreInspection,
+  type AccountRestoreOptions,
+} from './account-restore';
 import { exportAccountEnvelope, importAccountEnvelope } from './account-transfer';
 
 /**
@@ -64,9 +78,17 @@ export interface SwitchResult {
 /** Exact local-auth checkpoint used to compensate a failed/scoped switch. */
 export interface LiveAuthCheckpoint {
   providerId: string;
+  source?: string;
   activeAccount: string | null;
   hadLiveAuth: boolean;
   directory: string;
+}
+
+export interface ProviderLoginResult {
+  provider: string;
+  account: AccountMeta;
+  method: ProviderLoginMethod;
+  backedUpTo: string | null;
 }
 
 /**
@@ -89,6 +111,12 @@ export class AccountService {
   private afterDelete?: (providerId: string, accountName: string) => Promise<void>;
 
   /**
+   * Optional post-switch side effects (keep the native client binding on the
+   * login that is now live). Wired from app.ts after BindingStore exists.
+   */
+  private afterSwitch?: (providerId: string, accountName: string) => Promise<void>;
+
+  /**
    * `proxy` stays optional for callers that only need account CRUD (several
    * tests, and any embedder that never starts a proxy). When omitted a private
    * one is built here — deliberately without a lease store, because a service
@@ -105,6 +133,10 @@ export class AccountService {
 
   setAfterDelete(fn: (providerId: string, accountName: string) => Promise<void>): void {
     this.afterDelete = fn;
+  }
+
+  setAfterSwitch(fn: (providerId: string, accountName: string) => Promise<void>): void {
+    this.afterSwitch = fn;
   }
 
   provider(id: string): Provider {
@@ -125,6 +157,51 @@ export class AccountService {
     return this.store.getAccount(providerId, normalizeAccountName(name));
   }
 
+  /**
+   * Drop leftover Antigravity hashes when the snapshot is only a CLI .env.
+   * Those labels made API-key relays look like a Google login that could not
+   * be switched.
+   */
+  private async reconcileStoredMeta(provider: Provider, account: Account): Promise<Account> {
+    if (!provider.describeSnapshot) {
+      return account;
+    }
+    const staleIdentity = isStaleAntigravityIdentity(account.meta.identity);
+    const staleNotes = account.meta.notes === 'Antigravity login';
+    if (!staleIdentity && !staleNotes) {
+      return account;
+    }
+    const materialized = await this.store.getAccount(account.meta.provider, account.meta.name);
+    if (!materialized) {
+      return account;
+    }
+    const described = await provider.describeSnapshot(materialized.snapshotDir).catch(() => null);
+    if (!described) {
+      return account;
+    }
+    if (staleIdentity && isStaleAntigravityIdentity(described.identity)) {
+      return materialized;
+    }
+    if (!staleIdentity && described.notes === account.meta.notes) {
+      return materialized;
+    }
+    const patch = {
+      ...(staleIdentity ? { identity: described.identity } : {}),
+      ...(staleNotes && described.notes !== 'Antigravity login'
+        ? { notes: described.notes, credentialClass: described.credentialClass }
+        : {}),
+    };
+    if (Object.keys(patch).length === 0) {
+      return materialized;
+    }
+    const meta = await this.store.patchAccountMeta(
+      materialized.meta.provider,
+      materialized.meta.name,
+      patch,
+    );
+    return { ...materialized, meta };
+  }
+
   /** Saved local name for an upstream identity, if one is already known. */
   async findNameByIdentity(providerId: string, identity: string): Promise<string | null> {
     return this.findAccountNameByIdentity(providerId, identity);
@@ -136,7 +213,7 @@ export class AccountService {
    */
   async checkpointLiveAuth(
     providerId: string,
-    opts: { durable?: boolean } = {},
+    opts: { durable?: boolean; source?: string } = {},
   ): Promise<LiveAuthCheckpoint> {
     const provider = this.registry.get(providerId);
     const checkpointRoot = opts.durable ? join(this.store.root, 'recovery', 'live-auth') : tmpdir();
@@ -144,11 +221,24 @@ export class AccountService {
     const directory = await mkdtemp(join(checkpointRoot, 'anypick-live-checkpoint-'));
     try {
       const activeAccount = await this.store.getActive(providerId);
-      const live = await provider.detectLive();
+      const live =
+        opts.source && provider.detectLiveSource
+          ? await provider.detectLiveSource(opts.source)
+          : await provider.detectLive();
       if (live.present) {
-        await provider.backup(directory);
+        if (opts.source && provider.backupSource) {
+          await provider.backupSource(opts.source, directory);
+        } else {
+          await provider.backup(directory);
+        }
       }
-      return { providerId, activeAccount, hadLiveAuth: live.present, directory };
+      return {
+        providerId,
+        source: opts.source,
+        activeAccount,
+        hadLiveAuth: live.present,
+        directory,
+      };
     } catch (err) {
       await rm(directory, { recursive: true, force: true });
       throw err;
@@ -160,6 +250,8 @@ export class AccountService {
     const provider = this.registry.get(checkpoint.providerId);
     if (checkpoint.hadLiveAuth) {
       await provider.restore(checkpoint.directory);
+    } else if (checkpoint.source && provider.clearLiveSource) {
+      await provider.clearLiveSource(checkpoint.source);
     } else if (provider.clearLive) {
       await provider.clearLive();
     } else {
@@ -185,7 +277,10 @@ export class AccountService {
     const out: ListedAccount[] = [];
     for (const p of providers) {
       const active = await this.store.getActive(p.id);
-      const accounts = await this.store.listAccounts(p.id);
+      const listed = await this.store.listAccounts(p.id);
+      const accounts = await Promise.all(
+        listed.map((account) => this.reconcileStoredMeta(p, account)),
+      );
       const live = await p.detectLive();
       const materialMatches = await Promise.all(
         accounts.map((account) => computeLiveMatch(p, account, live)),
@@ -279,6 +374,141 @@ export class AccountService {
   async liveUsage(providerId: string): Promise<LiveUsage | null> {
     const provider = this.registry.get(providerId);
     return provider.liveUsage ? provider.liveUsage() : null;
+  }
+
+  /** Provider-owned browser sign-in methods, ordered by preference only. */
+  async loginMethods(providerId: string, source?: string): Promise<ProviderLoginMethod[]> {
+    const provider = this.registry.get(providerId);
+    if (!provider.loginMethods || !provider.login) {
+      return [];
+    }
+    const methods = [...(await provider.loginMethods())];
+    return methods
+      .filter((method) => !source || !method.source || method.source === source)
+      .toSorted((a, b) => {
+        const official = Number(b.provenance === 'official') - Number(a.provenance === 'official');
+        if (official !== 0) {
+          return official;
+        }
+        const preferred = Number(Boolean(b.preferred)) - Number(Boolean(a.preferred));
+        return preferred || a.label.localeCompare(b.label);
+      });
+  }
+
+  /**
+   * Run a provider-owned browser login, then commit its native credential as
+   * an AnyPick account. The prior native login and active pointer are restored
+   * exactly if any step after checkpointing fails.
+   */
+  async login(
+    providerId: string,
+    opts: {
+      methodId?: string;
+      source?: string;
+      name?: string;
+      label?: string;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<ProviderLoginResult> {
+    return withMutationLocks(this.store.root, [providerScope(providerId)], () =>
+      this.loginLocked(providerId, opts),
+    );
+  }
+
+  private async loginLocked(
+    providerId: string,
+    opts: {
+      methodId?: string;
+      source?: string;
+      name?: string;
+      label?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<ProviderLoginResult> {
+    const provider = this.registry.get(providerId);
+    if (!provider.loginMethods || !provider.login) {
+      throw new AnyPickError(`${provider.name} does not offer browser sign-in.`, {
+        code: 'PROVIDER_LOGIN_UNSUPPORTED',
+        mutated: false,
+      });
+    }
+
+    const needsSource = (provider.accountSources?.length ?? 0) > 1;
+    if (needsSource && !opts.source && !opts.methodId) {
+      throw new AnyPickError(`Choose which ${provider.name} sign-in source to use.`, {
+        code: 'ACCOUNT_SOURCE_REQUIRED',
+        suggestions: [`Pass --source <source> together with --auth-method <id>.`],
+        mutated: false,
+      });
+    }
+
+    const methods = await this.loginMethods(providerId, opts.source);
+    const method = selectLoginMethod(methods, opts.methodId);
+    if (method.available === false) {
+      throw new AnyPickError(method.unavailableReason ?? `${method.label} is unavailable.`, {
+        code: 'PROVIDER_LOGIN_UNAVAILABLE',
+        suggestions: [`Install the launcher required by ${method.label}, then try again.`],
+        mutated: false,
+      });
+    }
+    const source = opts.source ?? method.source;
+    if (needsSource && !source) {
+      throw new AnyPickError(`Choose which ${provider.name} sign-in source to use.`, {
+        code: 'ACCOUNT_SOURCE_REQUIRED',
+        suggestions: [`Pass --source <source> together with --auth-method ${method.id}.`],
+        mutated: false,
+      });
+    }
+    if (opts.source && method.source && opts.source !== method.source) {
+      throw new AnyPickError(`${method.label} cannot sign in to source "${opts.source}".`, {
+        code: 'PROVIDER_LOGIN_METHOD_UNKNOWN',
+        mutated: false,
+      });
+    }
+
+    const checkpoint = await this.checkpointLiveAuth(providerId, { source });
+    let backedUpTo: string | null = null;
+    try {
+      if (checkpoint.hadLiveAuth) {
+        const stash = await this.stashLocked(providerId, { source });
+        backedUpTo = stash.backedUpTo;
+      }
+
+      await provider.login({ methodId: method.id, source, signal: opts.signal });
+      const live =
+        source && provider.detectLiveSource
+          ? await provider.detectLiveSource(source)
+          : await provider.detectLive();
+      if (!live.present) {
+        throw new AnyPickError(`${method.label} completed without a usable local login.`, {
+          code: 'PROVIDER_LOGIN_NO_CREDENTIAL',
+          suggestions: ['Try Sign In again and complete every step in the browser.'],
+        });
+      }
+
+      const accountName = await this.resolveCurrentSaveName(providerId, opts.name, source);
+      const account = await this.save(providerId, accountName, {
+        force: true,
+        source,
+        label: opts.label,
+      });
+      await this.store.setActive(providerId, account.name);
+      return { provider: providerId, account, method, backedUpTo };
+    } catch (err) {
+      try {
+        await this.restoreLiveAuthCheckpoint(checkpoint);
+      } catch (rollbackErr) {
+        throw new AnyPickError(
+          `Provider sign-in failed and the previous login could not be restored: ${
+            rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+          }`,
+          'PROVIDER_LOGIN_ROLLBACK_FAILED',
+        );
+      }
+      throw err;
+    } finally {
+      await this.discardLiveAuthCheckpoint(checkpoint);
+    }
   }
 
   /**
@@ -395,19 +625,14 @@ export class AccountService {
         identity: fromProvider.identity ?? live.identity ?? existing?.meta.identity,
         notes: opts.notes ?? existing?.meta.notes ?? fromProvider.notes,
         credentialKind: fromProvider.credentialKind,
+        credentialClass:
+          fromProvider.credentialClass ??
+          existing?.meta.credentialClass ??
+          (fromProvider.credentialKind === 'proxy-only' ? 'proxy_only' : 'native_subscription'),
       };
-      await this.store.writeMeta(meta);
-    } catch (err) {
-      if (existing) {
-        // Re-materialize the last committed DB snapshot after prepareSnapshot
-        // cleared its on-disk cache.
-        await this.store.getAccount(providerId, accountName).catch(() => null);
-      } else {
-        // A failed first save must not leave an empty account directory that
-        // can later be mistaken for a real login.
-        await rm(prepared.accountDir, { recursive: true, force: true }).catch(() => {});
-      }
-      throw err;
+      await this.store.writeMeta(meta, prepared.snapshotDir);
+    } finally {
+      await this.store.discardPreparedSnapshot(prepared.snapshotDir).catch(() => {});
     }
 
     if (!(await this.store.getActive(providerId))) {
@@ -424,9 +649,16 @@ export class AccountService {
    * snapshot instead of creating an alias such as "default". A new login gets
    * a stable identity-derived name unless the caller supplied one.
    */
-  async resolveCurrentSaveName(providerId: string, requestedName?: string): Promise<string> {
+  async resolveCurrentSaveName(
+    providerId: string,
+    requestedName?: string,
+    source?: string,
+  ): Promise<string> {
     const provider = this.registry.get(providerId);
-    const live = await provider.detectLive();
+    const live =
+      source && provider.detectLiveSource
+        ? await provider.detectLiveSource(source)
+        : await provider.detectLive();
     if (!live.present) {
       throw new AnyPickError(`No live ${provider.name} login to save.`, {
         code: 'NO_LIVE_AUTH',
@@ -469,9 +701,13 @@ export class AccountService {
   }
 
   /** Save current auth, reusing its existing account whenever possible. */
-  async saveCurrent(providerId: string, requestedName?: string): Promise<AccountMeta> {
-    const accountName = await this.resolveCurrentSaveName(providerId, requestedName);
-    return this.save(providerId, accountName, { force: true });
+  async saveCurrent(
+    providerId: string,
+    requestedName?: string,
+    source?: string,
+  ): Promise<AccountMeta> {
+    const accountName = await this.resolveCurrentSaveName(providerId, requestedName, source);
+    return this.save(providerId, accountName, { force: true, source });
   }
 
   /**
@@ -536,6 +772,7 @@ export class AccountService {
         await provider.restore(target.snapshotDir);
       }
       await this.store.setActive(providerId, accountName);
+      await this.afterSwitch?.(providerId, accountName);
 
       let proxy: SwitchResult['proxy'];
       if (!opts.noProxy && providerCanProxy(provider)) {
@@ -595,7 +832,7 @@ export class AccountService {
       /** Force backup into this account name. */
       as?: string;
       /** Sign-in source to stash for providers that have more than one. */
-      source?: 'gemini-cli' | 'antigravity';
+      source?: string;
     } = {},
   ): Promise<{
     provider: string;
@@ -617,7 +854,7 @@ export class AccountService {
     opts: {
       noBackup?: boolean;
       as?: string;
-      source?: 'gemini-cli' | 'antigravity';
+      source?: string;
     },
   ): Promise<{
     provider: string;
@@ -1071,6 +1308,72 @@ export class AccountService {
     await exportAccountEnvelope(this.store, providerId, name, outPath);
   }
 
+  async exportAccountBackup(
+    accounts: SavedAccountBackupEntry[],
+    destination: string,
+    opts: SavedAccountBackupOptions = {},
+  ): Promise<SavedAccountBackupResult> {
+    const selected = validateBackupSelection(accounts);
+    for (const account of selected) {
+      this.registry.get(account.provider);
+    }
+    return withMutationLocks(
+      this.store.root,
+      selected.map((account) => providerScope(account.provider)),
+      () => exportSelectedAccountBackup(this.store, selected, destination, opts),
+    );
+  }
+
+  async inspectAccountBackup(path: string): Promise<AccountRestoreInspection> {
+    return inspectAccountBackup(this.store, this.registry, path);
+  }
+
+  async restoreAccountBackup(
+    path: string,
+    selected: SavedAccountBackupEntry[],
+    opts: AccountRestoreOptions = {},
+  ): Promise<AccountMeta[]> {
+    // Validate the complete package before deriving lock scopes from its preview.
+    const preview = await inspectAccountBackup(this.store, this.registry, path);
+    const available = new Set(preview.entries.map((entry) => `${entry.provider}\0${entry.name}`));
+    for (const account of selected) {
+      if (!available.has(`${account.provider}\0${account.name}`)) {
+        throw new AnyPickError('The restore selection contains an unknown account.', {
+          code: 'BACKUP_SELECTION_INVALID',
+          mutated: false,
+        });
+      }
+    }
+    return withMutationLocks(
+      this.store.root,
+      selected.map((account) => providerScope(account.provider)),
+      () => restoreSelectedAccountBackup(this.store, this.registry, path, selected, opts),
+    );
+  }
+
+  /** Compatibility entry point for the directory-picker backup UI. */
+  async backupSavedAccounts(parentPath: string): Promise<{
+    directory: string;
+    accountCount: number;
+  }> {
+    const accounts = (
+      await Promise.all(
+        this.registry.list().map(async (provider) =>
+          (await this.store.listAccounts(provider.id)).map((account) => ({
+            provider: provider.id,
+            name: account.meta.name,
+          })),
+        ),
+      )
+    ).flat();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const result = await this.exportAccountBackup(
+      accounts,
+      join(parentPath, `anypick-backup-${timestamp}.anypick-backup`),
+    );
+    return { directory: result.file, accountCount: result.accountCount };
+  }
+
   async importAccount(
     providerId: string,
     name: string,
@@ -1095,8 +1398,71 @@ export class AccountService {
   }
 }
 
+function selectLoginMethod(
+  methods: ProviderLoginMethod[],
+  requestedMethodId?: string,
+): ProviderLoginMethod {
+  if (requestedMethodId) {
+    const requested = methods.find((method) => method.id === requestedMethodId);
+    if (!requested) {
+      throw new AnyPickError(`Unknown browser sign-in method "${requestedMethodId}".`, {
+        code: 'PROVIDER_LOGIN_METHOD_UNKNOWN',
+        suggestions:
+          methods.length > 0
+            ? [`Choose one of: ${methods.map((method) => method.id).join(', ')}.`]
+            : undefined,
+        mutated: false,
+      });
+    }
+    return requested;
+  }
+
+  const available = methods.filter((method) => method.available !== false);
+  const official = available.filter((method) => method.provenance === 'official');
+  const preferredOfficial = official.filter((method) => method.preferred);
+  if (preferredOfficial.length === 1) {
+    return preferredOfficial[0];
+  }
+  if (official.length === 1) {
+    return official[0];
+  }
+  if (official.length > 1) {
+    throw new AnyPickError('Choose an official browser sign-in method.', {
+      code: 'PROVIDER_LOGIN_METHOD_REQUIRED',
+      suggestions: [`Choose one of: ${official.map((method) => method.id).join(', ')}.`],
+      mutated: false,
+    });
+  }
+  const preferred = available.filter((method) => method.preferred);
+  if (preferred.length === 1) {
+    return preferred[0];
+  }
+  if (available.length === 1) {
+    return available[0];
+  }
+  if (available.length === 0) {
+    const fallback = methods.find((method) => method.preferred) ?? methods[0];
+    if (fallback) {
+      return fallback;
+    }
+    throw new AnyPickError('No browser sign-in method is available.', {
+      code: 'PROVIDER_LOGIN_UNAVAILABLE',
+      mutated: false,
+    });
+  }
+  throw new AnyPickError('Choose a browser sign-in method.', {
+    code: 'PROVIDER_LOGIN_METHOD_REQUIRED',
+    suggestions: [`Choose one of: ${available.map((method) => method.id).join(', ')}.`],
+    mutated: false,
+  });
+}
+
 function identitiesMatch(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function isStaleAntigravityIdentity(identity: string | undefined): boolean {
+  return typeof identity === 'string' && /^antigravity:/i.test(identity);
 }
 
 /**

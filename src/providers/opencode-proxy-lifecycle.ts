@@ -11,7 +11,11 @@ import {
   stopPidFile,
   waitForHttp,
 } from '../utils/process';
-import { listZenGoCredentials } from './opencode-proxy/auth';
+import {
+  listZenGoCredentials,
+  opencodeDbPathFor,
+  readDbPlatformCredentials,
+} from './opencode-proxy/auth';
 import { resolveAnyPickCliLaunch } from './opencode-cli-entry';
 
 export interface OpenCodeProxyLifecycleOptions {
@@ -60,18 +64,26 @@ export async function startOpenCodeProxy(
     ((await pathExists(opts.authPath)) ? opts.authPath : join(ctx.snapshotDir, 'auth.json'));
 
   if (authMode !== 'public' && !(await pathExists(authPath))) {
-    throw new AnyPickError(
-      'No OpenCode auth available. Run: opencode auth login  then  anypick add account opencode --current --name <name>',
-      'NO_LIVE_AUTH',
-    );
+    // The beta CLI can hold a live Zen/Go key without any auth.json on disk.
+    if (readDbPlatformCredentials(opencodeDbPathFor(authPath)).length === 0) {
+      throw new AnyPickError(
+        'No OpenCode auth available. Run: opencode auth login  then  anypick add account opencode --current --name <name>',
+        'NO_LIVE_AUTH',
+      );
+    }
   }
 
   // Proxy needs a Zen/Go API key (oauth-only accounts cannot drive this proxy)
   try {
     const data = await readJsonFile<Record<string, unknown>>(authPath);
-    if (authMode === 'api' && listZenGoCredentials(data).length === 0) {
+    const dbCredentials = readDbPlatformCredentials(opencodeDbPathFor(authPath));
+    if (
+      authMode === 'api' &&
+      listZenGoCredentials(data).length === 0 &&
+      dbCredentials.length === 0
+    ) {
       throw new AnyPickError(
-        'OpenCode proxy needs a Zen/Go API key in auth.json (opencode auth login → OpenCode Zen or Go). OAuth providers (ChatGPT, etc.) are activated via anypick use, not this proxy.',
+        'OpenCode proxy needs a Zen/Go API key in auth.json or the CLI credential store (opencode auth login → OpenCode Zen or Go). OAuth providers (ChatGPT, etc.) are activated via anypick use, not this proxy.',
         'NO_LIVE_AUTH',
       );
     }

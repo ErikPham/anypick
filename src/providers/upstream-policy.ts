@@ -27,6 +27,25 @@ export function isInsufficientBalanceFailure(status: number, bodyPreview = ''): 
 }
 
 /**
+ * A 401 that explicitly blames the credential — OpenCode's CreditsError
+ * ("No payment method") or an invalid/expired key. Retrying the same key can
+ * never succeed and must not end a multi-credential walk: another ring member
+ * may still serve. Deliberately narrow; a generic 401 stays on the current key.
+ */
+export function isCredentialRejectedFailure(status: number, bodyPreview = ''): boolean {
+  if (status !== 401) {
+    return false;
+  }
+  const text = bodyPreview.slice(0, 2000).toLowerCase();
+  return (
+    /credits?error/.test(text) ||
+    /no payment method/.test(text) ||
+    /invalid[_\s-]*(?:api[_\s-]*)?key/.test(text) ||
+    /(?:api[_\s-]*)?key[^.]{0,80}(?:expired|revoked|invalid)/.test(text)
+  );
+}
+
+/**
  * A 429 is normally shared by an IP, endpoint, or model. This deliberately
  * returns true only for vendor responses that explicitly attribute exhaustion
  * to an API key, project, account, billing balance, or quota allocation.

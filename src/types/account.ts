@@ -2,6 +2,14 @@ import type { SourceAdapter } from './bindings';
 import type { ModelPolicy } from './catalog';
 import type { ProxyHubBackendContext, ProxyHubBackendHandle } from './proxy-hub';
 
+/** Provider policy for a credential, independent of where its secret is stored. */
+export type CredentialClass =
+  | 'native_subscription'
+  | 'provider_api_key'
+  | 'coding_plan_key'
+  | 'external_oauth'
+  | 'proxy_only';
+
 /**
  * Metadata stored alongside each saved account snapshot.
  * Secrets live only in the snapshot files, never in meta.
@@ -32,11 +40,17 @@ export interface AccountMeta {
    * live token; it is reachable only through the provider's proxy.
    */
   credentialKind?: 'native' | 'proxy-only';
+  /**
+   * Provider-declared, non-secret credential taxonomy for presentation and
+   * routing. `credentialKind` remains the compatibility/safety switch used by
+   * legacy snapshots; this value must never contain a credential or token.
+   */
+  credentialClass?: CredentialClass;
 }
 
 /** Fields a provider may contribute to AccountMeta when it writes a snapshot. */
 export type SnapshotMeta = Partial<
-  Pick<AccountMeta, 'identity' | 'label' | 'notes' | 'credentialKind'>
+  Pick<AccountMeta, 'identity' | 'label' | 'notes' | 'credentialKind' | 'credentialClass'>
 >;
 
 /**
@@ -209,6 +223,51 @@ export interface AccountSourceDescriptor {
   name: string;
 }
 
+/** How a provider characterizes one browser sign-in path. */
+export type ProviderLoginProvenance = 'official' | 'community';
+
+/**
+ * A browser login offered by a provider.
+ *
+ * `provenance` is presentation and preference data, not an authorization
+ * policy. AnyPick prefers an official method when the provider marks one, but
+ * full providers and plugins may intentionally expose community workflows.
+ */
+export interface ProviderLoginMethod {
+  /** Stable provider-owned id used by CLI and tray commands. */
+  id: string;
+  label: string;
+  description?: string;
+  provenance: ProviderLoginProvenance;
+  /** Provider-owned default within the same provenance tier. */
+  preferred?: boolean;
+  /** Restrict this method to one provider-owned native source. */
+  source?: string;
+  /** False when the required local launcher or integration is unavailable. */
+  available?: boolean;
+  unavailableReason?: string;
+}
+
+export interface ProviderLoginContext {
+  methodId: string;
+  source?: string;
+  signal?: AbortSignal;
+}
+
+/** Provider-owned choice for a live credential location. */
+export interface AccountSource {
+  /** Stable value passed to detect/backup/clear source hooks. */
+  id: string;
+  /** Human-facing picker label. */
+  label: string;
+  /** Optional concise help for the picker. */
+  hint?: string;
+  /** Provider-owned instruction for adding a different login. */
+  signInInstruction?: string;
+  /** Provider-owned hint shown while naming the saved login. */
+  saveNameHint?: string;
+}
+
 /**
  * Provider contract.
  *
@@ -234,11 +293,10 @@ export interface Provider extends ModelPolicy {
   readonly shortName?: string;
 
   /**
-   * When true, the TUI/CLI account-add flow offers a multi-source picker before
-   * mode selection (e.g. Gemini CLI vs Antigravity). Driven by the provider so
-   * UI surfaces never hardcode provider ids.
+   * Provider-owned choices for live credential locations. More than one entry
+   * makes CLI/TUI present a source picker; no core/UI provider-id conditionals.
    */
-  readonly requiresAccountSourcePick?: boolean;
+  readonly accountSources?: readonly AccountSource[];
 
   /**
    * True when the compatibility proxy needs an API key from the snapshot and
@@ -310,11 +368,32 @@ export interface Provider extends ModelPolicy {
   backup(destDir: string): Promise<SnapshotMeta>;
 
   /**
+   * Browser sign-in methods currently available on this machine.
+   *
+   * Providers own both the method list and implementation so core never
+   * hardcodes OAuth endpoints, client ids, or provider-specific commands.
+   */
+  loginMethods?(): readonly ProviderLoginMethod[] | Promise<readonly ProviderLoginMethod[]>;
+
+  /**
+   * Complete a provider-declared browser login and write its native credential
+   * store. Core verifies and snapshots that live credential after this returns.
+   */
+  login?(ctx: ProviderLoginContext): Promise<void>;
+
+  /**
    * Credential kinds this provider accepts as direct user input, e.g.
    * `['api-key']`. Declaring one is what makes `backupInput` reachable from the
    * CLI, so core can validate a request without knowing the provider.
    */
   readonly credentialInputs?: readonly string[];
+
+  /**
+   * Human label for one declared credential kind. UIs fall back to formatting
+   * the kind when omitted; providers use this for product terms such as
+   * "Coding Plan key" without teaching core about vendor-specific plans.
+   */
+  credentialInputLabel?(kind: string): string;
 
   /**
    * Non-secret qualifiers a credential kind accepts, in the order a caller

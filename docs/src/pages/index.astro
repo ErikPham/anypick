@@ -1,198 +1,94 @@
 ---
-import BaseLayout from "../layouts/BaseLayout.astro";
-import Header from "../components/Header.astro";
-import TuiFrame from "../components/TuiFrame.astro";
 import { Icon } from "astro-icon/components";
 import { config } from "virtual:nimbus/config";
+import Header from "../components/Header.astro";
+import RoutingConcept from "../components/RoutingConcept.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
 
-/** The Apps screen — default landing, as `anypick` renders it. */
-const appsScreen = {
-  path: "apps",
-  blocks: [
-    {
-      group: "Routes for Claude Code and Codex",
-      rows: [
-        {
-          name: "Claude",
-          detail: "grok/work · grok-code-fast-1",
-          status: "● ready",
-          kind: "live" as const,
-          selected: true,
-        },
-        {
-          name: "Codex",
-          detail: "openrouter-work · openai/gpt-5.6",
-          status: "● ready",
-          kind: "live" as const,
-        },
-      ],
-    },
-  ],
-  outcome: "Claude uses grok/work",
-  support: "model grok-code-fast-1 · enter to preview a different route",
-  hints: [
-    ["enter", "change route"],
-    ["a", "accounts"],
-    ["g", "gateways"],
-    ["p", "proxies"],
-    ["d", "diagnose"],
-  ] as Array<[string, string]>,
-};
+const sourceCommand = "open src/macos/AnyPick.xcodeproj";
 
-/** Source picker — second step of the Apps route builder. */
-const appsSourceScreen = {
-  path: "apps / Claude / source",
-  nameWidth: "22ch",
-  blocks: [
-    {
-      group: "Native accounts",
-      rows: [
-        {
-          name: "Anthropic · work",
-          detail: "current live login",
-          status: "● live",
-          kind: "live" as const,
-        },
-      ],
-    },
-    {
-      group: "Gateways & proxies",
-      rows: [
-        {
-          name: "grok/work",
-          detail: "account proxy",
-          status: "○ saved",
-          kind: "saved" as const,
-          selected: true,
-        },
-        {
-          name: "openrouter-work",
-          detail: "gateway",
-          status: "○ saved",
-          kind: "saved" as const,
-        },
-      ],
-    },
-  ],
-  outcome: "Route Claude through grok/work",
-  support: "account proxy · model routing is configured next",
-  hints: [
-    ["enter", "choose route"],
-    ["a", "accounts"],
-    ["g", "gateways"],
-    ["esc", "back"],
-  ] as Array<[string, string]>,
-};
-
-/** The Proxy board, same binary, one key from Apps. */
-const proxyScreen = {
-  path: "proxy",
-  blocks: [
-    {
-      rows: [
-        {
-          name: "gemini/work",
-          status: "– off",
-          kind: "muted" as const,
-          selected: true,
-        },
-        { name: "grok/work", status: "○ stopped", kind: "saved" as const },
-      ],
-    },
-  ],
-  outcome: "Turn on and start gemini/work",
-  support: "AnyPick chooses the address automatically.",
-  hints: [
-    ["enter", "turn on and start"],
-    ["tab", "apps"],
-  ] as Array<[string, string]>,
-};
-
-const steps = [
+const capabilities = [
   {
-    key: "anypick",
-    wide: true,
-    title: "Open Apps",
-    body: "Claude Code and Codex each get a row: who powers them, which model, and whether the route is ready. That list is the whole home screen.",
+    label: "Cross-provider routes",
+    value: "Claude Code · Codex",
+    detail: "Compatible accounts, proxies, and gateways",
   },
   {
-    key: "enter",
-    title: "Pick who powers the app",
-    body: "Native logins, gateways, account proxies, pools, or a saved preset. Only pairings that actually work appear — no dead ends.",
+    label: "Native account switching",
+    value: "Gemini · Kiro",
+    detail: "Switches the provider's own live credential",
   },
   {
-    key: "a",
-    title: "Set models, then confirm",
-    body: "When the route needs it, choose the default model (and Claude roles). A preview lists every write and proxy start before anything changes.",
+    label: "Bring your own gateway",
+    value: "OpenRouter · LiteLLM",
+    detail: "Or another compatible endpoint",
   },
 ];
-/**
- * Only `claude` and `codex` can consume a source that is not their own
- * provider — see `transportFor` in src/sources/account-adapters.ts. Every pair
- * below is one that adapter actually permits.
- */
-const pairs = [
-  { client: "Claude Code", source: "xAI Grok", via: "proxy" },
-  { client: "Codex CLI", source: "Gemini CLI", via: "proxy" },
-  { client: "Claude Code", source: "OpenCode", via: "proxy" },
-  { client: "Claude Code", source: "OpenRouter", via: "gateway" },
+
+const workflow = [
+  {
+    number: "01",
+    title: "See what powers each app",
+    body: "Claude Code and Codex show their current source, model, usage when available, and whether the route needs attention.",
+  },
+  {
+    number: "02",
+    title: "Choose a compatible source",
+    body: "Pick a native account, gateway, managed proxy, Proxy Hub, or saved setup. Incompatible pairings never appear.",
+  },
+  {
+    number: "03",
+    title: "Review every change",
+    body: "AnyPick previews the binding, model roles, proxy start, and client configuration before it writes anything.",
+  },
+  {
+    number: "04",
+    title: "Activate, then keep coding",
+    body: "The approved plan drives both execution and rollback, so the route shown in Apps stays the source of truth.",
+  },
 ];
 
-const features = [
+const appBenefits = [
+  {
+    icon: "ph:cursor-click",
+    title: "Switch from the menu bar",
+    body: "Change an app's source without reopening config files or leaving the tool you are using.",
+  },
+  {
+    icon: "ph:gauge",
+    title: "See usage where supported",
+    body: "Keep the active identity, model, and provider quota in the same compact view.",
+  },
+  {
+    icon: "ph:shield-check",
+    title: "Keep secrets out of the UI",
+    body: "The native UI sends typed actions to its bundled Go service; credentials and proxy bearer tokens stay behind that boundary.",
+  },
+];
+
+const proof = [
   {
     icon: "ph:identification-card",
-    title: "Reuse the logins you have",
-    body: "AnyPick snapshots the credential a provider's own CLI wrote, so a subscription you already pay for becomes a source you can point any client at. It never performs the sign-in itself.",
-  },
-  {
-    icon: "ph:arrows-left-right",
-    title: "Cross the provider boundary",
-    body: "A local proxy translates between the Anthropic and OpenAI protocols, so Claude Code can run on a Grok login and Codex can run on Gemini. Started, supervised, and torn down for you.",
-  },
-  {
-    icon: "ph:plugs",
-    title: "Bring your own endpoint",
-    body: "A gateway is an endpoint, an API key, and a model catalog — OpenRouter, LiteLLM, a self-hosted server, or a raw provider API. No proxy process involved.",
+    title: "Reuse provider-owned logins",
+    body: "AnyPick snapshots credentials created by the provider's own sign-in flow. It never impersonates that flow or asks for your password.",
+    href: "/docs/guides/accounts",
+    link: "Accounts guide",
   },
   {
     icon: "ph:folders",
-    title: "One source per repository",
-    body: "Bindings resolve per launch, then per directory, then globally. Give one client a different source inside one project and nothing else changes.",
+    title: "Route one project differently",
+    body: "Bindings resolve per launch, then per directory, then globally. Change one repository without disturbing the rest.",
+    href: "/docs/guides/projects",
+    link: "Project bindings",
+  },
+  {
+    icon: "ph:arrows-left-right",
+    title: "Supervise local translation",
+    body: "When protocols differ, the bundled Go service owns the required loopback proxy instead of making the UI reimplement it.",
+    href: "/docs/guides/proxies",
+    link: "Proxy guide",
   },
 ];
-
-const sources = [
-  "OpenAI Codex",
-  "Gemini CLI",
-  "xAI Grok",
-  "AWS Kiro",
-  "OpenCode",
-  "OpenRouter",
-  "Anthropic",
-  "OpenAI",
-  "LiteLLM",
-  "Custom / local",
-];
-
-/**
- * Two different questions, and the honest answer differs for each.
- *
- * Which client can be *bound* to a foreign provider: only `claude` and `codex`
- * — `transportFor` in src/sources/account-adapters.ts returns `unsupported`
- * for the rest.
- *
- * Which surfaces follow an *account switch*: whatever reads the credential
- * AnyPick restored. `claude` covers the CLI and its IDE extensions (see the
- * client description in src/clients/claude-code.ts), and a Gemini login may be
- * the Gemini CLI's or Antigravity's (src/providers/gemini.ts). The Codex
- * desktop app is the documented exception — the header comment in
- * src/providers/codex.ts states it keeps its own in-app account and AnyPick can
- * only restore ~/.codex/auth.json.
- */
-const clients = {
-  any: ["Claude Code (CLI + IDE)", "Codex CLI"],
-  native: ["Gemini CLI", "Antigravity", "Kiro"],
-};
 ---
 
 <BaseLayout
@@ -200,577 +96,695 @@ const clients = {
   description={config.description}
   socialImage="/og-image.png"
 >
-  <div class="flex min-h-screen flex-col">
-    <Header showSidebar={false} />
+  <div class="landing min-h-screen bg-[#080A11] text-[#F8FAFC]">
+    <Header showSidebar={false} appearance="landing" />
 
-    <main id="main-content" class="flex-1">
-      {/* ── Hero ─────────────────────────────────────────────── */}
-      <section class="relative isolate overflow-hidden bg-[#0B0F19]">
-        <div class="hp-dots pointer-events-none absolute inset-0 -z-10"></div>
+    <main id="main-content">
+      <section class="hero relative isolate overflow-hidden">
+        <div class="hero-grid pointer-events-none absolute inset-0 -z-20" aria-hidden="true"></div>
+        <div class="hero-light pointer-events-none absolute -z-10" aria-hidden="true"></div>
 
-        <div class="mx-auto w-full max-w-5xl px-6 pt-20 pb-16 sm:pt-24">
-          <div class="mx-auto max-w-3xl text-center">
-            <p
-              class="hp-rise inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 font-mono text-xs text-[#98A2B3]"
-            >
-              <span class="hp-pulse h-1.5 w-1.5 rounded-full bg-[#22C55E]"></span>
-              Apps · pick a source · keep coding
+        <div class="mx-auto grid w-full max-w-7xl items-center gap-14 px-5 pt-16 pb-20 sm:px-8 sm:pt-20 lg:grid-cols-[0.88fr_1.12fr] lg:gap-16 lg:pt-24 lg:pb-28">
+          <div class="hero-copy max-w-2xl">
+            <p class="eyebrow">
+              <span></span>
+              Native source preview · no signed download yet
             </p>
 
-            <h1
-              class="hp-rise mt-7 text-balance text-[#F8FAFC] leading-[1.05]"
-              style="font-size: clamp(2.5rem, 7.5vw, 4.25rem); font-weight: 650; letter-spacing: -0.035em; --hp-delay: 80ms;"
-            >
+            <h1 class="mt-7 text-balance text-[clamp(3rem,7vw,5.4rem)] font-semibold leading-[0.96] tracking-[-0.055em]">
               Pick any.<br />
-              <span class="hp-shimmer bg-clip-text text-transparent"
-                >Code on.</span
-              >
+              <span>Code on.</span>
             </h1>
 
-            <p
-              class="hp-rise mx-auto mt-6 max-w-2xl text-lg text-[#98A2B3] leading-relaxed"
-              style="--hp-delay: 160ms;"
-            >
-              Point <strong class="font-medium text-[#F8FAFC]">Claude Code</strong> or{" "}
-              <strong class="font-medium text-[#F8FAFC]">Codex</strong> at the login
-              you already pay for — Grok, Gemini, OpenRouter, a second work
-              account. Run{" "}
-              <code class="font-mono text-[#F8FAFC]">anypick</code>, open{" "}
-              <strong class="font-medium text-[#F8FAFC]">Apps</strong>, press{" "}
-              <kbd class="font-mono text-[#F8FAFC]">enter</kbd>. No config files.
+            <p class="mt-7 max-w-xl text-pretty text-lg leading-8 text-[#98A2B3] sm:text-xl">
+              Route <strong>Claude Code</strong> and <strong>Codex</strong> through compatible accounts and gateways you already have. Switch native provider logins from the same place.
             </p>
 
-            {/* One solid primary, one outlined secondary, one plain link — all
-                on a shared 3rem height so the row has a single baseline. */}
-            <div
-              class="hp-rise mt-9 flex flex-wrap items-center justify-center gap-x-3 gap-y-2"
-              style="--hp-delay: 240ms;"
-            >
-              <a
-                href="/docs/getting-started"
-                class="group inline-flex h-12 items-center gap-2 rounded-lg bg-[#7C3AED] px-6 font-medium text-white no-underline transition-colors hover:bg-[#6D28D9]"
-              >
+            <div class="mt-9 flex flex-wrap items-center gap-3">
+              <a class="primary-cta" href="/docs/getting-started">
                 Get started
-                <Icon
-                  name="ph:arrow-right"
-                  class="h-[1.125rem] w-[1.125rem] transition-transform group-hover:translate-x-0.5"
-                />
+                <Icon name="ph:arrow-right" class="h-4 w-4" />
               </a>
-              <a
-                href="/docs/guides/terminal-ui"
-                class="inline-flex h-12 items-center gap-2 rounded-lg border border-white/15 px-5 font-medium text-[#F8FAFC] no-underline transition-colors hover:border-white/30 hover:bg-white/5"
-              >
-                <Icon name="ph:terminal-window" class="h-[1.125rem] w-[1.125rem]" />
-                How Apps works
-              </a>
-              {
-                config.github && (
-                  <a
-                    href={config.github}
-                    class="inline-flex h-12 items-center gap-2 px-3 font-medium text-[#98A2B3] no-underline transition-colors hover:text-[#F8FAFC]"
-                    target="_blank"
-                    rel="noopener"
-                  >
-                    <Icon name="ph:github-logo" class="h-[1.125rem] w-[1.125rem]" />
-                    GitHub
-                  </a>
-                )
-              }
+              <a class="secondary-cta" href="#workflow">See the workflow</a>
             </div>
 
-            {/* The whole pill is the copy target, so there is no small icon to
-                aim at. Height matches the CTA row above. */}
-            <button
-              type="button"
-              data-hp-copy="npm install -g anypick"
-              aria-label="Copy the install command"
-              class="hp-rise group mx-auto mt-7 inline-flex h-12 cursor-pointer items-center gap-3 rounded-lg border border-white/10 bg-black/30 px-4 font-mono text-sm transition-colors hover:border-white/25 hover:bg-black/50"
-              style="--hp-delay: 320ms;"
-            >
-              <span class="text-[#475163]">$</span>
-              <span class="text-[#F8FAFC]">npm install -g anypick</span>
-              <span class="hp-caret text-[#A78BFA]">▌</span>
-              <span
-                class="ml-1 flex items-center border-l border-white/10 pl-3 text-[#98A2B3] transition-colors group-hover:text-[#F8FAFC]"
-              >
-                <span data-hp-copy-idle>
-                  <Icon name="ph:copy" class="h-[1.125rem] w-[1.125rem]" />
-                </span>
-                <span class="hidden text-[#22C55E]" data-hp-copy-done>
-                  <Icon name="ph:check" class="h-[1.125rem] w-[1.125rem]" />
-                </span>
-              </span>
-            </button>
-            <span class="sr-only" role="status" data-hp-copy-status></span>
-            <p
-              class="hp-rise mt-2.5 font-mono text-xs text-[#475163]"
-              style="--hp-delay: 360ms;"
-            >
-              Node.js 22.5+ · macOS and Linux · MIT
-            </p>
+            <div class="install-shell mt-8 max-w-lg">
+              <span class="prompt" aria-hidden="true">$</span>
+              <code>{sourceCommand}</code>
+              <button type="button" data-copy={sourceCommand} aria-label="Copy source command">
+                <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                <span>Copy</span>
+              </button>
+            </div>
+            <p class="mt-3 font-mono text-xs text-[#8b93a7]">macOS 14+ source target · Xcode + Go · no published installer</p>
+            <p class="sr-only" aria-live="polite" data-copy-status></p>
           </div>
 
-          {/* Capped near the 74-column width the frame was captured at, so the
-              right-aligned status column stays next to the row it describes.
-              The only glow is light spilling from behind the terminal. */}
-          <div class="hp-rise relative mt-14" style="--hp-delay: 440ms;">
-            <div class="hp-screenlight pointer-events-none absolute -inset-16 -z-10"></div>
-            <TuiFrame {...appsScreen} class="mx-auto max-w-3xl" />
-            <p class="mt-3 text-center font-mono text-xs text-[#475163]">
-              Apps — what each coding tool uses right now.
-            </p>
+          <div class="hero-product relative mx-auto w-full max-w-[38rem] lg:mr-0">
+            <RoutingConcept variant="hero" />
           </div>
         </div>
       </section>
 
-      {/* ── Three keystrokes ─────────────────────────────────── */}
-      <section class="border-b border-border">
-        <div class="hp-reveal mx-auto w-full max-w-5xl px-6 py-20">
-          <h2
-            class="max-w-2xl text-3xl font-semibold tracking-tight text-foreground"
-          >
-            Connect an app without touching config files.
-          </h2>
-          <p class="mt-3 max-w-2xl text-muted-foreground leading-relaxed">
-            Apps is a short wizard: who powers the tool, which model, then a
-            written preview. Every step also exists as a CLI flag, so nothing here
-            is interactive-only.
-          </p>
-
-          <ol class="mt-10 grid gap-6 sm:grid-cols-3">
-            {
-              steps.map((step) => (
-                <li class="relative rounded-xl border border-border bg-card p-6">
-                  <kbd class="inline-block rounded-md border border-border-strong bg-muted px-2.5 py-1 font-mono text-sm font-semibold text-primary tracking-tight">
-                    {step.key}
-                  </kbd>
-                  <h3 class="mt-4 font-semibold text-foreground">{step.title}</h3>
-                  <p class="mt-2 text-sm text-muted-foreground leading-relaxed">
-                    {step.body}
-                  </p>
-                </li>
-              ))
-            }
-          </ol>
-
-          <div class="mt-12">
-            <TuiFrame {...appsSourceScreen} class="mx-auto max-w-3xl" />
-            <p class="mt-3 text-center font-mono text-xs text-muted-foreground">
-              Step 2 — only sources this app can actually use.
-            </p>
-          </div>
+      <section aria-label="Compatibility overview" class="border-y border-white/8 bg-white/[0.018]">
+        <div class="mx-auto grid w-full max-w-7xl divide-y divide-white/8 px-5 sm:px-8 lg:grid-cols-3 lg:divide-x lg:divide-y-0">
+          {capabilities.map((item) => (
+            <div class="py-7 lg:px-8 lg:first:pl-0 lg:last:pr-0">
+              <p class="font-mono text-[0.68rem] uppercase tracking-[0.16em] text-[#8b93a7]">{item.label}</p>
+              <p class="mt-2 text-base font-semibold text-[#F8FAFC]">{item.value}</p>
+              <p class="mt-1 text-sm text-[#98A2B3]">{item.detail}</p>
+            </div>
+          ))}
         </div>
       </section>
 
-      {/* ── Cross-provider pairs ─────────────────────────────── */}
-      <section class="border-b border-border bg-muted/40">
-        <div
-          class="hp-reveal mx-auto grid w-full max-w-5xl gap-12 px-6 py-20 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-center"
-        >
-          <div>
-            <h2 class="text-3xl font-semibold tracking-tight text-foreground">
-              Claude Code on a Grok subscription.
-            </h2>
-            <p class="mt-4 text-muted-foreground leading-relaxed">
-              Clients and providers speak different protocols. AnyPick runs a local
-              proxy that translates between them, so the pairing your subscriptions
-              never intended just works. Claude Code and Codex are the two clients
-              that can cross the boundary this way.
-            </p>
-
-            <ul class="mt-7 space-y-2.5">
-              {
-                pairs.map((pair) => (
-                  <li class="flex flex-wrap items-center gap-2.5 rounded-lg border border-border bg-card px-3.5 py-2.5">
-                    <span class="font-mono text-sm font-medium text-foreground">
-                      {pair.client}
-                    </span>
-                    <span class="text-xs text-muted-foreground">runs on</span>
-                    <span class="font-mono text-sm font-medium text-primary">
-                      {pair.source}
-                    </span>
-                    <span class="ml-auto rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
-                      {pair.via}
-                    </span>
-                  </li>
-                ))
-              }
-            </ul>
-
-            <p class="mt-6 text-sm text-muted-foreground leading-relaxed">
-              You never start, stop, or port-map a proxy by hand — the board below
-              is one <kbd class="font-mono">p</kbd> from Apps.
-            </p>
+      <section id="workflow" class="section-shell">
+        <div class="mx-auto w-full max-w-7xl px-5 sm:px-8">
+          <div class="section-heading max-w-3xl">
+            <p class="section-kicker">Apps route builder</p>
+            <h2>Know what will change before it changes.</h2>
+            <p>Apps turns routing into one deliberate flow instead of a collection of credential files, environment variables, and background processes.</p>
           </div>
 
-          <TuiFrame {...proxyScreen} nameWidth="14ch" />
-        </div>
-      </section>
+          <div class="mt-14 grid gap-5 md:grid-cols-2">
+            {workflow.map((step) => (
+              <article class="workflow-card">
+                <div class="flex items-start gap-5">
+                  <span class="step-number">{step.number}</span>
+                  <div>
+                    <h3>{step.title}</h3>
+                    <p>{step.body}</p>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
 
-      {/* ── Features ─────────────────────────────────────────── */}
-      <section class="hp-reveal mx-auto w-full max-w-5xl px-6 py-20">
-        <h2 class="text-3xl font-semibold tracking-tight text-foreground">
-          What it actually does
-        </h2>
-        <div class="mt-10 grid gap-6 sm:grid-cols-2">
-          {
-            features.map((f) => (
-              <div class="rounded-xl border border-border bg-card p-6">
-                <span class="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-                  <Icon name={f.icon} class="h-5 w-5 text-primary" />
-                </span>
-                <h3 class="mt-4 font-semibold text-foreground">{f.title}</h3>
-                <p class="mt-2 text-sm text-muted-foreground leading-relaxed">
-                  {f.body}
-                </p>
+          <div class="plan-panel mt-8 grid overflow-hidden lg:grid-cols-[0.78fr_1.22fr]">
+            <div class="border-b border-white/8 p-7 sm:p-9 lg:border-r lg:border-b-0">
+              <p class="section-kicker">Activation preview</p>
+              <h3 class="mt-4 text-2xl font-semibold tracking-[-0.03em]">A plan you can inspect.</h3>
+              <p class="mt-4 leading-7 text-[#98A2B3]">Nothing is written until you confirm. The same planned steps drive execution and rollback.</p>
+              <a class="text-link mt-6" href="/docs/guides/terminal-ui">
+                Explore the terminal UI
+                <Icon name="ph:arrow-up-right" class="h-4 w-4" />
+              </a>
+            </div>
+            <div class="plan-code p-5 sm:p-7">
+              <div class="plan-titlebar">
+                <span></span><span></span><span></span>
+                <p>Claude Code → grok/work</p>
               </div>
-            ))
-          }
-        </div>
-      </section>
-
-      {/* ── Coverage ─────────────────────────────────────────── */}
-      <section class="border-t border-border">
-        <div
-          class="mx-auto grid w-full max-w-5xl gap-12 px-6 py-16 sm:grid-cols-2"
-        >
-          <div>
-            <h2
-              class="text-sm font-semibold tracking-wide text-muted-foreground uppercase"
-            >
-              Sources
-            </h2>
-            <p class="mt-2 text-sm text-muted-foreground">
-              Native logins and API gateways you can bind a client to.
-            </p>
-            <ul class="mt-4 flex flex-wrap gap-2">
-              {
-                sources.map((s) => (
-                  <li class="rounded-md border border-border bg-card px-2.5 py-1 font-mono text-xs text-foreground">
-                    {s}
-                  </li>
-                ))
-              }
-            </ul>
-          </div>
-          <div>
-            <h2
-              class="text-sm font-semibold tracking-wide text-muted-foreground uppercase"
-            >
-              Clients
-            </h2>
-            <p class="mt-2 text-sm text-muted-foreground">
-              Where a switch lands. AnyPick writes the tool's own config and
-              credential files, so anything else reading them follows.
-            </p>
-            <p class="mt-4 text-xs text-muted-foreground">
-              Bind to any source above:
-            </p>
-            <ul class="mt-2 flex flex-wrap gap-2">
-              {
-                clients.any.map((c) => (
-                  <li class="rounded-md border border-border-strong bg-card px-2.5 py-1 font-mono text-xs font-medium text-foreground">
-                    {c}
-                  </li>
-                ))
-              }
-            </ul>
-            <p class="mt-4 text-xs text-muted-foreground">
-              Their own provider's login only:
-            </p>
-            <ul class="mt-2 flex flex-wrap gap-2">
-              {
-                clients.native.map((c) => (
-                  <li class="rounded-md border border-border bg-card px-2.5 py-1 font-mono text-xs text-muted-foreground">
-                    {c}
-                  </li>
-                ))
-              }
-            </ul>
-            <p class="mt-5 text-xs text-muted-foreground leading-relaxed">
-              One exception worth knowing: the Codex desktop app keeps its own
-              signed-in account, so it does not follow a switch of <code
-                class="font-mono">~/.codex/auth.json</code
-              >. AnyPick notices the mismatch and hides the quota readout rather
-              than report another account's numbers.
-            </p>
+              <ol>
+                <li><span>01</span><div><strong>Bind app</strong><small>Claude Code uses grok/work</small></div><b>ready</b></li>
+                <li><span>02</span><div><strong>Start owned proxy</strong><small>Loopback only · secret stays private</small></div><b>planned</b></li>
+                <li><span>03</span><div><strong>Set model</strong><small>grok-code-fast-1</small></div><b>planned</b></li>
+                <li><span>04</span><div><strong>Write client config</strong><small>After confirmation</small></div><b>planned</b></li>
+              </ol>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* ── Closing CTA ──────────────────────────────────────── */}
-      <section class="relative isolate overflow-hidden bg-[#0B0F19]">
-        <div class="pointer-events-none absolute inset-0 -z-10">
-          <span class="hp-blob-cta"></span>
+      <section class="section-shell border-y border-white/8 bg-[#0B0D15]">
+        <div class="mx-auto grid w-full max-w-7xl gap-12 px-5 sm:px-8 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-start lg:gap-24">
+          <RoutingConcept variant="desktop" class="order-2 lg:order-1" />
+
+          <div class="order-1 lg:order-2">
+            <p class="section-kicker">Desktop control</p>
+            <h2 class="mt-4 text-balance text-[clamp(2.25rem,5vw,3.8rem)] font-semibold leading-[1.04] tracking-[-0.045em]">The route switcher lives where you work.</h2>
+            <p class="mt-5 max-w-xl text-lg leading-8 text-[#98A2B3]">The regular macOS app owns its bundled Go service. Use the menu bar for quick changes and the full System Settings-style window for deeper management.</p>
+
+            <div class="mt-9 space-y-7">
+              {appBenefits.map((benefit) => (
+                <div class="benefit-row">
+                  <span><Icon name={benefit.icon} class="h-5 w-5" /></span>
+                  <div>
+                    <h3>{benefit.title}</h3>
+                    <p>{benefit.body}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <a class="text-link mt-9" href="/docs/guides/tray">
+              See the macOS app guide
+              <Icon name="ph:arrow-up-right" class="h-4 w-4" />
+            </a>
+          </div>
         </div>
-        <div class="hp-reveal mx-auto w-full max-w-3xl px-6 py-24 text-center">
-          <h2
-            class="text-balance text-[#F8FAFC] leading-[1.1]"
-            style="font-size: clamp(1.875rem, 5vw, 2.75rem); font-weight: 650; letter-spacing: -0.03em;"
-          >
-            Stop re-authenticating just to switch models.
-          </h2>
-          <p class="mx-auto mt-4 max-w-xl text-[#98A2B3] leading-relaxed">
-            Install it, run <code class="font-mono text-[#F8FAFC]">anypick</code>,
-            and let the terminal UI show you what you already have access to.
-          </p>
-          <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <a
-              href="/docs/getting-started"
-              class="group inline-flex h-12 items-center gap-2 rounded-lg bg-[#7C3AED] px-6 font-medium text-white no-underline shadow-lg shadow-[#7C3AED]/25 transition-colors hover:bg-[#6D28D9]"
-            >
-              Get started
-              <Icon
-                name="ph:arrow-right"
-                class="h-[1.125rem] w-[1.125rem] transition-transform group-hover:translate-x-0.5"
-              />
+      </section>
+
+      <section class="section-shell">
+        <div class="mx-auto w-full max-w-7xl px-5 sm:px-8">
+          <div class="section-heading max-w-3xl">
+            <p class="section-kicker">Built for the real workflow</p>
+            <h2>Less credential choreography. More coding.</h2>
+          </div>
+
+          <div class="mt-14 grid gap-5 md:grid-cols-3">
+            {proof.map((item) => (
+              <article class="proof-card">
+                <span class="proof-icon"><Icon name={item.icon} class="h-5 w-5" /></span>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+                <a href={item.href}>
+                  {item.link}
+                  <Icon name="ph:arrow-right" class="h-4 w-4" />
+                </a>
+              </article>
+            ))}
+          </div>
+
+          <div class="boundary-note mt-8">
+            <Icon name="ph:info" class="h-5 w-5 shrink-0 text-[#A78BFA]" />
+            <p><strong>Clear compatibility boundaries:</strong> Claude Code and Codex can use foreign-provider sources. Gemini and Kiro switch only among their own provider accounts. The Codex desktop app keeps its own signed-in account and does not follow a CLI credential switch.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="px-5 pb-20 sm:px-8 sm:pb-28">
+        <div class="closing mx-auto max-w-7xl overflow-hidden px-6 py-14 text-center sm:px-10 sm:py-20">
+          <div class="closing-light" aria-hidden="true"></div>
+          <p class="section-kicker relative">Ready when your tools are</p>
+          <h2 class="relative mx-auto mt-4 max-w-3xl text-balance text-[clamp(2.4rem,6vw,4.5rem)] font-semibold leading-[1] tracking-[-0.05em]">Pick the route once.<br />Keep coding.</h2>
+          <div class="relative mt-8 flex flex-wrap justify-center gap-3">
+            <a class="primary-cta" href="/docs/getting-started">
+              Run from source
+              <Icon name="ph:arrow-right" class="h-4 w-4" />
             </a>
-            <a
-              href="/docs/reference/cli"
-              class="inline-flex h-12 items-center gap-2 rounded-lg border border-white/15 px-5 font-medium text-[#F8FAFC] no-underline transition-colors hover:border-white/30 hover:bg-white/5"
-            >
-              CLI reference
-            </a>
+            <a class="secondary-cta" href="/docs/reference/cli">Read the CLI reference</a>
           </div>
         </div>
       </section>
     </main>
 
-    <footer class="border-t border-border">
-      <div
-        class="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-4 px-6 py-8"
-      >
-        <div class="flex items-center gap-2">
-          <img src="/logomark.svg" alt="" width="16" height="18" />
-          <span class="text-sm text-muted-foreground">
-            {config.title} — {config.description}
-          </span>
-        </div>
-        <div class="flex items-center gap-4 text-sm text-muted-foreground">
-          <a href="/docs" class="no-underline hover:text-foreground">Docs</a>
-          {
-            config.github && (
-              <a
-                href={config.github}
-                class="no-underline hover:text-foreground"
-                target="_blank"
-                rel="noopener"
-              >
-                GitHub
-              </a>
-            )
-          }
-          <a
-            href="https://www.npmjs.com/package/anypick"
-            class="no-underline hover:text-foreground"
-            target="_blank"
-            rel="noopener">npm</a
-          >
-          <span>MIT</span>
+    <footer class="border-t border-white/8 px-5 py-8 sm:px-8">
+      <div class="mx-auto flex max-w-7xl flex-col items-center justify-between gap-5 sm:flex-row">
+        <img src="/logo-dark.svg" alt={config.title} width="98" height="20" />
+        <p class="text-center text-sm text-[#8b93a7]">Route compatible sources. Keep every change explicit.</p>
+        <div class="flex gap-5 text-sm">
+          <a href="/docs">Docs</a>
+          {config.github && <a href={config.github} target="_blank" rel="noopener">GitHub</a>}
         </div>
       </div>
     </footer>
   </div>
 
   <script>
-    // Reveal-on-scroll. Sections start hidden only once this runs, so a reader
-    // with JS disabled sees the whole page rather than a blank one.
-    const targets = document.querySelectorAll<HTMLElement>(".hp-reveal");
-    if (
-      targets.length > 0 &&
-      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      document.documentElement.classList.add("hp-reveal-armed");
-      const observer = new IntersectionObserver(
-        (entries) => {
-          for (const entry of entries) {
-            if (entry.isIntersecting) {
-              entry.target.classList.add("hp-in");
-              observer.unobserve(entry.target);
-            }
-          }
-        },
-        { rootMargin: "0px 0px -12% 0px" },
-      );
-      for (const target of targets) {
-        observer.observe(target);
-      }
-    }
+    const status = document.querySelector("[data-copy-status]");
 
-    const copyButton = document.querySelector<HTMLButtonElement>("[data-hp-copy]");
-    if (copyButton) {
-      const idle = copyButton.querySelector<HTMLElement>("[data-hp-copy-idle]");
-      const done = copyButton.querySelector<HTMLElement>("[data-hp-copy-done]");
-      const status = document.querySelector<HTMLElement>("[data-hp-copy-status]");
-      let reset: number | undefined;
-
-      copyButton.addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(copyButton.dataset.hpCopy ?? "");
-        } catch {
-          // Clipboard needs a secure context and user permission. Leaving the
-          // icon untouched is the honest signal that nothing was copied.
-          return;
-        }
-        idle?.classList.add("hidden");
-        done?.classList.remove("hidden");
-        if (status) {
-          status.textContent = "Install command copied";
-        }
-        clearTimeout(reset);
-        reset = window.setTimeout(() => {
-          idle?.classList.remove("hidden");
-          done?.classList.add("hidden");
-          if (status) {
-            status.textContent = "";
-          }
+    document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const value = button.dataset.copy;
+        if (!value) return;
+        await navigator.clipboard.writeText(value);
+        button.querySelector(".copy-icon")?.classList.add("hidden");
+        button.querySelector(".check-icon")?.classList.remove("hidden");
+        const label = button.querySelector("span");
+        if (label) label.textContent = "Copied";
+        if (status) status.textContent = "Source command copied";
+        window.setTimeout(() => {
+          button.querySelector(".copy-icon")?.classList.remove("hidden");
+          button.querySelector(".check-icon")?.classList.add("hidden");
+          if (label) label.textContent = "Copy";
         }, 1800);
       });
-    }
+    });
   </script>
 </BaseLayout>
 
 <style>
-  /* ── Hero atmosphere ────────────────────────────────────────────
-     A fine dot field, and light spilling out from behind the terminal as
-     though the screen were the source. Decoration only, so
-     `prefers-reduced-motion` can freeze all of it. */
-  .hp-dots {
-    opacity: 0.14;
-    background-image: radial-gradient(#fff 1px, transparent 1px);
-    background-size: 1.5rem 1.5rem;
-    mask-image: linear-gradient(to bottom, #000 20%, transparent 90%);
+  .landing {
+    color-scheme: dark;
   }
 
-  .hp-screenlight {
-    background: radial-gradient(
-      ellipse at center,
-      rgba(124, 58, 237, 0.42) 0%,
-      rgba(167, 139, 250, 0.16) 45%,
-      transparent 75%
-    );
-    filter: blur(48px);
-    animation: hp-breathe 9s ease-in-out infinite alternate;
-    will-change: opacity, transform;
+  .hero {
+    background:
+      linear-gradient(180deg, rgb(11 15 25 / 0.25), #080a11 92%),
+      #0b0f19;
   }
 
-  .hp-blob-cta {
+  .hero-grid {
+    opacity: 0.22;
+    background-image:
+      linear-gradient(rgb(255 255 255 / 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: linear-gradient(to bottom, black, transparent 88%);
+  }
+
+  .hero-light {
+    top: 3rem;
+    right: -10rem;
+    width: 56rem;
+    height: 56rem;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgb(124 58 237 / 0.2), transparent 67%);
+  }
+
+  .eyebrow,
+  .section-kicker {
+    color: #a78bfa;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin: 0;
+  }
+
+  .eyebrow span {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: #22c55e;
+    box-shadow: 0 0 18px rgb(34 197 94 / 0.7);
+  }
+
+  h1 span {
+    background: linear-gradient(110deg, #f8fafc 5%, #c4b5fd 52%, #7c3aed 110%);
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hero-copy strong {
+    color: #f8fafc;
+    font-weight: 550;
+  }
+
+  .primary-cta,
+  .secondary-cta {
+    display: inline-flex;
+    min-height: 2.8rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    border-radius: 0.75rem;
+    padding: 0.72rem 1.05rem;
+    font-size: 0.9rem;
+    font-weight: 650;
+    text-decoration: none;
+    transition: 160ms ease;
+  }
+
+  .primary-cta {
+    background: #7c3aed;
+    color: white;
+    box-shadow: 0 12px 36px rgb(124 58 237 / 0.25);
+  }
+
+  .primary-cta:hover {
+    background: #8b5cf6;
+    transform: translateY(-1px);
+  }
+
+  .secondary-cta {
+    border: 1px solid rgb(255 255 255 / 0.13);
+    background: rgb(255 255 255 / 0.035);
+    color: #d6d9e0;
+  }
+
+  .secondary-cta:hover {
+    border-color: rgb(255 255 255 / 0.22);
+    background: rgb(255 255 255 / 0.07);
+    color: white;
+  }
+
+  .primary-cta:focus-visible,
+  .secondary-cta:focus-visible,
+  .text-link:focus-visible,
+  .proof-card a:focus-visible,
+  footer a:focus-visible {
+    border-radius: 0.5rem;
+    outline: 2px solid #c4b5fd;
+    outline-offset: 3px;
+  }
+
+  .install-shell {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 3.4rem;
+    padding: 0.45rem 0.45rem 0.45rem 1rem;
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 0.85rem;
+    background: rgb(4 6 12 / 0.7);
+    box-shadow: 0 14px 40px rgb(0 0 0 / 0.22);
+  }
+
+  .install-shell .prompt {
+    color: #7c3aed;
+    font-family: var(--font-mono);
+  }
+
+  .install-shell code {
+    overflow: hidden;
+    color: #d6d9e0;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .install-shell button {
+    display: inline-flex;
+    min-height: 2.45rem;
+    align-items: center;
+    gap: 0.4rem;
+    border: 0;
+    border-radius: 0.6rem;
+    padding: 0 0.75rem;
+    background: rgb(255 255 255 / 0.07);
+    color: #98a2b3;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .install-shell button:hover {
+    background: rgb(255 255 255 / 0.11);
+    color: white;
+  }
+
+  .install-shell button:focus-visible {
+    outline: 2px solid #c4b5fd;
+    outline-offset: 2px;
+  }
+
+  .section-shell {
+    padding-block: clamp(5.5rem, 10vw, 8.5rem);
+    scroll-margin-top: 4rem;
+  }
+
+  .section-heading h2 {
+    margin-top: 1rem;
+    color: #f8fafc;
+    font-size: clamp(2.25rem, 5vw, 3.8rem);
+    font-weight: 620;
+    line-height: 1.04;
+    letter-spacing: -0.045em;
+    text-wrap: balance;
+  }
+
+  .section-heading > p:last-child {
+    margin-top: 1.35rem;
+    color: #98a2b3;
+    font-size: 1.08rem;
+    line-height: 1.8;
+  }
+
+  .workflow-card,
+  .proof-card {
+    border: 1px solid rgb(255 255 255 / 0.09);
+    border-radius: 1rem;
+    background: rgb(255 255 255 / 0.025);
+  }
+
+  .workflow-card {
+    padding: 1.6rem;
+  }
+
+  .workflow-card:hover,
+  .proof-card:hover {
+    border-color: rgb(167 139 250 / 0.3);
+    background: rgb(124 58 237 / 0.045);
+  }
+
+  .step-number {
+    display: grid;
+    width: 2.5rem;
+    height: 2.5rem;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid rgb(167 139 250 / 0.22);
+    border-radius: 0.7rem;
+    background: rgb(124 58 237 / 0.1);
+    color: #a78bfa;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .workflow-card h3,
+  .benefit-row h3,
+  .proof-card h3 {
+    color: #f8fafc;
+    font-size: 1rem;
+    font-weight: 620;
+  }
+
+  .workflow-card p,
+  .benefit-row p,
+  .proof-card p {
+    margin-top: 0.55rem;
+    color: #98a2b3;
+    font-size: 0.9rem;
+    line-height: 1.7;
+  }
+
+  .plan-panel {
+    border: 1px solid rgb(255 255 255 / 0.1);
+    border-radius: 1.1rem;
+    background: #0b0d15;
+    box-shadow: 0 30px 80px rgb(0 0 0 / 0.2);
+  }
+
+  .text-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: #a78bfa;
+    font-size: 0.86rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .text-link:hover {
+    color: #c4b5fd;
+  }
+
+  .plan-code {
+    background: #07090e;
+  }
+
+  .plan-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 0.38rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  }
+
+  .plan-titlebar span {
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: #343947;
+  }
+
+  .plan-titlebar span:first-child {
+    background: #7c3aed;
+  }
+
+  .plan-titlebar p {
+    margin-left: auto;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+  }
+
+  .plan-code ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .plan-code li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid rgb(255 255 255 / 0.06);
+  }
+
+  .plan-code li:last-child {
+    border: 0;
+  }
+
+  .plan-code li > span {
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+  }
+
+  .plan-code li div {
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .plan-code strong {
+    color: #e6e8ee;
+    font-size: 0.82rem;
+    font-weight: 580;
+  }
+
+  .plan-code small {
+    overflow: hidden;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .plan-code b {
+    color: #a78bfa;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 500;
+  }
+
+  .benefit-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 1rem;
+  }
+
+  .benefit-row > span,
+  .proof-icon {
+    display: grid;
+    width: 2.6rem;
+    height: 2.6rem;
+    place-items: center;
+    border: 1px solid rgb(167 139 250 / 0.2);
+    border-radius: 0.75rem;
+    background: rgb(124 58 237 / 0.09);
+    color: #a78bfa;
+  }
+
+  .proof-card {
+    display: flex;
+    min-height: 19rem;
+    flex-direction: column;
+    padding: 1.7rem;
+    transition: 160ms ease;
+  }
+
+  .proof-card h3 {
+    margin-top: 1.5rem;
+    font-size: 1.08rem;
+  }
+
+  .proof-card a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: auto;
+    padding-top: 1.8rem;
+    color: #a78bfa;
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .proof-card a:hover,
+  footer a:hover {
+    color: #c4b5fd;
+  }
+
+  .boundary-note {
+    display: flex;
+    gap: 0.85rem;
+    padding: 1.1rem 1.2rem;
+    border: 1px solid rgb(167 139 250 / 0.15);
+    border-radius: 0.9rem;
+    background: rgb(124 58 237 / 0.05);
+    color: #98a2b3;
+    font-size: 0.82rem;
+    line-height: 1.65;
+  }
+
+  .boundary-note strong {
+    color: #d6d9e0;
+    font-weight: 600;
+  }
+
+  .closing {
+    position: relative;
+    isolation: isolate;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    border-radius: 1.5rem;
+    background: #0b0d15;
+  }
+
+  .closing-light {
     position: absolute;
-    display: block;
-    bottom: -20rem;
-    left: 50%;
-    height: 32rem;
-    width: 54rem;
-    margin-left: -27rem;
-    border-radius: 9999px;
-    opacity: 0.6;
-    filter: blur(80px);
-    background: radial-gradient(
-      closest-side,
-      #7c3aed 0%,
-      rgba(167, 139, 250, 0.3) 50%,
-      transparent 100%
-    );
-    animation: hp-drift 20s ease-in-out infinite alternate;
+    z-index: -1;
+    inset: -60% 10% auto;
+    height: 28rem;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgb(124 58 237 / 0.3), transparent 68%);
   }
 
-  @keyframes hp-breathe {
-    from {
-      opacity: 0.75;
-      transform: scale(0.96);
+  footer a {
+    color: #98a2b3;
+    text-decoration: none;
+  }
+
+  @media (max-width: 40rem) {
+    .install-shell button span {
+      display: none;
     }
-    to {
-      opacity: 1;
-      transform: scale(1.06);
+
+    .plan-code li {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .plan-code b {
+      display: none;
     }
   }
 
-  @keyframes hp-drift {
-    from {
-      transform: translate3d(-4rem, 0, 0) scale(1);
+  @media (prefers-reduced-motion: no-preference) {
+    .hero-copy {
+      animation: hero-enter 650ms ease-out both;
     }
-    to {
-      transform: translate3d(4rem, 1.5rem, 0) scale(1.12);
+
+    .hero-product {
+      animation: product-enter 750ms 100ms ease-out both;
     }
-  }
-
-  /* ── Tagline emphasis ────────────────────────────────────────── */
-  .hp-shimmer {
-    background-image: linear-gradient(90deg, #7c3aed, #a78bfa);
-  }
-
-  .hp-pulse {
-    animation: hp-pulse 2.4s ease-in-out infinite;
-  }
-
-  @keyframes hp-pulse {
-    0%,
-    100% {
-      opacity: 1;
-      box-shadow: 0 0 0 0 rgb(166 255 77 / 0.5);
-    }
-    50% {
-      opacity: 0.65;
-      box-shadow: 0 0 0 0.25rem rgb(166 255 77 / 0);
-    }
-  }
-
-  .hp-caret {
-    animation: hp-blink 1.1s steps(1, end) infinite;
-  }
-
-  @keyframes hp-blink {
-    0%,
-    49% {
-      opacity: 1;
-    }
-    50%,
-    100% {
-      opacity: 0;
-    }
-  }
-
-  /* ── Entrance ───────────────────────────────────────────────── */
-  .hp-rise {
-    animation: hp-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
-    animation-delay: var(--hp-delay, 0ms);
-  }
-
-  @keyframes hp-rise {
-    from {
-      opacity: 0;
-      transform: translateY(1.25rem);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-
-  :global(.hp-reveal-armed) .hp-reveal {
-    opacity: 0;
-    transform: translateY(1.75rem);
-    transition:
-      opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
-      transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
-  :global(.hp-reveal-armed) .hp-reveal.hp-in {
-    opacity: 1;
-    transform: none;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .hp-screenlight,
-    .hp-blob-cta,
-    .hp-shimmer,
-    .hp-pulse,
-    .hp-caret,
-    .hp-rise {
-      animation: none;
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
     }
-    .hp-shimmer {
-      background-position: 50% 0;
+  }
+
+  @keyframes hero-enter {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+  }
+
+  @keyframes product-enter {
+    from {
+      opacity: 0;
+      transform: translateY(18px) scale(0.985);
     }
   }
 </style>

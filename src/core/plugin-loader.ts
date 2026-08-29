@@ -18,14 +18,7 @@ export const PLUGIN_MANIFEST_FILE = 'anypick.plugin.json';
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
 
 /** Directory names skipped when hashing a plugin package (dev debris / VCS). */
-const DIGEST_SKIP_DIRS = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  'node_modules',
-  '.DS_Store',
-  '__pycache__',
-]);
+const DIGEST_SKIP_DIRS = new Set(['.git', '.hg', '.svn', '.DS_Store', '__pycache__']);
 
 function fail(message: string, suggestions: string[] = []): never {
   throw anypickError(message, 'PLUGIN_INVALID', {
@@ -149,7 +142,9 @@ async function listPluginFiles(root: string): Promise<string[]> {
  *
  * Hashing only `main` would let a compromised helper module change while the
  * trusted entry stayed identical (ADR 0012). Manifest + every shipped file are
- * included so an install is a fixed artifact.
+ * included, including runtime dependencies under node_modules, so an install
+ * is a fixed artifact. Skipping dependencies would let a trusted entry import
+ * altered code without changing its pin.
  */
 export async function digestPluginPackage(root: string): Promise<string> {
   const files = await listPluginFiles(root);

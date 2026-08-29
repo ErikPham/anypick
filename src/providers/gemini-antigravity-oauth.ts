@@ -49,9 +49,102 @@ export interface AntigravityKeyringPayload {
     token_type?: string;
     expiry?: string;
   };
+  /** Stable Google email. CLIProxyAPI / 9router identify accounts by this, not the refresh token. */
+  email?: string;
 }
 
+const GOOGLE_USERINFO = 'https://www.googleapis.com/oauth2/v2/userinfo?alt=json';
+const emailByRefreshToken = new Map<string, string>();
+
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export function normalizeGoogleEmail(value: string | undefined): string | undefined {
+  const email = value?.trim().toLowerCase();
+  return email && email.includes('@') ? email : undefined;
+}
+
+export function emailFromJwt(token: string | undefined): string | undefined {
+  if (!token) {
+    return undefined;
+  }
+  const parts = token.split('.');
+  if (parts.length < 2 || !parts[1]) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as {
+      email?: unknown;
+    };
+    return typeof payload.email === 'string' ? normalizeGoogleEmail(payload.email) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function fetchGoogleUserEmail(
+  accessToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | undefined> {
+  const token = accessToken.trim();
+  if (!token) {
+    return undefined;
+  }
+  try {
+    const response = await fetchImpl(GOOGLE_USERINFO, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const body = (await response.json()) as { email?: unknown };
+    return typeof body.email === 'string' ? normalizeGoogleEmail(body.email) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the durable Google account email for an Antigravity/Gemini login.
+ * Prefers a stored email, then JWT claims, then Google userinfo (CLIProxyAPI).
+ */
+export async function resolveAntigravityAccountEmail(
+  payload: AntigravityKeyringPayload | null | undefined,
+  fetchImpl: FetchLike = fetch,
+): Promise<string | undefined> {
+  if (!payload) {
+    return undefined;
+  }
+  const stored = normalizeGoogleEmail(payload.email);
+  if (stored) {
+    return stored;
+  }
+  const fromJwt = emailFromJwt(payload.token?.access_token);
+  if (fromJwt) {
+    return fromJwt;
+  }
+  const refresh = payload.token?.refresh_token?.trim();
+  if (refresh && emailByRefreshToken.has(refresh)) {
+    return emailByRefreshToken.get(refresh);
+  }
+  const access = payload.token?.access_token?.trim();
+  if (!access) {
+    return undefined;
+  }
+  const fromUserinfo = await fetchGoogleUserEmail(access, fetchImpl);
+  if (fromUserinfo && refresh) {
+    emailByRefreshToken.set(refresh, fromUserinfo);
+  }
+  return fromUserinfo;
+}
+
+export function withAntigravityEmail(
+  payload: AntigravityKeyringPayload,
+  email: string | undefined,
+): AntigravityKeyringPayload {
+  const normalized = normalizeGoogleEmail(email);
+  return normalized ? { ...payload, email: normalized } : payload;
+}
 
 /** True on platforms where we know how to read the credential store. */
 export function antigravityKeychainSupported(): boolean {

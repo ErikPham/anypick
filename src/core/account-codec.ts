@@ -153,6 +153,14 @@ function decodeMeta(value: unknown): AccountMeta {
     // Losing this on import would turn a user-supplied credential back into a
     // native one, and activating it would then prune the machine's real login.
     credentialKind: m.credentialKind === 'proxy-only' ? 'proxy-only' : undefined,
+    credentialClass:
+      m.credentialClass === 'native_subscription' ||
+      m.credentialClass === 'provider_api_key' ||
+      m.credentialClass === 'coding_plan_key' ||
+      m.credentialClass === 'external_oauth' ||
+      m.credentialClass === 'proxy_only'
+        ? m.credentialClass
+        : undefined,
   };
 }
 

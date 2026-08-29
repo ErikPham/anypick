@@ -36,6 +36,72 @@ shipped file under the directory), pinned when you added it. AnyPick recomputes
 it and compares **before** importing the entry module, so code — including
 helpers the entry imports — that changed since you approved it never executes.
 
+### Popular API and coding-plan providers
+
+AnyPick ships one reviewed provider pack in its npm package. It follows the same
+disabled-first trust flow as a plugin you add by path:
+
+```bash
+anypick plugin add bundled:popular-providers
+anypick plugin enable popular-providers
+```
+
+The next AnyPick command can add the model vendors, coding-plan gateways, and
+inference clouds below as managed accounts. API billing and coding subscriptions
+are different account kinds because their keys and endpoints are not interchangeable:
+
+```bash
+# Omit the --secret value to use the masked prompt.
+anypick add account kimi --credential subscription-key --secret --name personal
+anypick add account minimax --credential api-key --secret --name paygo \
+  --option profile=global
+anypick add account mimo --credential subscription-key --secret --name europe \
+  --option profile=europe
+```
+
+| Provider | `api-key` | `subscription-key` profiles |
+| --- | --- | --- |
+| Kimi | Open Platform (`global`, `china`) | Kimi Code membership |
+| GLM | BigModel / Z.AI (`china`, `global`) | GLM Coding Plan (`china`, `global`) |
+| MiniMax | pay-as-you-go (`china`, `global`) | Token Plan (`china`, `global`) |
+| MiMo | pay-as-you-go | Token Plan (`china`, `singapore`, `europe`) |
+| DeepSeek | platform API | — |
+| Qwen | Model Studio (`china`, `singapore`, `us`) | Coding Plan / Token Plan |
+| Ark | Volcengine / BytePlus (`china`, `global`) | Coding Plan (`china`, `global`) |
+| TokenHub | Tencent pay-as-you-go | Tencent Coding Plan |
+| OpenRouter | multi-model API | — |
+| GroqCloud | inference API | — |
+| Mistral | La Plateforme API | — |
+| Together | inference API | — |
+| Fireworks | serverless API | — |
+| Cerebras | inference API | — |
+| SiliconFlow | inference API | — |
+| NVIDIA NIM | hosted NIM API | — |
+
+Subscription keys stay behind the same authenticated local proxy and pool as
+API keys. The proxy keeps the real client `User-Agent`; it does not import a
+consumer website session or pretend to be another coding tool. Use a subscription
+only for the interactive coding scenarios its provider permits. OpenRouter,
+GroqCloud, and Fireworks use their documented native Responses endpoints; other
+OpenAI-compatible profiles translate Responses through Chat Completions.
+
+Endpoint and product choices follow the providers' current documentation:
+[Kimi Code](https://www.kimi.com/code/docs/),
+[GLM Coding Plan](https://docs.bigmodel.cn/cn/coding-plan/tool/others),
+[MiniMax Token Plan](https://platform.minimax.io/docs/token-plan/quickstart),
+[MiMo Token Plan](https://mimo.mi.com/docs/en-US/price/tokenplan/subscription),
+[Qwen Coding Plan](https://help.aliyun.com/en/model-studio/coding-plan),
+[BytePlus ModelArk Coding Plan](https://docs.byteplus.com/api/docs/ModelArk/2188959),
+[Tencent TokenHub Coding Plan](https://cloud.tencent.com/document/product/1823/130092),
+[OpenRouter](https://openrouter.ai/docs/quickstart),
+[GroqCloud](https://console.groq.com/docs/openai),
+[Mistral](https://docs.mistral.ai/api),
+[Together AI](https://docs.together.ai/docs/inference/openai-compatibility),
+[Fireworks](https://docs.fireworks.ai/tools-sdks/openai-compatibility),
+[Cerebras](https://inference-docs.cerebras.ai/resources/openai),
+[SiliconFlow](https://docs.siliconflow.com/en/userguide/quickstart), and
+[NVIDIA NIM](https://docs.api.nvidia.com/nim/reference/z-ai-glm5.1-infer).
+
 ## When the code changes
 
 Pull a new version, or rebuild during development, and the plugin stops loading:
@@ -91,9 +157,46 @@ AnyPick's built-in providers register and immediately before the registries are
 sealed. Register everything there; the context is not usable afterwards.
 
 `ctx` is deliberately narrow — `registerProvider`, `registerClient`,
-`registerCatalogProvider`, and nothing else. There is no database handle, no
-store, and no data root, so a plugin extends the composition graph without
-receiving a general capability to read the accounts that graph manages.
+`registerCatalogProvider`, and `registerCompatibleProvider`. There is no
+database handle, store, service, or data root, so a plugin extends the
+composition graph without receiving a general capability to read the accounts
+that graph manages.
+
+For an official OpenAI/Anthropic-compatible service, prefer the declarative
+registration. AnyPick then owns secret snapshots, local authentication,
+Responses/Messages translation, model discovery, pool failover, and Proxy Hub:
+
+```js title="index.mjs"
+export default {
+  activate(ctx) {
+    ctx.registerCompatibleProvider({
+      id: 'acme',
+      name: 'ACME AI',
+      description: 'ACME API and Coding Plan',
+      models: ['acme-coder'],
+      credentials: [
+        {
+          kind: 'api-key',
+          label: 'API key',
+          profiles: [
+            {
+              id: 'global',
+              openaiBase: 'https://api.acme.example/v1',
+              anthropicBase: 'https://api.acme.example/anthropic',
+              // Optional: 'bearer' or 'api-key'; default is 'x-api-key'.
+              anthropicAuth: 'bearer',
+            },
+          ],
+        },
+      ],
+    });
+  },
+};
+```
+
+Implement and register a full `Provider` when authentication is not a supplied
+key, the upstream is not an official HTTPS compatible API, or the provider needs
+a custom credential lifecycle.
 
 `main` must resolve inside the plugin directory; an absolute path or one that
 escapes with `../` is refused. `apiVersion` is checked against the version this

@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from 'vitest';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -578,6 +578,72 @@ describe('listenGeminiProxy (mock upstream)', () => {
     expect(lastGenerateBody?.generationConfig).toMatchObject({
       thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: true },
     });
+  });
+
+  it('aborts a pending Gemini generation when the client disconnects', async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let markClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      markClosed = resolve;
+    });
+    const upstream = createServer((req, res) => {
+      if (req.url?.includes(':generateContent')) {
+        markStarted();
+        res.once('close', () => {
+          if (!res.writableEnded) {
+            markClosed();
+          }
+        });
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ models: [{ name: 'models/gemini-3.5-flash' }] }));
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    servers.push(upstream);
+    const address = upstream.address();
+    const upstreamPort = address && typeof address === 'object' ? address.port : 0;
+    const dir = await mkdtemp(join(tmpdir(), 'anypick-gproxy-abort-'));
+    dirs.push(dir);
+    await writeFile(join(dir, '.env'), 'GEMINI_API_KEY=test-key\n', { mode: 0o600 });
+    const { endpoint, server } = await listenGeminiProxy({
+      token: TEST_TOKEN,
+      host: '127.0.0.1',
+      port: 0,
+      authDir: dir,
+      apiKey: 'test-key',
+      upstream: `http://127.0.0.1:${upstreamPort}`,
+      quiet: true,
+    });
+    servers.push(server);
+
+    const target = new URL('/v1/chat/completions', endpoint);
+    const client = httpRequest({
+      hostname: target.hostname,
+      port: target.port,
+      path: target.pathname,
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+    });
+    client.on('error', () => {});
+    client.end(
+      JSON.stringify({
+        model: 'gemini-3.5-flash',
+        messages: [{ role: 'user', content: 'wait' }],
+      }),
+    );
+    await started;
+    client.destroy();
+
+    await expect(
+      Promise.race([
+        closed.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
+      ]),
+    ).resolves.toBe(true);
   });
 
   it('uses a second pooled key only for an explicit credential quota response', async () => {

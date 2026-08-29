@@ -29,6 +29,7 @@ import {
 import type { ClientRegistry } from '../clients/registry';
 import { mergeModelRolesIntoClientOptions, modelFromRolesOrSelection } from './activation-models';
 import { buildTransport } from './activation-transport';
+import { resolveTransportPolicy } from './transport-resolver';
 import { randomUUID } from 'node:crypto';
 
 export interface PlanOptions {
@@ -45,6 +46,8 @@ export interface PlanOptions {
   originPreset?: { id: string; name: string; revision: number };
   /** Role id → model id stored on binding clientOptions.modelRoles. */
   modelRoles?: Record<string, string>;
+  /** Explicit user transport intent for this activation. */
+  transportPolicy?: BindingSpec['transportPolicy'];
 }
 
 export async function planActivation(
@@ -156,15 +159,19 @@ export async function planActivation(
     });
   }
 
+  const transportPolicy =
+    request.transportPolicy ?? opts.transportPolicy ?? bindingSpec.transportPolicy;
+  bindingSpec = { ...bindingSpec, transportPolicy };
+
   // Validate compatibility / transport
   steps.push({ kind: 'ValidateCompatibility', detail: `${clientId} × ${resolvedSource.display}` });
   steps.push({ kind: 'ValidateCredential' });
 
-  const capability = resolvedSource.adapter.transportFor(clientId);
+  const capability = resolveTransportPolicy(resolvedSource.adapter, clientId, transportPolicy);
   steps.push({
     kind: 'ResolveTransport',
     detail: capability,
-    params: { capability },
+    params: { capability, policy: transportPolicy },
   });
 
   if (capability === 'unsupported') {

@@ -3,9 +3,13 @@ title: CLI reference
 description: Every AnyPick command, global flag, exit code, and environment variable.
 ---
 
-The binary is `anypick`. The first
-bare interactive run asks whether future bare runs should open the
-[terminal UI](/docs/guides/terminal-ui) or desktop Tray.
+The command name is `anypick`. During the current development preview, run the
+same command tree from a checkout as `pnpm dev <arguments>`; for example,
+`pnpm dev list accounts`. No supported CLI or native-app installer is currently
+published.
+
+The native macOS application is a separate app-owned target. It launches its
+bundled Go service itself and does not need this CLI to parent it.
 
 ## Global flags
 
@@ -22,7 +26,7 @@ Valid on every command.
 | `-y, --yes` | Skip destructive confirmations |
 | `--trace` | Print internal step names, without secrets |
 | `--tui` | Open the Terminal UI for this run |
-| `--tray` | Open the desktop Tray for this run |
+| `--tray` | Select the compatibility tray surface for this source CLI run |
 
 ## Bindings
 
@@ -68,18 +72,25 @@ anypick clients
 
 ```bash
 anypick add account [provider] [--current] [--new]
-    [--name <name>] [--source <id>]
+    [--name <name>] [--source <id>] [--auth-method <id>]
     [--api-key [key]] [--region <region>]
+    [--credential <kind> --secret [secret]]
+    [--option <key=value...>]
 anypick add gateway [name] --provider <id> --endpoint <url>
     [--api-key <key> | --api-key-env <var>]
     [--model <id>] [--models <id...>]
 ```
 
-`--current` snapshots the login that is live now; `--new` stashes it first so the
-provider's CLI prompts for a fresh one. `--source gemini-cli|antigravity` picks
-which Gemini sign-in to read. `--api-key` saves a key you already hold instead of
-a login — currently `kiro` only — and prompts for the value when it is omitted;
-`--region` pins the API region for it.
+`--current` snapshots the login that is live now. `--new` uses an available
+provider-owned browser sign-in and saves its resulting native credential;
+otherwise it stashes the current login and prints the manual continuation.
+Official methods are preferred, while `--auth-method <id>` can select any method
+the provider declares, including a community method. `--source <id>` picks an
+explicit native store for a multi-source provider. `--api-key` is the backwards-compatible Kiro
+shortcut and prompts for the value when it is omitted; `--region` pins its API
+region. Plugin providers use `--credential <kind>`, `--secret`, and one or more
+provider-declared `key=value` qualifiers after `--option`. Omit the `--secret`
+value to use a masked prompt.
 
 ## Accounts
 
@@ -166,7 +177,7 @@ picks which account wins when two sources advertise the same model id;
 
 ```bash
 anypick plugin list
-anypick plugin add <dir>
+anypick plugin add <dir|bundled:name>
 anypick plugin enable <name>
 anypick plugin disable <name>
 anypick plugin trust <name>
@@ -178,7 +189,7 @@ prompts; it needs the global `-y` when there is no TTY. `trust` re-pins the
 package digest after the plugin's code changes. See
 [Plugins](/docs/guides/plugins).
 
-## Surfaces and supervisor
+## Source CLI surfaces and compatibility supervisor
 
 ```bash
 anypick tui
@@ -189,11 +200,14 @@ anypick tray stop
 ```
 
 `anypick tui` always opens the [Apps / Terminal UI](/docs/guides/terminal-ui).
-Bare `anypick tray` opens or starts the [Desktop Tray](/docs/guides/tray) on
-macOS (elsewhere it reports that the desktop surface is unavailable — use
-`tray start` for the supervisor alone). `start`, `status`, and `stop` are
-explicit lifecycle commands for automation and diagnostics. `stop` quits the
-supervisor and stops every AnyPick-owned proxy.
+The `tray` command family remains in the TypeScript source tree as a compatibility
+path while the native cutover is completed. `start`, `status`, and `stop`
+inspect or control that compatibility supervisor and the proxies it owns.
+
+These commands do not define native-app ownership. The macOS app resolves and
+starts `Contents/Helpers/anypick-core`, keeps the menu-bar quick panel inside the
+same application, and stops the helper on explicit app Quit. See
+[macOS app and menu bar](/docs/guides/tray).
 
 ## Health
 
@@ -205,18 +219,21 @@ anypick doctor --fix [--dry-run] [-y]
 See [Troubleshooting](/docs/reference/troubleshooting) for what `--fix` is allowed to
 touch.
 
-## Updating
+## Update command during the preview
 
 ```bash
-anypick update           # install the latest release
-anypick update --check   # report only; install nothing
+anypick update           # legacy npm-channel behavior
+anypick update --check   # query only; install nothing
 ```
 
-`update` reads the `latest` tag from the npm registry, compares it with the
-running version, and — if there is something newer — runs
-`npm install -g anypick@<version>` with the exact version it just reported.
-npm's own output is passed straight through. With `--check` it prints the
-comparison and exits `0` either way, so a shell script can gate on `--json`:
+The command still implements the existing npm-channel compatibility behavior:
+it compares the running version with the registry's `latest` tag and can invoke
+npm for that exact version. It does **not** update `AnyPick.app`, install a
+bundled Go helper, or establish that a supported release currently exists.
+
+For this development preview, update the source checkout through its version
+control workflow and rerun `pnpm install`. `--check` remains non-mutating and
+supports `--json`:
 
 ```bash
 anypick update --check --json
@@ -226,10 +243,9 @@ anypick update --check --json
 { "current": "1.0.0", "latest": "1.1.0", "updateAvailable": true, "updated": false }
 ```
 
-<Aside type="caution" title="npm-installed builds only">
-The update runs npm regardless of how AnyPick got onto your machine. If you
-installed with pnpm, bun, or Homebrew, update it the same way you installed it —
-otherwise you end up with two copies on `PATH`.
+<Aside type="caution" title="Not a native app updater">
+Do not use `anypick update` for an Xcode-built app. Signed app updates and all
+installer channels remain planned distribution work.
 </Aside>
 
 ## Shell completion
@@ -267,7 +283,7 @@ source <(anypick completion zsh)
 | Variable | Effect |
 | --- | --- |
 | `ANYPICK_HOME` | Data directory. Default `~/.anypick` |
-| `ANYPICK_UI=tui\|tray` | Override the saved surface for a bare interactive run |
+| `ANYPICK_UI=tui\|tray` | Override the saved surface for a bare compatibility CLI run |
 | `ANYPICK_NO_PLUGINS=1` | Skip loading plugins entirely |
 
 | `ANYPICK_DEBUG=1` | Echo internal events to stderr |

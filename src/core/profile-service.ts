@@ -67,6 +67,7 @@ export class ProfileService {
     const models = opts.models ?? {};
     const headerNames = opts.headers ? Object.keys(opts.headers) : undefined;
 
+    const splitOverrides = splitClientOverrides(opts.clientOverrides);
     const meta: RuntimeProfileMeta = {
       name: profileName,
       provider: provider.id,
@@ -81,12 +82,16 @@ export class ProfileService {
       sonnetModel: cleanModel(opts.sonnetModel),
       opusModel: cleanModel(opts.opusModel),
       haikuModel: cleanModel(opts.haikuModel),
-      clientOverrides: opts.clientOverrides,
+      clientOverrides: splitOverrides.meta,
     };
 
     const secrets: RuntimeProfileSecrets = {
       apiKey: normalizeLooseSecret(opts.apiKey) ?? existing?.secrets.apiKey,
       headers: opts.headers ?? existing?.secrets.headers,
+      clientOverrides: mergeSecretOverrides(
+        existing?.secrets.clientOverrides,
+        splitOverrides.secrets,
+      ),
     };
 
     await this.store.writeMeta(meta);
@@ -109,9 +114,11 @@ export class ProfileService {
       headers = { ...headers, ...opts.headers };
     }
 
+    const currentOverrides = splitClientOverrides(current.meta.clientOverrides);
+    const requestedOverrides = splitClientOverrides(opts.clientOverrides);
     const clientOverrides = {
-      ...current.meta.clientOverrides,
-      ...opts.clientOverrides,
+      ...currentOverrides.meta,
+      ...requestedOverrides.meta,
     };
 
     const meta: RuntimeProfileMeta = {
@@ -143,6 +150,10 @@ export class ProfileService {
     const secrets: RuntimeProfileSecrets = {
       apiKey,
       headers,
+      clientOverrides: mergeSecretOverrides(
+        mergeSecretOverrides(current.secrets.clientOverrides, currentOverrides.secrets),
+        requestedOverrides.secrets,
+      ),
     };
 
     await this.store.writeMeta(meta);
@@ -193,7 +204,7 @@ export class ProfileService {
       return { meta: profile.meta, secrets: profile.secrets };
     }
     return {
-      meta: profile.meta,
+      meta: redactProfileMeta(profile.meta),
       secrets: {
         apiKey: profile.secrets.apiKey ? maskSecret(profile.secrets.apiKey) : undefined,
         headers: profile.secrets.headers
@@ -204,6 +215,118 @@ export class ProfileService {
       },
     };
   }
+}
+
+const SECRET_FIELD =
+  /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|secret|password|credential)/i;
+
+function splitClientOverrides(overrides: ProfileCreateOpts['clientOverrides']): {
+  meta?: Record<string, Record<string, unknown>>;
+  secrets?: Record<string, { apiKey?: string; env?: Record<string, string> }>;
+} {
+  if (!overrides) {
+    return {};
+  }
+  const meta: Record<string, Record<string, unknown>> = {};
+  const secrets: Record<string, { apiKey?: string; env?: Record<string, string> }> = {};
+  for (const [client, raw] of Object.entries(overrides)) {
+    const next = structuredClone(raw);
+    const secret: { apiKey?: string; env?: Record<string, string> } = {};
+    if (typeof next.apiKey === 'string') {
+      secret.apiKey = next.apiKey;
+      delete next.apiKey;
+    }
+    if (next.env && typeof next.env === 'object' && !Array.isArray(next.env)) {
+      const publicEnv: Record<string, unknown> = {};
+      const secretEnv: Record<string, string> = {};
+      for (const [key, value] of Object.entries(next.env as Record<string, unknown>)) {
+        if (SECRET_FIELD.test(key)) {
+          if (typeof value !== 'string') {
+            throw new AnyPickError(
+              `Secret environment override ${key} must be a string.`,
+              'PROFILE_SECRET_INVALID',
+            );
+          }
+          secretEnv[key] = value;
+        } else {
+          publicEnv[key] = value;
+        }
+      }
+      if (Object.keys(secretEnv).length > 0) {
+        secret.env = secretEnv;
+      }
+      if (Object.keys(publicEnv).length > 0) {
+        next.env = publicEnv;
+      } else {
+        delete next.env;
+      }
+    }
+    rejectNestedSecrets(next, `clientOverrides.${client}`);
+    if (Object.keys(next).length > 0) {
+      meta[client] = next;
+    }
+    if (secret.apiKey !== undefined || secret.env) {
+      secrets[client] = secret;
+    }
+  }
+  return {
+    meta: Object.keys(meta).length > 0 ? meta : undefined,
+    secrets: Object.keys(secrets).length > 0 ? secrets : undefined,
+  };
+}
+
+function rejectNestedSecrets(value: unknown, path: string): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (SECRET_FIELD.test(key)) {
+      throw new AnyPickError(
+        `${path}.${key} is credential material. Put it in apiKey or an environment override instead.`,
+        'PROFILE_SECRET_INVALID',
+      );
+    }
+    rejectNestedSecrets(child, `${path}.${key}`);
+  }
+}
+
+function mergeSecretOverrides(
+  base: RuntimeProfileSecrets['clientOverrides'],
+  additions: RuntimeProfileSecrets['clientOverrides'],
+): RuntimeProfileSecrets['clientOverrides'] {
+  const merged: NonNullable<RuntimeProfileSecrets['clientOverrides']> = structuredClone(base ?? {});
+  for (const [client, addition] of Object.entries(additions ?? {})) {
+    const current = merged[client] ?? {};
+    merged[client] = {
+      apiKey: addition.apiKey ?? current.apiKey,
+      env: { ...current.env, ...addition.env },
+    };
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function redactProfileMeta(meta: RuntimeProfileMeta): RuntimeProfileMeta {
+  return {
+    ...meta,
+    clientOverrides: meta.clientOverrides
+      ? (redactUnknown(meta.clientOverrides) as Record<string, Record<string, unknown>>)
+      : undefined,
+  };
+}
+
+function redactUnknown(value: unknown, fieldName = ''): unknown {
+  if (SECRET_FIELD.test(fieldName)) {
+    return '••••••••';
+  }
+  if (Array.isArray(value)) {
+    return value.map((child) => redactUnknown(child));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, redactUnknown(child, key)]),
+  );
 }
 
 function cleanModel(value: string | undefined): string | undefined {

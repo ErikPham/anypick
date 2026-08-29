@@ -86,6 +86,7 @@ export function decodeRuntimeProfileMeta(
 export interface DecodedRuntimeProfileSecrets {
   apiKey?: string;
   headers?: Record<string, string>;
+  clientOverrides?: Record<string, { apiKey?: string; env?: Record<string, string> }>;
 }
 
 export function decodeRuntimeProfileSecrets(
@@ -101,7 +102,36 @@ export function decodeRuntimeProfileSecrets(
       v.headers && typeof v.headers === 'object' && !Array.isArray(v.headers)
         ? (v.headers as Record<string, string>)
         : undefined,
+    clientOverrides: decodeClientOverrideSecrets(v.clientOverrides),
   });
+}
+
+function decodeClientOverrideSecrets(
+  value: unknown,
+): Record<string, { apiKey?: string; env?: Record<string, string> }> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: Record<string, { apiKey?: string; env?: Record<string, string> }> = {};
+  for (const [client, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      continue;
+    }
+    const record = raw as Record<string, unknown>;
+    const env =
+      record.env && typeof record.env === 'object' && !Array.isArray(record.env)
+        ? Object.fromEntries(
+            Object.entries(record.env).filter(
+              (entry): entry is [string, string] => typeof entry[1] === 'string',
+            ),
+          )
+        : undefined;
+    const apiKey = isOptionalString(record.apiKey) ? record.apiKey : undefined;
+    if (apiKey !== undefined || (env && Object.keys(env).length > 0)) {
+      out[client] = { apiKey, env };
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 // ── ClientState (v0) ──────────────────────────────────────────

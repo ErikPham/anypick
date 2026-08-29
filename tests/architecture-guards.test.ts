@@ -95,6 +95,24 @@ describe('architecture guards', () => {
     ).toEqual([]);
   });
 
+  it('CLI/TUI presentation layers do not reach into raw persistence stores', async () => {
+    const roots = ['cli', 'tui'].map((p) => join(SRC, p));
+    const offenders: string[] = [];
+    const rawStoreMember = /\bapp\.(?:accountStore|bindings|presets|pools)\b/;
+    for (const root of roots) {
+      const files = await listTsFiles(root);
+      for (const file of files) {
+        const source = stripComments(await readSource(file));
+        if (rawStoreMember.test(source)) {
+          offenders.push(relative(SRC, file));
+        }
+      }
+    }
+    expect(offenders, `presentation callers bypassing services:\n${offenders.join('\n')}`).toEqual(
+      [],
+    );
+  });
+
   it('getDefaultApp is never called (throws by design)', async () => {
     const files = await listTsFiles(SRC);
     const offenders: string[] = [];

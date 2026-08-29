@@ -7,6 +7,9 @@ import {
   parseAntigravityOAuthCredential,
   readAntigravityOAuthPayload,
   hydrateAntigravityOAuthPayload,
+  emailFromJwt,
+  fetchGoogleUserEmail,
+  resolveAntigravityAccountEmail,
 } from '../src/providers/gemini-antigravity-oauth';
 import { GeminiProvider } from '../src/providers/gemini';
 
@@ -169,6 +172,31 @@ describe('hydrateAntigravityOAuthPayload', () => {
     expect(payload.token?.access_token).toBe('fresh-at');
     expect(payload.token?.refresh_token).toBe('rt');
     expect(payload.token?.expiry).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe('Gemini account email identity', () => {
+  it('reads email from a JWT access token', () => {
+    const body = Buffer.from(JSON.stringify({ email: 'Work@Example.com' })).toString('base64url');
+    expect(emailFromJwt(`aaa.${body}.sig`)).toBe('work@example.com');
+  });
+
+  it('fetches email from Google userinfo like CLIProxyAPI', async () => {
+    const email = await fetchGoogleUserEmail('access-token', async (url, init) => {
+      expect(String(url)).toContain('oauth2/v2/userinfo');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer access-token' });
+      return new Response(JSON.stringify({ email: 'live@example.com' }));
+    });
+    expect(email).toBe('live@example.com');
+  });
+
+  it('prefers a stored email over the refresh token', async () => {
+    await expect(
+      resolveAntigravityAccountEmail({
+        email: 'saved@example.com',
+        token: { refresh_token: 'secret' },
+      }),
+    ).resolves.toBe('saved@example.com');
   });
 });
 

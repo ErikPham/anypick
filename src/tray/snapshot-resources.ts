@@ -17,6 +17,7 @@ import type {
   TrayGatewaySnapshot,
   TrayLogSourceSnapshot,
   TrayManagedAccountSnapshot,
+  TrayProviderLoginMethodSnapshot,
   TrayProxySnapshot,
   TrayRouteSnapshot,
   TraySnapshotOptions,
@@ -124,7 +125,13 @@ export async function buildTrayAccountProviders(
         if (probes.length === 0) {
           return [
             (async (): Promise<TrayAccountProviderSnapshot> => {
-              const live = await provider.detectLive().catch(() => ({ present: false as const }));
+              const [live, loginMethods] = await Promise.all([
+                provider.detectLive().catch(() => ({
+                  present: false as const,
+                  identity: undefined,
+                })),
+                buildTrayProviderLoginMethods(app, provider.id),
+              ]);
               return {
                 id: provider.id,
                 providerId: provider.id,
@@ -133,7 +140,10 @@ export async function buildTrayAccountProviders(
                 detail: live.present
                   ? (live.identity ?? provider.description)
                   : provider.description,
-                installed: live.present,
+                installed: live.present || loginMethods.some((method) => method.available),
+                livePresent: live.present,
+                ...(live.identity ? { liveIdentity: live.identity } : {}),
+                loginMethods,
                 // clearLive wipes the only live store this row represents.
                 canClear: typeof provider.clearLive === 'function',
               };
@@ -146,19 +156,28 @@ export async function buildTrayAccountProviders(
           const canClear = provider.detectLiveSource
             ? typeof provider.clearLiveSource === 'function'
             : typeof provider.clearLive === 'function';
+          const sourceId = provider.detectLiveSource ? probe.sourceId : undefined;
+          const [loginMethods, live, installed] = await Promise.all([
+            buildTrayProviderLoginMethods(app, provider.id, sourceId),
+            (sourceId && provider.detectLiveSource
+              ? provider.detectLiveSource(sourceId)
+              : provider.detectLive()
+            ).catch(() => ({ present: false as const, identity: undefined })),
+            client
+              ? (opts.isNativeSourceInstalled ?? nativeSourceInstalled)(client, probe.sourceId)
+              : Promise.resolve(false),
+          ]);
           return {
             id: `${provider.id}:${probe.sourceId}`,
             providerId: provider.id,
-            ...(client ? { clientId: client.id } : {}),
-            ...(provider.detectLiveSource ? { sourceId: probe.sourceId } : {}),
+            clientId: client?.id,
+            sourceId: provider.detectLiveSource ? probe.sourceId : undefined,
             label: humanizeSourceId(probe.sourceId),
             detail: provider.shortName ?? provider.name,
-            installed: client
-              ? await (opts.isNativeSourceInstalled ?? nativeSourceInstalled)(
-                  client,
-                  probe.sourceId,
-                )
-              : false,
+            installed,
+            livePresent: live.present,
+            ...(live.identity ? { liveIdentity: live.identity } : {}),
+            loginMethods,
             canClear,
           };
         });
@@ -172,9 +191,27 @@ export async function buildTrayAccountProviders(
   );
 }
 
+async function buildTrayProviderLoginMethods(
+  app: AnyPickApp,
+  providerId: string,
+  source?: string,
+): Promise<TrayProviderLoginMethodSnapshot[]> {
+  const methods = await app.accounts.loginMethods(providerId, source).catch(() => []);
+  return methods.map((method) => ({
+    id: method.id,
+    label: method.label,
+    detail: method.description,
+    provenance: method.provenance,
+    preferred: method.preferred === true,
+    available: method.available !== false,
+    unavailableReason: method.unavailableReason,
+  }));
+}
+
 export async function buildTrayManagedAccounts(
   app: AnyPickApp,
   listedAccounts: readonly ListedAccount[],
+  registry: TrayActionRegistry | undefined,
 ): Promise<TrayManagedAccountSnapshot[]> {
   return Promise.all(
     listedAccounts.map(async (account): Promise<TrayManagedAccountSnapshot> => {
@@ -195,6 +232,12 @@ export async function buildTrayManagedAccounts(
           .join(' · '),
         active: account.isLiveMatch,
         canRefresh: providerCanRefresh(provider),
+        switchActionId:
+          registry?.register({
+            operation: 'account-switch',
+            providerId: account.provider,
+            accountName: account.name,
+          }) ?? randomUUID(),
       };
     }),
   );
@@ -204,7 +247,6 @@ export function buildProviderSwitchActions(
   app: AnyPickApp,
   listedAccounts: readonly ListedAccount[],
   managedAccounts: readonly TrayManagedAccountSnapshot[],
-  registry: TrayActionRegistry | undefined,
 ): TrayActionSnapshot[] {
   // Providers without a client adapter (Grok, OpenCode, …) never appear in the
   // client loop above. Surface their saved logins under Other CLI so the tray
@@ -221,14 +263,8 @@ export function buildProviderSwitchActions(
         (row) => row.provider === account.providerId && row.name === account.name,
       );
       const selected = Boolean(listed?.isLiveMatch || listed?.active);
-      const id =
-        registry?.register({
-          operation: 'account-switch',
-          providerId: account.providerId,
-          accountName: account.name,
-        }) ?? randomUUID();
       return {
-        id,
+        id: account.switchActionId,
         clientId: account.providerId,
         sourceId: account.providerId,
         client,
@@ -288,7 +324,11 @@ export function buildTrayGatewayProviders(app: AnyPickApp): TrayGatewayProviderS
       id: provider.id,
       label: provider.name,
       detail: provider.description,
-      kind: 'gateway',
+      ...(provider.defaultEndpoint ? { providesEndpoint: true } : {}),
+      ...(provider.firstPartyClientIds
+        ? { firstPartyClientIds: [...provider.firstPartyClientIds] }
+        : {}),
+      kind: provider.configurationKind === 'custom' ? 'custom' : 'gateway',
     }),
   );
 

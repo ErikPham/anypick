@@ -4,3 +4,5 @@ export * from './types/clients';
 export * from './types/bindings';
 export * from './types/proxy-hub';
 export * from './types/plugins';
+export * from './types/compatible-provider';
+export * from './types/backend';

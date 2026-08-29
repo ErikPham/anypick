@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type {
   ClientId,
   Protocol,
@@ -23,7 +24,7 @@ import { displayRef, providerScope, serializeRef } from './refs';
 import { ProxyHubBackendRegistry, type ProxyHubServerDeps } from './proxy-hub-server';
 import { compileProxyHubRoutes, type CompiledProxyHubRoutes } from './proxy-hub-routes';
 import { DEFAULT_PROXY_HUB, ProxyHubStore, type ProxyHubRouteSecret } from './proxy-hub-store';
-import { proxyHubLogPath, proxyHubPidPath } from './paths';
+import { proxyHubLogPath, proxyHubPidPath, proxyHubRuntimeDir } from './paths';
 import { pathExists } from '../utils/fs';
 import {
   isListenPortFree,
@@ -289,7 +290,11 @@ export class ProxyHubService {
   }
 
   private async previewWithConfig(config: ProxyHubConfig): Promise<ProxyHubPreview> {
-    const registry = new ProxyHubBackendRegistry(this.deps, () => {});
+    const registry = new ProxyHubBackendRegistry(
+      this.deps,
+      () => {},
+      join(proxyHubRuntimeDir(this.root, config.name), 'preview-runtime'),
+    );
     const catalogs: ProxyHubCatalogSnapshot[] = [];
     const unavailable: ProxyHubPreview['unavailable'] = [];
     try {

@@ -170,7 +170,12 @@ describe('app route builder', () => {
     const driftedTray = await buildTraySnapshot(app, 0);
     expect(driftedTray.routes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ client: 'Codex', source: 'codex · other', status: 'attention' }),
+        expect.objectContaining({
+          client: 'Codex',
+          source: 'codex · other',
+          status: 'attention',
+          attentionReason: expect.stringContaining('bound to'),
+        }),
       ]),
     );
     expect(
@@ -257,6 +262,73 @@ describe('app route builder', () => {
         selected: true,
       }),
     ]);
+
+    vi.spyOn(app.accounts, 'liveUsage').mockResolvedValue({
+      windows: [{ label: 'Daily', remainingPercent: 73 }],
+    });
+    await expect(buildTrayUsage(app)).resolves.toEqual([
+      expect.objectContaining({
+        client: 'grok',
+        account: 'work',
+        windows: [expect.objectContaining({ label: 'Daily', remainingPercent: 73 })],
+      }),
+    ]);
+  });
+
+  it('shows usage for a live native provider before the account is saved', async () => {
+    root = await mkdtemp(join(tmpdir(), 'anypick-unsaved-native-usage-'));
+    const providers = new ProviderRegistry();
+    const native = new FakeProvider('native-usage', join(root, 'live', 'native-usage'));
+    Object.assign(native, {
+      liveUsage: async () => ({ windows: [{ label: 'Weekly', remainingPercent: 66 }] }),
+    });
+    providers.register(native);
+    app = await createAppReady({
+      root,
+      bare: true,
+      skipMigrate: true,
+      accountRegistry: providers,
+    });
+    await native.setLive({ email: 'native@example.test', token: 'secret' });
+
+    await expect(buildTrayUsage(app)).resolves.toEqual([
+      expect.objectContaining({
+        client: 'native-usage',
+        account: 'native-usage',
+        windows: [expect.objectContaining({ label: 'Weekly', remainingPercent: 66 })],
+      }),
+    ]);
+  });
+
+  it('offers compatible provider accounts to OpenCode', async () => {
+    root = await mkdtemp(join(tmpdir(), 'anypick-opencode-routes-'));
+    const providers = new ProviderRegistry();
+    const borrowable = new FakeProvider('borrowable', join(root, 'live', 'borrowable'), {
+      withProxy: true,
+      defaultProxyPort: 0,
+    });
+    providers.register(borrowable);
+    const clients = new ClientRegistry();
+    registerBuiltinClients(clients);
+    const catalog = new CatalogRegistry();
+    registerBuiltinCatalog(catalog);
+    app = await createAppReady({
+      root,
+      bare: true,
+      skipMigrate: true,
+      accountRegistry: providers,
+      clients,
+      catalog,
+    });
+    await borrowable.setLive({ email: 'route@example.test', token: 'secret' });
+    await app.accounts.save('borrowable', 'work');
+
+    const rows = await loadCompatibleSources(app, 'opencode');
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: 'borrowable · work', transport: 'managed_builtin_proxy' }),
+      ]),
+    );
   });
 
   it('offers every configured gateway model and renders a secret-free plan summary', async () => {

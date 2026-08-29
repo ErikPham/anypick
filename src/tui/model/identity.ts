@@ -19,7 +19,7 @@ export function identityDisplayText(value: string | undefined | null, fallback =
     return fallback;
   }
   if (/^antigravity:[0-9a-f]{12,}$/i.test(identity)) {
-    return 'Antigravity OAuth';
+    return 'Gemini OAuth';
   }
   return identity;
 }

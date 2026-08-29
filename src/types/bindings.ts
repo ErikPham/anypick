@@ -13,6 +13,9 @@ export type TransportCapability =
   | 'external_manual_proxy'
   | 'unsupported';
 
+/** User intent; resolver must never silently replace `direct` with a proxy. */
+export type TransportPolicy = 'auto' | 'direct' | 'proxy';
+
 export type ResourceKind = 'account' | 'gateway' | 'proxy-hub' | 'preset' | 'account-pool';
 
 export interface AccountResourceRef {
@@ -97,7 +100,7 @@ export interface BindingSpec {
   client: ClientId;
   source: ResourceRef;
   model: ModelSelection;
-  transportPolicy: 'auto' | 'direct' | 'proxy';
+  transportPolicy: TransportPolicy;
   clientOptions: Record<string, unknown>;
 }
 
@@ -188,6 +191,11 @@ export interface SourceAdapter {
   readonly sourceRef: ResourceRef;
   readonly capabilities: SourceCapabilities;
   transportFor(clientId: ClientId): TransportCapability;
+  /** Provider-owned override when this source supports more than one path. */
+  transportForPolicy?(
+    clientId: ClientId,
+    policy: Exclude<TransportPolicy, 'auto'>,
+  ): TransportCapability;
 }
 
 export interface ResolvedSource {
@@ -318,6 +326,7 @@ export interface ActivationRequest {
   modelRoles?: Record<string, string>;
   projectRoot?: string;
   childArgs?: string[];
+  transportPolicy?: TransportPolicy;
 }
 
 export interface ActivationPlan {

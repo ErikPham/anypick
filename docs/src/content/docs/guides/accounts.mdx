@@ -3,9 +3,9 @@ title: Accounts
 description: Snapshot native provider logins so several can coexist and any client can use them.
 ---
 
-An account is a login that some provider's own CLI created. AnyPick snapshots
-it, so you can keep several, switch between them, and lend one to a client that
-was never designed to use it.
+An account is either a login that a provider's own CLI created or a provider key
+you supplied for its local proxy. AnyPick snapshots it, so you can keep several,
+switch between them, and lend one to a client that was never designed to use it.
 
 ## Supported providers
 
@@ -20,10 +20,16 @@ was never designed to use it.
 
 `anypick providers` prints the same table with live status for your machine.
 
+The optional `popular-providers` plugin adds official API and developer-plan
+accounts for Kimi, GLM, MiniMax, MiMo, DeepSeek, Qwen, Ark, TokenHub, OpenRouter,
+GroqCloud, Mistral, Together, Fireworks, Cerebras, SiliconFlow, and NVIDIA NIM. See
+[Plugins](/docs/guides/plugins) for the install command and the distinct
+`api-key` / `subscription-key` profiles.
+
 ## Saving a login
 
-AnyPick does not implement provider login flows; it reads what the native tool
-produced. Two ways in:
+AnyPick delegates browser sign-in to provider-owned login launchers and then
+reads the credential they write to the provider's normal location. Two ways in:
 
 <Tabs>
 <TabItem label="Save the live login">
@@ -41,16 +47,28 @@ The credential that is live right now becomes a saved snapshot named
 ```bash
 anypick add account codex --new --name work
 ```
-AnyPick stashes the live credential and clears it, so the provider CLI offers a
-login prompt instead of reusing the existing session. Log in, and AnyPick saves
-the result under the new name.
+When an installed provider exposes browser Auth, AnyPick backs up the live
+credential, opens the provider's browser flow, verifies the new native login,
+and saves it under the new name in one command. Codex, Claude Code, Kiro, and
+Grok provide this path. If no browser launcher is available, AnyPick falls back
+to clearing the live login and tells you how to save it after signing in with a
+provider-supported tool.
 </TabItem>
 </Tabs>
+
+Official methods are shown first and are the default because they are less
+likely to conflict with provider policy. They are not a whitelist: a full
+provider plugin may expose a community method, and you can choose it explicitly
+with `--auth-method <id>` or the method picker. Provider terms still apply.
+
+If browser sign-in or snapshot saving fails, AnyPick restores the previous
+native login and active-account pointer. Authorization URLs, one-time codes, and
+launcher output are not copied into tray or JSON output.
 
 For Gemini, `--source gemini-cli|antigravity` picks which sign-in to read when
 both exist.
 
-## Saving an API key instead of a login
+## Saving a key instead of a login
 
 Kiro also accepts a key you already hold:
 
@@ -76,6 +94,18 @@ it never shows as the live Kiro credential, activating it leaves any `kiro-cli`
 login on disk untouched, and `account refresh` will not overwrite it. Clients
 reach it exactly like any other Kiro account — through `kirolink`, which the
 account's proxy starts in API-key mode.
+
+Providers installed by a plugin can declare other credential products without
+adding provider-specific CLI flags. The generic form is:
+
+```bash
+anypick add account <provider> --credential <kind> --secret --name <name>
+anypick add account mimo --credential subscription-key --secret --name work \
+  --option profile=singapore
+```
+
+Every `--option key=value` must be a qualifier declared by that provider. The
+TUI renders the same kinds and endpoint profiles from the provider contract.
 
 <Aside type="caution" title="One live login at a time">
 Provider CLIs keep exactly one credential on disk. That is the constraint

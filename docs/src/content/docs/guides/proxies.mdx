@@ -22,8 +22,12 @@ provider's real API:
   `/v1/responses` request and SSE lifecycle current Codex CLI releases expect
 - **kiro** — delegated to an external `kirolink` / `kiro-proxy` binary if you
   have one installed
+- **compatible provider plugins** — native Anthropic Messages when the vendor
+  exposes it, OpenAI Chat Completions otherwise, plus the Responses lifecycle
+  used by Codex; API and coding-subscription keys use the same local boundary
 
-Model discovery is live, never a bundled list: Gemini reads `models.list` for
+Model discovery prefers the live upstream and uses a provider-owned fallback
+only when `/models` is missing or unavailable: Gemini reads `models.list` for
 API-key accounts and Code Assist `fetchAvailableModels` for OAuth accounts;
 OpenCode intersects the live catalogs with provider metadata. New models show up
 without a AnyPick release.
@@ -43,6 +47,7 @@ pass-through.
 | `kiro` | `4119` |
 | `opencode` | `4120` |
 | `gemini` | `4130` |
+| plugin: `kimi` … `qwen` | `4141` … `4146` |
 
 A proxy that has no configured port takes the first free one.
 
@@ -140,23 +145,31 @@ The Proxy board lists the Hub as its own row when configured; <kbd>enter</kbd>
 or <kbd>m</kbd> opens the Hub editor. Prefer ordinary per-account proxies unless
 you specifically need one shared endpoint across providers.
 
-## The supervisor
+## Process ownership
 
-Proxies outlive the terminal UI so a client you launched keeps working after you
-close it. On macOS the daily owner is the [Desktop Tray](/docs/guides/tray)
-menu-bar helper; elsewhere `anypick tray start` runs a headless supervisor or a
-packaged Tauri helper when one is present.
+In the native macOS architecture, `AnyPick.app` owns its bundled Go service and
+the Go service owns local proxy processes. Closing the main window keeps the app
+running; explicit app Quit gracefully stops the helper and its services. The
+menu-bar item is a view of that same app, not a standalone supervisor.
+
+The TypeScript CLI/TUI still has a compatibility supervisor during the source
+cutover:
 
 ```bash
-anypick tray          # open/start the desktop Tray (macOS)
+anypick tray          # compatibility source surface
 anypick tray start
 anypick tray status
-anypick tray stop     # quit the supervisor and stop every AnyPick-owned proxy
+anypick tray stop     # stop that supervisor and the proxies it owns
 ```
 
-Closing the TUI with <kbd>q</kbd> leaves background state unchanged. Press
-<kbd>Shift+D</kbd> when you explicitly want to start or reuse the Tray and
-detach, or <kbd>t</kbd> for the runtime screen.
+From this repository, prefix those forms with `pnpm dev`. Closing the TUI with
+<kbd>q</kbd> leaves compatibility background state unchanged. Its
+<kbd>Shift+D</kbd> and <kbd>t</kbd> actions do not manage a separately launched
+native app.
 
 Orphans are cleaned up rather than accumulating: on startup, AnyPick releases
 leases whose owning process has exited and stops their proxies.
+
+No packaged Linux/Windows tray helper or desktop installer is currently a
+supported download. See [macOS app and menu bar](/docs/guides/tray) for the
+app-owned source target.

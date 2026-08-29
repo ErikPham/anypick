@@ -150,7 +150,7 @@ export type Screen =
   | { kind: 'help'; context: HelpContext; back: Screen }
   | { kind: 'anypick-preview'; providerId: string; name: string }
   | { kind: 'add-provider' }
-  | { kind: 'add-mode'; providerId: string; source?: 'antigravity' }
+  | { kind: 'add-mode'; providerId: string; source?: string }
   | { kind: 'add-source'; providerId: string }
   | {
       kind: 'credential-form';
@@ -165,7 +165,7 @@ export type Screen =
   | {
       kind: 'stash-result';
       providerId: string;
-      source?: 'antigravity';
+      source?: string;
       displayName: string;
       cleared: boolean;
       backedUpTo: string | null;
@@ -179,7 +179,7 @@ export type Screen =
       providerId?: string;
       accountName?: string;
       /** Sign-in source carried into save-name for providers with a source picker. */
-      source?: 'antigravity';
+      source?: string;
       /** Gateway create draft carried through text steps */
       gatewayDraft?: GatewayDraft;
       label: string;

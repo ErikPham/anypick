@@ -27,10 +27,13 @@
     "url": "git+https://github.com/outof0/anypick.git"
   },
   "bin": {
-    "anypick": "./dist/cli.js"
+    "anypick": "./bin/anypick.js"
   },
   "files": [
-    "dist"
+    "bin",
+    "dist",
+    "plugins",
+    "scripts/plugin-host.mjs"
   ],
   "type": "module",
   "main": "./dist/index.js",
@@ -61,16 +64,27 @@
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "go": "node scripts/dev-go.mjs",
+    "go:sandbox": "node scripts/dev-go.mjs --sandbox",
+    "go:dev": "node scripts/dev-go.mjs --launch-app",
+    "go:dev:stop": "node scripts/dev-go.mjs --stop-app",
+    "go:test": "cd go && GOTOOLCHAIN=auto go test -race ./...",
+    "go:parity": "bash -c \"npx tsx scripts/parity-drift-gate.ts\"",
+    "go:cli-tree": "npx tsx scripts/parity-cli-tree.ts",
     "start": "node dist/cli.js",
     "build": "pnpm clean && tsc -p tsconfig.json --emitDeclarationOnly && node scripts/rewrite-declaration-specifiers.mjs && vite build && node scripts/copy-native-assets.mjs && node scripts/check-native-tray.mjs",
     "clean": "node scripts/clean-dist.mjs",
-    "check": "oxfmt --check && pnpm lint && pnpm typecheck && pnpm release:check && pnpm test",
+    "check": "oxfmt --check && pnpm lint && pnpm typecheck && pnpm release:check && pnpm npm:launcher:test && pnpm artifact:node-free:test && pnpm test",
     "format": "oxfmt",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "npm:platform:build": "node scripts/build-npm-binaries.mjs",
+    "npm:launcher:test": "node scripts/npm-launcher-test.mjs",
+    "artifact:node-free": "node scripts/check-node-free-artifact.mjs",
+    "artifact:node-free:test": "node --test scripts/check-node-free-artifact.test.mjs",
     "package": "pnpm build && pnpm pack --pack-destination dist",
     "package:smoke": "pnpm package && node scripts/pack-smoke.mjs",
     "prepublishOnly": "pnpm build",
@@ -78,9 +92,13 @@
     "release:check": "node scripts/release-plan.mjs check",
     "release:plan": "node scripts/release-plan.mjs plan",
     "tray:build": "pnpm tray:ui:build && node scripts/build-tauri-tray.mjs",
+    "tauri:desktop:build": "node scripts/build-tauri-desktop.mjs",
     "tray:check": "pnpm tray:ui:check && pnpm tray:ui:build && cargo check --manifest-path src/tray/tauri/src-tauri/Cargo.toml",
     "tray:demo": "node scripts/demo-tauri-tray.mjs",
     "tray:macos": "node scripts/demo-macos-tray.mjs",
+    "macos:app": "node scripts/demo-macos-tray.mjs",
+    "macos:design": "node scripts/demo-macos-design.mjs",
+    "macos:design:check": "node scripts/demo-macos-design.mjs --check",
     "tray:smoke": "node scripts/smoke-tauri-tray.mjs",
     "tray:smoke:probe": "node scripts/smoke-tauri-tray.mjs",
     "tray:smoke:only": "node scripts/smoke-tauri-tray.mjs --smoke-only",
@@ -93,6 +111,7 @@
     "@clack/core": "0.4.2",
     "@clack/prompts": "^0.10.1",
     "commander": "^13.1.0",
+    "fs-ext": "^2.1.1",
     "ink": "^7.1.1",
     "picocolors": "^1.1.1",
     "react": "^19.2.7",
@@ -100,6 +119,8 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/fs-ext": "^2.0.3",
     "@types/node": "^22.15.21",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -115,6 +136,13 @@
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10"
+  },
+  "optionalDependencies": {
+    "@anypick/cli-darwin-arm64": "workspace:*",
+    "@anypick/cli-darwin-x64": "workspace:*",
+    "@anypick/cli-linux-arm64-gnu": "workspace:*",
+    "@anypick/cli-linux-x64-gnu": "workspace:*",
+    "@anypick/cli-win32-x64": "workspace:*"
   },
   "engines": {
     "node": ">=22.5.0"
