@@ -51,7 +51,14 @@ final class ProductionDesignModel: MacOSDesignModel {
       backups: []
     )
     storeObserver = store.objectWillChange.sink { [weak self] _ in
-      DispatchQueue.main.async { self?.synchronize() }
+      // The @MainActor-isolated synchronize() cannot be called from a
+      // non-isolated DispatchQueue.main.async closure under Swift 5.10+
+      // actor isolation checking: the closure runs on the main thread but is
+      // not main-actor-typed, so the runtime can silently drop the call and
+      // the SwiftUI binding never sees the new state. A Task hopped onto
+      // MainActor is the documented way and matches how SwiftUI itself
+      // dispatches update notifications.
+      Task { @MainActor [weak self] in self?.synchronize() }
     }
     synchronize()
   }
@@ -1223,6 +1230,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     case "gemini", "google", "antigravity": return "diamond.fill"
     case "kiro": return "shippingbox.fill"
     case "proxy-hub": return "point.3.connected.trianglepath.dotted"
+    case "workbuddy", "codebuddy": return "wand.and.stars"
     default: return "network"
     }
   }
@@ -1237,6 +1245,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     case "kiro": return "Kiro"
     case "grok": return "Grok"
     case "opencode": return "OpenCode"
+    case "workbuddy", "codebuddy": return "WorkBuddy"
     default: return anypickDisplayName(client)
     }
   }
@@ -1272,7 +1281,7 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   private func nativeAppOrder(_ lhs: DesignApp, _ rhs: DesignApp) -> Bool {
-    let priority = ["claude", "codex", "gemini", "kiro", "grok", "opencode"]
+    let priority = ["claude", "codex", "gemini", "kiro", "grok", "opencode", "workbuddy"]
     let lhsIndex = priority.firstIndex(of: lhs.id) ?? priority.count
     let rhsIndex = priority.firstIndex(of: rhs.id) ?? priority.count
     if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
