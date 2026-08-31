@@ -48,7 +48,6 @@ struct MainWindow: View {
       FirstRunWelcomeSheet(model: model)
     }
     .onAppear {
-      kickSplitViewLayout()
       presentStartupRoute()
       if !model.isProduction {
         openWindow(id: "tray")
@@ -123,26 +122,13 @@ struct MainWindow: View {
     }
   }
 
-  /// NSHostingView + NavigationSplitView can paint an empty sidebar until a resize.
-  /// Resolve the main window explicitly: the tray preview can hold key status
-  /// during startup, and resizing the wrong window leaves the sidebar blank.
-  private func kickSplitViewLayout() {
-    DispatchQueue.main.async {
-      let window =
-        NSApp.windows.first { $0.identifier?.rawValue == "main" }
-        ?? NSApp.windows.first { $0.canBecomeMain && $0.frame.width > 500 }
-      guard let window else { return }
-      if window.title.isEmpty { window.title = "AnyPick" }
-      let frame = window.frame
-      guard frame.width > 200, frame.height > 200 else { return }
-      window.contentView?.needsLayout = true
-      window.setFrame(
-        NSRect(x: frame.origin.x, y: frame.origin.y, width: frame.width + 1, height: frame.height),
-        display: true
-      )
-      DispatchQueue.main.async { window.setFrame(frame, display: true) }
-    }
-  }
+  // kickSplitViewLayout() used to live here. It nudged the window frame by +1px
+  // and back to force NSHostingView to lay the sidebar out. `.onAppear` re-runs
+  // whenever NavigationStack rebuilds on a `model.destination` change, so every
+  // sidebar click bumped the window by one pixel — the "layout jump" the sidebar
+  // had. The empty-sidebar symptom it worked around does not reproduce on the
+  // macOS releases we ship; if it ever comes back, reintroduce it behind a
+  // one-shot guard (a `@State` flag) so it can only ever fire once.
 
   @ViewBuilder
   private var detailColumn: some View {
