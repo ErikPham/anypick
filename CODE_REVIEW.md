@@ -412,17 +412,40 @@ Done:
 - [x] `anypick reset` no longer reports success when the binding delete failed
       (`cmd/anypick/bindings.go` dropped `DeleteGlobal`'s error). Found while
       fixing the ctx bug next to it — the usual way live bugs surface.
+- [x] **`CODE_REVIEW.md` was never committed.** It existed only in the working
+      tree, so a clean checkout, CI, and every agent starting from `main` were
+      reviewing against a standard they could not read — while `AGENTS.md`,
+      `CONTRIBUTING.md` and the PR template pointed at a file that was not
+      there. Landed as its own commit rather than bundled into the 100+ file
+      worktree it was sitting in.
+- [x] **`.gitignore` was swallowing `src/go/internal/refs`.** The `refs/` rule
+      was unanchored, so git matched it at any depth and excluded a real Go
+      package that 45 committed files import. Three separate silences at once:
+      `main` did not compile, `git status` said nothing (an ignored path is
+      invisible, not merely untracked), and `refs.ProviderScope` — the lock
+      scope behind ADR 0011 and invariant #5 — was not in the repository. Both
+      `refs/` and `design/` are now anchored to the root, and `make paths`
+      fails if any `.go` file under `src/go` is git-ignored or if any of the
+      authority documents is untracked (§4).
+- [x] **The table-ownership guard and two concurrency suites were also
+      untracked** — `internal/db/tables.go` + its test (invariant #6),
+      `internal/pubgate/gate_test.go` and `internal/modelcache/store_test.go`.
+      On `main` those rules were asserted by nobody.
 
 Open:
 
-- [ ] **`CODE_REVIEW.md` is still untracked.** Not on `main`, so no clean
-      checkout and no agent that starts from `main` can see it — and the
-      references to it from `AGENTS.md`, the PR template and `CONTRIBUTING.md`
-      dangle there. Land it, and the `AGENTS.md` line that points at it, as its
-      own commit: it is currently sitting inside a 100+ file worktree, and
-      §4's "one logical change" is the reason it has not shipped.
-      **This is the highest-value item in this list** — every other rule here
-      is unreachable until it is done.
+- [ ] **Three invariant guards still cannot land**, because the code they guard
+      is only fixed in work that is not committed yet. They are correct; they
+      fail — or do not compile — against `main`. Land the code fix first, then
+      the guard, in that order or together:
+      - `internal/store/coordinator_test.go` — 16 mutators still bypass
+        `s.mutate` (invariant #5).
+      - `internal/bindings/locking_test.go` — both ctx guards fail; six
+        mutators still take no caller `ctx`, and eight
+        `context.Background()` calls remain in production code.
+      - `cmd/anypick-release/version.go` — does not compile against `main`;
+        it needs `cargoToml` and `tauriConf` from a pending change.
+      Verified by building a clean worktree at `HEAD`; see §11 for the method.
 - [ ] **`internal/store` still has six ctx-less read wrappers** —
       `account_store.go:91,114,439,473,597` and `proxy_config.go:14` — each
       manufacturing a `context.Background()`. `internal/bindings` went further
@@ -466,5 +489,18 @@ completed template was not reviewed, whatever the author remembers doing.
 3. Re-read §10. An item open across two passes is not open work, it is accepted
    risk. Write that down, or close the item.
 4. Record the result — in §10 or an issue. An unrecorded pass did not happen.
+5. Before claiming a guard "can land", prove it against `main` in a throwaway
+   worktree, not in this working directory:
+
+   ```bash
+   git worktree add --detach /tmp/head-check HEAD
+   cd /tmp/head-check/src/go && go build ./... && go vet ./...
+   git worktree remove --force /tmp/head-check
+   ```
+
+   A guard that passes here only because the fix it depends on is sitting
+   uncommitted in your working directory is a guard that will be red the moment
+   it lands. This is how the three guards in §10 were found to be
+   un-landable — they are not wrong, they are early.
 
 A pass that finds nothing is a real result. Say so, with the date.
