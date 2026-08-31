@@ -10,8 +10,10 @@ docs/dist/
 .claude/
 .pi/
 
-# Local design mocks / ad-hoc screenshots — not product source
-design/
+# Local design mocks / ad-hoc screenshots — not product source.
+# Anchored to the root: an unanchored `design/` matches at any depth and will
+# silently swallow a nested directory of the same name.
+/design/
 /brand.png
 /*.png
 /*.jpg
@@ -29,8 +31,12 @@ npm/*/bin/
 *.exe
 *.profraw
 
-# Local scratch: ad-hoc screenshots, browser probes, assistant data
-refs/
+# Local scratch: ad-hoc screenshots, browser probes, assistant data.
+# Anchored to the repository root on purpose. An unanchored `refs/` matches at
+# any depth, and it swallowed src/go/internal/refs — a real Go package that 45
+# committed files import — so that package could never be committed and `main`
+# did not build, while `git status` stayed completely silent about it.
+/refs/
 .playwright-mcp/
 .workbuddy-ai/
 
