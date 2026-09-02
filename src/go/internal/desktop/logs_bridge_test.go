@@ -73,17 +73,17 @@ func TestHandleLogsBridgesProviderOwnedLogSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := env.Deps.Store.WriteMeta(store.Meta{
+	if err := env.Deps.Store.WriteMetaContext(context.Background(), store.Meta{
 		Name: "work", Provider: "pluginprov", CreatedAt: now, UpdatedAt: now,
 	}, staging); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Store.SetProxyConfig("pluginprov", "work",
+	if err := env.Deps.Store.SetProxyConfigContext(context.Background(), "pluginprov", "work",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	_ = env.Deps.Store.DiscardPreparedSnapshot(staging)
-	if err := env.Deps.Store.WriteProxyState("pluginprov", "work", store.ProxyRuntimeState{
+	if err := env.Deps.Store.WriteProxyStateContext(context.Background(), "pluginprov", "work", store.ProxyRuntimeState{
 		AccountName: "work", Endpoint: "http://127.0.0.1:43199",
 		PID: 1, InstanceID: "inst-dead", StartedAt: now, Token: engineToken,
 	}); err != nil {

@@ -1,134 +1,278 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// workbuddy mirrors the OpenCode provider (provider/opencode.go): a file-backed
-// account source under ~/.workbuddy (XDG-aware) whose accounts can be proxied
-// to other clients. WorkBuddy is an OpenAI-compatible agent, so its managed
-// proxy serves OpenAI-speaking borrowing clients (claude/codex/opencode).
+// workbuddy is the WorkBuddy AI / CodeBuddy subscription account source.
 //
-// The proxy server itself (ResolveUpstream + server selection) is wired
-// separately, the same way OpenCode's proxy lives in opencode-proxy-lifecycle.
+// It is the one provider here that cannot borrow an official CLI to sign in:
+// no CodeBuddy CLI ships on the user's machine, and the desktop app keeps its
+// token behind Electron safeStorage, reachable only by asking the running
+// daemon — which raises a Keychain prompt and blocks for tens of seconds. So
+// AnyPick runs Tencent's own OAuth device flow itself, the same one the
+// official CLI uses, and owns the resulting token end to end.
+//
+// Two files are involved and only one is authoritative:
+//
+//	~/.workbuddy/auth.json                             live, staging
+//	~/.anypick/providers/workbuddy/accounts/<name>/…   the snapshot
+//
+// The live file exists only because core's login sequence is
+// Login → DetectLive → Backup with no way to skip the middle step, and Login
+// is not handed a destination directory. Nothing outside AnyPick reads it:
+// WorkBuddy has no code path that opens auth.json. Every consumer, including
+// the proxy, reads the snapshot.
+//
+// API-key accounts are deliberately not supported here — the `tokenhub`
+// compatible provider already covers Tencent's pay-as-you-go and Coding Plan
+// keys with the real endpoints.
 type workbuddy struct{ home string }
 
 func newWorkBuddy(home string) *workbuddy { return &workbuddy{home: home} }
 
+const (
+	workbuddyAuthFile    = "auth.json"
+	workbuddyAuthVersion = 1
+	workbuddyKindSub     = "subscription"
+)
+
+// workbuddyAuthDocument is the token document AnyPick writes and reads.
+type workbuddyAuthDocument struct {
+	Version     int    `json:"version"`
+	Kind        string `json:"kind"`
+	MethodID    string `json:"methodId,omitempty"`
+	Base        string `json:"base,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	AccessToken string `json:"accessToken,omitempty"`
+	// RefreshToken is written but never read: AnyPick has no token-refresh
+	// machinery at all — no Refresher interface, no expiry column in the
+	// account meta — so an expired token currently means signing in again.
+	// It is kept so adding refresh later does not force every existing
+	// account through a full browser re-login.
+	RefreshToken string `json:"refreshToken,omitempty"`
+	UserID       string `json:"userId,omitempty"`
+	ObtainedAt   string `json:"obtainedAt,omitempty"`
+}
+
 func (p *workbuddy) ID() string          { return "workbuddy" }
 func (p *workbuddy) Name() string        { return "WorkBuddy AI" }
-func (p *workbuddy) Description() string { return "Manages ~/.workbuddy credentials" }
+func (p *workbuddy) ShortName() string   { return "WorkBuddy" }
+func (p *workbuddy) Description() string { return "WorkBuddy AI and CodeBuddy subscription accounts" }
 func (p *workbuddy) CanProxy() bool      { return true }
-
-func (p *workbuddy) ShortName() string { return "WorkBuddy" }
 
 func (p *workbuddy) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	return transport.WorkBuddyAccountAdapter(p.ID(), accountName)
 }
 
-func (p *workbuddy) dataDir() string {
-	if env := os.Getenv("WORKBUDDY_DATA_DIR"); env != "" {
+// authPath is where AnyPick keeps its staging credential.
+//
+// It deliberately ignores WORKBUDDY_CONFIG_DIR and CODEBUDDY_CONFIG_DIR.
+// Those are the WorkBuddy app's own variables and it exports them into every
+// process it spawns, so honouring them would put this file under
+// ~/.workbuddy-ai when AnyPick runs inside the app and under ~/.workbuddy
+// when it runs from a plain Terminal — the same account would read as logged
+// in or not depending on where the command was typed. Nothing outside AnyPick
+// opens this file, so a fixed path costs nothing and is the only stable one.
+// WORKBUDDY_AUTH_PATH stays as an explicit escape hatch for tests.
+func (p *workbuddy) authPath() string {
+	if env := strings.TrimSpace(os.Getenv("WORKBUDDY_AUTH_PATH")); env != "" {
 		return expandHome(env)
 	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" && expandHome(p.home) == homeDirOf() {
-		return filepath.Join(expandHome(xdg), "workbuddy")
-	}
-	return filepath.Join(expandHome(p.home), ".workbuddy")
+	return filepath.Join(expandHome(p.home), ".workbuddy", workbuddyAuthFile)
 }
 
-func (p *workbuddy) authPath() string {
-	if env := os.Getenv("WORKBUDDY_AUTH_PATH"); env != "" {
-		return expandHome(env)
+// readAuthDocument returns nil without an error when the file is missing or is
+// not a credential AnyPick wrote. A file we cannot parse is not a login.
+func readWorkBuddyAuthDocument(path string) (*workbuddyAuthDocument, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return filepath.Join(p.dataDir(), "auth.json")
+	var doc workbuddyAuthDocument
+	if json.Unmarshal(raw, &doc) != nil || doc.AccessToken == "" {
+		return nil, nil
+	}
+	return &doc, nil
+}
+
+func writeWorkBuddyAuthDocument(path string, doc workbuddyAuthDocument) error {
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func (p *workbuddy) DetectLive() (LiveAuthStatus, error) {
-	if _, err := os.Stat(p.authPath()); err != nil {
-		if os.IsNotExist(err) {
-			return LiveAuthStatus{}, nil
-		}
+	doc, err := readWorkBuddyAuthDocument(p.authPath())
+	if err != nil {
 		return LiveAuthStatus{}, err
 	}
-	return LiveAuthStatus{Present: true, Identity: "workbuddy"}, nil
+	if doc == nil {
+		return LiveAuthStatus{}, nil
+	}
+	return LiveAuthStatus{Present: true, Identity: doc.UserID}, nil
 }
 
-func (p *workbuddy) Backup(destDir string) (SnapshotInfo, error) {
-	src := p.authPath()
-	data, err := os.ReadFile(src)
+func (p *workbuddy) LoginMethods() []LoginMethod {
+	methods := make([]LoginMethod, 0, len(workbuddySites))
+	for _, site := range workbuddySites {
+		methods = append(methods, LoginMethod{
+			ID:          site.MethodID,
+			Label:       site.Label,
+			Description: site.Description,
+			// Not "official": these endpoints are undocumented and Tencent
+			// can change them without notice, so users should know AnyPick
+			// is on its own here.
+			Provenance: "community",
+			Preferred:  site.Preferred,
+			// The flow is plain HTTPS against a public service; there is no
+			// launcher binary that could be missing.
+			Available: true,
+		})
+	}
+	return methods
+}
+
+func (p *workbuddy) Login(ctx context.Context, methodID, source string) error {
+	if source != "" {
+		return anyerr.Newf(
+			"WorkBuddy sign-in has no separate sources.",
+			"PROVIDER_LOGIN_METHOD_UNKNOWN")
+	}
+	site, ok := workbuddySiteByMethod(methodID)
+	if !ok {
+		return anyerr.Newf("Unknown WorkBuddy sign-in method.", "PROVIDER_LOGIN_METHOD_UNKNOWN")
+	}
+	token, err := workbuddyDeviceLogin(ctx, site)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return SnapshotInfo{}, anyerr.Newf(
-				"No live WorkBuddy auth found at "+src+". Sign in to WorkBuddy first, then save.",
-				"NO_LIVE_AUTH",
-				anyerr.WithSuggestions("Open WorkBuddy and sign in, then try again."))
-		}
+		return err
+	}
+	domain := token.Domain
+	if domain == "" {
+		domain = site.Domain
+	}
+	doc := workbuddyAuthDocument{
+		Version:      workbuddyAuthVersion,
+		Kind:         workbuddyKindSub,
+		MethodID:     site.MethodID,
+		Base:         site.Base,
+		Domain:       domain,
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		UserID:       workbuddyTokenSubject(token.AccessToken),
+		ObtainedAt:   time.Now().UTC().Format(time.RFC3339),
+	}
+	return writeWorkBuddyAuthDocument(p.authPath(), doc)
+}
+
+// ClearLive drops the staging file. There is no server-side logout to call:
+// revoking a subscription session is not part of the endpoint we use.
+func (p *workbuddy) ClearLive() error {
+	err := os.Remove(p.authPath())
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// Backup reports proxy-only so core never restores this credential into a live
+// client: nothing reads ~/.workbuddy/auth.json, so writing it back would only
+// clobber AnyPick's own staging file.
+func (p *workbuddy) Backup(destDir string) (SnapshotInfo, error) {
+	doc, err := readWorkBuddyAuthDocument(p.authPath())
+	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	if err := os.WriteFile(filepath.Join(destDir, "auth.json"), data, 0o600); err != nil {
+	if doc == nil {
+		return SnapshotInfo{}, anyerr.Newf(
+			"No live WorkBuddy login to save.",
+			"NO_LIVE_AUTH",
+			anyerr.WithSuggestions("Run `anypick login workbuddy` first."))
+	}
+	if err := writeWorkBuddyAuthDocument(filepath.Join(destDir, workbuddyAuthFile), *doc); err != nil {
 		return SnapshotInfo{}, err
 	}
-	info := SnapshotInfo{CredentialKind: "native"}
-	var parsed map[string]json.RawMessage
-	if json.Unmarshal(data, &parsed) == nil {
-		info.Identity = workBuddyIdentity(parsed)
-	}
-	return info, nil
+	return SnapshotInfo{
+		Identity:        doc.UserID,
+		CredentialKind:  "proxy-only",
+		CredentialClass: "external_oauth",
+	}, nil
 }
 
 func (p *workbuddy) Restore(srcDir string) error {
-	data, err := os.ReadFile(filepath.Join(srcDir, "auth.json"))
+	doc, err := readWorkBuddyAuthDocument(filepath.Join(srcDir, workbuddyAuthFile))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return errSnapshotMissing("auth.json")
-		}
 		return err
 	}
-	dest := p.authPath()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return err
+	if doc == nil {
+		return errSnapshotMissing(workbuddyAuthFile)
 	}
-	return os.WriteFile(dest, data, 0o600)
+	return writeWorkBuddyAuthDocument(p.authPath(), *doc)
 }
 
 func (p *workbuddy) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
-	raw, err := os.ReadFile(filepath.Join(srcDir, "auth.json"))
+	doc, err := readWorkBuddyAuthDocument(filepath.Join(srcDir, workbuddyAuthFile))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return SnapshotInfo{}, nil
-		}
 		return SnapshotInfo{}, err
 	}
-	info := SnapshotInfo{CredentialKind: "native"}
-	var parsed map[string]json.RawMessage
-	if json.Unmarshal(raw, &parsed) == nil {
-		info.Identity = workBuddyIdentity(parsed)
+	if doc == nil {
+		return SnapshotInfo{}, nil
 	}
-	return info, nil
+	return SnapshotInfo{
+		Identity:        doc.UserID,
+		CredentialKind:  "proxy-only",
+		CredentialClass: "external_oauth",
+	}, nil
 }
 
-// workBuddyIdentity extracts a display identity from the auth document without
-// assuming its exact shape: prefer an email-looking field, else the first
-// string value. Best-effort only — an empty result is acceptable.
-func workBuddyIdentity(data map[string]json.RawMessage) string {
-	for _, key := range []string{"email", "user", "username", "account", "identity"} {
-		if raw, ok := data[key]; ok {
-			var s string
-			if json.Unmarshal(raw, &s) == nil && s != "" {
-				return s
-			}
-		}
+// ResolveUpstream points the shared OpenAI-compatible loopback proxy at the
+// CodeBuddy chat endpoint. The host comes from the credential, not from a
+// package default: a token issued by copilot.tencent.com is rejected by
+// www.codebuddy.ai, so guessing would be wrong for half the users.
+func (p *workbuddy) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
+	doc, err := readWorkBuddyAuthDocument(filepath.Join(snapshotDir, workbuddyAuthFile))
+	if err != nil {
+		return nil, err
 	}
-	for _, raw := range data {
-		var s string
-		if json.Unmarshal(raw, &s) == nil && s != "" {
-			return s
-		}
+	if doc == nil || doc.AccessToken == "" {
+		return nil, anyerr.Newf(
+			"No WorkBuddy credential in this snapshot.", "NO_CREDENTIAL",
+			anyerr.WithSuggestions("Save a subscription login: `anypick login workbuddy`."))
 	}
-	return ""
+	// WORKBUDDY_BASE_URL overrides the whole upstream base, including /v2.
+	// It exists for testing against a local stand-in.
+	base := strings.TrimSpace(os.Getenv("WORKBUDDY_BASE_URL"))
+	if base == "" {
+		base = doc.Base + "/v2"
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "parse WorkBuddy upstream base", "PROXY_START_FAILED")
+	}
+	return &proxy.Upstream{
+		BaseURL:            u,
+		Auth:               doc.AccessToken,
+		AuthHeader:         "Authorization",
+		AuthValuePrefix:    "Bearer ",
+		TranslateAnthropic: true,
+		QuotaErrorPatterns: []string{"quota", "balance", "insufficient", "billing"},
+	}, nil
 }

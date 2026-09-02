@@ -7,7 +7,7 @@
 
 `spawnDetached` wrote a numeric PID to a `0o644` file with no owner token. PID
 reuse (ABA) meant a future unrelated live process holding that PID could be
-signaled by Hotplug on stop/reap. `stopPidFile` and `reapStaleLeases` only checked
+signaled by AnyPick on stop/reap. `stopPidFile` and `reapStaleLeases` only checked
 `isProcessRunning(pid)` — liveness, not ownership. The lease table stored only
 `owner_pid`, so an adopted/duplicated lease could not be proven to belong to the
 current supervisor.
@@ -38,7 +38,7 @@ current supervisor.
 
 ## Consequences
 
-- PID reuse / ABA can no longer cause Hotplug to signal an unrelated live
+- PID reuse / ABA can no longer cause AnyPick to signal an unrelated live
   process: a record must be present, structurally valid, and (for start/health)
   identity-matched.
 - Legacy numeric PID files are treated as unowned (fail closed); old runtime

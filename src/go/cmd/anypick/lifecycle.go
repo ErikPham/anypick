@@ -269,5 +269,3 @@ func supervisorRuntimeDir(root string) string {
 }
 
 func surfaceName() string { return "cli" }
-
-func println(s string) { os.Stdout.WriteString(s + "\n") }

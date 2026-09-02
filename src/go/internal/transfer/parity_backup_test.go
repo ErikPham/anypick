@@ -78,7 +78,7 @@ func saveParityAccount(t *testing.T, st *store.AccountStore, name string) {
 		CreatedAt: "2026-01-01T00:00:00.000Z", UpdatedAt: "2026-01-01T00:00:00.000Z",
 		Identity: `{"email":"` + name + `@example.test"}`, Label: name,
 	}
-	if err = st.WriteMeta(meta, snapshotDir); err != nil {
+	if err = st.WriteMetaContext(context.Background(), meta, snapshotDir); err != nil {
 		t.Fatal(err)
 	}
 	_ = st.DiscardPreparedSnapshot(snapshotDir)

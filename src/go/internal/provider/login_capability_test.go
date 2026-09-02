@@ -10,40 +10,83 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
+// declaredLogin is what a provider is allowed to advertise as a browser
+// sign-in method.
+type declaredLogin struct {
+	methods    []string
+	provenance string
+}
+
+// declaredLoginMethods is an allowlist, not documentation. Every registered
+// provider is walked below: implementing LoginMethodsProvider without an entry
+// here fails, and an entry whose provider stopped implementing it fails. A new
+// login path is therefore always a reviewed change rather than something that
+// appears in the UI because a provider grew a method.
+var declaredLoginMethods = map[string]declaredLogin{
+	"claude": {methods: []string{"claude-subscription"}, provenance: "official"},
+	"codex":  {methods: []string{"chatgpt-subscription"}, provenance: "official"},
+	"grok":   {methods: []string{"grok-subscription"}, provenance: "official"},
+	"kiro":   {methods: []string{"builder-id"}, provenance: "official"},
+	// Two sites, one preferred: a token issued by one host is rejected by the
+	// other. Community, not official — the device flow behind these is
+	// undocumented and Tencent can change it without notice.
+	"workbuddy": {
+		methods:    []string{"workbuddy-international", "codebuddy-china"},
+		provenance: "community",
+	},
+}
+
 func TestLoginMethodsDeclaredPerProvider(t *testing.T) {
 	reg := NewRegistry()
 	home := t.TempDir()
 	if err := RegisterBuiltin(reg, home); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{
-		"claude": "claude-subscription",
-		"codex":  "chatgpt-subscription",
-		"grok":   "grok-subscription",
-		"kiro":   "builder-id",
-	}
-	for id, methodID := range want {
+	seen := make(map[string]bool, len(declaredLoginMethods))
+	for _, id := range reg.IDs() {
 		p, err := reg.Get(id)
 		if err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
 		mp, ok := p.(LoginMethodsProvider)
+		want, declared := declaredLoginMethods[id]
 		if !ok {
-			t.Fatalf("%s does not implement LoginMethodsProvider", id)
+			if declared {
+				t.Errorf("%s is declared with login methods but does not implement LoginMethodsProvider", id)
+			}
+			continue
 		}
+		if !declared {
+			// Providers without browser sign-in must not advertise it.
+			t.Errorf("%s implements LoginMethodsProvider but is not declared in declaredLoginMethods", id)
+			continue
+		}
+		seen[id] = true
 		methods := mp.LoginMethods()
-		if len(methods) != 1 || methods[0].ID != methodID {
-			t.Fatalf("%s methods = %+v", id, methods)
+		if len(methods) != len(want.methods) {
+			t.Fatalf("%s methods = %+v, want %v", id, methods, want.methods)
 		}
-		if methods[0].Provenance != "official" || !methods[0].Preferred {
-			t.Fatalf("%s provenance/preferred wrong: %+v", id, methods[0])
+		preferred := 0
+		for i, m := range methods {
+			if m.ID != want.methods[i] {
+				t.Errorf("%s method[%d].ID = %q, want %q", id, i, m.ID, want.methods[i])
+			}
+			if m.Provenance != want.provenance {
+				t.Errorf("%s method[%d].Provenance = %q, want %q", id, i, m.Provenance, want.provenance)
+			}
+			if m.Preferred {
+				preferred++
+			}
+		}
+		// Exactly one, not "at least one": a UI with two defaults is a bug the
+		// user has to resolve by guessing.
+		if preferred != 1 {
+			t.Errorf("%s must mark exactly one method preferred, got %d", id, preferred)
 		}
 	}
-	// Providers without browser sign-in must not advertise it.
-	for _, id := range []string{"gemini", "opencode"} {
-		p, _ := reg.Get(id)
-		if _, ok := p.(LoginMethodsProvider); ok {
-			t.Fatalf("%s must not implement LoginMethodsProvider yet", id)
+	for id := range declaredLoginMethods {
+		if !seen[id] {
+			t.Errorf("%s is declared but no such provider is registered", id)
 		}
 	}
 }

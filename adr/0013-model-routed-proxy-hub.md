@@ -4,7 +4,7 @@
 
 ## Context
 
-Hotplug could start one compatibility proxy for each account or provider. That
+AnyPick could start one compatibility proxy for each account or provider. That
 keeps each provider isolated, but clients that use several subscriptions need
 several endpoints and cannot select a model from a single catalog. A shared
 endpoint must not solve this by encoding ownership in model names (`cx/`,
@@ -18,7 +18,7 @@ un-journalled shortcut around activation.
 
 ## Decision
 
-1. **Proxy Hub has one public, loopback-only listener per Hotplug root.** It
+1. **Proxy Hub has one public, loopback-only listener per AnyPick root.** It
    exposes an OpenAI-compatible endpoint and holds no provider credentials in
    its client-facing state. Provider adapters may start private ephemeral
    loopback backends in the same Hub process, but those are implementation

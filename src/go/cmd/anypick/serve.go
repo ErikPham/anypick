@@ -27,12 +27,6 @@ import (
 // serve.go implements the `serve` status API; desktop stdio protocol lives
 // in internal/desktop.
 
-type serveOptions struct {
-	port   int
-	detach bool
-	stop   bool
-}
-
 func cmdServe(ctx context.Context, a *app.App, args []string) int {
 	fs := fsFor(args)
 	port := fs.Int("port", 0, "fixed port (default: auto)")

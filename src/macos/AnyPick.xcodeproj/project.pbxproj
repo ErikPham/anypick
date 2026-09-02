@@ -354,8 +354,8 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/../../go/go.mod",
-				"$(SRCROOT)/../../go/go.sum",
+				"$(SRCROOT)/../go/go.mod",
+				"$(SRCROOT)/../go/go.sum",
 				"$(SRCROOT)/scripts/bundle-go-helper.sh",
 				"$(SRCROOT)/scripts/check-node-free-app.sh",
 			);

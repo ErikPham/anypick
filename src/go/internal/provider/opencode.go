@@ -3,12 +3,32 @@ package provider
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
+)
+
+// Zen/Go gateway targets, the same pair compatible.go declares for the
+// opencode-zen / opencode-go definitions.
+//
+// The base is chosen once per account, not per model: the TypeScript proxy
+// routed with CatalogStore.route(modelId), which merged both live catalogs and
+// fell back to `entitlement.hasGo ? 'go' : 'zen'` for any model they did not
+// list — a Go subscription was probed with GET /zen/go/v1/usage. The engine's
+// upstream has one base and no catalog, so the port keeps that fallback rule
+// and reads the entitlement from the credential itself: a key stored under the
+// opencode-go service is the subscription key. Per-model routing, `public`
+// mode and OPENCODE_PROXY_UPSTREAM are not ported (src/go/PARITY.md).
+const (
+	openCodeZenBaseURL      = "https://opencode.ai/zen/v1"
+	openCodeZenAnthropicURL = "https://opencode.ai/zen"
+	openCodeGoBaseURL       = "https://opencode.ai/zen/go/v1"
+	openCodeGoAnthropicURL  = "https://opencode.ai/zen/go"
 )
 
 // opencode mirrors OpenCodeProvider: ~/.local/share/opencode/auth.json
@@ -172,6 +192,63 @@ func (p *opencode) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 		info.Identity = openCodeIdentity(parsed)
 	}
 	return info, nil
+}
+
+// ResolveUpstream points the engine's shared proxy at the OpenCode Zen/Go
+// gateway using this account's saved login.
+//
+// Only a Zen/Go platform key can drive a gateway. An OAuth-only auth.json
+// (ChatGPT, Anthropic, GitLab…) holds nothing the gateway accepts, so it fails
+// here with a coded error the caller can surface: those logins are applied to
+// native clients by `anypick use`, which writes the credential back to the
+// CLI, not through this proxy. The three failure messages are the ones the
+// TypeScript proxy raised (src/providers/opencode-proxy-lifecycle.ts) — "no
+// login at all" and "logged in without a Zen/Go key" send the user to
+// different commands, so they are not collapsed into one.
+func (p *opencode) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
+	key, service, state := openCodeGatewayKey(snapshotDir)
+	if key == "" {
+		switch state {
+		case mirrorMissing:
+			return nil, anyerr.Newf(
+				"No OpenCode auth available.",
+				"NO_LIVE_AUTH",
+				anyerr.WithSuggestions(
+					"Run: opencode auth login",
+					"then: anypick add opencode --name <name>"))
+		case mirrorUnreadable:
+			return nil, anyerr.Newf(
+				"Unreadable OpenCode auth: "+filepath.Join(snapshotDir, "auth.json")+".",
+				"NO_LIVE_AUTH")
+		default:
+			return nil, anyerr.Newf(
+				"OpenCode proxy needs a Zen/Go API key in auth.json or the CLI credential store (opencode auth login → OpenCode Zen or Go). OAuth providers (ChatGPT, etc.) are activated via anypick use, not this proxy.",
+				"NO_LIVE_AUTH")
+		}
+	}
+	openAI, anthropic := openCodeZenBaseURL, openCodeZenAnthropicURL
+	if strings.EqualFold(service, "opencode-go") {
+		openAI, anthropic = openCodeGoBaseURL, openCodeGoAnthropicURL
+	}
+	base, err := url.Parse(openAI)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "parse OpenCode upstream base", "PROXY_START_FAILED")
+	}
+	anthropicBase, err := url.Parse(anthropic)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "parse OpenCode Anthropic base", "PROXY_START_FAILED")
+	}
+	return &proxy.Upstream{
+		BaseURL:         base,
+		Auth:            key,
+		AuthHeader:      "Authorization",
+		AuthValuePrefix: "Bearer ",
+		Anthropic: &proxy.UpstreamTarget{
+			BaseURL:         anthropicBase,
+			AuthHeader:      "Authorization",
+			AuthValuePrefix: "Bearer ",
+		},
+	}, nil
 }
 
 func (opencode *opencode) ShortName() string { return "OpenCode" }

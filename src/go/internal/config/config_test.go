@@ -179,19 +179,6 @@ func TestLaunchAtLoginEffectRequestShape(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
-func contains(haystack, needle string) bool {
-	return len(needle) == 0 || (len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0)
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}
-
 // jsonUnmarshalCheck decodes via encoding/json through a tiny indirection so
 // the import stays local to this test.
 func jsonUnmarshalCheck(t *testing.T, data string, into *map[string]any) bool {

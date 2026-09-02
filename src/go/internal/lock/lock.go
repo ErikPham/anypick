@@ -57,7 +57,38 @@ func AcquireFileLock(path string, timeout time.Duration) (*FileLock, error) {
 		timeout = defaultTimeout
 	}
 	mu := pathMutex(path)
-	mu.Lock()
+	// Wait for the in-process mutex with the SAME budget as the flock. Two
+	// reasons this matters:
+	//
+	//   1. The contract above promises "blocks up to timeout"; an unbounded
+	//      mu.Lock() silently broke that promise, so a contended path could
+	//      hang for the whole test timeout instead of failing.
+	//   2. Re-entrancy is carried in the context. A caller that holds the lock
+	//      in one context and reaches this function through a fresh
+	//      context.Background() cannot be distinguished from a different
+	//      goroutine, so it blocks on the mutex it already owns — a deadlock
+	//      with no error and no stack that names the cause. Failing after the
+	//      timeout turns that into a diagnosable error.
+	// A zero timeout means "try once" for the flock, but the in-process mutex
+	// is the queue that makes concurrent callers serialize rather than fail.
+	// `app.Ready` relies on that for .migrate.lock, so the mutex always gets a
+	// real budget; the flock still honours the caller's try-once request.
+	mutexBudget := timeout
+	if mutexBudget <= 0 {
+		mutexBudget = defaultTimeout
+	}
+	deadline := time.Now().Add(mutexBudget)
+	for !mu.TryLock() {
+		if !time.Now().Before(deadline) {
+			return nil, anyerr.Newf(
+				"timed out acquiring the mutation lock for "+path+": it is held by "+
+					"another operation in this process. If this call should re-enter a "+
+					"lock the caller already holds, the holding context must be passed "+
+					"down — re-entrancy is carried in the context (ADR 0009)",
+				"MUTATION_LOCK_TIMEOUT")
+		}
+		time.Sleep(pollInterval)
+	}
 
 	platform, err := acquirePlatformFileLock(path, timeout)
 	if err != nil {
@@ -107,6 +138,22 @@ func HeldLocks(ctx context.Context) map[string]bool {
 // Holds reports whether ctx already holds scope.
 func Holds(ctx context.Context, root, scope string) bool {
 	return HeldLocks(ctx)[MutationLockPath(root, scope)]
+}
+
+// Require reports an error when ctx does not hold the mutation lock for
+// scope. ADR 0009 (CONC-01) promises that correctness never depends on the
+// caller locking, but WithMutationLocks is opt-in at the call site: a store
+// that mutates outside the coordinator keeps working and simply loses the
+// serialization guarantee, which surfaces months later as a rare,
+// unreproducible corruption. Stores call Require (or better, self-lock) so the
+// mistake is an error instead of a lottery.
+func Require(ctx context.Context, root, scope string) error {
+	if Holds(ctx, root, scope) {
+		return nil
+	}
+	return anyerr.Newf(
+		"mutation lock "+scope+" is not held: wrap this call in lock.WithMutationLock (ADR 0009)",
+		"MUTATION_LOCK_NOT_HELD")
 }
 
 // WithMutationLock runs fn under one scoped exclusive lock.

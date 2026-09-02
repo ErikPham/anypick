@@ -169,7 +169,12 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 	// rollbackOrCancel restores the checkpoint exactly once and returns the
 	// cause (or the rollback failure when restoration itself broke).
 	rollback := func(cause error) (LoginResult, error) {
-		if rbErr := s.restoreCheckpointQuiet(ctx, checkpoint); rbErr != nil {
+		// Compensation runs after the trigger is gone — cancellation is the
+		// most likely cause of this rollback, so restoring with the original
+		// context would fail on its own cancellation and leave the user's real
+		// previous login unrestored. WithoutCancel keeps the coordinator locks
+		// the context carries while dropping the cancellation.
+		if rbErr := s.restoreCheckpointQuiet(context.WithoutCancel(ctx), checkpoint); rbErr != nil {
 			return LoginResult{}, anyerr.Wrapf(rbErr,
 				"Provider sign-in failed and the previous login could not be restored",
 				"PROVIDER_LOGIN_ROLLBACK_FAILED")
@@ -239,7 +244,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 	if cerr := commitBarrier(); cerr != nil {
 		return rollback(cerr)
 	}
-	if err := s.Store.SetActive(providerID, meta.Name); err != nil {
+	if err := s.Store.SetActiveContext(ctx, providerID, meta.Name); err != nil {
 		return rollback(err)
 	}
 	return LoginResult{Provider: providerID, Account: meta, Method: method, BackedUpTo: backedUpTo}, nil
@@ -353,7 +358,7 @@ func (s *Service) saveLockedWithLabel(ctx context.Context, pv provider.Provider,
 		return store.Meta{}, err
 	}
 	if label != "" && label != meta.Label {
-		return s.Store.PatchMeta(pv.ID(), meta.Name, store.MetaPatch{LabelSet: true, Label: label})
+		return s.Store.PatchMetaContext(ctx, pv.ID(), meta.Name, store.MetaPatch{LabelSet: true, Label: label})
 	}
 	return meta, nil
 }

@@ -11,12 +11,11 @@ import (
 // MaxSlugLen mirrors MAX_SLUG_LEN.
 const MaxSlugLen = 64
 
-// Normalize ports normalizeSlug: human-friendly input is auto-slugified
-// ("Kiro Key - 1k" → "kiro-key-1k"). Result is safe for filesystem paths:
-// lowercase, [a-z0-9._-], no spaces.
+// Normalize slugifies human-friendly input ("Kiro Key - 1k" → "kiro-key-1k").
+// The result is safe for filesystem paths: lowercase, [a-z0-9._-], no spaces.
 func Normalize(raw, kind string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
-		return "", fmt.Errorf("%s is required.", kind)
+		return "", fmt.Errorf("%s is required", kind)
 	}
 
 	// Unicode NFKD + strip combining marks so "café" → "cafe".
@@ -46,13 +45,13 @@ func Normalize(raw, kind string) (string, error) {
 	name = strings.Trim(name, "-._")
 
 	if name == "" {
-		return "", fmt.Errorf("%s %q has no usable characters. Use letters or digits.", kind, raw)
+		return "", fmt.Errorf("%s %q has no usable characters; use letters or digits", kind, raw)
 	}
 	if len(name) > MaxSlugLen {
 		name = strings.TrimRight(name[:MaxSlugLen], "-._")
 	}
 	if name == "" || !isAlnum(name[0]) {
-		return "", fmt.Errorf("%s %q must start with a letter or digit after normalization.", kind, raw)
+		return "", fmt.Errorf("%s %q must start with a letter or digit after normalization", kind, raw)
 	}
 	return name, nil
 }

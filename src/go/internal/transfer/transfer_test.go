@@ -40,7 +40,7 @@ func saveFakeAccount(t *testing.T, st *store.AccountStore, providerID, name stri
 		CreatedAt: "2026-01-01T00:00:00.000Z", UpdatedAt: "2026-01-01T00:00:00.000Z",
 		Identity: `{"email":"user@example.com"}`, Label: "Work",
 	}
-	if err = st.WriteMeta(meta, snapshotDir); err != nil {
+	if err = st.WriteMetaContext(context.Background(), meta, snapshotDir); err != nil {
 		t.Fatal(err)
 	}
 	_ = st.DiscardPreparedSnapshot(snapshotDir)

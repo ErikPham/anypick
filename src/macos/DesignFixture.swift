@@ -237,6 +237,28 @@ enum DesignFixture {
         reasoningModel: "Native Login",
         useCompatibleFallback: false
       ),
+      DesignApp(
+        id: "workbuddy",
+        name: "WorkBuddy",
+        detail: "Uses WorkBuddy international",
+        symbol: "wand.and.stars",
+        status: .ready,
+        accountCount: 1,
+        selectedRouteID: "workbuddy-international",
+        routeOptions: [
+          DesignRoute(
+            id: "workbuddy-international", name: "WorkBuddy international",
+            detail: "www.codebuddy.ai", symbol: "person.crop.circle", kind: .native
+          ),
+          DesignRoute(
+            id: "codebuddy-china", name: "CodeBuddy China",
+            detail: "copilot.tencent.com", symbol: "person.crop.circle", kind: .native
+          ),
+        ],
+        fastModel: "auto",
+        reasoningModel: "Native Login",
+        useCompatibleFallback: false
+      ),
     ]
 
     let accounts = [

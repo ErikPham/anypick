@@ -23,7 +23,6 @@ import (
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
-	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/runtime"
 	"github.com/outof0/anypick/go/internal/store"
 )
@@ -246,16 +245,6 @@ func errorsAsAny(err error, target **anyerr.Error) bool {
 }
 
 // ---- shared plan-building helpers ----
-
-func mustResolve(t *testing.T, env *testEnv, providerID, name string) *ResolvedSource {
-	t.Helper()
-	rs, err := MaterializeResolvedSource(
-		context.Background(), refs.AccountRef(providerID, name), env.Deps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rs
-}
 
 func (e *testEnv) writeOpenCodeLive(t *testing.T, email string) {
 	t.Helper()

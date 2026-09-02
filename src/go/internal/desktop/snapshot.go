@@ -136,6 +136,8 @@ type GatewayProviderRow struct {
 	Label               string   `json:"label"`
 	Detail              string   `json:"detail"`
 	ProvidesEndpoint    bool     `json:"providesEndpoint,omitempty"`
+	RequiresApiKey      bool     `json:"requiresApiKey"`
+	DefaultEndpoint     string   `json:"defaultEndpoint,omitempty"`
 	FirstPartyClientIDs []string `json:"firstPartyClientIds,omitempty"`
 	Kind                string   `json:"kind,omitempty"`
 }
@@ -343,7 +345,18 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		})
 	}
 
-	// Compatible vendors surface as gateway providers.
+	// Gateway providers: compatible vendors (fixed endpoint) plus first-party
+	// providers that can serve an upstream from a profile. gemini implements
+	// ResolveUpstream(snapshotDir) and is bridged from the saved profile key,
+	// so it belongs in the Gateway/Proxy picker even though it is not a
+	// CompatibleDefinition vendor. grok also implements ResolveUpstream and is
+	// bridged from the live OIDC session (~/.grok/auth.json) it shares with the
+	// account flow, so it belongs in the picker too (requiresApiKey=false).
+	// opencode/workbuddy also implement ResolveUpstream but need credentials the
+	// picker cannot supply (Zen/Go key in a specific auth doc, subscription
+	// login), so they are intentionally excluded (see the eligibility gate
+	// below). Compatible providers win on ID so there is no duplicate row.
+	addedGateway := make(map[string]bool)
 	for _, providerID := range s.Deps.Providers.IDs() {
 		pv, err := s.Deps.Providers.Get(providerID)
 		if err != nil {
@@ -358,8 +371,52 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				ProvidesEndpoint: len(def.Credentials) > 0 &&
 					len(def.Credentials[0].Profiles) > 0 &&
 					strings.Contains(def.Credentials[0].Profiles[0].OpenAIBase, "http"),
+				// Compatible vendors are bring-your-own-key gateways.
+				RequiresApiKey: true,
 			})
+			addedGateway[def.ID] = true
+			continue
 		}
+		_, isUpstream := pv.(interface {
+			ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
+		})
+		if !isUpstream || addedGateway[providerID] {
+			continue
+		}
+		// Only providers the gateway can actually serve belong in the
+		// Gateway/Proxy picker. gemini is bridged from the saved profile key
+		// (see snapshotUpstreamResolver). grok is bridged from the live OIDC
+		// session it shares with the account flow (requiresApiKey=false).
+		// opencode needs a Zen/Go key in a specific auth doc and workbuddy a
+		// subscription login — neither of which the picker's inputs can supply,
+		// so listing them would create dead gateways that fail at first request.
+		if providerID != "gemini" && providerID != "grok" {
+			continue
+		}
+		row := GatewayProviderRow{
+			ID:     providerID,
+			Label:  pv.Name(),
+			Detail: pv.Description(),
+			Kind:   "hosted",
+		}
+		switch providerID {
+		case "gemini":
+			// gemini-proxy serves the Google Gemini API (api-key or
+			// OAuth/Code Assist) translated from OpenAI/Anthropic/Responses.
+			// The api-key upstream base is fixed, so the engine supplies it.
+			row.ProvidesEndpoint = true
+			row.DefaultEndpoint = "https://generativelanguage.googleapis.com/v1beta"
+			row.FirstPartyClientIDs = []string{"gemini"}
+			row.RequiresApiKey = true
+		case "grok":
+			// grok-proxy serves cli-chat-proxy.grok.com using the live x.ai
+			// OIDC session (grok login) shared with the account flow. No API
+			// key is collected; the upstream auth is refreshed per request.
+			row.ProvidesEndpoint = true
+			row.DefaultEndpoint = "https://cli-chat-proxy.grok.com"
+			row.RequiresApiKey = false
+		}
+		snap.GatewayProviders = append(snap.GatewayProviders, row)
 	}
 
 	// Apps view rows: every client id that appears anywhere — the five known
@@ -725,7 +782,7 @@ func designAppName(client string) string {
 }
 
 // managedAppClientIDs mirrors Store.managedAppClientIDs: every clientId that
-// appears on any action, first-occurrence order, plus the five known apps so
+// appears on any action, first-occurrence order, plus the known apps so
 // unbound/absent apps still render a row.
 func (s *Server) managedAppClientIDs() []string {
 	var out []string
@@ -741,7 +798,7 @@ func (s *Server) managedAppClientIDs() []string {
 			add(a.ClientID)
 		}
 	}
-	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode"} {
+	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy"} {
 		add(id)
 	}
 	return out

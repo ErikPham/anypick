@@ -283,6 +283,7 @@ func RegisterBuiltin(r *Registry, home string) error {
 		newGemini(home),
 		newKiro(home),
 		newOpenCode(home),
+		newWorkBuddy(home),
 	} {
 		if err := r.Register(a); err != nil {
 			return err

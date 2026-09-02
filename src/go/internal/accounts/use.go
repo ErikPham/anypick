@@ -96,7 +96,7 @@ func (s *Service) useUnlocked(ctx context.Context, pv provider.Provider, account
 			return SwitchResult{}, err
 		}
 	}
-	if err := s.Store.SetActive(pv.ID(), accountName); err != nil {
+	if err := s.Store.SetActiveContext(ctx, pv.ID(), accountName); err != nil {
 		_ = s.restoreCheckpointQuiet(ctx, checkpoint)
 		return SwitchResult{}, err
 	}
@@ -143,7 +143,7 @@ func (s *Service) saveLiveIntoExistingAccount(ctx context.Context, pv provider.P
 	if info.Identity != "" {
 		meta.Identity = info.Identity
 	}
-	if err := s.Store.WriteMeta(meta, snapshotDir); err != nil {
+	if err := s.Store.WriteMetaContext(ctx, meta, snapshotDir); err != nil {
 		_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
 		return "", err
 	}

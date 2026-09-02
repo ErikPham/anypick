@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestProxyStateRoundTrip(t *testing.T) {
 	s := testStore(t)
@@ -11,7 +14,7 @@ func TestProxyStateRoundTrip(t *testing.T) {
 		Token:       "secret-token",
 		StartedAt:   nowISO(),
 	}
-	if err := s.WriteProxyState("grok", "work", state); err != nil {
+	if err := s.WriteProxyStateContext(context.Background(), "grok", "work", state); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.ReadProxyState("grok", "work")
@@ -23,14 +26,14 @@ func TestProxyStateRoundTrip(t *testing.T) {
 	}
 	// Overwrite.
 	state.Endpoint = "http://127.0.0.1:4001"
-	if err := s.WriteProxyState("grok", "work", state); err != nil {
+	if err := s.WriteProxyStateContext(context.Background(), "grok", "work", state); err != nil {
 		t.Fatal(err)
 	}
 	got2, _ := s.ReadProxyState("grok", "work")
 	if got2.Endpoint != "http://127.0.0.1:4001" {
 		t.Fatalf("overwrite failed: %#v", got2)
 	}
-	if err := s.ClearProxyState("grok", "work"); err != nil {
+	if err := s.ClearProxyStateContext(context.Background(), "grok", "work"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.ReadProxyState("grok", "work"); got != nil {
@@ -49,7 +52,7 @@ func TestProxyStateMissingReturnsNil(t *testing.T) {
 func TestProxyStateCorruptReturnsNil(t *testing.T) {
 	s := testStore(t)
 	// Write valid then corrupt directly via SQL.
-	_ = s.WriteProxyState("grok", "work", ProxyRuntimeState{Endpoint: "http://x", StartedAt: nowISO()})
+	_ = s.WriteProxyStateContext(context.Background(), "grok", "work", ProxyRuntimeState{Endpoint: "http://x", StartedAt: nowISO()})
 	if _, err := s.DB.Exec(`UPDATE proxy_state SET state_json='not json' WHERE provider='grok' AND account='work'`); err != nil {
 		t.Fatal(err)
 	}

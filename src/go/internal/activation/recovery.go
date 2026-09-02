@@ -28,8 +28,11 @@ func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResu
 	}
 	result := &RecoveryResult{}
 	for _, listed := range incomplete {
-		var recoverOne func() error
-		recoverOne = func() error {
+		// recoverOne takes the context explicitly because it runs either bare
+		// or inside the lock below. Passing the outer ctx into the locked call
+		// would re-enter with a context that does not carry the held scopes and
+		// block on our own lock (ADR 0009).
+		recoverOne := func(ctx context.Context) error {
 			entry, err := deps.Journal.Get(listed.ID)
 			if err != nil || entry == nil || !isIncompleteState(string(entry.State)) {
 				return err
@@ -40,12 +43,12 @@ func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResu
 		scopes := recoveryScopes(listed)
 		if deps.Root != "" && len(scopes) > 0 {
 			if err := lock.WithMutationLocks(ctx, deps.Root, scopes, func(c context.Context) error {
-				return recoverOne()
+				return recoverOne(c)
 			}, 0); err != nil {
 				result.Failed = append(result.Failed, listed.ID)
 			}
 		} else {
-			if err := recoverOne(); err != nil {
+			if err := recoverOne(ctx); err != nil {
 				result.Failed = append(result.Failed, listed.ID)
 			}
 		}
@@ -86,7 +89,7 @@ func sourceRefFromJournal(entry *journal.Entry) *refs.Ref {
 	return &ref
 }
 
-func recover(_ context.Context, deps *Deps, entry *journal.Entry, result *RecoveryResult) {
+func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *RecoveryResult) {
 	sourceRef := sourceRefFromJournal(entry)
 	reResolvedOk := true
 	expectedSource := ""
@@ -99,7 +102,7 @@ func recover(_ context.Context, deps *Deps, entry *journal.Entry, result *Recove
 			// Presets are never forward-executed from journal entries.
 			reResolvedOk = false
 		} else {
-			resolved, err := MaterializeResolvedSource(context.Background(), *sourceRef, deps)
+			resolved, err := MaterializeResolvedSource(ctx, *sourceRef, deps)
 			if err != nil {
 				reResolvedOk = false
 			} else if refs.SerializeRef(resolved.Ref) != refs.SerializeRef(*sourceRef) ||
@@ -174,7 +177,7 @@ func recover(_ context.Context, deps *Deps, entry *journal.Entry, result *Recove
 			HadLiveAuth:   hadLiveAuth,
 			ActiveAccount: activeAccount,
 		}
-		if err := deps.Accounts.restoreCheckpoint(cp); err != nil {
+		if err := deps.Accounts.restoreCheckpoint(ctx, cp); err != nil {
 			_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
 			result.Failed = append(result.Failed, entry.ID)
 			return

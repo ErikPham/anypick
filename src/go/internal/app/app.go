@@ -191,7 +191,7 @@ func (a *App) compose() error {
 			return rec.PID, nil
 		},
 	}
-	px.Resolver = &snapshotUpstreamResolver{store: st, providers: provReg}
+	px.Resolver = &snapshotUpstreamResolver{store: st, providers: provReg, profiles: rt.Profiles}
 	px.Pools = poolsStore
 	// Plugin providers that own their proxy lifecycle route through the
 	// private Node host; built-ins keep the engine path. Wiring lives here so

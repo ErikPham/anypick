@@ -153,7 +153,7 @@ func TestInvokeGatewayRouteActionWritesBinding(t *testing.T) {
 		t.Fatalf("gateway route invoke failed: %v", res["message"])
 	}
 
-	binding, err := env.Deps.Bindings.GetGlobal("codex")
+	binding, err := env.Deps.Bindings.GetGlobalContext(context.Background(), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestInvokeCrossProviderAppRouteBindsClientNotSourceProvider(t *testing.T) {
 		t.Fatalf("cross-provider route invoke failed: %v", res["message"])
 	}
 
-	binding, err := env.Deps.Bindings.GetGlobal("claude")
+	binding, err := env.Deps.Bindings.GetGlobalContext(context.Background(), "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestInvokeCurrentRouteReappliesBinding(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "a", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.Deps.Bindings.UpsertGlobal(bindings.Global{
+	if _, err := env.Deps.Bindings.UpsertGlobalContext(ctx, bindings.Global{
 		Client: "codex",
 		Spec: bindings.Spec{
 			Client: "codex",
@@ -288,7 +288,7 @@ func TestInvokeCurrentRouteReappliesBinding(t *testing.T) {
 	if res["status"] != "success" {
 		t.Fatalf("current-route invoke failed: %v", res["message"])
 	}
-	binding, err := env.Deps.Bindings.GetGlobal("codex")
+	binding, err := env.Deps.Bindings.GetGlobalContext(context.Background(), "codex")
 	if err != nil {
 		t.Fatal(err)
 	}

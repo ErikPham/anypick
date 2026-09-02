@@ -92,10 +92,6 @@ func scanGlobal(row rowScanner) (*Global, error) {
 	return g, nil
 }
 
-func (s *Store) GetGlobal(clientID string) (*Global, error) {
-	return s.GetGlobalContext(context.Background(), clientID)
-}
-
 func (s *Store) GetGlobalContext(ctx context.Context, clientID string) (*Global, error) {
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT `+globalColumns+` FROM global_bindings WHERE client_id = ?`, clientID)
@@ -107,10 +103,14 @@ func (s *Store) GetGlobalContext(ctx context.Context, clientID string) (*Global,
 }
 
 // UpsertGlobal inserts or replaces the global binding for a client.
-func (s *Store) UpsertGlobal(g Global) (Global, error) {
-	return s.UpsertGlobalContext(context.Background(), g)
-}
-
+//
+// There is deliberately no ctx-less form — and neither does any other method
+// on Store. A caller that starts from context.Background() cannot see the lock
+// its caller holds, so a mutator reached that way re-enters the coordinator and
+// hangs rather than erroring (ADR 0009). internal/store deleted its ctx-less
+// *mutators* for exactly this reason; bindings goes further and deletes the
+// ctx-less reads too, so no method on this Store can be reached through a fresh
+// context. internal/bindings/locking_test.go fails the build if one comes back.
 func (s *Store) UpsertGlobalContext(ctx context.Context, g Global) (Global, error) {
 	now := nowISO()
 	existing, err := s.GetGlobalContext(ctx, g.Client)
@@ -146,10 +146,8 @@ func (s *Store) UpsertGlobalContext(ctx context.Context, g Global) (Global, erro
 	return g, nil
 }
 
-func (s *Store) DeleteGlobal(clientID string) error {
-	return s.DeleteGlobalContext(context.Background(), clientID)
-}
-
+// DeleteGlobal removes the global binding for a client. No ctx-less form — see
+// the note on UpsertGlobalContext.
 func (s *Store) DeleteGlobalContext(ctx context.Context, clientID string) error {
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM global_bindings WHERE client_id = ?`, clientID)
 	return err
@@ -172,10 +170,6 @@ func scanProject(row rowScanner) (*Project, error) {
 	return p, nil
 }
 
-func (s *Store) GetProject(root, clientID string) (*Project, error) {
-	return s.GetProjectContext(context.Background(), root, clientID)
-}
-
 func (s *Store) GetProjectContext(ctx context.Context, root, clientID string) (*Project, error) {
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT `+projectColumns+` FROM project_bindings WHERE project_root = ? AND client_id = ?`,
@@ -187,10 +181,8 @@ func (s *Store) GetProjectContext(ctx context.Context, root, clientID string) (*
 	return p, err
 }
 
-func (s *Store) UpsertProject(p Project) (Project, error) {
-	return s.UpsertProjectContext(context.Background(), p)
-}
-
+// UpsertProject inserts or replaces one project binding. No ctx-less form —
+// see the note on UpsertGlobalContext.
 func (s *Store) UpsertProjectContext(ctx context.Context, p Project) (Project, error) {
 	now := nowISO()
 	existing, err := s.GetProjectContext(ctx, p.ProjectRoot, p.Client)
@@ -225,10 +217,8 @@ func (s *Store) UpsertProjectContext(ctx context.Context, p Project) (Project, e
 	return p, nil
 }
 
-func (s *Store) DeleteProject(root, clientID string) error {
-	return s.DeleteProjectContext(context.Background(), root, clientID)
-}
-
+// DeleteProject removes one project binding. No ctx-less form — see the note on
+// UpsertGlobalContext.
 func (s *Store) DeleteProjectContext(ctx context.Context, root, clientID string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`DELETE FROM project_bindings WHERE project_root = ? AND client_id = ?`, root, clientID)
@@ -246,17 +236,9 @@ func (s *Store) CountProjectsContext(ctx context.Context, root string) (int64, e
 
 // DeleteAllProjects removes every project binding under a project root and
 // reports how many were removed (TS deleteProject(root)).
-func (s *Store) DeleteAllProjects(root string) (int64, error) {
-	res, err := s.DB.Exec(
-		`DELETE FROM project_bindings WHERE project_root = ?`, root)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
-}
-
-// DeleteAllProjectsContext is the context-aware variant.
+// DeleteAllProjectsContext removes every project binding under a project root
+// and reports how many were removed (TS deleteProject(root)). No ctx-less form
+// — see the note on UpsertGlobalContext.
 func (s *Store) DeleteAllProjectsContext(ctx context.Context, root string) (int64, error) {
 	res, err := s.DB.ExecContext(ctx,
 		`DELETE FROM project_bindings WHERE project_root = ?`, root)
@@ -278,13 +260,10 @@ type SourceResume struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// RecordSourceResume ports recordSourceResume. Presets are expanded by the
-// planner before activation, so a symbolic preset pointer is never retained —
-// it could be edited or deleted independently of this history row.
-func (s *Store) RecordSourceResume(spec Spec) error {
-	return s.RecordSourceResumeContext(context.Background(), spec)
-}
-
+// RecordSourceResumeContext ports recordSourceResume. Presets are expanded by
+// the planner before activation, so a symbolic preset pointer is never retained
+// — it could be edited or deleted independently of this history row. No
+// ctx-less form — see the note on UpsertGlobalContext.
 func (s *Store) RecordSourceResumeContext(ctx context.Context, spec Spec) error {
 	if spec.Source.Kind == refs.KindPreset {
 		return nil
@@ -304,12 +283,9 @@ func (s *Store) RecordSourceResumeContext(ctx context.Context, spec Spec) error 
 	return werr
 }
 
-// ListSourceResumes returns the most recently successful compatible setups for
-// a concrete source (newest first). Preset sources have no history rows.
-func (s *Store) ListSourceResumes(source refs.Ref) ([]SourceResume, error) {
-	return s.ListSourceResumesContext(context.Background(), source)
-}
-
+// ListSourceResumesContext returns the most recently successful compatible
+// setups for a concrete source (newest first). Preset sources have no history
+// rows.
 func (s *Store) ListSourceResumesContext(ctx context.Context, source refs.Ref) ([]SourceResume, error) {
 	if source.Kind == refs.KindPreset {
 		return []SourceResume{}, nil

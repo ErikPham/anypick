@@ -548,7 +548,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	if resolved.Kind != "account" {
 		for _, s := range steps {
 			if s.Kind == StepWriteNativeAuth {
-				return nil, fmt.Errorf("Internal planner error: WriteNativeAuth for %s", resolved.Kind)
+				return nil, fmt.Errorf("internal planner error: WriteNativeAuth for %s", resolved.Kind)
 			}
 		}
 	}

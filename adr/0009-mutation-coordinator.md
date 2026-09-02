@@ -5,7 +5,7 @@
 
 ## Context
 
-Hotplug persists to a single `node:sqlite` database plus a handful of owned files
+AnyPick persists to a single `node:sqlite` database plus a handful of owned files
 (bindings, profiles, client config, proxy state). Concurrent invocations (two
 terminals, the TUI + a CLI, the tray supervisor + a `run`) must not interleave
 mutations that touch overlapping resources and corrupt state. Correctness must

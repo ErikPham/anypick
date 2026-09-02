@@ -28,7 +28,7 @@ func writeTestAccount(t *testing.T, env *trayEnv, providerID, name string) {
 		t.Fatal(werr)
 	}
 	meta := accountMetaForTest(providerID, name)
-	if werr := env.Deps.Store.WriteMeta(meta, snapshotDir); werr != nil {
+	if werr := env.Deps.Store.WriteMetaContext(context.Background(), meta, snapshotDir); werr != nil {
 		t.Fatal(werr)
 	}
 }
@@ -83,7 +83,7 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 	}
 	// Remove the local account so restore lands as `create`.
 	if _, gerr := srcStore.Get("codex", "alpha"); gerr == nil {
-		_ = srcStore.Delete("codex", "alpha")
+		_ = srcStore.DeleteContext(context.Background(), "codex", "alpha")
 	}
 
 	var out bytes.Buffer

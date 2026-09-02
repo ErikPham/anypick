@@ -81,11 +81,27 @@ func liveOwnedRecords(t *testing.T, phase string) []string {
 	return found
 }
 
+// waitBudget is the single upper bound for every "wait for it to happen" and
+// "prove it did not block" poll in this package.
+//
+// These tests spawn real detached children and shells out to `go build`, then
+// wait for a /health endpoint or for a process to exit. On a loaded machine —
+// `make test` runs ~36 packages in parallel, and this package builds the CLI
+// inside the test — the old 3-8 second deadlines were not wrong, just tight:
+// a slow child looked exactly like a dead one, and the failure named the test
+// rather than the timing.
+//
+// 30s does not weaken the assertions that matter. In dryrun_gate_test the lock
+// holder is released by a defer AFTER the assertions, so an operation that
+// really does block waits for that release; it cannot pass inside any budget
+// the test would still be waiting on.
+const waitBudget = 30 * time.Second
+
 // assertNoLeakedChildren waits briefly for a verified stop to take effect, then
 // fails with the pids that survived — so a leak always names its own test.
 func assertNoLeakedChildren(t *testing.T, phase string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(waitBudget)
 	for {
 		pids := leakedChildren(t)
 		if len(pids) == 0 {
@@ -204,7 +220,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 	}
 	defer closeFn()
 
-	global, gerr := a.Bindings.GetGlobal("claude")
+	global, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil {
 		t.Fatal(gerr)
 	}
@@ -212,7 +228,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 		t.Fatalf("link must not write a global binding: %+v", global)
 	}
 	cwd, _ := os.Getwd()
-	project, perr := a.Bindings.GetProject(cwd, "claude")
+	project, perr := a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
 	if perr != nil || project == nil {
 		t.Fatalf("project binding missing: %+v err=%v", project, perr)
 	}
@@ -221,7 +237,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 	if code := run([]string{"unlink", "claude"}); code != 0 {
 		t.Fatalf("unlink exited %d", code)
 	}
-	project, _ = a.Bindings.GetProject(cwd, "claude")
+	project, _ = a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
 	if project != nil {
 		t.Fatalf("unlink left the project binding: %+v", project)
 	}
@@ -359,7 +375,7 @@ func TestPoolActivationEndToEnd(t *testing.T) {
 	if code := run([]string{"proxy", "pool", "stop", "deepseek"}); code != 0 {
 		t.Fatalf("pool stop exited %d", code)
 	}
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(waitBudget)
 	for time.Now().Before(deadline) {
 		req, _ := http.NewRequest(http.MethodGet, state.Endpoint+"/health", nil)
 		resp, err := client.Do(req)
@@ -407,17 +423,28 @@ func currentDir(t *testing.T) string {
 func waitHTTP(t *testing.T, url string) bool {
 	t.Helper()
 	client := &http.Client{Timeout: time.Second}
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(waitBudget)
+	start := time.Now()
+	var lastErr error
+	var lastStatus int
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
 		if err == nil {
+			lastStatus = resp.StatusCode
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return true
 			}
+		} else {
+			lastErr = err
+			lastStatus = 0
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// Name the timing, not just the test: a healthy child that was simply slow
+	// must not be reported the same way as one that never listened.
+	t.Logf("%s never became healthy in %s (last error: %v, last status: %d)",
+		url, time.Since(start).Round(time.Millisecond), lastErr, lastStatus)
 	return false
 }
 
@@ -462,7 +489,7 @@ func TestSupervisorStartStaysAlive(t *testing.T) {
 	if code := run([]string{"stop"}); code != 0 {
 		t.Fatal("stop failed")
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(waitBudget)
 	for time.Now().Before(deadline) && processAlive(pid) {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -494,7 +521,7 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	global, gerr := a.Bindings.GetGlobal("claude")
+	global, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil || global == nil {
 		t.Fatalf("global binding missing: %+v %v", global, gerr)
 	}
@@ -512,7 +539,7 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	}
 	defer closeFn()
 	cwd, _ := os.Getwd()
-	project, perr := a.Bindings.GetProject(cwd, "claude")
+	project, perr := a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
 	if perr != nil || project == nil {
 		t.Fatalf("project binding missing: %v", perr)
 	}

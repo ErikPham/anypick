@@ -86,7 +86,7 @@ func (v *poolsView) GetContext(ctx context.Context, providerID string) (*pools.P
 
 // restoreCheckpoint / discardCheckpoint adapt a journal-decoded checkpoint
 // onto the real AccountService.
-func (v *accountsView) restoreCheckpoint(cp *checkpointLike) error {
+func (v *accountsView) restoreCheckpoint(ctx context.Context, cp *checkpointLike) error {
 	converted := &accounts.Checkpoint{
 		ProviderID:  cp.ProviderID,
 		HadLiveAuth: cp.HadLiveAuth,
@@ -96,7 +96,7 @@ func (v *accountsView) restoreCheckpoint(cp *checkpointLike) error {
 		a := cp.ActiveAccount
 		converted.ActiveAccount = &a
 	}
-	return v.Svc.RestoreLiveAuthCheckpoint(context.Background(), converted)
+	return v.Svc.RestoreLiveAuthCheckpoint(ctx, converted)
 }
 
 func (v *accountsView) discardCheckpoint(cp *checkpointLike) error {

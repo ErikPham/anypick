@@ -10,7 +10,9 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/paths"
+	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/slug"
 )
 
@@ -31,6 +33,16 @@ func New(root string, database *db.DB) *AccountStore {
 		DB:       database,
 		prepared: map[string]map[string]bool{},
 	}
+}
+
+// mutate runs fn under the provider-scoped coordinator lock (ADR 0011),
+// acquiring it when ctx does not already hold it. Re-entrancy means a caller
+// that already locked the same provider simply re-enters, so services can keep
+// wrapping broader sequences without deadlocking, while a caller that forgot
+// to lock is still serialized. This is what makes ADR 0009's "correctness
+// never depends on the caller locking" true rather than aspirational.
+func (s *AccountStore) mutate(ctx context.Context, providerID string, fn func(context.Context) error) error {
+	return lock.WithMutationLock(ctx, s.Root, refs.ProviderScope(providerID), fn)
 }
 
 func (s *AccountStore) rowToAccount(providerID, name, metaJSON, proxyJSON string) Account {
@@ -130,12 +142,19 @@ func (s *AccountStore) Require(providerID, name string) (Account, error) {
 	return *account, nil
 }
 
-// PatchMeta is a metadata-only update; snapshot BLOBs stay as they are.
-func (s *AccountStore) PatchMeta(providerID, name string, patch MetaPatch) (Meta, error) {
-	return s.PatchMetaContext(context.Background(), providerID, name, patch)
+// PatchMetaContext is mutation-guarded: it takes the provider lock itself, so
+// a caller that forgets to is still serialized (ADR 0009).
+func (s *AccountStore) PatchMetaContext(ctx context.Context, providerID, name string, patch MetaPatch) (Meta, error) {
+	var out Meta
+	err := s.mutate(ctx, providerID, func(ctx context.Context) error {
+		meta, err := s.patchMetaContext(ctx, providerID, name, patch)
+		out = meta
+		return err
+	})
+	return out, err
 }
 
-func (s *AccountStore) PatchMetaContext(ctx context.Context, providerID, name string, patch MetaPatch) (Meta, error) {
+func (s *AccountStore) patchMetaContext(ctx context.Context, providerID, name string, patch MetaPatch) (Meta, error) {
 	account, err := s.GetContext(ctx, providerID, name)
 	if err != nil {
 		return Meta{}, err
@@ -207,7 +226,17 @@ func (s *AccountStore) PrepareSnapshot(providerID, name string) (snapshotDir, ac
 // previous rows + metadata exactly as they were (DATA-01): old snapshot files
 // are deleted and re-ingested together, never partially. This is the atomic
 // commit point — invariant #4 (ADR 0004).
-func (s *AccountStore) WriteMeta(meta Meta, snapshotDir string) error {
+// WriteMeta is mutation-guarded (ADR 0009). It is the atomic commit point for
+// a snapshot, so it is the single worst place to lose serialization: two
+// concurrent saves of one provider could interleave the delete+re-ingest and
+// leave the account with neither the old nor the new snapshot.
+func (s *AccountStore) WriteMetaContext(ctx context.Context, meta Meta, snapshotDir string) error {
+	return s.mutate(ctx, meta.Provider, func(ctx context.Context) error {
+		return s.writeMeta(ctx, meta, snapshotDir)
+	})
+}
+
+func (s *AccountStore) writeMeta(ctx context.Context, meta Meta, snapshotDir string) error {
 	now := meta.UpdatedAt
 	if now == "" {
 		now = nowISO()
@@ -235,7 +264,7 @@ func (s *AccountStore) WriteMeta(meta Meta, snapshotDir string) error {
 
 	stored := meta
 	stored.UpdatedAt = now
-	err := s.DB.InTransaction(func(tx *sql.Tx) error {
+	err := s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
 		var proxyJSON sql.NullString
 		var createdAt sql.NullString
 		err := tx.QueryRow(
@@ -295,8 +324,30 @@ type BatchWrite struct {
 // WriteAccountsBatch atomically writes many accounts in one transaction —
 // the equivalent of writeAccountsBatch in src/core/store.ts. A failure leaves
 // every prior row untouched, so a batch restore cannot half-land.
-func (s *AccountStore) WriteAccountsBatch(entries []BatchWrite) error {
-	err := s.DB.InTransaction(func(tx *sql.Tx) error {
+// WriteAccountsBatch is mutation-guarded (ADR 0009). A batch can span
+// providers, so it takes every affected provider scope at once: acquiring them
+// in sorted order is what keeps a mixed batch from deadlocking against a
+// single-provider mutation touching the same provider.
+func (s *AccountStore) WriteAccountsBatchContext(ctx context.Context, entries []BatchWrite) error {
+	scopes := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		p := entry.Meta.Provider
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		scopes = append(scopes, refs.ProviderScope(p))
+	}
+	run := func(c context.Context) error { return s.writeAccountsBatch(c, entries) }
+	if len(scopes) == 0 {
+		return run(ctx)
+	}
+	return lock.WithMutationLocks(ctx, s.Root, scopes, run, 0)
+}
+
+func (s *AccountStore) writeAccountsBatch(ctx context.Context, entries []BatchWrite) error {
+	err := s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
 		for _, entry := range entries {
 			meta := entry.Meta
 			now := meta.UpdatedAt
@@ -366,11 +417,16 @@ func hasPathPrefix(p, prefix string) bool {
 
 // WriteProxyState persists owner-only runtime state (PROXY-01 token included;
 // never surfaced in status output).
-func (s *AccountStore) WriteProxyState(providerID, name string, state ProxyRuntimeState) error {
-	return s.WriteProxyStateContext(context.Background(), providerID, name, state)
+// WriteProxyStateContext is mutation-guarded (ADR 0009). proxy_state carries
+// the per-instance proxy secret, so it must never be written outside the
+// coordinator.
+func (s *AccountStore) WriteProxyStateContext(ctx context.Context, providerID, name string, state ProxyRuntimeState) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.writeProxyStateContext(ctx, providerID, name, state)
+	})
 }
 
-func (s *AccountStore) WriteProxyStateContext(ctx context.Context, providerID, name string, state ProxyRuntimeState) error {
+func (s *AccountStore) writeProxyStateContext(ctx context.Context, providerID, name string, state ProxyRuntimeState) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO proxy_state (provider, account, state_json)
 		 VALUES (?, ?, ?)
@@ -399,10 +455,6 @@ func (s *AccountStore) ReadProxyStateContext(ctx context.Context, providerID, na
 		return nil, nil // corrupt state degrades to "not running", never crashes
 	}
 	return &state, nil
-}
-
-func (s *AccountStore) ClearProxyState(providerID, name string) error {
-	return s.ClearProxyStateContext(context.Background(), providerID, name)
 }
 
 // ProxyStateRef is one persisted proxy runtime state row.
@@ -443,7 +495,14 @@ func (s *AccountStore) ListProxyStatesContext(ctx context.Context) ([]ProxyState
 	return out, rows.Err()
 }
 
+// ClearProxyStateContext is mutation-guarded (ADR 0009).
 func (s *AccountStore) ClearProxyStateContext(ctx context.Context, providerID, name string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.clearProxyStateContext(ctx, providerID, name)
+	})
+}
+
+func (s *AccountStore) clearProxyStateContext(ctx context.Context, providerID, name string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`DELETE FROM proxy_state WHERE provider = ? AND account = ?`, providerID, name)
 	return err
@@ -455,7 +514,16 @@ func (s *AccountStore) ClearProxyStateContext(ctx context.Context, providerID, n
 // host-loss reconciliation enumerates proxy_state, so clearing the row before
 // the leases — or stranding either half through a partial failure — means no
 // later pass ever revisits the account. Either both halves land or neither.
+// ClearProxyStateAndLeasesContext is mutation-guarded (ADR 0009): the pair of
+// deletes is the atomic commit point for verified-dead cleanup, so it must not
+// interleave with another mutation of the same provider.
 func (s *AccountStore) ClearProxyStateAndLeasesContext(ctx context.Context, providerID, name string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.clearProxyStateAndLeasesContext(ctx, providerID, name)
+	})
+}
+
+func (s *AccountStore) clearProxyStateAndLeasesContext(ctx context.Context, providerID, name string) error {
 	return s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(
 			`DELETE FROM proxy_state WHERE provider = ? AND account = ?`, providerID, name); err != nil {
@@ -470,9 +538,17 @@ func (s *AccountStore) ClearProxyStateAndLeasesContext(ctx context.Context, prov
 // Delete removes the account, its proxy state, and a stale active pointer in
 // ONE durable commit — clearing the pointer after cleanup could strand it
 // after a crash.
-func (s *AccountStore) Delete(providerID, name string) error {
+// Delete is mutation-guarded (ADR 0009): it removes the account, its proxy
+// state and a stale active pointer in one durable commit.
+func (s *AccountStore) DeleteContext(ctx context.Context, providerID, name string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.deleteAccount(ctx, providerID, name)
+	})
+}
+
+func (s *AccountStore) deleteAccount(ctx context.Context, providerID, name string) error {
 	deleted := false
-	err := s.DB.InTransaction(func(tx *sql.Tx) error {
+	err := s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
 		res, err := tx.Exec(
 			`DELETE FROM accounts WHERE provider = ? AND name = ?`, providerID, name)
 		if err != nil {
@@ -532,11 +608,15 @@ func (s *AccountStore) GetActiveContext(ctx context.Context, providerID string) 
 	return name, err
 }
 
-func (s *AccountStore) SetActive(providerID, name string) error {
-	return s.SetActiveContext(context.Background(), providerID, name)
+// SetActiveContext is mutation-guarded (ADR 0009): the active pointer decides
+// which credential file every read resolves, so it must not interleave.
+func (s *AccountStore) SetActiveContext(ctx context.Context, providerID, name string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.setActiveContext(ctx, providerID, name)
+	})
 }
 
-func (s *AccountStore) SetActiveContext(ctx context.Context, providerID, name string) error {
+func (s *AccountStore) setActiveContext(ctx context.Context, providerID, name string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO provider_active (provider, account_name)
 		 VALUES (?, ?)
@@ -545,11 +625,14 @@ func (s *AccountStore) SetActiveContext(ctx context.Context, providerID, name st
 	return err
 }
 
-func (s *AccountStore) ClearActive(providerID string) error {
-	return s.ClearActiveContext(context.Background(), providerID)
+// ClearActiveContext is mutation-guarded (ADR 0009).
+func (s *AccountStore) ClearActiveContext(ctx context.Context, providerID string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.clearActiveContext(ctx, providerID)
+	})
 }
 
-func (s *AccountStore) ClearActiveContext(ctx context.Context, providerID string) error {
+func (s *AccountStore) clearActiveContext(ctx context.Context, providerID string) error {
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM provider_active WHERE provider = ?`, providerID)
 	return err
 }

@@ -107,7 +107,7 @@ func TestSourceResumeJSONRoundTripsAgainstTS(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
 	sp := spec()
-	if err := s.RecordSourceResume(sp); err != nil {
+	if err := s.RecordSourceResumeContext(context.Background(), sp); err != nil {
 		t.Fatal(err)
 	}
 	var stored string

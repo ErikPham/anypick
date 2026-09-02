@@ -55,17 +55,63 @@ type Upstream struct {
 	// scheme; empty = Authorization: Bearer.
 	AuthHeader      string
 	AuthValuePrefix string
+	// AuthProvider, when set, supplies the live credential per request so the
+	// proxy can refresh short-lived tokens (OIDC/OAuth) without a restart.
+	// Static Auth is ignored while AuthProvider is non-nil. It must be safe to
+	// call concurrently and may block on a token refresh.
+	AuthProvider func(ctx context.Context) (string, error)
+	// ExtraHeaders are injected into every forwarded request (vendor probes,
+	// client-version pins). They never carry the credential.
+	ExtraHeaders []ExtraHeader
 	// Anthropic: native /v1/messages target. When nil and TranslateAnthropic
 	// is set, messages requests are translated into chat completions instead.
 	Anthropic *UpstreamTarget
 	// TranslateAnthropic: upstream speaks OpenAI only; POST /v1/messages is
 	// translated into chat completions.
 	TranslateAnthropic bool
+	// TranslateGemini: upstream is Google Gemini (generateContent), which is
+	// neither OpenAI- nor Anthropic-compatible. POST /v1/chat/completions,
+	// /v1/responses and /v1/messages are each translated to a Gemini
+	// generateContent request and the response translated back. Gemini is the
+	// outlier backend that needs a full translate-and-reissue egress, so it
+	// gets its own branch rather than riding TranslateAnthropic.
+	TranslateGemini bool
+	// Gemini carries the mode-specific egress facts (api-key vs OAuth/code
+	// assist) used by the serveGemini branch.
+	Gemini *GeminiTarget
 	// QuotaErrorPatterns: provider-declared regexes that mark a failure as
 	// quota-class for pool failover (backend.ts isExhausted's
 	// definition.quotaErrorPatterns branch). Empty → classification falls back
 	// to the built-in 401/402/balance/credential-quota rules only.
 	QuotaErrorPatterns []string
+}
+
+// GeminiTarget holds the Gemini-specific egress facts consumed by serveGemini.
+// It is the Gemini analogue of UpstreamTarget: provider-owned, never inferred
+// from a generic flag.
+type GeminiTarget struct {
+	// APIKeyMode: true → call generativelanguage.googleapis.com with the
+	// x-goog-api-key header (static key from Auth or AuthProvider). false →
+	// call the Code Assist upstream with Authorization: Bearer + the
+	// {model, project, session_id} envelope (OAuth).
+	APIKeyMode bool
+	// APIKeyBase overrides the API-key upstream (generativelanguage.googleapis.com).
+	// Mirrors the TS opts.upstream override; defaults to the Google endpoint.
+	APIKeyBase *url.URL
+	// CodeAssistBase is the OAuth upstream (cloudcode-pa.googleapis.com or
+	// daily-cloudcode-pa.googleapis.com). Ignored in APIKeyMode.
+	CodeAssistBase *url.URL
+	// AltRoute, when set on an OAuth target, is the secondary Code Assist
+	// identity retried once on 401/403/404 (ports callGeminiWithAutoFallback's
+	// gemini-cli ↔ antigravity failover). The engine's multi-account pool also
+	// covers this, but AltRoute lets one account carry both credentials.
+	AltRoute *GeminiAltRoute
+}
+
+// GeminiAltRoute is the secondary OAuth identity used by auto auth fallback.
+type GeminiAltRoute struct {
+	CodeAssistBase *url.URL
+	AuthProvider   func(ctx context.Context) (string, error)
 }
 
 // UpstreamTarget is one protocol-specific forwarding target.
@@ -74,6 +120,18 @@ type UpstreamTarget struct {
 	Auth            string // empty → inherit Upstream.Auth
 	AuthHeader      string // empty → Authorization
 	AuthValuePrefix string // empty → "Bearer "
+	// AuthProvider overrides the parent Upstream.AuthProvider for this target.
+	AuthProvider func(ctx context.Context) (string, error)
+	// ExtraHeaders are injected into requests to this target, after the
+	// parent Upstream.ExtraHeaders.
+	ExtraHeaders []ExtraHeader
+}
+
+// ExtraHeader is a static header forwarded to the upstream on every request
+// (vendor probes, client-version pins). It must never carry the credential.
+type ExtraHeader struct {
+	Name  string
+	Value string
 }
 
 // UpstreamResolver lets each provider own its forwarding target without the
@@ -537,6 +595,8 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 		UpstreamAuth:            upstream.Auth,
 		UpstreamAuthHeader:      upstream.AuthHeader,
 		UpstreamAuthValuePrefix: upstream.AuthValuePrefix,
+		UpstreamAuthProvider:    upstream.AuthProvider,
+		UpstreamExtraHeaders:    upstream.ExtraHeaders,
 		TranslateAnthropic:      upstream.TranslateAnthropic,
 		Anthropic:               upstream.Anthropic,
 	}

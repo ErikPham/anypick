@@ -212,7 +212,7 @@ func (p *claude) Restore(srcDir string) error {
 	}
 	if err := json.Unmarshal(raw, &snapshot); err != nil ||
 		snapshot.Version != 1 || snapshot.Account == "" || snapshot.Credential == "" {
-		return fmt.Errorf("Claude Code credential snapshot is invalid.")
+		return fmt.Errorf("the Claude Code credential snapshot is invalid")
 	}
 	return p.write(snapshot.Credential)
 }

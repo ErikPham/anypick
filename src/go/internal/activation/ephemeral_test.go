@@ -33,7 +33,7 @@ func TestExecuteEphemeralRunWithIsolatedHome(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "run", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Accounts.Svc.Store.SetProxyConfig("codex", "run",
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "codex", "run",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestEphemeralProxyRunKeepsNativeAuthUntouched(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "acct", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Accounts.Svc.Store.SetProxyConfig("codex", "acct",
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "codex", "acct",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

@@ -732,6 +732,76 @@ target.
   TestPlannerManagedProxyAccountStillWritesNativeAuth (also asserts the
   RestoreNativeAuth rollback companion step).
 
+## GO-PARITY-M11 — TS proxy faithful ports (grok + gemini) — **complete**
+
+The deleted `outof0/anypick` gemini-proxy / grok-proxy TypeScript engines were
+faithfully ported into the Go engine. All three previously died with `no builtin
+upstream for provider` (see the resolved "Known proxy-resolution gaps" note
+below); `opencode` was fixed earlier, and this session closed the remaining two —
+`grok` and `gemini` now implement `ResolveUpstream` and are reachable via
+`use <client> --with grok/x` / `--with gemini/x`.
+
+| Feature | TS authority | Go | Status | Validation |
+| --- | --- | --- | --- | --- |
+| grok ResolveUpstream (cli-chat-proxy.grok.com, OIDC refresh, `x-grok-*` + user-agent injection) | grok-proxy/server.ts | internal/provider/grok.go + grok_credential.go (`grokUpstream`, `grokEnsureAccessToken`) | complete | go test ./internal/provider -run Grok (grok_upstream_test.go) |
+| gemini ResolveUpstream (api-key vs OAuth/Code Assist routing) | gemini-proxy/server.ts | internal/provider/gemini.go + gemini_credential.go (`geminiUpstream`, `geminiEnsureAccessToken`) | complete | go test ./internal/provider -run Gemini |
+| gemini translation layer (OpenAI/Anthropic/Responses ↔ Gemini generateContent) | translate-types.ts | internal/protocol/gemini/* | complete | internal/protocol/gemini tests + proxy egress tests |
+| gemini egress (3 wire formats, SSE faked from non-stream generateContent) | server.ts callGemini/handleOpenAI/handleAnthropic/handleResponses | internal/proxy/gemini_serve.go (`serveGemini`, `callGemini`, `callGeminiAPIKey`, `callGeminiOAuth`, `writeGeminiResponse`) | complete | go test ./internal/proxy -run TestGeminiServe (8 tests) |
+| gemini OAuth refresh (gemini-cli ↔ antigravity profiles, file-locked cred rotation) | server.ts refreshOAuthToken | internal/provider/gemini_credential.go (`refreshGeminiOAuth`, `writeGeminiOAuthCredentials` under `lock`) | complete | provider tests |
+| gemini Code Assist envelope (`{model, project, user_prompt_id, request:{…session_id}}`) | server.ts requestBody | internal/proxy/gemini_serve.go `doCodeAssistRequest` + `GeminiCodeAssistEnvelope` | complete | TestGeminiServeOAuthEnvelope |
+| gemini auto auth fallback (gemini-cli ↔ antigravity, single retry on 401/403/404) | server.ts callGeminiWithAutoFallback | internal/proxy/gemini_serve.go `GeminiTarget.AltRoute` | complete | TestGeminiServeOAuthAutoFallback (primary 404 → alt retry → fallback; asserts primaryAttempts==1 && altAttempts==1) |
+| gemini 429 cooldown (Retry-After backoff, both modes) | upstream-policy.ts classifyUpstreamFailure + CooldownRegistry | internal/proxy/gemini_serve.go `geminiCooldowns` (set in `callGeminiAPIKey` + `callGeminiOAuth`) | complete | TestGeminiServeRateLimitCooldown (429 + Retry-After → 2nd call blocked, hits==1) |
+| gemini live model catalog (api-key `listModels` + OAuth Code Assist `fetchAvailableModels`/`retrieveUserQuota`, cached by route, TTL + failure-TTL) | proxy/server.ts `refreshModelCatalog` + `liveModelCatalog` + `listGeminiModelsFromGoogle`/`listGeminiModelsFromCodeAssist` | internal/proxy/gemini_catalog.go (`liveGeminiCatalog`, `refreshGeminiModelCatalog`, `fetchGeminiCatalogFromGoogle`, `fetchGeminiCatalogFromCodeAssist`, `parseCodeAssistCatalog`, `fetchGeminiCatalogFromCodeAssistQuota`) wired into `translateToGemini` | complete | go test ./internal/proxy -run 'TestParseCodeAssistCatalog\|TestRefreshGeminiCatalogFromGoogle\|TestLiveGeminiCatalogCachesAndFallsBack\|TestGeminiServeResolvesAliasFromLiveCatalog' + full gate green |
+| gemini dispatch from shared proxy + pool ring (capture semantics for failover) | proxy-service.ts | internal/proxy/upstream_serve.go + pool_server.go (`geminiWithCapture`) | complete | build + pool tests |
+| grok (no translation — speaks OpenAI natively; per-request OIDC token) | grok-proxy/server.ts | shared proxy + `grokUpstream` AuthProvider | complete | grok_upstream_test.go |
+
+Intentional differences (documented, tested where possible):
+- Live model catalog is now **ported** (see table row above). `translateToGemini`
+  consults `liveGeminiCatalog(ctx, up)`, which fetches and caches the account-scoped
+  model list (Google `listModels` for api-key mode, Code Assist
+  `fetchAvailableModels`/`retrieveUserQuota` for OAuth mode) with a 10m TTL and a
+  30s failure-TTL. On fetch failure it returns `nil`, and `ResolveGeminiModel(nil)`
+  falls back to the empty-catalog passthrough that passes concrete ids through
+  unchanged — so resolution degrades gracefully when the live list is unavailable.
+- gemini-cli ↔ antigravity auto-fallback is a **bounded single retry** via
+  `GeminiTarget.AltRoute`. The engine's multi-account pool already covers broader
+  failover, so the in-egress retry is a faithful-but-bounded match of the TS's
+  `callGeminiWithAutoFallback` loop.
+- gemini `session_id` is a per-process constant (`geminiSessionID`, like the TS
+  `proxySessionId`), not regenerated per request.
+
+## Known proxy-resolution gaps (cross-provider, 2026-09-01) — **resolved**
+
+- Fixed: `opencode` implemented `ResolveUpstream` earlier (live CLI credential
+  store → the `opencode.db` beside `auth.json` → `auth.json` mirror; NO_LIVE_AUTH
+  with three messages). Root cause was the optional-interface dispatch in
+  `internal/app/resolver.go`: any builtin provider whose adapter promises
+  `ManagedBuiltinProxy` for another client but that does not implement
+  `ResolveUpstream` falls through to `no builtin upstream for provider %q`.
+- Resolved this session: `grok` and `gemini` now implement `ResolveUpstream` —
+  faithful TS-proxy ports (see GO-PARITY-M11). The earlier note that they "cannot
+  be fixed the way opencode was" is now superseded: the Go engine gained the
+  proxy-server capabilities (per-request token refresh via `AuthProvider`,
+  vendor header injection, and a dedicated translation egress for gemini), so both
+  resolve instead of dying with `no builtin upstream for provider`. `use claude
+  --with grok/x` / `--with gemini/x` now work. The gemini live model catalog is
+  also ported (documented in M11) — M11 is now fully complete.
+- Gemini now also surfaces in the macOS **Gateway/Proxy** picker (Tạo Gateway/Proxy
+  screen). `internal/desktop/snapshot.go` `buildSnapshot` emits a `GatewayProviderRow`
+  for every provider implementing `ResolveUpstream(snapshotDir string)` that is not
+  already a `CompatibleDefinition` vendor (gemini → `id:"gemini"`, `providesEndpoint:
+  true`, `defaultEndpoint: "https://generativelanguage.googleapis.com/v1beta"`,
+  `firstPartyClientIDs:["gemini"]`, `kind:"hosted"`). The Swift sheet seeds the
+  endpoint and the user supplies the API key; `gateway-create` stores a profile, and
+  `internal/app/resolver.go` `snapshotUpstreamResolver` resolves a Gemini gateway by
+  seeding a snapshot `.env` (`GEMINI_API_KEY=<profile key>`) from the profile store
+  and calling `gemini.ResolveUpstream` — so the created gateway actually serves the
+  OpenAI-compatible → Gemini translation instead of being a dead entry.
+- `openai` is **not a provider** in either engine. It is a protocol/catalog
+  concept (`Protocol = "openai"`, catalog vendor `id: "openai"`); the OpenAI-
+  backed account provider is `codex`, which already resolves. There is nothing
+  named `openai` to port or fix.
+
 ## Validation log (this session)
 
 - GO-PARITY-M7 host recovery/restart owner-isolation round (2026-08-26):

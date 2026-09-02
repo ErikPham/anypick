@@ -500,13 +500,17 @@ struct AddGatewaySheet: View {
 
   private var canSave: Bool {
     !gatewayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (requiresApiKey
+        ? !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        : true)
       && selectedProvider != nil
       && (usesCustomEndpoint
         ? !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         : true)
       && (!isAPIKeyAccount || regionChoices.isEmpty || regionChoices.contains(region ?? ""))
   }
+
+  private var requiresApiKey: Bool { selectedProvider?.requiresApiKey ?? true }
 
   var body: some View {
     DesignSheetHost(
@@ -558,29 +562,44 @@ struct AddGatewaySheet: View {
           }
 
           Section {
-            LabeledContent("API Key") {
-              HStack(spacing: 8) {
-                Group {
-                  if revealKey {
-                    TextField("", text: $apiKey)
-                  } else {
-                    SecureField("", text: $apiKey)
+            if requiresApiKey {
+              LabeledContent("API Key") {
+                HStack(spacing: 8) {
+                  Group {
+                    if revealKey {
+                      TextField("", text: $apiKey)
+                    } else {
+                      SecureField("", text: $apiKey)
+                    }
                   }
-                }
-                .labelsHidden()
-                .focused($focusedField, equals: .apiKey)
-                .accessibilityIdentifier("gateway-flow.api-key")
+                  .labelsHidden()
+                  .focused($focusedField, equals: .apiKey)
+                  .accessibilityIdentifier("gateway-flow.api-key")
 
-                Button {
-                  revealKey.toggle()
-                } label: {
-                  Image(systemName: revealKey ? "eye.slash" : "eye")
-                    .foregroundStyle(.secondary)
+                  Button {
+                    revealKey.toggle()
+                  } label: {
+                    Image(systemName: revealKey ? "eye.slash" : "eye")
+                      .foregroundStyle(.secondary)
+                  }
+                  .buttonStyle(.plain)
+                  .accessibilityLabel(revealKey ? "Hide API Key" : "Show API Key")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(revealKey ? "Hide API Key" : "Show API Key")
+                .frame(width: fieldWidth)
               }
-              .frame(width: fieldWidth)
+            } else {
+              LabeledContent("Credentials") {
+                Text("Uses your Grok login session (~/.grok/auth.json).")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+                  .frame(width: fieldWidth, alignment: .leading)
+              }
+              LabeledContent("Setup") {
+                Text("Run: grok login")
+                  .font(.footnote)
+                  .foregroundStyle(.secondary)
+                  .frame(width: fieldWidth, alignment: .leading)
+              }
             }
             if isAPIKeyAccount, !regionChoices.isEmpty {
               LabeledContent("Region") {

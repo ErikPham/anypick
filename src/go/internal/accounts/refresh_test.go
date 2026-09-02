@@ -85,7 +85,7 @@ func TestUseRefreshesPreviousWhenLivePresent(t *testing.T) {
 	if _, err := svc.Save(ctx, "grok", "acc-b", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetActive("grok", "acc-a"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "grok", "acc-a"); err != nil {
 		t.Fatal(err)
 	}
 	seedGrokLive(t, "a-refreshed@grok.xai")

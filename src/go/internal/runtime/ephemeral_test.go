@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,7 +172,7 @@ func TestHelpersSanitizeAndSplit(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
 	_ = clientHome(s) // just cover the branch
 	// ApplyProxyEndpoint unknown client
-	if _, err := s.ApplyProxyEndpoint(nil, "nope", ProxyEndpointOptions{Endpoint: "https://x", APIKey: "sk"}); err == nil {
+	if _, err := s.ApplyProxyEndpoint(context.Background(), "nope", ProxyEndpointOptions{Endpoint: "https://x", APIKey: "sk"}); err == nil {
 		t.Fatal("want error for unknown client in ApplyProxyEndpoint")
 	}
 	// PrepareClientConfigRecovery unknown client -> error

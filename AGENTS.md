@@ -23,6 +23,8 @@ make test                      # go test ./... -count=1
 make test-race                 # the same under -race
 make vet
 make fmt-check                 # fails if anything is not gofmt-clean
+make lint                      # staticcheck; wants it at $(go env GOPATH)/bin
+make review                    # fmt-check + vet + test + gates in one command
 make build                     # -> src/go/bin/anypick-dev
 
 make run ARGS="providers"      # build, then run a command
@@ -41,9 +43,10 @@ JavaScript build and no `scripts/` directory — a `Makefile` and Go tooling are
 all there is. The only Node project is `docs/`, the documentation site, with its
 own lockfile.
 
-CI (`.github/workflows/ci.yml`) runs five jobs: format/vet/version sync, Go
-tests on Ubuntu, Go tests on Windows, the macOS app and helper contract, and
-the docs site. Run the Go ones before you claim a change is done.
+CI (`.github/workflows/ci.yml`) runs six jobs: format/vet/staticcheck/version
+sync, Go tests on Ubuntu, Go tests on Windows, the Tauri app check and UI build,
+the macOS app and helper contract, and the docs site. Run the Go ones before
+you claim a change is done.
 
 > **GOPATH trap.** `~/.zshrc` currently exports `GOPATH="$HOME/workspace/ocg/go"`,
 > which is *another project's* module cache. Tests that shell out to `go build`
@@ -55,6 +58,17 @@ the docs site. Run the Go ones before you claim a change is done.
 > If you run `go` directly, use `GOPATH=$HOME/go go test ./...` (warm once with
 > `go mod download all`). The real fix is to delete that export from `~/.zshrc`:
 > Go modules have not needed GOPATH since 1.16.
+>
+> **`go` may not be on your `PATH` at all.** `~/.zshrc` here also exports a
+> `GOROOT` and a `PATH` entry for a `go@1.21` that is no longer installed, so a
+> bare `go` fails with `command not found` (exit 127) — which reads exactly like
+> a change that broke the build, and is how a gate quietly stops being run. The
+> Makefile resolves the toolchain itself (`PATH`, then `~/sdk/go*/bin`,
+> `/usr/local/go/bin`, `/opt/homebrew/bin`) and prints the install instructions
+> when it finds nothing, so **`make` targets work regardless**. Only a direct
+> `go` invocation needs `export PATH=<go-install>/bin:$PATH`. Keep
+> `GOTOOLCHAIN=auto`: the module requires go1.26, and an older local toolchain
+> delegates upward only under `auto`.
 
 The docs site is a **separate** pnpm project with its own lockfile:
 
@@ -76,6 +90,7 @@ run it against the wrong project.
 | *Why* is it like this? | `adr/` — cite records by number |
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
+| How is a change reviewed? | `CODE_REVIEW.md` — severity, checklists, and when a finding needs a gate |
 | How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
 
 Do not edit an accepted ADR to reflect new thinking; write a new one and mark the
@@ -103,26 +118,65 @@ Breaking one of these is a correctness or security regression, not a style nit.
 4. **`writeMeta` is the atomic commit point** for an account snapshot — a failed
    backup or import can never destroy the previously saved account (ADR 0004).
 5. **Every persisted mutation runs under the coordinator** with sorted, scoped
-   locks (ADR 0009). Correctness must not depend on the caller locking. Stores
-   own SQL; services never embed it. Account mutations lock
-   `providerScope(id)` — one scope per *provider*, not per account, because all
-   of them are reached through the provider's single live credential file
-   (ADR 0011). Locks are re-entrant within one async context, so a service may
-   lock a scope its caller already holds.
-6. **Never prompt without a TTY**, never guess a source, and keep `--json`
+   locks (ADR 0009). Correctness must not depend on the caller locking, so
+   mutating store methods take the lock themselves via `AccountStore.mutate`:
+   the services' `WithMutationLock` wrappers are now a broader-scope
+   *optimisation*, not the thing that makes the write safe. Account mutations
+   lock `providerScope(id)` — one scope per *provider*, not per account,
+   because all of them are reached through the provider's single live
+   credential file (ADR 0011). Locks are re-entrant within one context, so a
+   service may lock a scope its caller already holds.
+   **Mutating store methods take `ctx` as their first argument and have no
+   ctx-less form** — see the deadlock trap below.
+   `internal/store/coordinator_test.go` fails the build if a new mutating
+   method bypasses the coordinator; the escape hatch is a map that requires a
+   written reason.
+6. **Every table has exactly one owning package.** Persistence is one package
+   per group of tables (`internal/store`, `internal/journal`, `internal/pools`,
+   `internal/hub`, `internal/presets`, `internal/bindings`, `internal/profile`,
+   `internal/plugins`, `internal/modelcache`), not one store package for the
+   whole schema — the older wording ("stores own SQL") was untrue and was
+   therefore enforced by nobody. Ownership is declared in
+   `internal/db/tables.go` and `internal/db/tables_test.go` fails the build when
+   a package reaches into a table it does not own, or when a table appears with
+   no owner. Sharing a table requires a written reason in the same map.
+   Tables belonging to a client AnyPick integrates with (`auth_kv`,
+   `credential`, `integration`) are marked `External` and are not ours.
+7. **Never prompt without a TTY**, never guess a source, and keep `--json`
    machine-readable on every command. Exit codes come from `anyerr.ExitCode`.
    The TUI's TTY guard must use `isatty.IsTerminal`, not
    `Mode()&os.ModeCharDevice != 0` — see the trap below.
-7. **The data directory is `~/.anypick`** (`ANYPICK_HOME` overrides).
+8. **The data directory is `~/.anypick`** (`ANYPICK_HOME` overrides).
 
 ## Traps that have cost real time
 
+- **An unanchored `.gitignore` pattern matches at any depth.** `refs/` was
+  written for the root screenshot folder; git also applied it to
+  `src/go/internal/refs`, a real package that 45 committed files import. The
+  result was three silences at once: `main` did not compile, `git status` said
+  nothing (an ignored path is invisible, not merely untracked), and
+  `refs.ProviderScope` — the lock scope behind ADR 0011 and invariant #5 — was
+  absent from the repository. Anchor directory rules to the root: `/refs/`,
+  `/design/`. `make paths` now fails if any `.go` file under `src/go` is
+  git-ignored. Note that plain `git check-ignore` **skips tracked paths**, so
+  the gate needs `--no-index` to see the pattern rather than the index.
 - **`/dev/null` is a character device.** `Mode()&os.ModeCharDevice != 0` is not
   a TTY test: it says yes for `/dev/null`, so the TUI starts, reads no
   keystrokes and hangs under cron and CI. Use `isatty.IsTerminal(fd)`.
 - **A TTY guard must run before any service is touched.** `tui.Run` checks it
   first, which is what lets a test pass a nil `*app.App` and assert the
   fail-closed path.
+- **A mutating store call without `ctx` is a deadlock, not a missed lock.**
+  Re-entrancy is carried in the context: `WithMutationLocks` skips scopes the
+  context already holds. A store method that starts from
+  `context.Background()` cannot see the lock its caller holds, so it calls
+  `AcquireFileLock` again and blocks forever on the in-process `pathMutex` —
+  the process hangs instead of failing. This already happened once, via
+  `SaveInput` → `WriteMeta`. That is why the ctx-less `WriteMeta`, `Delete`,
+  `SetActive`, `ClearActive`, `PatchMeta`, `WriteProxyState`,
+  `ClearProxyState` and `SetProxyConfig` were **deleted** rather than kept as
+  conveniences: the compiler now refuses the call. Reads keep their ctx-less
+  form because they take no lock.
 - **A mutation scope is not a resource identity.** `refs.ProviderScope` (lock
   scope, collapses accounts onto their provider) and `refs.Serialize` (precise
   identity, used for journal `affectedResources`) look interchangeable and are
@@ -181,8 +235,10 @@ The macOS app’s main window must look like an app Apple could ship:
 - **Settings (⌘,) is a `Settings` scene**, not a main-sidebar destination.
   Main sidebar: Overview, Apps, Accounts & APIs, Proxy Hub, Proxies,
   Activity, Account Backups.
-- Preview with `pnpm macos:design`. Audit with the design-checklist skill
-  routed `--surface desktop-app --artifact preferences --platform macos`.
+- **Preview the fixture, never a stale screenshot.** There is no
+  `pnpm macos:design` — the root `package.json` was deleted with the JavaScript
+  toolchain. Launch the app from Xcode with `ANYPICK_MACOS_FIXTURE` set in the
+  scheme's environment variables; `src/macos/README.md` lists every variable.
 - Full allowed/forbidden list, pane recipe, IA table, and current
   deviations: `src/macos/README.md`.
 

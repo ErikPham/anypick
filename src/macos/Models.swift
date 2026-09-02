@@ -195,6 +195,33 @@ class MacOSDesignModel: ObservableObject {
           )
         ]
       ),
+      DesignProviderOption(
+        id: "WorkBuddy",
+        label: "WorkBuddy",
+        detail: "Local app login",
+        canClear: true,
+        // Two regions, one preferred: a token issued by one host is rejected
+        // by the other, so the user picks the site they actually signed in on.
+        // Community, not official — this flow is undocumented.
+        loginMethods: [
+          DesignLoginMethod(
+            id: "workbuddy-international",
+            label: "WorkBuddy international",
+            detail: "Browser sign-in at www.codebuddy.ai",
+            provenance: "community",
+            preferred: true,
+            available: true
+          ),
+          DesignLoginMethod(
+            id: "codebuddy-china",
+            label: "CodeBuddy China",
+            detail: "Browser sign-in at copilot.tencent.com",
+            provenance: "community",
+            preferred: false,
+            available: true
+          ),
+        ]
+      ),
     ]
   }
 

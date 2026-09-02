@@ -1,58 +1,71 @@
-# AnyPick Tauri tray
+# AnyPick desktop app (Linux and Windows)
 
-This is the Linux UI helper. It owns no AnyPick state and never reads
-credentials. The Node supervisor spawns it with piped stdin/stdout:
+This is one of two native front ends. The other is the macOS app in
+`src/macos/` (SwiftUI); this one is Tauri 2 + React and ships on Linux and
+Windows (ADR 0020).
 
-- supervisor → helper: filtered `snapshot`, `result`, and `logs` messages;
-- helper → supervisor: bounded `invoke`, `mutate`, `logs`, and simple commands.
+**This app owns no AnyPick state and never reads credentials.** It launches,
+handshakes with, supervises and shuts down the bundled Go service, then renders
+what that service sends it (ADR 0019 §1):
 
-The macOS build continues to use `AnyPickTray.swift`. When a packaged Tauri
-binary is unavailable, Linux keeps the existing headless supervisor. Windows
-remains unsupported and is not part of the release matrix.
-AnyPick looks first beside its packaged JavaScript, then for `anypick-tray` on
-`PATH`. Developers can set `ANYPICK_TAURI_TRAY_BINARY` to an absolute path.
-Release artifacts use the platform/architecture suffixes emitted by
-`scripts/build-tauri-tray.mjs`; place the matching file in `dist/tray/bin` or
-point the environment variable at it.
+- app → service: `invoke`, `mutate`, `logs`, and simple commands;
+- service → app: filtered `snapshot`, `result`, and `logs` messages.
 
-The browser UI is a React + Tailwind (v4) app under `ui/` and is built into
-`frontend/` (consumed by Tauri as `frontendDist`). Do not edit files under
-`frontend/` by hand. Shared design tokens and component styles live in
-`ui/styles.css` (`@import "tailwindcss"` plus the tray look).
+The transport is a hidden `anypick desktop-service --stdio` process whose stdout
+is protocol-only, behind a version/capability handshake that gates every
+mutation (ADR 0019 §3). There is no permanent daemon, no localhost HTTP API, no
+socket, and no gRPC — any of those needs a new accepted ADR.
+
+## What is bundled
+
+- **The Go service**, as a Tauri `externalBin` sidecar:
+  `binaries/anypick-core` in `src-tauri/tauri.conf.json`, resolved per target by
+  `src-tauri/build.rs`. If you move a directory under `src/`, run `make paths`
+  first: that build script is one of the paths it checks.
+- **No Node runtime.** npm and Vite build the UI bundle at build time; the
+  shipped artifact contains no Node, npm, pnpm or ESM shim (ADR 0020 §8). Two
+  gates enforce it — `src/macos/scripts/check-node-free-app.sh` and
+  `go run ./cmd/anypick-artifact node-free <root>` — and both must reject the
+  same shapes.
+
+## UI
+
+React 19 + Vite + Tailwind v4 under `ui/`, built into `frontend/` (which Tauri
+consumes as `frontendDist`). Do not edit files under `frontend/` by hand.
+Shared design tokens and component styles live in `ui/styles.css`
+(`@import "tailwindcss"` plus the app look).
+
+## Commands
 
 From the repository root:
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm dev tray start` | Real tray against your `~/.anypick` data (main path) |
-| `pnpm tray:check` | Compile-check Tauri helper (+ UI typecheck/build) |
-| `pnpm tray:build` | Release helper binary (Linux release path) |
-| `pnpm tray:smoke` | Full binary protocol suite (one spawn: seed + multi-command + quit) |
-| `pnpm tray:smoke:only` | Short path only (`snapshot` → `refresh` → exit) |
-| `pnpm tray:e2e:ui` | Playwright click-through against the Vite demo fixture |
-| `pnpm tray:demo` | Tauri shell + in-memory fixture (`--empty` for empty snapshot) |
-| `pnpm tray:ui` | Browser-only Vite UI for layout work |
-| `pnpm macos:design` | macOS app fixture (same Swift as `pnpm dev`) |
+| `make tauri-deps` | Install the UI dependencies |
+| `make tauri-check` | Typecheck the UI without emitting output |
+| `make tauri-ui` | Build the UI bundle into `src/tauri/frontend` |
+| `make tauri-build` | Build the packaged desktop app for this platform |
+| `make tauri-dev` | Run the desktop app against the real Go service |
 
-Build helpers on the target desktop OS after installing Tauri platform
-prerequisites. Fixture demos never read or write `~/.anypick`, login files,
-Keychain, or real proxy processes.
+Build on the target desktop OS after installing the Tauri platform
+prerequisites (on Linux: `libwebkit2gtk-4.1-dev`,
+`libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`).
 
-### CI / E2E coverage
+## The desktop protocol version is declared three times
 
-Path-filtered (only when `src/tray/**`, tray scripts, or lockfile change):
+Go (`internal/buildinfo`), Rust (`src-tauri/src/protocol.rs`) and Swift
+(`src/macos/AppServiceClient.swift`) each declare it independently, and nothing
+links them. `make protocol-sync` asserts all three agree — run it whenever you
+bump the protocol, because bumping it on one platform only produces a failure
+that is otherwise very hard to trace.
 
-1. **`tray-ui-e2e`** (Linux) — Playwright against the React demo
-   bridge. Chromium browsers are cached by lockfile hash.
-2. **`tauri-tray`** (Linux) — rust-cache + `cargo test` + UI build +
-   release binary + **one** `pnpm tray:smoke` spawn covering seed, multi-command
-   probe (`refresh|logs|mutate|invoke|model-roles|navigate|quit`), garbage
-   rejection, and quit. Protocol mode returns before Tauri initializes GTK/WebKit.
+## CI
 
-Still out of scope for CI (needs a real desktop + installed clients): live
-`pnpm dev tray start` against `~/.anypick`, tray-icon click geometry, and OS
-notification surfaces.
+The `tauri` job in `.github/workflows/ci.yml` (ubuntu) runs on every push and
+PR to `main`: `make paths protocol-sync`, `npm ci`, `make tauri-check`,
+`make tauri-ui`, then `cargo check --locked`.
 
-After rebuilding the package while the real macOS tray is already running,
-run `pnpm dev tray start` once more. AnyPick fingerprints the Swift helper and
-automatically replaces a stale native tray process.
+Out of scope for CI (needs a real desktop and installed clients): running
+against a developer's `~/.anypick`, tray-icon click geometry, and OS
+notification surfaces. Use `make sandbox ARGS="status"` when you need to poke
+at real state without touching your own data root.

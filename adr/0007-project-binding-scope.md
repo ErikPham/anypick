@@ -5,8 +5,8 @@
 
 ## Context
 
-`hotplug link <client> --with <source>` records a *project* binding so that
-`hotplug run` inside that project resolves the binding into an isolated
+`anypick link <client> --with <source>` records a *project* binding so that
+`anypick run` inside that project resolves the binding into an isolated
 ephemeral session (RUN-01). The planner previously emitted the same
 `WriteClientConfig` + `VerifyEffectiveState` steps for `project` mode as it did
 for `persistent` (`use`) mode. Those steps write the **global** live client

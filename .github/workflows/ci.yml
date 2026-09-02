@@ -39,8 +39,22 @@ jobs:
       - name: Vet
         run: cd src/go && go vet ./...
 
-      - name: Release versions are synchronized
-        run: cd src/go && go run ./cmd/anypick-release check
+      # Pinned: a new staticcheck release can add checks, and an unpinned
+      # `go install ...@latest` would then fail CI for reasons unrelated to the
+      # change under review. Bump it deliberately.
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+
+      - name: Staticcheck
+        run: make lint
+
+      # Cross-language gates: repository layout, script root resolution,
+      # GitHub Actions working-directories, and the desktop protocol version
+      # that Go, Rust and Swift each declare independently. Cheap, and they
+      # fail in seconds on the class of break a directory move introduces.
+      # Also asserts VERSION agrees with the Xcode MARKETING_VERSION.
+      - name: Cross-language gates
+        run: make gates
 
   go:
     name: Go / Vet & Test
@@ -52,14 +66,14 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
       - name: Vet
-        working-directory: go
+        working-directory: src/go
         run: go vet ./...
       - name: Test
-        working-directory: go
+        working-directory: src/go
         run: go test ./... -count=1
 
       - name: Race test
-        working-directory: go
+        working-directory: src/go
         run: go test -race ./... -count=1
 
   go-windows:
@@ -72,8 +86,60 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
       - name: Test native Windows process, lock, proxy, and CLI paths
-        working-directory: go
+        working-directory: src/go
         run: go test ./... -count=1
+
+  tauri:
+    name: Tauri app / Linux check & UI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.17.1'
+
+      - name: Install Linux web dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Select stable Rust
+        run: |
+          rustup default stable
+          rustup component add rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src/tauri/src-tauri -> src/tauri/src-tauri/target
+          shared-key: anypick-tauri-ci
+
+      # ADR 0020 ships this app on Linux and Windows, so it needs a gate. The
+      # Go sidecar path in build.rs is exactly the kind of assumption that a
+      # directory move breaks silently.
+      - name: Cross-language gates
+        run: make paths protocol-sync
+
+      - name: Install UI dependencies
+        run: cd src/tauri/ui && npm ci
+
+      - name: Typecheck the UI
+        run: make tauri-check
+
+      - name: Build the UI bundle
+        run: make tauri-ui
+
+      - name: cargo check the app and its Go sidecar
+        run: cd src/tauri/src-tauri && cargo check --locked
 
   macos-app:
     name: macOS app / Xcode & universal helper

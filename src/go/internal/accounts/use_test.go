@@ -44,7 +44,7 @@ func TestUseSwitchesActiveAndRestoresSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Start with acc-a active.
-	if err := st.SetActive("grok", "acc-a"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "grok", "acc-a"); err != nil {
 		t.Fatal(err)
 	}
 	// Live currently holds b's material (last seed). Switching to acc-a
@@ -94,7 +94,7 @@ func TestUseBetweenTwoAccounts(t *testing.T) {
 	if _, err := svc.Save(ctx, "grok", "acc-b", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetActive("grok", "acc-a"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "grok", "acc-a"); err != nil {
 		t.Fatal(err)
 	}
 	res, err := svc.Use(ctx, "grok", "acc-b", UseOptions{NoRefresh: true})

@@ -244,9 +244,9 @@ func (j *OperationJournal) ListRecentContext(ctx context.Context, limit int) ([]
 		 ORDER BY started_at DESC LIMIT ?`, limit)
 }
 
-func (j *OperationJournal) query(q string, args ...any) ([]Entry, error) {
-	return j.queryContext(context.Background(), q, args...)
-}
+// No ctx-less query wrapper: a fresh context.Background() here cannot see a
+// lock the caller holds, which is the re-entrancy trap ADR 0009 documents.
+// Callers pass their context to the exported methods.
 
 func (j *OperationJournal) queryContext(ctx context.Context, q string, args ...any) ([]Entry, error) {
 	rows, err := j.DB.QueryContext(ctx, q, args...)

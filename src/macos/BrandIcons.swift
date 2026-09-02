@@ -152,6 +152,11 @@ extension DesignBrandAsset {
       return ["gemini-mark-v2.png", "gemini-mark.png", "googlegemini.svg"]
     case "kiro", "personalbuilder":
       return ["kiro-app.png", "kiro.svg"]
+    case "workbuddy", "codebuddy":
+      // Full-color app icon (workbuddy-mark.png). Same convention as
+      // kiro-app.png: the row shows the app's own icon to identify which
+      // client is being configured.
+      return ["workbuddy-mark.png", "workbuddy.svg"]
     case "openrouter":
       return dark
         ? ["openrouter-glyph-dark.png", "openrouter-glyph-light.png", "openrouter.svg"]
@@ -205,6 +210,9 @@ enum DesignBrandAsset {
     case "openrouter": "network"
     case "grok", "xai": "sparkles"
     case "opencode": "chevron.left.forwardslash.chevron.right"
+    // No bundled mark: WorkBuddy ships a full-color app icon, and these slots
+    // render as monochrome templates, so its logo would come out as a blob.
+    case "workbuddy", "codebuddy": "wand.and.stars"
     default: "server.rack"
     }
   }

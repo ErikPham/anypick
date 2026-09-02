@@ -3,11 +3,13 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Two levels up, not three: this script lives at macos/scripts, so
-# ../.. is the repository root. It used to be src/macos/scripts, where the
-# extra level was correct — the path was not adjusted when the tree moved.
+# Three levels up: this script lives at src/macos/scripts, so ../../.. is the
+# repository root. The Go module is at src/go, not go — the pre-src/ layout
+# appended /go straight onto the root and that suffix was never updated, which
+# made `make app-build` fail on every machine. `make paths` now asserts this
+# path resolves, so the suffix cannot drift again.
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-go_root="${repo_root}/go"
+go_root="${repo_root}/src/go"
 destination_dir="${TARGET_BUILD_DIR:?}/${CONTENTS_FOLDER_PATH:?}/Helpers"
 destination="${destination_dir}/anypick-core"
 resources_dir="${TARGET_BUILD_DIR:?}/${UNLOCALIZED_RESOURCES_FOLDER_PATH:?}"
@@ -23,7 +25,7 @@ if [[ -z "${go_binary}" || ! -x "${go_binary}" ]]; then
 fi
 go_toolchain="$(/usr/bin/awk '$1 == "toolchain" { print $2; exit }' "${go_root}/go.mod")"
 if [[ -z "${go_toolchain}" ]]; then
-  echo "error: go/go.mod must pin the helper build toolchain." >&2
+  echo "error: ${go_root}/go.mod must pin the helper build toolchain." >&2
   exit 1
 fi
 

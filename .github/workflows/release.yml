@@ -1,11 +1,13 @@
 name: Release
 
+# A release is: verify everything on Linux, commit and push the version, build
+# the Linux/Windows (Tauri) and macOS apps, deploy the docs, and create or
+# update the GitHub Release. There is no npm package — the JavaScript toolchain
+# was removed in e59509d and ADR-0020 makes npm optional, so the only channels
+# are the GitHub Release and the docs site.
 on:
   workflow_dispatch:
 
-# The job pushes its generated version commit/tag, publishes with npm trusted
-# publishing (or NPM_TOKEN for the one-time bootstrap), deploys the docs and
-# creates or updates the matching GitHub Release.
 permissions:
   contents: write
   id-token: write
@@ -16,13 +18,17 @@ concurrency:
 
 jobs:
   release:
-    name: Verify and publish
+    name: Verify, version and publish
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment:
       name: production
       url: https://anypick.dev
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,69 +40,18 @@ jobs:
           test "$GITHUB_REF" = refs/heads/main
           test -z "$(git status --porcelain)"
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
         with:
-          version: 9.12.0
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
 
-      # npm trusted publishing requires Node >=22.14 and npm >=11.5.1.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.17.1'
-          package-manager-cache: false
-          registry-url: https://registry.npmjs.org/
 
-      - name: Select an OIDC-capable npm CLI
-        run: npm install --global npm@11.6.0
-
-      - name: Install JavaScript dependencies
-        run: |
-          pnpm install --frozen-lockfile
-          cd docs && pnpm install --frozen-lockfile
-
-      - name: Validate release infrastructure
-        env:
-          REPOSITORY_VISIBILITY: ${{ github.repository_visibility }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          test "$REPOSITORY_VISIBILITY" = public || {
-            echo 'The repository must be public for npm provenance.'
-            exit 1
-          }
-
-          expected_repository="git+https://github.com/${GITHUB_REPOSITORY}.git"
-          actual_repository="$(node -p "require('./package.json').repository.url")"
-          test "$actual_repository" = "$expected_repository" || {
-            echo "package.json repository.url must be ${expected_repository}; got ${actual_repository}"
-            exit 1
-          }
-
-          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
-            echo 'CLOUDFLARE_ACCOUNT_ID is not configured.'
-            exit 1
-          }
-          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
-            echo 'CLOUDFLARE_API_TOKEN is not configured.'
-            exit 1
-          }
-          cd docs && pnpm exec wrangler whoami
-          cd ..
-
-          view_output="${RUNNER_TEMP}/anypick-npm-package.json"
-          view_error="${RUNNER_TEMP}/anypick-npm-package.err"
-          if npm view anypick name --json >"$view_output" 2>"$view_error"; then
-            :
-          elif grep -Eq 'E404|404 Not Found' "$view_error"; then
-            test -n "${NODE_AUTH_TOKEN:-}" || {
-              echo 'The initial npm publish requires an NPM_TOKEN; trusted publishing can only be configured after the package exists.'
-              exit 1
-            }
-            npm whoami --registry=https://registry.npmjs.org/
-          else
-            cat "$view_error"
-            exit 1
-          fi
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 9.12.0
 
       - name: Install Linux desktop dependencies
         run: |
@@ -106,107 +61,91 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-          pnpm exec playwright install chromium --with-deps
 
       - name: Select stable Rust with rustfmt
         run: |
           rustup default stable
           rustup component add rustfmt
 
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: src/tray/tauri/src-tauri -> src/tray/tauri/src-tauri/target
-          shared-key: anypick-tray-release
+          workspaces: src/tauri/src-tauri -> src/tauri/src-tauri/target
+          shared-key: anypick-tauri-release
           cache-on-failure: true
 
+      - name: Validate release infrastructure
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.repository_visibility }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          test "$REPOSITORY_VISIBILITY" = public || {
+            echo 'The repository must be public to publish a public release.'
+            exit 1
+          }
+          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
+            echo 'CLOUDFLARE_ACCOUNT_ID is not configured.'
+            exit 1
+          }
+          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
+            echo 'CLOUDFLARE_API_TOKEN is not configured.'
+            exit 1
+          }
+          cd docs && pnpm install --frozen-lockfile && pnpm exec wrangler whoami
+
+      # anypick-release plan replaces scripts/release-plan.mjs, deleted with the
+      # JavaScript toolchain. It reads Conventional Commits since the current
+      # tag and prints mode/bump/version/tag. "none" stops the run before
+      # anything external changes; "resume" reuses an existing tag so a rerun
+      # after a partial failure does not invent a second version.
       - name: Plan version from Conventional Commits
         id: plan
+        run: cd src/go && go run ./cmd/anypick-release plan | tee "$GITHUB_OUTPUT"
+
+      - name: Stop when there is nothing to release
+        if: steps.plan.outputs.mode == 'none'
         run: |
-          current_version="$(node -p "require('./package.json').version")"
-          current_tag="v${current_version}"
+          echo "::notice::No feat, fix or perf commit since ${{ steps.plan.outputs.tag }}; nothing to release."
+          exit 0
 
-          if git rev-parse --verify --quiet "refs/tags/${current_tag}" >/dev/null; then
-            tag_commit="$(git rev-list -n 1 "${current_tag}")"
-            head_commit="$(git rev-parse HEAD)"
-            if [[ "$tag_commit" != "$head_commit" ]] && \
-              git diff --quiet "$tag_commit" "$head_commit" -- . \
-                ':(exclude).github/workflows/release.yml' \
-                ':(exclude).github/workflows/ci.yml' \
-                ':(exclude)docs/package.json' \
-                ':(exclude)docs/AGENT.md' \
-                ':(exclude)docs/AGENTS.md' \
-                ':(exclude)docs/wrangler.jsonc' \
-                ':(exclude)tests/release-plan.test.ts'; then
-              node scripts/release-plan.mjs check
-              {
-                echo 'mode=resume'
-                echo "previous_tag=${current_tag}"
-                echo 'bump=current'
-                echo "version=${current_version}"
-                echo "tag=${current_tag}"
-              } >> "$GITHUB_OUTPUT"
-              echo "Resuming code-equivalent ${current_tag} after release workflow repairs."
-              exit 0
-            fi
-          fi
-
-          node scripts/release-plan.mjs prepare
+      - name: Apply the planned version
+        if: steps.plan.outputs.mode == 'release'
+        run: cd src/go && go run ./cmd/anypick-release set "${{ steps.plan.outputs.version }}"
 
       - name: Reject unexpected version edits
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(package.json|npm/cli-[^/]+/package.json|src/tray/tauri/src-tauri/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
+          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|src/tauri/src-tauri/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
           test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
 
-      - name: Format, lint, typecheck and test
-        run: pnpm check
+      # ── verification gate: nothing external changes below this line ──────
+      - name: Cross-language gates
+        run: make gates
 
-      - name: Build and smoke-test the npm tarball
-        run: pnpm package:smoke
-
-      - name: Verify consumer fixtures
-        env:
-          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+      - name: Go vet and test
         run: |
-          tarball="$(realpath "dist/anypick-${RELEASE_VERSION}.tgz")"
-          cd tests/consumer/nodenext
-          npm install --no-save "$tarball"
-          npm run typecheck
-          cd ../bundler
-          npm install --no-save "$tarball"
-          npm run typecheck
+          make vet
+          make test
 
-      - name: Typecheck and build docs
-        run: cd docs && pnpm predeploy
-
-      - name: Lint docs
-        run: cd docs && pnpm lint:docs
-
-      - name: Validate Cloudflare Pages configuration
-        run: cd docs && pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
-
-      - name: Check and test the tray
+      - name: Tauri UI typecheck and build
         run: |
-          cargo fmt --manifest-path src/tray/tauri/src-tauri/Cargo.toml -- --check
-          pnpm tray:ui:check
-          pnpm tray:ui:build
-          cargo test --locked --manifest-path src/tray/tauri/src-tauri/Cargo.toml
-          pnpm tray:e2e:ui
+          cd src/tauri/ui && npm ci
+          make tauri-check
 
-      - name: Build and smoke-test the Linux tray helper
+      - name: Tauri cargo check, fmt and test
         run: |
-          pnpm tray:build
-          pnpm tray:smoke
+          cargo fmt --manifest-path src/tauri/src-tauri/Cargo.toml -- --check
+          cargo test --locked --manifest-path src/tauri/src-tauri/Cargo.toml
 
-      - name: Verify exact release artifacts
-        env:
-          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+      - name: Build the Linux desktop app
+        run: make tauri-build
+
+      - name: Docs typecheck, lint and build
         run: |
-          node scripts/verify-release-artifacts.mjs "$RELEASE_VERSION"
-          git diff --check
+          cd docs && pnpm typecheck
+          cd docs && pnpm lint:docs
+          cd docs && pnpm build
+          cd docs && pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
 
-      # All expensive and security-sensitive checks happen before the first
-      # external mutation. A rerun recognizes pending and already-tagged releases.
       - name: Commit version and push tag
         env:
           RELEASE_TAG: ${{ steps.plan.outputs.tag }}
@@ -214,160 +153,95 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
           version_files=(
-            package.json
-            npm/cli-darwin-arm64/package.json
-            npm/cli-darwin-x64/package.json
-            npm/cli-linux-arm64-gnu/package.json
-            npm/cli-linux-x64-gnu/package.json
-            npm/cli-win32-x64/package.json
-            src/tray/tauri/src-tauri/Cargo.toml
-            src/tray/tauri/src-tauri/Cargo.lock
-            src/tray/tauri/src-tauri/tauri.conf.json
+            VERSION
+            src/tauri/src-tauri/Cargo.toml
+            src/tauri/src-tauri/Cargo.lock
+            src/tauri/src-tauri/tauri.conf.json
             src/macos/AnyPick.xcodeproj/project.pbxproj
           )
-
           if ! git diff --quiet -- "${version_files[@]}"; then
             git add "${version_files[@]}"
             git diff --cached --check
             git commit -m "chore(release): ${RELEASE_TAG}"
             git push origin HEAD:main
           fi
-
           if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            tag_commit="$(git rev-list -n 1 "${RELEASE_TAG}")"
-            head_commit="$(git rev-parse HEAD)"
-            if [[ "$tag_commit" != "$head_commit" ]]; then
-              git diff --quiet "$tag_commit" "$head_commit" -- . \
-                ':(exclude).github/workflows/release.yml' \
-                ':(exclude).github/workflows/ci.yml' \
-                ':(exclude)docs/package.json' \
-                ':(exclude)docs/AGENT.md' \
-                ':(exclude)docs/AGENTS.md' \
-                ':(exclude)docs/wrangler.jsonc' \
-                ':(exclude)tests/release-plan.test.ts' || {
-                  echo "${RELEASE_TAG} already points at a different product commit"
-                  exit 1
-                }
-              echo "${RELEASE_TAG} points at a code-equivalent release commit; preserving it."
-            fi
+            echo "${RELEASE_TAG} already exists; reusing it."
           else
             git tag --annotate "$RELEASE_TAG" --message "AnyPick ${RELEASE_VERSION}"
+            git push origin "refs/tags/${RELEASE_TAG}"
           fi
 
-          git push origin "refs/tags/${RELEASE_TAG}"
-
-      - name: Publish the verified tarball to npm
+      # changelogithub is fetched on demand rather than added to docs/, because
+      # a new devDependency also needs a lockfile update and this tool runs once
+      # per release. Pinned for reproducibility: 15.x requires Node >=22.19 and
+      # this job pins 22.17.1.
+      - name: Create or update the GitHub Release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: 'true'
-          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
         run: |
-          tarball="$(realpath "dist/anypick-${RELEASE_VERSION}.tgz")"
-          view_output="${RUNNER_TEMP}/anypick-npm-view.json"
-          view_error="${RUNNER_TEMP}/anypick-npm-view.err"
+          npx --yes changelogithub@14.0.0 --github "$GITHUB_REPOSITORY" --to "$RELEASE_TAG"
 
-          if npm view "anypick@${RELEASE_VERSION}" dist.integrity --json >"$view_output" 2>"$view_error"; then
-            published_integrity="$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')))" "$view_output")"
-            local_integrity="$(node -e "const fs=require('node:fs'); const crypto=require('node:crypto'); process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$tarball")"
-            test "$published_integrity" = "$local_integrity" || {
-              echo "npm already has anypick@${RELEASE_VERSION}, but its tarball integrity differs"
-              exit 1
-            }
-            echo "anypick@${RELEASE_VERSION} already matches the verified tarball; skipping."
-          elif grep -Eq 'E404|404 Not Found' "$view_error"; then
-            npm publish "$tarball" --access public --ignore-scripts
-          else
-            cat "$view_error"
+      - name: Attach the Linux desktop app
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          # tauri-build produces a .deb/.AppImage/.rpm under target/release/bundle.
+          # Attach whatever was produced; the macos-app job adds the macOS build.
+          shopt -s nullglob
+          assets=(src/tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+                  src/tauri/src-tauri/target/release/bundle/deb/*.deb)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::the Linux desktop app produced no bundle"
             exit 1
           fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
-      - name: Deploy verified docs to Cloudflare Pages
+      - name: Deploy the docs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: cd docs && pnpm run deploy
 
-      - name: Create or update GitHub Release
+  # The macOS app can only be built on macOS. It uploads into the release the
+  # job above created, so it runs after it and is allowed to fail without
+  # invalidating the version commit and tag.
+  macos-app:
+    name: Build and attach the macOS app
+    needs: release
+    if: needs.release.outputs.mode != 'none'
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
+
+      - name: Build unsigned universal app
+        run: >-
+          xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick
+          -configuration Release -destination 'generic/platform=macOS'
+          ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
+
+      - name: Verify the bundle has no Node runtime (ADR 0020)
+        run: |
+          app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/AnyPick.app' -print -quit)"
+          test -n "$app"
+          test -x "$app/Contents/Helpers/anypick-core"
+          src/macos/scripts/check-node-free-app.sh "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" AnyPick-macos-universal.zip
+
+      - name: Attach the macOS app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
-        run: |
-          pnpm exec changelogithub --github "$GITHUB_REPOSITORY" --to "$RELEASE_TAG"
-
-          node --input-type=module - \
-            "dist/anypick-${RELEASE_VERSION}.tgz" \
-            "dist/tray/bin/anypick-tray-linux-x64" <<'NODE'
-          import { createHash } from 'node:crypto';
-          import { readFile } from 'node:fs/promises';
-          import { basename } from 'node:path';
-
-          const assetPaths = process.argv.slice(2);
-          const apiUrl = process.env.GITHUB_API_URL;
-          const repository = process.env.GITHUB_REPOSITORY;
-          const tag = process.env.RELEASE_TAG;
-          const token = process.env.GITHUB_TOKEN;
-          const headers = {
-            Accept: 'application/vnd.github+json',
-            Authorization: `Bearer ${token}`,
-            'X-GitHub-Api-Version': '2022-11-28',
-          };
-
-          const requestJson = async (url, init = {}) => {
-            const response = await fetch(url, { ...init, headers: { ...headers, ...init.headers } });
-            if (!response.ok) {
-              throw new Error(`${init.method ?? 'GET'} ${url} failed: ${response.status} ${await response.text()}`);
-            }
-            return response.json();
-          };
-
-          const releaseUrl = `${apiUrl}/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`;
-          let release = await requestJson(releaseUrl);
-
-          for (const assetPath of assetPaths) {
-            const data = await readFile(assetPath);
-            const name = basename(assetPath);
-            const digest = `sha256:${createHash('sha256').update(data).digest('hex')}`;
-            const existing = release.assets.find((asset) => asset.name === name);
-
-            if (existing) {
-              if (existing.state !== 'uploaded' || existing.digest !== digest) {
-                throw new Error(`GitHub Release asset ${name} exists but does not match ${digest}`);
-              }
-              console.log(`${name} already matches ${digest}; skipping.`);
-              continue;
-            }
-
-            const uploadUrl = release.upload_url.replace(
-              '{?name,label}',
-              `?name=${encodeURIComponent(name)}`,
-            );
-            await requestJson(uploadUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: data,
-            });
-            console.log(`Uploaded ${name}.`);
-            release = await requestJson(releaseUrl);
-          }
-
-          for (const assetPath of assetPaths) {
-            const data = await readFile(assetPath);
-            const name = basename(assetPath);
-            const digest = `sha256:${createHash('sha256').update(data).digest('hex')}`;
-            const asset = release.assets.find((candidate) => candidate.name === name);
-            if (asset?.state !== 'uploaded' || asset.digest !== digest) {
-              throw new Error(`GitHub Release asset verification failed for ${name}`);
-            }
-          }
-          NODE
-
-      - name: Write release summary
-        env:
-          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
-        run: |
-          echo "## AnyPick ${RELEASE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Published npm package, Linux tray helper, GitHub Release and Pages docs from ${RELEASE_TAG}." >> "$GITHUB_STEP_SUMMARY"
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" AnyPick-macos-universal.zip --clobber

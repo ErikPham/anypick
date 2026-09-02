@@ -86,11 +86,20 @@ struct DesignIdentityRow<Icon: View, Trailing: View>: View {
             .accessibilityLabel(issue)
           }
         }
+        // Accounts & APIs' inventory row sizes its text block with
+        // `maxWidth: .infinity` and pins the trailing cluster with
+        // `.fixedSize()`. A bare `Spacer` only expands when something above it
+        // already promised the width, so rows built on this helper stayed at
+        // their intrinsic width and did not reach the right edge when the
+        // window widened — the same content looked narrower here than in
+        // Accounts. Match that row's geometry so every destination fills alike.
+        .frame(maxWidth: .infinity, alignment: .leading)
       } icon: {
         icon()
       }
       Spacer(minLength: 8)
       trailing()
+        .fixedSize()
     }
   }
 }
@@ -153,15 +162,28 @@ struct DesignGroupedPane<Content: View, Actions: View>: View {
   }
 
   var body: some View {
-    if showsActions {
-      ScrollView {
-        VStack(alignment: .trailing, spacing: 12) {
-          Form {
-            content()
-          }
-          .formStyle(.grouped)
-          .fixedSize(horizontal: false, vertical: true)
+    // Every pane renders through this one wrapper. Splitting it — a bare Form
+    // when there are no action buttons, a ScrollView+VStack when there are —
+    // gave panes without actions a different width, scrolling behaviour and
+    // vertical padding than panes with them, so the same content looked
+    // different from one destination to the next.
+    ScrollView {
+      VStack(alignment: .trailing, spacing: 12) {
+        Form {
+          content()
+        }
+        .formStyle(.grouped)
+        // `fixedSize(vertical:)` keeps the Form at its natural height so the
+        // ScrollView is what scrolls. Left alone it also let the Form keep its
+        // *natural width*, which differs per destination — Accounts & APIs'
+        // content measured wider than Overview's, so NavigationSplitView
+        // resolved a different column width per destination and the sidebar
+        // appeared to change shape when you switched menus. Pin the width to
+        // the available space and only the height stays intrinsic.
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity)
 
+        if showsActions {
           HStack(spacing: 12) {
             actions()
           }
@@ -170,13 +192,8 @@ struct DesignGroupedPane<Content: View, Actions: View>: View {
           .padding(.trailing, 20)
           .padding(.bottom, 20)
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
       }
-    } else {
-      Form {
-        content()
-      }
-      .formStyle(.grouped)
+      .frame(maxWidth: .infinity, alignment: .trailing)
     }
   }
 }

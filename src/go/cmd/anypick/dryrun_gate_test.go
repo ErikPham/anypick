@@ -91,15 +91,6 @@ func seedSliceARoot(t *testing.T) {
 	}
 }
 
-// runDryRun executes one dry-run invocation and returns (exit, stdout, stderr).
-func runDryRun(t *testing.T, args []string) (int, string, string) {
-	t.Helper()
-	code := -1
-	captureBoth(t, func() { code = run(append([]string{"--dry-run"}, args...)) })
-	out, errOut := captureBoth(t, func() { code = run(append([]string{"--dry-run"}, args...)) })
-	return code, out, errOut
-}
-
 func TestDryRunBreadthLeavesNothingBehind(t *testing.T) {
 	isolateEnv(t)
 	clearGlobalsForParity()
@@ -312,7 +303,7 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 		close(release)
 		select {
 		case <-holderErr:
-		case <-time.After(5 * time.Second):
+		case <-time.After(waitBudget):
 			t.Error("lock holder never released")
 		}
 	}()
@@ -330,7 +321,7 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("dry-run under held provider lock exited %d", code)
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(waitBudget):
 		t.Fatal("dry-run blocked on the held provider mutation lock — planner purity violated")
 	}
 
@@ -348,7 +339,7 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("proxy disable dry-run under held lock exited %d", code)
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(waitBudget):
 		t.Fatal("proxy dry-run blocked on the held provider mutation lock")
 	}
 }

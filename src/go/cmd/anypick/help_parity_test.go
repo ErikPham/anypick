@@ -6,6 +6,7 @@ package main
 // verbosity-flag consumers, and dynamic positional completion.
 
 import (
+	"context"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -400,7 +401,7 @@ func TestQuietSuppressesChatterButNotMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeFn()
-	binding, gerr := a.Bindings.GetGlobal("claude")
+	binding, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil || binding == nil {
 		t.Fatalf("--quiet must still persist the binding: %+v err=%v", binding, gerr)
 	}
@@ -438,7 +439,7 @@ func TestDoctorDetailRequiresVerbose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if serr := a.Store.SetActive("grok", "ghost"); serr != nil {
+	if serr := a.Store.SetActiveContext(context.Background(), "grok", "ghost"); serr != nil {
 		t.Fatal(serr)
 	}
 	closeFn()

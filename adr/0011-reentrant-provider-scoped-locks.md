@@ -10,7 +10,7 @@ ADR-0009 stated that every persisted mutation runs under the coordinator and
 that correctness must never depend on the caller locking. `AccountService` did
 not honour it: `save`, `use`, `stash`, `refresh`, `delete`, and `importAccount`
 mutated snapshots and live credential files with no lock at all. Two concurrent
-`hotplug` invocations could interleave `prepareSnapshot` → `provider.backup` →
+`anypick` invocations could interleave `prepareSnapshot` → `provider.backup` →
 `writeMeta`, and two saves of the same upstream login could each resolve their
 target account before the other committed, producing duplicate accounts for one
 identity.

@@ -244,7 +244,7 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 		return startManagedProxy(ctx, plan, deps, actx)
 
 	case StepEnsureProxyHub, StepAttachProxyHubRoute, StepWaitForHubHealth, StepValidateProxyHubRoute:
-		return fmt.Errorf("Proxy Hub service is unavailable in this composition.")
+		return fmt.Errorf("the Proxy Hub service is unavailable in this composition")
 
 	case StepCreateTempClientHome, StepCreateEnvironmentOverlay:
 		return createEphemeralHome(ctx, plan, deps, actx)
@@ -399,7 +399,13 @@ func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activati
 	actx.mutated = true
 	actx.checkpointJSON = cpMap
 	actx.undo = append(actx.undo, func() error {
-		restoreErr := deps.Accounts.Svc.RestoreLiveAuthCheckpoint(context.Background(), cp)
+		// Re-enter with the activation's context: it carries the coordinator
+		// locks Execute already holds, and a fresh context here would deadlock.
+		// WithoutCancel keeps those values while surviving the cancellation
+		// that probably caused this rollback in the first place — compensation
+		// must be able to finish after its trigger is cancelled, or a
+		// cancelled login leaves the previous credentials unrestored.
+		restoreErr := deps.Accounts.Svc.RestoreLiveAuthCheckpoint(context.WithoutCancel(ctx), cp)
 		_ = deps.Accounts.Svc.DiscardLiveAuthCheckpoint(cp)
 		return restoreErr
 	})
@@ -772,14 +778,6 @@ type recoveryBundle struct {
 	records  []string
 }
 
-func prepareClientRecovery(clientID string, deps *Deps, actx *activationContext) (*recoveryBundle, error) {
-	// Recovery records are filesystem-only; no DB context needed, but the
-	// journal bookkeeping is DB-backed so we thread Background when no
-	// request ctx is available at this layer. Callers that have a ctx use
-	// prepareClientRecoveryContext.
-	return prepareClientRecoveryContext(context.Background(), clientID, deps, actx)
-}
-
 func prepareClientRecoveryContext(ctx context.Context, clientID string, deps *Deps, actx *activationContext) (*recoveryBundle, error) {
 	if deps.Runtime == nil {
 		return &recoveryBundle{clientID: clientID}, nil
@@ -879,7 +877,7 @@ func verifyEffectiveState(plan *Plan, deps *Deps, actx *activationContext) error
 
 func commitGlobalBinding(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
 	if plan.Mode != ModePersistent || plan.BindingSpec == nil || plan.Provenance == nil {
-		return fmt.Errorf("Internal plan error: invalid global binding commit")
+		return fmt.Errorf("internal plan error: invalid global binding commit")
 	}
 	previous, err := deps.Bindings.GetGlobalContext(ctx, plan.Client)
 	if err != nil {
@@ -895,19 +893,25 @@ func commitGlobalBinding(ctx context.Context, plan *Plan, deps *Deps, actx *acti
 	}
 	actx.binding = &upserted
 	actx.mutated = true
+	// Compensation uses the activation's own context, not a fresh one: it
+	// carries the coordinator locks Execute holds, and a context.Background()
+	// here would re-enter and deadlock the moment bindings takes a lock.
+	// WithoutCancel keeps those values while surviving the cancellation that
+	// probably triggered this rollback in the first place.
+	undoCtx := context.WithoutCancel(ctx)
 	actx.undo = append(actx.undo, func() error {
 		if previous != nil {
-			_, err := deps.Bindings.UpsertGlobal(*previous)
+			_, err := deps.Bindings.UpsertGlobalContext(undoCtx, *previous)
 			return err
 		}
-		return deps.Bindings.DeleteGlobal(plan.Client)
+		return deps.Bindings.DeleteGlobalContext(undoCtx, plan.Client)
 	})
 	return nil
 }
 
 func commitProjectBinding(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts ExecuteOptions, actx *activationContext) error {
 	if plan.Mode != ModeProject || plan.BindingSpec == nil || plan.Provenance == nil {
-		return fmt.Errorf("Internal plan error: invalid project binding commit")
+		return fmt.Errorf("internal plan error: invalid project binding commit")
 	}
 	root, _ := step.Params["projectRoot"].(string)
 	if root == "" {
@@ -932,12 +936,15 @@ func commitProjectBinding(ctx context.Context, step PlanStep, plan *Plan, deps *
 	}
 	actx.projectBind = &upserted
 	actx.mutated = true
+	// Same compensation contract as the global-binding undo above: the
+	// activation's context (locks) with WithoutCancel (survives cancellation).
+	undoCtx := context.WithoutCancel(ctx)
 	actx.undo = append(actx.undo, func() error {
 		if previous != nil {
-			_, err := deps.Bindings.UpsertProject(*previous)
+			_, err := deps.Bindings.UpsertProjectContext(undoCtx, *previous)
 			return err
 		}
-		return deps.Bindings.DeleteProject(root, plan.Client)
+		return deps.Bindings.DeleteProjectContext(undoCtx, root, plan.Client)
 	})
 	return nil
 }

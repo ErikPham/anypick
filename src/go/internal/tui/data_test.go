@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -222,7 +223,7 @@ func TestTruncateRespectsRunesNotBytes(t *testing.T) {
 func TestViewRendersWithoutAWindowSize(t *testing.T) {
 	// The first paint happens before WindowSizeMsg arrives, so View must not
 	// divide by zero or index out of range with a zero width/height.
-	m := New(nil, nil)
+	m := New(context.Background(), nil)
 	m.providers = []ProviderRow{{ID: "codex", DisplayName: "OpenAI Codex", Identity: "signed out"}}
 	if got := m.View(); got == "" {
 		t.Error("View() = empty before the first window-size message")

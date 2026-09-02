@@ -127,7 +127,7 @@ func TestCurrentIdentityFallbackAndMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetActive("claude", "main"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "claude", "main"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +158,7 @@ func TestCurrentIdentityFallbackAndMismatch(t *testing.T) {
 	}
 
 	// No active pointer → early return without matching.
-	if err := st.ClearActive("claude"); err != nil {
+	if err := st.ClearActiveContext(context.Background(), "claude"); err != nil {
 		t.Fatal(err)
 	}
 	cur, err = svc.Current(ctx, "claude")
@@ -167,7 +167,7 @@ func TestCurrentIdentityFallbackAndMismatch(t *testing.T) {
 	}
 
 	// Active pointer to a vanished account degrades gracefully.
-	if err := st.SetActive("claude", "ghost"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "claude", "ghost"); err != nil {
 		t.Fatal(err)
 	}
 	cur, err = svc.Current(ctx, "claude")
@@ -181,7 +181,7 @@ func TestCheckpointRestoreRoundTripWithActivePointer(t *testing.T) {
 	ctx := context.Background()
 
 	seedGrokLive(t, "cp@grok.xai")
-	if err := st.SetActive("grok", "acc-a"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "grok", "acc-a"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,7 +201,7 @@ func TestCheckpointRestoreRoundTripWithActivePointer(t *testing.T) {
 	if err := os.Remove(os.Getenv("GROK_AUTH_PATH")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ClearActive("grok"); err != nil {
+	if err := st.ClearActiveContext(context.Background(), "grok"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.RestoreLiveAuthCheckpoint(ctx, cp); err != nil {

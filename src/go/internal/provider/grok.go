@@ -9,6 +9,7 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/browserlogin"
+	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
@@ -180,3 +181,20 @@ func (p *grok) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 }
 
 func (grok *grok) ShortName() string { return "Grok" }
+
+// ResolveUpstream points the engine's shared proxy at cli-chat-proxy.grok.com
+// using this account's saved OIDC session. The token is short-lived, so it is
+// supplied per request by grokEnsureAccessToken (OIDC refresh) rather than
+// frozen at start; x-grok-* + user-agent headers are injected on every
+// forwarded request. The same base serves both OpenAI and native Anthropic.
+func (p *grok) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
+	return grokUpstream(filepath.Join(snapshotDir, "auth.json"))
+}
+
+// GatewayUpstream resolves the upstream for a Grok gateway from the live x.ai
+// OIDC session (~/.grok/auth.json) shared with the account flow. A gateway
+// carries no account snapshot and no API key; it reuses the session the user
+// established with `grok login`, refreshing the token per request.
+func (p *grok) GatewayUpstream() (*proxy.Upstream, error) {
+	return grokUpstream(p.authPath())
+}

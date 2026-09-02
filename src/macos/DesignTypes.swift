@@ -173,6 +173,7 @@ struct DesignProviderOption: Identifiable, Hashable {
   var detail: String
   var defaultEndpoint: String? = nil
   var providesEndpoint: Bool = false
+  var requiresApiKey: Bool = true
   var firstPartyClientIDs: [String] = []
   var enabled: Bool = true
   var canClear: Bool = false
@@ -355,7 +356,8 @@ func nativeProviderPriority(_ provider: String) -> Int {
   if value.contains("kiro") { return 3 }
   if value.contains("grok") { return 4 }
   if value.contains("opencode") { return 5 }
-  return 6
+  if value.contains("workbuddy") || value.contains("codebuddy") { return 6 }
+  return 7
 }
 
 struct DesignBackup: Identifiable, Hashable {

@@ -60,12 +60,6 @@ func (s *pluginSupervisor) recordStartupFailure(failure plugins.LoadFailure) {
 	s.startupFailures = append(s.startupFailures, failure)
 }
 
-func (s *pluginSupervisor) recordLoaded(entry plugins.LoadedPlugin) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.loaded = append(s.loaded, entry)
-}
-
 // runtimeSnapshot is the startup view consumed by PluginDiagnostics. It is
 // frozen at startup because no candidate can ever load.
 func (s *pluginSupervisor) runtimeSnapshot() ([]plugins.LoadedPlugin, []plugins.LoadFailure) {
@@ -73,12 +67,6 @@ func (s *pluginSupervisor) runtimeSnapshot() ([]plugins.LoadedPlugin, []plugins.
 	defer s.mu.Unlock()
 	return append([]plugins.LoadedPlugin(nil), s.loaded...),
 		append([]plugins.LoadFailure(nil), s.startupFailures...)
-}
-
-// healthView reports an absent host. active is false, so diagnostics stop at
-// "inactive" and never claim degraded health for something that never ran.
-func (s *pluginSupervisor) healthView() (active, running bool, errText string) {
-	return false, false, ""
 }
 
 // Identity is the zero value: there is no supervised generation. An invalid

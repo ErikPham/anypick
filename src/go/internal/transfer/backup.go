@@ -230,7 +230,7 @@ func RestoreSelected(st *store.AccountStore, reg *provider.Registry, path string
 	var metas []store.Meta
 	err := lock.WithMutationLocks(context.Background(), st.Root, scopes,
 		func(ctx context.Context) error {
-			m, err := restoreSelectedLocked(st, reg, path, selected, opts)
+			m, err := restoreSelectedLocked(ctx, st, reg, path, selected, opts)
 			metas = m
 			return err
 		}, 0)
@@ -240,8 +240,11 @@ func RestoreSelected(st *store.AccountStore, reg *provider.Registry, path string
 	return metas, nil
 }
 
-func restoreSelectedLocked(st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
-	ctx := context.Background()
+// restoreSelectedLocked must receive the context that holds the coordinator
+// locks: it calls WriteAccountsBatchContext, which re-enters the same scopes.
+// Building a fresh context here deadlocks on the in-process path mutex (ADR
+// 0009 re-entrancy is carried in the context).
+func restoreSelectedLocked(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
 	prepared, err := prepareBackup(st, reg, path)
 	if err != nil {
 		return nil, err
@@ -330,7 +333,7 @@ func restoreSelectedLocked(st *store.AccountStore, reg *provider.Registry, path 
 		writes = append(writes, store.BatchWrite{Meta: meta, Proxy: proxy, SnapshotDir: snapshotDir})
 		metas = append(metas, meta)
 	}
-	if err := st.WriteAccountsBatch(writes); err != nil {
+	if err := st.WriteAccountsBatchContext(ctx, writes); err != nil {
 		return nil, err
 	}
 	return metas, nil

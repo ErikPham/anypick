@@ -5,7 +5,7 @@
 
 ## Context
 
-Hotplug authors extensionless relative imports in both `src` and `tests`.
+AnyPick authors extensionless relative imports in both `src` and `tests`.
 `tsconfig.json` deliberately excludes `tests`; its production typecheck uses
 `module: ESNext` / `moduleResolution: Bundler`. Vite performs the Node/SSR
 build and emits `.js` specifiers in `dist`, while TypeScript emits declarations
@@ -26,7 +26,7 @@ imposing a different module-resolution model from source authoring.
 The `bundler` resolution mirrors how Vitest and the Vite Node/SSR build consume
 the code, so typechecking validates real contract mismatches without extension
 noise. The `tests/consumer/*` standalone fixtures are excluded because they
-resolve `hotplug` from an installed tarball, not the workspace.
+resolve `anypick` from an installed tarball, not the workspace.
 
 ## Consequences
 

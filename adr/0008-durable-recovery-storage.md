@@ -9,7 +9,7 @@ The activation journal (`operation_journal` in SQLite) is already persistent and
 the recovery engine (`recoverIncompleteOperations`) already restores overwritten
 client config files from recorded `backupPaths` at startup and in doctor. But the
 backups themselves were written to the **system temp directory**
-(`mkdtemp(join(tmpdir(), 'hotplug-backup-…'))`) with **basename-only** destination
+(`mkdtemp(join(tmpdir(), 'anypick-backup-…'))`) with **basename-only** destination
 filenames. Two problems:
 
 1. **Not owner-only / not durable.** System temp is world-readable by default and
@@ -27,8 +27,8 @@ those paths. The storage location was the remaining gap.
 
 ## Decision
 
-1. **Owner-only recovery directory inside the Hotplug root.** Backups are stored
-   under `<hotplugRoot>/recovery/clients/<clientId>/` (created with mode `0o700`),
+1. **Owner-only recovery directory inside the AnyPick root.** Backups are stored
+   under `<anypickRoot>/recovery/clients/<clientId>/` (created with mode `0o700`),
    not the system temp dir (`src/core/paths.ts` `recoveryDir` /
    `clientRecoveryDir`). They survive crashes and are never world-readable.
 2. **Collision-free hashed filenames.** Each backup filename is
@@ -42,18 +42,18 @@ those paths. The storage location was the remaining gap.
 
 ## Consequences
 
-- Crash backups survive a reboot and are confined to the owner's Hotplug root.
+- Crash backups survive a reboot and are confined to the owner's AnyPick root.
 - Two managed files named identically across directories never clobber each
   other's backup (`tests/txn-recovery.test.ts`).
 - Recovery restores the exact prior file from the owner-only backup on a
   simulated crash + restart.
-- Temp-dir leftover `hotplug-backup-*` dirs are no longer produced.
+- Temp-dir leftover `anypick-backup-*` dirs are no longer produced.
 
 ## Rejected alternatives
 
 - **Keep `tmpdir` but add a random subdir per activation.** Still not durable
   across tmp cleanup and not owner-only; only moves the collision risk down a
-  level. The Hotplug root is the correct home for Hotplug's own recovery data.
+  level. The AnyPick root is the correct home for AnyPick's own recovery data.
 - **Namespace backups by basename + counter.** Counter collisions under
   concurrency and still no per-target identity; hashing the absolute path is
   collision-free by construction.

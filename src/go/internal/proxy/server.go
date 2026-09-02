@@ -142,28 +142,42 @@ type Server struct {
 	// Upstream auth presentation; empty = Authorization: Bearer.
 	UpstreamAuthHeader      string
 	UpstreamAuthValuePrefix string
+	// UpstreamAuthProvider, when set, supplies the live credential per request
+	// (OIDC/OAuth refresh) and overrides UpstreamAuth.
+	UpstreamAuthProvider func(ctx context.Context) (string, error)
+	// UpstreamExtraHeaders are injected into every forwarded request.
+	UpstreamExtraHeaders []ExtraHeader
 	// TranslateAnthropic: upstream is OpenAI-only, so /v1/messages requests
 	// are translated into chat completions (body + response + SSE stream).
 	TranslateAnthropic bool
+	// TranslateGemini: upstream is Google Gemini (generateContent), so
+	// /v1/chat/completions, /v1/responses and /v1/messages are translated to
+	// Gemini and the response translated back. See Upstream.TranslateGemini.
+	TranslateGemini bool
+	// Gemini holds the Gemini-specific egress facts (api-key vs OAuth mode).
+	Gemini *GeminiTarget
 	// Anthropic: optional native /v1/messages target (vendor /anthropic base).
 	Anthropic *UpstreamTarget
 
 	srv   *http.Server
 	errCh chan error
-	// translateAnthropic mirrors Upstream.TranslateAnthropic at start time.
-	translateAnthropic bool
-	clientOnce         sync.Once
-	client             *http.Client
+	// Deliberately no translateAnthropic mirror: the live flag is read from the
+	// Upstream that upstreamValue() composes. A cached copy next to the field it
+	// caches is how a future reader ends up trusting the wrong one.
+	clientOnce sync.Once
+	client     *http.Client
 }
 
 // injectUpstreamAuth applies the configured scheme, never forwarding the
 // proxy token.
 func (s *Server) injectUpstreamAuth(out *http.Request) {
-	injectUpstreamAuthFields(out, &Upstream{
+	injectUpstreamAuthFields(out.Context(), out, &Upstream{
 		BaseURL:         s.Upstream,
 		Auth:            s.UpstreamAuth,
 		AuthHeader:      s.UpstreamAuthHeader,
 		AuthValuePrefix: s.UpstreamAuthValuePrefix,
+		AuthProvider:    s.UpstreamAuthProvider,
+		ExtraHeaders:    s.UpstreamExtraHeaders,
 	})
 }
 
@@ -188,14 +202,23 @@ func (s *Server) Handler() http.Handler {
 }
 
 // upstreamValue composes the single egress description consumed by Serve.
+// It must carry AuthProvider + ExtraHeaders — buildServer sets them on the
+// Server, and the per-request path needs them to refresh short-lived tokens
+// and inject vendor headers. A cached copy of any of these next to the field
+// it caches is how a future reader ends up trusting the wrong one, so every
+// egress fact lives only in the Upstream upstreamValue() returns.
 func (s *Server) upstreamValue() *Upstream {
 	return &Upstream{
 		BaseURL:            s.Upstream,
 		Auth:               s.UpstreamAuth,
 		AuthHeader:         s.UpstreamAuthHeader,
 		AuthValuePrefix:    s.UpstreamAuthValuePrefix,
+		AuthProvider:       s.UpstreamAuthProvider,
+		ExtraHeaders:       s.UpstreamExtraHeaders,
 		Anthropic:          s.Anthropic,
 		TranslateAnthropic: s.TranslateAnthropic,
+		TranslateGemini:    s.TranslateGemini,
+		Gemini:             s.Gemini,
 	}
 }
 

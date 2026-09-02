@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
@@ -174,3 +175,11 @@ func (p *gemini) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 }
 
 func (gemini *gemini) ShortName() string { return "Gemini" }
+
+// ResolveUpstream points the engine's shared proxy at Google Gemini: API-key
+// or OAuth/Code Assist, both translated through serveGemini
+// (OpenAI/Anthropic/Responses → generateContent → back). Ports the gemini-cli
+// auth-source half of gemini-proxy/server.ts.
+func (p *gemini) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
+	return geminiUpstream(snapshotDir)
+}

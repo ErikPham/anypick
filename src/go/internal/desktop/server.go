@@ -633,14 +633,29 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 	case "account-save-current":
 		result = s.handleAccountSaveCurrent(ctx, m)
 	case "gateway-create":
-		if m.Name == "" || m.Endpoint == "" || m.APIKey == "" || m.ProviderID == "" {
+		if m.Name == "" || m.ProviderID == "" {
 			result.Status, result.Message = "error",
-				"gateway-create needs name, providerId, endpoint, apiKey"
+				"gateway-create needs name and providerId"
+			break
+		}
+		// grok gateways authenticate with the live x.ai OIDC session shared
+		// with the account flow, so no API key is collected. Every other
+		// gateway (including gemini) carries its key in the profile.
+		needsKey := m.ProviderID != "grok"
+		if (needsKey && m.APIKey == "") || m.Endpoint == "" {
+			result.Status, result.Message = "error",
+				"gateway-create needs endpoint"+map[bool]string{true: " and apiKey", false: ""}[needsKey]
 			break
 		}
 		if s.Deps.Profiles == nil {
 			result.Status, result.Message = "error", "profiles unavailable"
 			break
+		}
+		// grok's upstream base is fixed and engine-supplied; fall back to it
+		// when the UI sends no endpoint (providerSuppliesEndpoint).
+		endpoint := m.Endpoint
+		if m.ProviderID == "grok" && endpoint == "" {
+			endpoint = "https://cli-chat-proxy.grok.com"
 		}
 		err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
 			_, err := s.Deps.Profiles.UpsertContext(c, profile.Runtime{
@@ -648,7 +663,7 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 					Name:         m.Name,
 					Provider:     orString(m.ProviderID, "custom"),
 					Label:        strings.TrimSpace(m.Label),
-					Endpoint:     m.Endpoint,
+					Endpoint:     endpoint,
 					DefaultModel: m.DefaultModel,
 				},
 				Secrets: profile.Secrets{APIKey: m.APIKey},
@@ -1283,7 +1298,7 @@ func orString(a, b string) string {
 // applyModelRoles re-activates the client's persistent binding with explicit
 // per-role models (the Go counterpart of supervisor model-role actions).
 func (s *Server) applyModelRoles(ctx context.Context, clientID string, roles map[string]string) error {
-	binding, err := s.Deps.Bindings.GetGlobal(clientID)
+	binding, err := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
 	if err != nil {
 		return err
 	}

@@ -83,6 +83,10 @@ func anypickDisplayName(_ client: String) -> String {
   case "codex": return "Codex"
   case "gemini", "gemini-cli": return "Gemini"
   case "kiro": return "Kiro"
+  // The same product ships as WorkBuddy outside mainland China and CodeBuddy
+  // inside it; AnyPick keys everything on "workbuddy" and treats the other as
+  // an alias so either install resolves to one row.
+  case "workbuddy", "codebuddy": return "WorkBuddy"
   default: return client
   }
 }
@@ -96,6 +100,7 @@ func nativeProviderName(_ providerId: String) -> String {
   case "openrouter": return "OpenRouter"
   case "opencode": return "OpenCode"
   case "grok": return "Grok"
+  case "workbuddy", "codebuddy": return "WorkBuddy"
   case "proxy-hub": return "Proxy Hub"
   default:
     return providerId

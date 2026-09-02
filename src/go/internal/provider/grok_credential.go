@@ -1,0 +1,376 @@
+package provider
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/proxy"
+)
+
+// Grok's proxy speaks OpenAI + Anthropic against cli-chat-proxy.grok.com and
+// authenticates with the OIDC access token from <snapshot>/auth.json. The token
+// is short-lived, so the proxy must refresh it (OIDC refresh_token grant)
+// before forwarding. This file is the faithful Go port of
+// src/providers/grok-proxy/auth.ts (loadGrokSession / ensureAccessToken /
+// refreshSession / writeSession): it reads the saved auth.json, picks a
+// session, refreshes when expired, and writes the rotated tokens back so the
+// snapshot stays in sync.
+
+const (
+	grokOIDCIssuer    = "https://auth.x.ai"
+	grokClientVersion = "0.2.101"
+	grokDefaultUpstream = "https://cli-chat-proxy.grok.com"
+	grokRefreshSkew    = 60 * time.Second
+	grokOIDCTimeout    = 30 * time.Second
+	// grokRefreshLockTimeout must comfortably exceed the in-flight OIDC refresh
+	// (grokOIDCTimeout) so a waiter adopting a winner's rotated token does not
+	// time out while the holder is mid-redemption.
+	grokRefreshLockTimeout = 60 * time.Second
+)
+
+type grokSession struct {
+	// raw is the on-disk object for storageKey; mutated in place on refresh so
+	// unrelated fields survive the round-trip (ports GrokSession.raw).
+	raw          map[string]json.RawMessage
+	accessToken  string
+	refreshToken string
+	expiresAt    string // RFC3339; empty → never expires client-side
+	oidcIssuer   string
+	oidcClientID string
+	storageKey   string
+}
+
+// loadGrokSession is loadGrokSession: read the saved auth.json and pick a
+// usable OIDC session.
+func loadGrokSession(authPath string) (grokSession, error) {
+	raw, err := os.ReadFile(authPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return grokSession{}, anyerr.Newf(
+				"Grok auth not found at "+authPath+". Run: grok login",
+				"NO_LIVE_AUTH",
+				anyerr.WithSuggestions("Sign in with the official tool, then try again."))
+		}
+		return grokSession{}, err
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return grokSession{}, anyerr.Newf("Unreadable Grok auth: "+authPath+".", "NO_LIVE_AUTH")
+	}
+	storageKey, rawSession := pickGrokSession(data)
+	if storageKey == "" {
+		return grokSession{}, anyerr.Newf(
+			"No OIDC session in "+authPath+". Run: grok login",
+			"NO_LIVE_AUTH",
+			anyerr.WithSuggestions("Sign in with the official tool, then try again."))
+	}
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(rawSession, &entry); err != nil {
+		return grokSession{}, anyerr.Newf("Unreadable Grok auth: "+authPath+".", "NO_LIVE_AUTH")
+	}
+	s := grokSession{raw: entry, storageKey: storageKey}
+	s.accessToken = stringField(entry, "key")
+	if s.accessToken == "" {
+		s.accessToken = stringField(entry, "access_token")
+	}
+	s.refreshToken = stringField(entry, "refresh_token")
+	s.expiresAt = stringField(entry, "expires_at")
+	s.oidcIssuer = validateGrokIssuer(stringField(entry, "oidc_issuer"))
+	if s.oidcIssuer == "" {
+		s.oidcIssuer = grokOIDCIssuer
+	}
+	s.oidcClientID = stringField(entry, "oidc_client_id")
+	if s.oidcClientID == "" {
+		// storageKey is "issuer::clientId"
+		if parts := strings.SplitN(storageKey, "::", 2); len(parts) == 2 {
+			s.oidcClientID = parts[1]
+		}
+	}
+	if s.accessToken == "" && s.refreshToken == "" {
+		return grokSession{}, anyerr.Newf("Grok session has no access or refresh token.", "NO_LIVE_AUTH")
+	}
+	if s.oidcClientID == "" {
+		return grokSession{}, anyerr.Newf("Grok session missing oidc_client_id.", "NO_LIVE_AUTH")
+	}
+	return s, nil
+}
+
+// pickGrokSession is pickSession: prefer an xAI OIDC-looking entry, else the
+// first object-valued entry.
+func pickGrokSession(data map[string]json.RawMessage) (string, json.RawMessage) {
+	type shape struct {
+		Key      string `json:"key"`
+		Refresh  string `json:"refresh_token"`
+		AuthMode string `json:"auth_mode"`
+	}
+	entries := make([]struct {
+		key string
+		raw json.RawMessage
+	}, 0, len(data))
+	for k, v := range data {
+		var sh shape
+		if err := json.Unmarshal(v, &sh); err != nil {
+			continue // not an object — skip
+		}
+		entries = append(entries, struct {
+			key string
+			raw json.RawMessage
+		}{key: k, raw: v})
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	for _, e := range entries {
+		var sh shape
+		_ = json.Unmarshal(e.raw, &sh)
+		if sh.Key != "" || sh.Refresh != "" || sh.AuthMode == "oidc" {
+			return e.key, e.raw
+		}
+	}
+	return entries[0].key, entries[0].raw
+}
+
+func isGrokExpired(s grokSession, now time.Time) bool {
+	if s.expiresAt == "" {
+		return false
+	}
+	exp, err := time.Parse(time.RFC3339, s.expiresAt)
+	if err != nil {
+		return false
+	}
+	return !exp.Add(-grokRefreshSkew).After(now)
+}
+
+// grokEnsureAccessToken is ensureAccessToken: return a valid access token,
+// refreshing via OIDC when expired.
+func grokEnsureAccessToken(authPath string) (string, error) {
+	s, err := loadGrokSession(authPath)
+	if err != nil {
+		return "", err
+	}
+	if s.accessToken != "" && !isGrokExpired(s, time.Now()) {
+		return s.accessToken, nil
+	}
+	if s.refreshToken == "" {
+		return "", anyerr.Newf(
+			"Grok access token expired and no refresh_token available. Run: grok login",
+			"NO_LIVE_AUTH")
+	}
+	s2, err := refreshGrokSession(authPath, s)
+	if err != nil {
+		return "", err
+	}
+	return s2.accessToken, nil
+}
+
+// refreshGrokSession is refreshSession + refreshSessionUnlocked: serialize
+// across processes with a file lock (ports withFileLock on
+// ${authPath}.refresh.lock), reload to adopt a winner's rotated token, then
+// redeem the refresh_token and write back so the snapshot stays current.
+func refreshGrokSession(authPath string, s grokSession) (grokSession, error) {
+	fl, err := lock.AcquireFileLock(authPath+".refresh.lock", grokRefreshLockTimeout)
+	if err != nil {
+		return grokSession{}, anyerr.Wrapf(err, "acquire Grok refresh lock", "PROXY_START_FAILED")
+	}
+	defer fl.Release()
+
+	// Someone else may have refreshed while we waited; adopt their token.
+	if latest, lerr := loadGrokSession(authPath); lerr == nil {
+		if latest.storageKey == s.storageKey &&
+			(latest.accessToken != s.accessToken || latest.refreshToken != s.refreshToken) {
+			return latest, nil
+		}
+		s = latest
+	}
+
+	tokenURL, err := resolveGrokTokenEndpoint(s.oidcIssuer)
+	if err != nil {
+		return grokSession{}, err
+	}
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {s.refreshToken},
+		"client_id":     {s.oidcClientID},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), grokOIDCTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return grokSession{}, err
+	}
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return grokSession{}, anyerr.Newf("Grok OIDC refresh failed: "+err.Error(), "PROXY_START_FAILED")
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return grokSession{}, anyerr.Newf(
+			fmt.Sprintf("Grok OIDC refresh failed (%d): %s", resp.StatusCode, string(body)),
+			"PROXY_START_FAILED")
+	}
+	var tok struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    *int   `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tok); err != nil {
+		return grokSession{}, anyerr.Newf("Grok OIDC refresh returned unreadable body.", "PROXY_START_FAILED")
+	}
+	if tok.AccessToken == "" {
+		return grokSession{}, anyerr.Newf("Grok OIDC refresh returned no access_token.", "PROXY_START_FAILED")
+	}
+	expiresAt := s.expiresAt
+	if tok.ExpiresIn != nil {
+		expiresAt = time.Now().Add(time.Duration(*tok.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+	}
+	updated := s
+	updated.accessToken = tok.AccessToken
+	if tok.RefreshToken != "" {
+		updated.refreshToken = tok.RefreshToken
+	}
+	updated.expiresAt = expiresAt
+	setRawString(updated.raw, "key", updated.accessToken)
+	setRawString(updated.raw, "refresh_token", updated.refreshToken)
+	setRawString(updated.raw, "expires_at", updated.expiresAt)
+	if err := writeGrokSession(authPath, updated); err != nil {
+		return grokSession{}, err
+	}
+	return updated, nil
+}
+
+// resolveGrokTokenEndpoint is resolveTokenEndpoint: OIDC discovery with a
+// pinned fallback, refusing any endpoint off the xAI issuer.
+func resolveGrokTokenEndpoint(issuer string) (string, error) {
+	safe := validateGrokIssuer(issuer)
+	if safe == "" {
+		return "", anyerr.Newf("Refusing untrusted Grok OIDC issuer "+issuer+".", "PROXY_START_FAILED")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		safe+"/.well-known/openid-configuration", nil)
+	if err == nil {
+		if resp, derr := http.DefaultClient.Do(req); derr == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				var conf struct {
+					TokenEndpoint string `json:"token_endpoint"`
+				}
+				if b, _ := io.ReadAll(resp.Body); json.Unmarshal(b, &conf) == nil && conf.TokenEndpoint != "" {
+					if ep, ok := validateGrokTokenEndpoint(conf.TokenEndpoint); ok {
+						return ep, nil
+					}
+				}
+			}
+		}
+	}
+	return safe + "/oauth2/token", nil
+}
+
+func validateGrokIssuer(value string) string {
+	u, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	normalized := u.Scheme + "://" + u.Host + strings.TrimSuffix(u.Path, "/")
+	if u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		normalized != grokOIDCIssuer {
+		return ""
+	}
+	return grokOIDCIssuer
+}
+
+func validateGrokTokenEndpoint(value string) (string, bool) {
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", false
+	}
+	if u.Scheme != "https" || u.Host != "auth.x.ai" || u.User != nil || u.Fragment != "" {
+		return "", false
+	}
+	return u.String(), true
+}
+
+// setRawString updates one key in the on-disk session object, omitting it when
+// empty (ports the undefined-key omission of JSON.stringify on the TS raw).
+func setRawString(m map[string]json.RawMessage, key, val string) {
+	if val == "" {
+		delete(m, key)
+		return
+	}
+	b, err := json.Marshal(val)
+	if err != nil {
+		return
+	}
+	m[key] = b
+}
+
+// writeGrokSession is writeSession: preserve every other session, overwrite the
+// rotated one, keep the on-disk shape the snapshot expects.
+func writeGrokSession(authPath string, s grokSession) error {
+	var data map[string]json.RawMessage
+	if raw, err := os.ReadFile(authPath); err == nil {
+		_ = json.Unmarshal(raw, &data)
+	}
+	if data == nil {
+		data = map[string]json.RawMessage{}
+	}
+	entry, err := json.Marshal(s.raw)
+	if err != nil {
+		return err
+	}
+	data[s.storageKey] = entry
+	out, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(authPath, append(out, '\n'), 0o600)
+}
+
+// grokUpstream builds the shared-proxy Upstream for this account's saved auth
+// (ports the dual-protocol server's base + injected headers). The token comes
+// from AuthProvider so it refreshes per request; static ExtraHeaders pin the
+// client version the upstream expects. authPath is the snapshot auth.json.
+func grokUpstream(authPath string) (*proxy.Upstream, error) {
+	// Fail fast when the snapshot has no usable session so the proxy refuses to
+	// start with a clear error rather than 401-ing the first request.
+	if _, err := loadGrokSession(authPath); err != nil {
+		return nil, err
+	}
+	base, err := url.Parse(grokDefaultUpstream)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "parse Grok upstream base", "PROXY_START_FAILED")
+	}
+	headers := []proxy.ExtraHeader{
+		{Name: "x-grok-client-version", Value: grokClientVersion},
+		{Name: "x-grok-client-identifier", Value: "anypick-grok-proxy"},
+		{Name: "user-agent", Value: "anypick-grok-proxy/" + grokClientVersion},
+	}
+	provider := func(ctx context.Context) (string, error) { return grokEnsureAccessToken(authPath) }
+	return &proxy.Upstream{
+		BaseURL:         base,
+		AuthHeader:      "Authorization",
+		AuthValuePrefix: "Bearer ",
+		AuthProvider:    provider,
+		ExtraHeaders:    headers,
+		// Native Anthropic target on the same base — cli-chat-proxy.grok.com
+		// speaks both shapes (ports the default native /v1/messages path).
+		Anthropic: &proxy.UpstreamTarget{
+			BaseURL:         base,
+			AuthHeader:      "Authorization",
+			AuthValuePrefix: "Bearer ",
+			AuthProvider:    provider,
+		},
+	}, nil
+}

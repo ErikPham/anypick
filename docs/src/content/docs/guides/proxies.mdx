@@ -101,6 +101,35 @@ to the Zen catalog. The upstream base URL can be overridden with
 `OPENCODE_PROXY_UPSTREAM`, and model metadata enrichment with
 `OPENCODE_MODEL_METADATA_URL` (set it to `none` to disable enrichment).
 
+<Aside type="caution" title="Engine status">
+The Go engine resolves **one** OpenCode catalog per account, from the credential
+that is actually logged in: a Go subscription row targets
+`https://opencode.ai/zen/go/v1`, any other Zen/Go key targets
+`https://opencode.ai/zen/v1`. Per-model catalog routing, `public` mode, and the
+`OPENCODE_PROXY_UPSTREAM` override are not ported yet.
+</Aside>
+
+The key is looked up in this order, first hit wins:
+
+1. the live CLI credential store (`opencode.db` under `OPENCODE_DATA_DIR`);
+2. the `opencode.db` saved **beside** the account's `auth.json`;
+3. `auth.json` in the saved snapshot.
+
+The live store is checked first because the beta CLI no longer rewrites
+`auth.json` on login — a snapshot saved before you switched accounts would
+otherwise keep serving the previous account's key.
+
+An account whose saved login holds no Zen/Go key — an OAuth-only `auth.json`,
+for example a ChatGPT or Anthropic sign-in — cannot drive this proxy. Those
+logins are applied to native clients by `anypick use` instead; the proxy fails
+with `NO_LIVE_AUTH`:
+
+- no saved `auth.json` at all: *No OpenCode auth available.* with the
+  `opencode auth login` / `anypick add opencode --name <name>` suggestions;
+- `auth.json` present but unreadable: *Unreadable OpenCode auth: &lt;path&gt;.*;
+- `auth.json` readable but holds only OAuth rows: *OpenCode proxy needs a
+  Zen/Go API key in auth.json or the CLI credential store …*.
+
 ## Multi-account pools
 
 The default is one proxy process per account. A pool puts several accounts of

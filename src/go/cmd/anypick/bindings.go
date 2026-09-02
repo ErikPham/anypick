@@ -118,7 +118,7 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	// would silently drop them.
 	var planOpts activation.Options
 	if *withFlag == "" {
-		global, gerr := a.Bindings.GetGlobal(clientID)
+		global, gerr := a.Bindings.GetGlobalContext(ctx, clientID)
 		if gerr != nil {
 			return reportErr(gerr)
 		}
@@ -272,26 +272,20 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 		emitResetDryRun(clientID, g != nil, false)
 		return int(anyerr.Success)
 	}
-	err := lock.WithMutationLock(ctx, a.Root, "client/"+cad.ID(), func(context.Context) error {
+	// `c`, not the outer ctx: re-entrancy is carried in the context (ADR 0009),
+	// and the delete error must be returned — dropping it reported "reset" for
+	// a binding that was still on disk.
+	err := lock.WithMutationLock(ctx, a.Root, "client/"+cad.ID(), func(c context.Context) error {
 		if err := cad.Reset(); err != nil {
 			return err
 		}
-		a.Bindings.DeleteGlobal(clientID)
-		return nil
+		return a.Bindings.DeleteGlobalContext(c, clientID)
 	})
 	if err != nil {
 		return reportErr(err)
 	}
 	fmt.Printf("reset %s\n", clientID)
 	return int(anyerr.Success)
-}
-
-// modelSelection maps an explicit id to the binding model selection.
-func modelSelection(id string) bindings.ModelSelection {
-	if strings.TrimSpace(id) == "" {
-		return bindings.OmittedModel()
-	}
-	return bindings.ExplicitModel(id)
 }
 
 // ---- run (ephemeral launch) ----------------------------------------------

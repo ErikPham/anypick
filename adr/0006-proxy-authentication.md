@@ -6,7 +6,7 @@
 ## Context
 
 The Gemini, Grok, and OpenCode compatibility proxies previously trusted loopback
-plus a hardcoded placeholder key `'hotplug-proxy'` that no code path validated.
+plus a hardcoded placeholder key `'anypick-proxy'` that no code path validated.
 Any local process able to reach `127.0.0.1:<port>` obtained full upstream
 credential authority — it could list catalogs and forward inference requests
 carrying the local user's OAuth token / API key to the upstream provider. Looback
@@ -15,7 +15,7 @@ shared machine.
 
 Three gaps existed:
 
-1. A fixed, non-random key (`hotplug-proxy`) that could be guessed or copied.
+1. A fixed, non-random key (`anypick-proxy`) that could be guessed or copied.
 2. No verification at the routes that actually exercise upstream authority
    (`/v1/models`, `/v1/chat/completions`, `/v1/responses`, `/v1/messages`).
 3. The OpenCode proxy server did not assert loopback inside its own `create*`

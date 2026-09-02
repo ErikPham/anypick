@@ -176,6 +176,14 @@ func (s *PoolServer) upstreamFor(_ *http.Request, account string) *Upstream {
 func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream) {
 	isMessages := r.Method == http.MethodPost &&
 		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages")
+	isGemini := r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" ||
+			r.URL.Path == "/v1/responses" ||
+			r.URL.Path == "/v1/messages")
+	if isGemini && up.TranslateGemini {
+		s.geminiWithCapture(w, r, up)
+		return
+	}
 	if isMessages && up.Anthropic != nil {
 		t := up.Anthropic
 		auth := t.Auth
@@ -186,8 +194,14 @@ func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream
 		if header == "" {
 			header, prefix = up.AuthHeader, up.AuthValuePrefix
 		}
+		provider := t.AuthProvider
+		if provider == nil {
+			provider = up.AuthProvider
+		}
+		headers := append(append([]ExtraHeader(nil), t.ExtraHeaders...), up.ExtraHeaders...)
 		s.reverseWithCapture(w, r, t.BaseURL, &Upstream{
 			Auth: auth, AuthHeader: header, AuthValuePrefix: prefix,
+			AuthProvider: provider, ExtraHeaders: headers,
 		})
 		return
 	}
@@ -198,6 +212,38 @@ func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream
 	s.reverseWithCapture(w, r, up.BaseURL, up)
 }
 
+// geminiWithCapture ports serveGemini's manual egress with capture semantics:
+// a Gemini-backed member still accepts /v1/messages + /v1/responses +
+// /v1/chat/completions and translates them to generateContent, capturing
+// non-2xx responses so the ring can fail over like any other member.
+func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Upstream) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	if err != nil {
+		w.commitJSON(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"unreadable body"}}`)
+		return
+	}
+	geminiReq, resolvedModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
+	if terr != nil {
+		w.commitJSON(http.StatusBadGateway, jsonErrorBody("upstream_error", terr.Error()))
+		return
+	}
+	if resolvedModel == "" {
+		w.commitJSON(http.StatusBadRequest,
+			jsonErrorBody("invalid_request_error", "model is required and no model could be discovered for this account"))
+		return
+	}
+	resp, cerr := callGemini(r.Context(), up, resolvedModel, geminiReq)
+	if cerr != nil {
+		// Capture the upstream failure so the ring loop can decide failover.
+		status, msg := geminiErrorStatusMessage(cerr)
+		w.capture(status, http.Header{"Content-Type": []string{"application/json"}},
+			[]byte(jsonErrorBody("proxy_error", msg)))
+		return
+	}
+	w.commit()
+	writeGeminiResponse(w, r.URL.Path, resp, resolvedModel, stream)
+}
+
 // reverseWithCapture streams committed responses straight through and buffers
 // non-committed (≥400) responses into the capture writer.
 func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseURL *url.URL, up *Upstream) {
@@ -206,7 +252,7 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
 			pr.Out.Host = target.Host
-			injectUpstreamAuthFields(pr.Out, up)
+			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(flush http.ResponseWriter, _ *http.Request, _ error) {
@@ -260,7 +306,7 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	injectUpstreamAuthFields(req, up)
+	injectUpstreamAuthFields(r.Context(), req, up)
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)

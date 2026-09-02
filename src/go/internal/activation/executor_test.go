@@ -66,7 +66,7 @@ func TestExecutePersistentSwitch(t *testing.T) {
 		t.Errorf("active pointer = %q, want b", active)
 	}
 
-	binding, err := env.Deps.Bindings.GetGlobal("codex")
+	binding, err := env.Deps.Bindings.GetGlobalContext(context.Background(), "codex")
 	if err != nil || binding == nil {
 		t.Fatalf("global binding missing: %v", err)
 	}

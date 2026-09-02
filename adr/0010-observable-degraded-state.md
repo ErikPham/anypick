@@ -5,13 +5,13 @@
 
 ## Context
 
-Hotplug previously swallowed several high-risk partial failures in `catch` blocks that only
+AnyPick previously swallowed several high-risk partial failures in `catch` blocks that only
 called `logInternalError` (startup journal recovery failure, stale-lease reap failure) or
 silently marked an operation `failed` (journal recovery refusal when a source could not be
 re-resolved exactly). These conditions are exactly the ones a production operator needs to
 see: a partial/crashed operation that could not be rolled back automatically, or a reaping
 failure that leaves a stale proxy holding a port across sessions. Silence hides inconsistency
-— the precise failure mode Hotplug must not exhibit.
+— the precise failure mode AnyPick must not exhibit.
 
 At the same time, events must never carry secret material. A naive stderr surface would
 tempt callers into logging tokens, auth files, or complete imported payloads. The design must
@@ -22,12 +22,12 @@ This ADR records the event port that now underpins OBS-01, locked by a regressio
 
 ## Decision
 
-1. **Injectable sink, no CLI coupling.** `HotplugEventSink.emit(event)` is the only port.
+1. **Injectable sink, no CLI coupling.** `AnyPickEventSink.emit(event)` is the only port.
    Library consumers supply their own sink (e.g. to feed a TUI status bar). When none is
    supplied, `createApp` uses an `InMemoryEventSink` ring (200 entries) that `doctor`/`status`
    can read, plus a `DebugStderrEventSink` echo that is a no-op unless `HOTPLUG_DEBUG` is set.
    `app.events = { sink, emit }` is exposed for callers; `createApp({ events })` injects a sink.
-2. **Typed, sanitized event shape.** `HotplugEvent` carries `opId?`, `resourceIds?`, `step?`,
+2. **Typed, sanitized event shape.** `AnyPickEvent` carries `opId?`, `resourceIds?`, `step?`,
    `severity` (`info`|`warn`|`error`), a stable machine-readable `code`, a human `message`
    (must not contain secrets), an optional sanitized `context`, and an ISO `timestamp`.
 3. **Redaction at the boundary.** `sanitizeContext` runs on every emit. It replaces known

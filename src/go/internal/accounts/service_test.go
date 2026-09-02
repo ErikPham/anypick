@@ -174,7 +174,7 @@ func TestCurrentReportsActiveAndLive(t *testing.T) {
 	if _, err := svc.Save(ctx, "grok", "cur-acc", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetActive("grok", "cur-acc"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "grok", "cur-acc"); err != nil {
 		t.Fatal(err)
 	}
 	cur, err := svc.Current(ctx, "grok")
@@ -234,7 +234,7 @@ func TestDeleteStopsProxyAndClearsActiveAccount(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetActive("deepseek", "work-account"); err != nil {
+	if err := st.SetActiveContext(context.Background(), "deepseek", "work-account"); err != nil {
 		t.Fatal(err)
 	}
 	stopper := &recordingProxyStopper{}

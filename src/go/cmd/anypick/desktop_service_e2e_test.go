@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -16,40 +18,9 @@ import (
 func TestDesktopServiceCrossProcessHandshake(t *testing.T) {
 	isolateEnv(t)
 	bin := requireBuiltCLI(t)
-	cmd := exec.Command(bin, "desktop-service", "--stdio")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
+	p := spawnDesktopService(t, bin)
 
-	frames := make(chan string, 8)
-	scanErr := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 64*1024), desktop.MaxServiceFrameBytes)
-		for scanner.Scan() {
-			frames <- scanner.Text()
-		}
-		scanErr <- scanner.Err()
-		close(frames)
-	}()
-
-	hello := awaitServiceFrame(t, frames, scanErr, "hello")
+	hello := awaitServiceFrame(t, p, "hello")
 	if !strings.HasPrefix(hello, "hello\t") {
 		t.Fatalf("protocol stdout was polluted before hello: %q", hello)
 	}
@@ -63,25 +34,25 @@ func TestDesktopServiceCrossProcessHandshake(t *testing.T) {
 			"usage-events-v1",
 		},
 	}
-	if _, err := stdin.Write([]byte(desktop.FrameHostHello(host) + "\n")); err != nil {
+	if _, err := p.stdin.Write([]byte(desktop.FrameHostHello(host) + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	_ = awaitServiceFrame(t, frames, scanErr, "ready")
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot")
-	if _, err := stdin.Write([]byte("quit\n")); err != nil {
+	_ = awaitServiceFrame(t, p, "ready")
+	_ = awaitServiceFrame(t, p, "snapshot")
+	if _, err := p.stdin.Write([]byte("quit\n")); err != nil {
 		t.Fatal(err)
 	}
-	_ = stdin.Close()
+	_ = p.stdin.Close()
 
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() { done <- p.cmd.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, stderr.String())
+			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, p.stderr.String())
 		}
-	case <-time.After(8 * time.Second):
-		t.Fatalf("desktop-service did not stop after quit\nstderr: %s", stderr.String())
+	case <-time.After(serviceDeadline):
+		t.Fatalf("desktop-service did not stop after quit\nstderr: %s", p.stderr.String())
 	}
 }
 
@@ -100,40 +71,9 @@ func TestDesktopServiceRequiresExplicitStdio(t *testing.T) {
 func TestDesktopServiceCrossProcessCommandKinds(t *testing.T) {
 	isolateEnv(t)
 	bin := requireBuiltCLI(t)
-	cmd := exec.Command(bin, "desktop-service", "--stdio")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = stdin.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
+	p := spawnDesktopService(t, bin)
 
-	frames := make(chan string, 64)
-	scanErr := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 64*1024), desktop.MaxServiceFrameBytes)
-		for scanner.Scan() {
-			frames <- scanner.Text()
-		}
-		scanErr <- scanner.Err()
-		close(frames)
-	}()
-
-	_ = awaitServiceFrame(t, frames, scanErr, "hello")
+	_ = awaitServiceFrame(t, p, "hello")
 	host := desktop.HostHello{
 		ProtocolVersion: desktop.ServiceProtocolVersion,
 		AppVersion:      "(devel)",
@@ -144,107 +84,194 @@ func TestDesktopServiceCrossProcessCommandKinds(t *testing.T) {
 			"usage-events-v1",
 		},
 	}
-	writeServiceLine(t, stdin, desktop.FrameHostHello(host))
-	_ = awaitServiceFrame(t, frames, scanErr, "ready")
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot")
+	writeServiceLine(t, p.stdin, desktop.FrameHostHello(host))
+	_ = awaitServiceFrame(t, p, "ready")
+	_ = awaitServiceFrame(t, p, "snapshot")
 
 	// Host-only commands must neither mutate nor pollute protocol stdout. A
 	// following refresh proves the same child remains responsive.
-	writeServiceLine(t, stdin, "open")
-	writeServiceLine(t, stdin, "navigate\taccounts")
-	writeServiceLine(t, stdin, "restart")
-	writeServiceLine(t, stdin, "refresh")
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot-event")
+	writeServiceLine(t, p.stdin, "open")
+	writeServiceLine(t, p.stdin, "navigate\taccounts")
+	writeServiceLine(t, p.stdin, "restart")
+	writeServiceLine(t, p.stdin, "refresh")
+	_ = awaitServiceFrame(t, p, "snapshot-event")
 
-	writeServicePayload(t, stdin, "logs", map[string]any{
+	writeServicePayload(t, p.stdin, "logs", map[string]any{
 		"version": 1, "requestId": "logs-1", "providerId": "codex",
 		"name": "not-saved", "lines": 20,
 	})
-	logs := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "logs"))
+	logs := decodeServicePayload(t, awaitServiceFrame(t, p, "logs"))
 	if logs["requestId"] != "logs-1" || logs["state"] != "not-running" {
 		t.Fatalf("logs response = %#v", logs)
 	}
 
-	writeServicePayload(t, stdin, "backup-inspect", map[string]any{
+	writeServicePayload(t, p.stdin, "backup-inspect", map[string]any{
 		"version": 1, "requestId": "inspect-1", "path": t.TempDir() + "/missing.anypick",
 	})
 	preview := decodeServicePayload(t,
-		awaitServiceFrame(t, frames, scanErr, "backup-preview"))
+		awaitServiceFrame(t, p, "backup-preview"))
 	if preview["requestId"] != "inspect-1" || preview["status"] != "error" {
 		t.Fatalf("backup preview = %#v", preview)
 	}
 
-	writeServicePayload(t, stdin, "invoke", map[string]any{
+	writeServicePayload(t, p.stdin, "invoke", map[string]any{
 		"version": 1, "requestId": "invoke-1", "revision": 0,
 		"actionId": "missing-action",
 	})
-	invoked := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "result"))
+	invoked := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
 	if invoked["requestId"] != "invoke-1" || invoked["status"] != "error" {
 		t.Fatalf("invoke result = %#v", invoked)
 	}
 
-	writeServicePayload(t, stdin, "model-roles", map[string]any{
+	writeServicePayload(t, p.stdin, "model-roles", map[string]any{
 		"version": 1, "requestId": "roles-1", "revision": 0,
 		"clientId": "missing-client", "roleActionIds": map[string]string{},
 	})
-	roles := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "result"))
+	roles := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
 	if roles["requestId"] != "roles-1" || roles["status"] != "error" {
 		t.Fatalf("model roles result = %#v", roles)
 	}
 
-	writeServicePayload(t, stdin, "mutate", map[string]any{
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
 		"version": 1, "requestId": "setting-1", "operation": "setting-show-quota",
 		"name": "show-quota", "enabled": false,
 	})
-	setting := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "result"))
+	setting := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
 	if setting["requestId"] != "setting-1" || setting["status"] != "success" {
 		t.Fatalf("setting result = %#v", setting)
 	}
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot-event")
+	_ = awaitServiceFrame(t, p, "snapshot-event")
 
 	const fixtureSecret = "must-not-cross-desktop-boundary"
-	writeServicePayload(t, stdin, "mutate", map[string]any{
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
 		"version": 1, "requestId": "gateway-create-1", "operation": "gateway-create",
 		"providerId": "custom", "name": "fixture", "label": "Fixture",
 		"endpoint": "https://example.invalid/v1", "apiKey": fixtureSecret,
 	})
-	created := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "result"))
+	created := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
 	if created["requestId"] != "gateway-create-1" || created["status"] != "success" {
 		t.Fatalf("gateway create result = %#v", created)
 	}
-	createdEvent := awaitServiceFrame(t, frames, scanErr, "snapshot-event")
+	createdEvent := awaitServiceFrame(t, p, "snapshot-event")
 	if strings.Contains(createdEvent, fixtureSecret) {
 		t.Fatal("gateway secret crossed the desktop protocol boundary")
 	}
 
-	writeServicePayload(t, stdin, "mutate", map[string]any{
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
 		"version": 1, "requestId": "gateway-remove-1", "operation": "gateway-remove",
 		"name": "fixture",
 	})
-	removed := decodeServicePayload(t, awaitServiceFrame(t, frames, scanErr, "result"))
+	removed := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
 	if removed["requestId"] != "gateway-remove-1" || removed["status"] != "success" {
 		t.Fatalf("gateway remove result = %#v", removed)
 	}
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot-event")
+	_ = awaitServiceFrame(t, p, "snapshot-event")
 
 	// Cancelling an unknown request is deliberately idempotent and silent.
-	writeServicePayload(t, stdin, "cancel", map[string]any{
+	writeServicePayload(t, p.stdin, "cancel", map[string]any{
 		"version": 1, "requestId": "already-finished",
 	})
-	writeServiceLine(t, stdin, "refresh")
-	_ = awaitServiceFrame(t, frames, scanErr, "snapshot-event")
+	writeServiceLine(t, p.stdin, "refresh")
+	_ = awaitServiceFrame(t, p, "snapshot-event")
 
-	writeServiceLine(t, stdin, "quit")
-	_ = stdin.Close()
+	writeServiceLine(t, p.stdin, "quit")
+	_ = p.stdin.Close()
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	go func() { done <- p.cmd.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, stderr.String())
+			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, p.stderr.String())
 		}
-	case <-time.After(8 * time.Second):
-		t.Fatalf("desktop-service did not stop after command matrix\nstderr: %s", stderr.String())
+	case <-time.After(serviceDeadline):
+		t.Fatalf("desktop-service did not stop after command matrix\nstderr: %s", p.stderr.String())
+	}
+}
+
+// TestDesktopServiceGeminiGatewayCreate exercises the exact path Erik reported
+// missing: a Gemini gateway created from the Tạo Gateway/Proxy sheet must persist
+// as a profile the resolver can bridge (snapshotUpstreamResolver seeds the
+// GEMINI_API_KEY .env) and surface as a usable gateway action. It also guards
+// the secret boundary — the api key must never cross the desktop protocol.
+func TestDesktopServiceGeminiGatewayCreate(t *testing.T) {
+	isolateEnv(t)
+	bin := requireBuiltCLI(t)
+	p := spawnDesktopService(t, bin)
+	_ = awaitServiceFrame(t, p, "hello")
+	host := desktop.HostHello{
+		ProtocolVersion: desktop.ServiceProtocolVersion,
+		AppVersion:      "(devel)",
+		Platform:        "test",
+		Capabilities: []string{
+			"cancel-v1", "command-dto-v1", "explicit-refresh",
+			"host-effects-v1", "post-mutation-events", "snapshot-dto-v1",
+			"usage-events-v1",
+		},
+	}
+	writeServiceLine(t, p.stdin, desktop.FrameHostHello(host))
+	_ = awaitServiceFrame(t, p, "ready")
+	_ = awaitServiceFrame(t, p, "snapshot")
+
+	const gwKey = "AIza-fake-gemini-e2e-key"
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
+		"version":    1,
+		"requestId":  "gemini-gw-1",
+		"operation":  "gateway-create",
+		"providerId": "gemini",
+		"name":       "gemgw",
+		"label":      "Gemini GW",
+		"endpoint":   "https://generativelanguage.googleapis.com/v1beta",
+		"apiKey":     gwKey,
+	})
+	created := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
+	if created["requestId"] != "gemini-gw-1" || created["status"] != "success" {
+		t.Fatalf("gemini gateway-create result = %#v", created)
+	}
+
+	// The gateway must surface as a gateway action in the post-mutation snapshot,
+	// and the secret must not cross the desktop boundary.
+	createdEvt := awaitServiceFrame(t, p, "snapshot-event")
+	if strings.Contains(createdEvt, gwKey) {
+		t.Fatal("gemini gateway api key crossed the desktop protocol boundary")
+	}
+	snap := decodeServicePayload(t, createdEvt)
+	inner, _ := snap["snapshot"].(map[string]any)
+	actions, _ := inner["actions"].([]any)
+	found := false
+	for _, a := range actions {
+		row, _ := a.(map[string]any)
+		if row["label"] == "gemgw" && row["kind"] == "gateway" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("created gemini gateway not surfaced as a gateway action in snapshot")
+	}
+
+	// Clean up so the isolated env does not leak the fixture gateway.
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
+		"version":   1,
+		"requestId": "gemini-gw-remove-1",
+		"operation": "gateway-remove",
+		"name":      "gemgw",
+	})
+	removed := decodeServicePayload(t, awaitServiceFrame(t, p, "result"))
+	if removed["requestId"] != "gemini-gw-remove-1" || removed["status"] != "success" {
+		t.Fatalf("gemini gateway-remove result = %#v", removed)
+	}
+
+	writeServiceLine(t, p.stdin, "quit")
+	_ = p.stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, p.stderr.String())
+		}
+	case <-time.After(serviceDeadline):
+		t.Fatalf("desktop-service did not stop after gemini gateway test\nstderr: %s", p.stderr.String())
 	}
 }
 
@@ -286,27 +313,110 @@ func decodeServicePayload(t *testing.T, line string) map[string]any {
 	return value
 }
 
-func awaitServiceFrame(t *testing.T, frames <-chan string, scanErr <-chan error, prefix string) string {
+// serviceDeadline bounds how long one protocol frame may take to arrive.
+//
+// It is deliberately not tight. The child is a freshly spawned process that
+// opens the account database and runs migrations before it can emit `hello`,
+// and under a fully parallel `go test ./...` that cold start competes with
+// every other package for CPU. Eight seconds was enough on an idle machine and
+// not enough on a loaded one, which made this suite fail for reasons unrelated
+// to the protocol it is testing. The bound still exists — it is not a wait
+// forever — so a genuinely hung child fails the test instead of hanging CI.
+const serviceDeadline = 30 * time.Second
+
+// serviceProc is a spawned `desktop-service --stdio` child wired for
+// frame-by-frame assertions.
+type serviceProc struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	frames  <-chan string
+	scanErr <-chan error
+	stderr  *bytes.Buffer
+}
+
+// spawnDesktopService starts `bin desktop-service --stdio` and wires its
+// protocol stdout into a frame channel.
+//
+// The child's stderr is captured and dumped whenever the test fails. A cross-
+// process protocol test can fail *inside the child* for reasons the parent
+// cannot observe, and "timeout waiting for service hello frame" with no stderr
+// is unfalsifiable: it reads like a protocol bug when it is usually a startup
+// failure. Reporting stderr is what makes the next occurrence diagnosable.
+func spawnDesktopService(t *testing.T, bin string) *serviceProc {
 	t.Helper()
-	timer := time.NewTimer(8 * time.Second)
+	cmd := exec.Command(bin, "desktop-service", "--stdio")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &serviceProc{cmd: cmd, stdin: stdin, stderr: &bytes.Buffer{}}
+	cmd.Stderr = p.stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	frames := make(chan string, 64)
+	scanErr := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), desktop.MaxServiceFrameBytes)
+		for scanner.Scan() {
+			frames <- scanner.Text()
+		}
+		scanErr <- scanner.Err()
+		close(frames)
+	}()
+	p.frames = frames
+	p.scanErr = scanErr
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		if t.Failed() && p.stderr.Len() > 0 {
+			t.Logf("desktop-service stderr:\n%s", p.stderr.String())
+		}
+	})
+	return p
+}
+
+func awaitServiceFrame(t *testing.T, p *serviceProc, prefix string) string {
+	t.Helper()
+	timer := time.NewTimer(serviceDeadline)
 	defer timer.Stop()
 	for {
 		select {
-		case line, ok := <-frames:
+		case line, ok := <-p.frames:
 			if !ok {
 				select {
-				case err := <-scanErr:
-					t.Fatalf("service stdout closed waiting for %s: %v", prefix, err)
+				case err := <-p.scanErr:
+					p.fatalf(t, "service stdout closed waiting for %s: %v", prefix, err)
 				default:
-					t.Fatalf("service stdout closed waiting for %s", prefix)
+					p.fatalf(t, "service stdout closed waiting for %s", prefix)
 				}
 			}
 			if strings.HasPrefix(line, prefix+"\t") {
 				return line
 			}
-			t.Fatalf("unexpected protocol frame before %s: %q", prefix, line)
+			p.fatalf(t, "unexpected protocol frame before %s: %q", prefix, line)
 		case <-timer.C:
-			t.Fatalf("timeout waiting for service %s frame", prefix)
+			p.fatalf(t, "timeout after %s waiting for service %s frame", serviceDeadline, prefix)
 		}
 	}
+}
+
+// fatalf fails the test with the child's stderr attached. Cleanup cannot be
+// relied on for this: it runs after the killing of the process, and a reader
+// diagnosing a CI failure should not have to scroll past the rest of the
+// output to find out why the child said nothing.
+func (p *serviceProc) fatalf(t *testing.T, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if p.stderr.Len() > 0 {
+		msg += "\ndesktop-service stderr:\n" + p.stderr.String()
+	}
+	t.Fatal(msg)
 }

@@ -29,11 +29,20 @@ func openWritableCredentialDB(t *testing.T, dir string) *sql.DB {
 	return d
 }
 
-// seedLiveOpenCodeDB creates a beta-CLI-shaped credential store in dir and
-// points OPENCODE_DATA_DIR at it. The returned cleanup restores the env.
+// seedLiveOpenCodeDB creates a beta-CLI-shaped credential store in a throwaway
+// dir and points OPENCODE_DATA_DIR at it, so the live lookup sees exactly these
+// rows and never the developer's real opencode.db.
 func seedLiveOpenCodeDB(t *testing.T, rows map[string]string) {
 	t.Helper()
 	dir := t.TempDir()
+	seedOpenCodeCredentialDB(t, dir, rows)
+	t.Setenv("OPENCODE_DATA_DIR", dir)
+}
+
+// seedOpenCodeCredentialDB writes a beta-CLI-shaped credential table into
+// dir/opencode.db — the file that sits beside a saved auth.json.
+func seedOpenCodeCredentialDB(t *testing.T, dir string, rows map[string]string) {
+	t.Helper()
 	d := openWritableCredentialDB(t, dir)
 	if _, err := d.Exec(`CREATE TABLE credential (
 		id text PRIMARY KEY, integration_id text, label text NOT NULL,
@@ -52,7 +61,6 @@ func seedLiveOpenCodeDB(t *testing.T, rows map[string]string) {
 		i++
 	}
 	d.Close()
-	t.Setenv("OPENCODE_DATA_DIR", dir)
 }
 
 func opencodeGoProviderForTest(t *testing.T) *Compatible {

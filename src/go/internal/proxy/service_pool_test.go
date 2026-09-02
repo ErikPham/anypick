@@ -58,7 +58,7 @@ func seedPoolAccount(t *testing.T, svc *Service, name string) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := svc.Store.WriteMeta(store.Meta{
+	if err := svc.Store.WriteMetaContext(context.Background(), store.Meta{
 		Name: name, Provider: "deepseek", CreatedAt: now, UpdatedAt: now,
 	}, staging); err != nil {
 		t.Fatal(err)

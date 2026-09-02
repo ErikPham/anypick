@@ -143,12 +143,12 @@ func seedForwardedAccount(t *testing.T, svc *Service, name string, cfg store.Pro
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := svc.Store.WriteMeta(store.Meta{
+	if err := svc.Store.WriteMetaContext(context.Background(), store.Meta{
 		Name: name, Provider: "pluginprov", CreatedAt: now, UpdatedAt: now,
 	}, staging); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Store.SetProxyConfig("pluginprov", name, cfg); err != nil {
+	if err := svc.Store.SetProxyConfigContext(context.Background(), "pluginprov", name, cfg); err != nil {
 		t.Fatal(err)
 	}
 	_ = svc.Store.DiscardPreparedSnapshot(staging)
@@ -574,7 +574,7 @@ func TestForwardedOutputBoundariesRedactEngineSecrets(t *testing.T) {
 	svc, fake := newForwardedServices(t)
 	const leaked = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	seedForwardedAccount(t, svc, "redact", store.ProxyConfig{Enabled: true})
-	if err := svc.Store.WriteProxyState("pluginprov", "redact", store.ProxyRuntimeState{
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "redact", store.ProxyRuntimeState{
 		AccountName: "redact", Endpoint: "http://127.0.0.1:43112",
 		PID: ownPID(), InstanceID: "inst-redact",
 		StartedAt: nowISO(), Token: leaked,
@@ -874,8 +874,7 @@ func TestReconcileAccountAfterHostLossKeepsProxyOnTransientHealthMiss(t *testing
 	defer func() { lifecycleVerifyTimeout = oldTimeout }()
 
 	gate := make(chan struct{})
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		select {
 		case <-gate:
 		case <-time.After(5 * time.Second):
@@ -889,7 +888,7 @@ func TestReconcileAccountAfterHostLossKeepsProxyOnTransientHealthMiss(t *testing
 		AccountName: "b", Endpoint: server.URL,
 		PID: ownPID(), InstanceID: "inst-b", Token: "tok-b", StartedAt: nowISO(),
 	}
-	if err := svc.Store.WriteProxyState("pluginprov", "b", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "b", state); err != nil {
 		t.Fatal(err)
 	}
 	lease := seedReconcileLease(t, svc, "b", "inst-b")
@@ -938,7 +937,7 @@ func TestReconcileAccountAfterHostLossClearsVerifiedDead(t *testing.T) {
 	terminated := PluginRuntimeIdentity{Generation: "dead-host-generation", PID: deadOwner}
 	state.PluginRuntimeGeneration = terminated.Generation
 	state.PluginRuntimePID = terminated.PID
-	if err := svc.Store.WriteProxyState("pluginprov", "dead", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "dead", state); err != nil {
 		t.Fatal(err)
 	}
 	seedReconcileLease(t, svc, "dead", "inst-dead")
@@ -981,7 +980,7 @@ func TestReconcileClearIsAtomicWhenLeaseDeleteFails(t *testing.T) {
 		svc.pluginRequest("pluginprov", "atomic", store.ProxyConfig{}, ""),
 		state.InstanceID, state.PID, state.Endpoint, time.Now(),
 		func(r map[string]interface{}) { delete(r, "endpoint") }) // in-host generation
-	if err := svc.Store.WriteProxyState("pluginprov", "atomic", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "atomic", state); err != nil {
 		t.Fatal(err)
 	}
 	lease := seedReconcileLease(t, svc, "atomic", "inst-atomic")
@@ -1115,7 +1114,7 @@ func TestReconcileKeepsPausedDetachedProxyAcrossWholeWindow(t *testing.T) {
 		PID: child.Process.Pid, InstanceID: instanceID,
 		Token: "tok-paused", StartedAt: nowISO(),
 	}
-	if err := svc.Store.WriteProxyState("pluginprov", "paused", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "paused", state); err != nil {
 		t.Fatal(err)
 	}
 	lease := seedReconcileLease(t, svc, "paused", instanceID)
@@ -1178,7 +1177,7 @@ func TestReconcileKeepsLateBindingGrandchildAfterRecordedOwnerDies(t *testing.T)
 		PID: deadParent, InstanceID: instanceID,
 		Token: "tok-lategrand", StartedAt: nowISO(),
 	}
-	if err := svc.Store.WriteProxyState("pluginprov", "lategrand", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "lategrand", state); err != nil {
 		t.Fatal(err)
 	}
 	lease := seedReconcileLease(t, svc, "lategrand", instanceID)
@@ -1234,7 +1233,7 @@ func TestReconcileRequiresEngineRuntimeGeneration(t *testing.T) {
 			state.PluginRuntimeGeneration = "terminated-generation"
 			state.PluginRuntimePID = deadOwner
 		}
-		if err := svc.Store.WriteProxyState("pluginprov", name, state); err != nil {
+		if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", name, state); err != nil {
 			t.Fatal(err)
 		}
 		seedReconcileLease(t, svc, name, "inst-"+name)
@@ -1267,7 +1266,7 @@ func TestReconcileRequiresEngineRuntimeGeneration(t *testing.T) {
 	// PID happens to match the terminated host (PID reuse / stale-state case).
 	stale := writeStateAndLease("recc", true)
 	stale.PluginRuntimeGeneration = "older-generation"
-	if err := svc.Store.WriteProxyState("pluginprov", "recc", stale); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "recc", stale); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.reconcileAccountAfterHostLoss(
@@ -1349,7 +1348,7 @@ func TestReconcileOnHostLossRunsUnderEachAccountsScopes(t *testing.T) {
 		svc.pluginRequest("pluginprov", "b", store.ProxyConfig{}, ""),
 		state.InstanceID, state.PID, state.Endpoint, time.Now(),
 		func(r map[string]interface{}) { delete(r, "endpoint") }) // in-host shape
-	if err := svc.Store.WriteProxyState("pluginprov", "b", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "b", state); err != nil {
 		t.Fatal(err)
 	}
 	seedReconcileLease(t, svc, "b", "inst-scope")
@@ -1395,7 +1394,7 @@ func TestReconcileSkipsSupersededInstance(t *testing.T) {
 		AccountName: "b", Endpoint: current.server.URL,
 		PID: ownPID(), InstanceID: "inst-current", Token: "tok-current", StartedAt: nowISO(),
 	}
-	if err := svc.Store.WriteProxyState("pluginprov", "b", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "b", state); err != nil {
 		t.Fatal(err)
 	}
 	stale := state
@@ -1570,7 +1569,7 @@ func TestForwardedStatusScreensAfterRuntimeOverlay(t *testing.T) {
 	// Persisted state whose raw endpoint carries a credential component and a
 	// PID matching the provider report — the exact ordering trap where the
 	// overlay previously reintroduced an unscreened value.
-	if err := svc.Store.WriteProxyState("pluginprov", "overlay", store.ProxyRuntimeState{
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "overlay", store.ProxyRuntimeState{
 		AccountName: "overlay",
 		Endpoint:    "http://127.0.0.1:43121/?tok=" + leaked,
 		PID:         777, InstanceID: "inst-overlay",
@@ -1666,7 +1665,7 @@ func TestForwardedStatusOverlaysConfiguredBindAddress(t *testing.T) {
 		AccountName: "status", Endpoint: "http://127.0.0.1:43111",
 		PID: 777, InstanceID: "inst-status", StartedAt: nowISO(), Token: "state-token",
 	}
-	if err := svc.Store.WriteProxyState("pluginprov", "status", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "status", state); err != nil {
 		t.Fatal(err)
 	}
 	out, err = svc.StatusContext(context.Background(), "pluginprov", "status")
@@ -1695,7 +1694,7 @@ func TestForwardedStatusOverlaysConfiguredBindAddress(t *testing.T) {
 	}
 	echo := newEchoProxy(t, "inst-status")
 	state.Endpoint = echo.server.URL
-	if err := svc.Store.WriteProxyState("pluginprov", "status", state); err != nil {
+	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "status", state); err != nil {
 		t.Fatal(err)
 	}
 	out, err = svc.StatusContext(context.Background(), "pluginprov", "status")

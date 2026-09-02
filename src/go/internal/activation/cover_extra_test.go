@@ -173,7 +173,7 @@ func TestPrepareClientRecoveryAndBindingHelpers(t *testing.T) {
 	// prepareClientRecovery with nil runtime
 	saved := env.Deps.Runtime
 	env.Deps.Runtime = nil
-	b, err := prepareClientRecovery("codex", env.Deps, actx)
+	b, err := prepareClientRecoveryContext(context.Background(), "codex", env.Deps, actx)
 	if err != nil || b.clientID != "codex" {
 		t.Fatalf("prepareClientRecovery nil runtime = %v %v", b, err)
 	}

@@ -170,6 +170,8 @@ struct GatewayProviderSnapshot: Decodable, Identifiable {
   let label: String
   let detail: String
   let providesEndpoint: Bool?
+  let requiresApiKey: Bool?
+  let defaultEndpoint: String?
   let firstPartyClientIds: [String]?
   let kind: String?
   let regions: [String]?

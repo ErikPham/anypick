@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -25,6 +26,14 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	}
 	isMessages := r.Method == http.MethodPost &&
 		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages")
+	isGemini := r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" ||
+			r.URL.Path == "/v1/responses" ||
+			r.URL.Path == "/v1/messages")
+	if isGemini && up.TranslateGemini {
+		serveGemini(w, r, up)
+		return
+	}
 	if isMessages && up.Anthropic != nil {
 		serveNativeAnthropic(w, r, up)
 		return
@@ -38,7 +47,7 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
 			pr.Out.Host = target.Host
-			injectUpstreamAuthFields(pr.Out, up)
+			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -57,20 +66,7 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 // /v1/messages lands on …/anthropic/v1/messages.
 func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	t := up.Anthropic
-	auth := t.Auth
-	if auth == "" {
-		auth = up.Auth
-	}
-	header := t.AuthHeader
-	prefix := t.AuthValuePrefix
-	if header == "" {
-		header = up.AuthHeader
-		prefix = up.AuthValuePrefix
-	}
-	if header == "" {
-		header = "Authorization"
-		prefix = "Bearer "
-	}
+	header, prefix, token := resolveTargetAuth(r.Context(), t, up)
 	target := *t.BaseURL
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -80,7 +76,9 @@ func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) 
 			out.Header.Del("Authorization")
 			out.Header.Del("x-api-key")
 			out.Header.Del("api-key")
-			out.Header.Set(header, prefix+auth)
+			out.Header.Set(header, prefix+token)
+			applyExtraHeaders(out, t.ExtraHeaders)
+			applyExtraHeaders(out, up.ExtraHeaders)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -115,7 +113,7 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	injectUpstreamAuthFields(req, up)
+	injectUpstreamAuthFields(r.Context(), req, up)
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
@@ -160,17 +158,68 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 	_, _ = w.Write(out)
 }
 
-func injectUpstreamAuthFields(out *http.Request, up *Upstream) {
-	header := up.AuthHeader
-	prefix := up.AuthValuePrefix
+// resolveUpstreamAuth returns the header/prefix/token to forward for an
+// OpenAI-surface request. A configured AuthProvider wins over static Auth and
+// may refresh a short-lived token; on provider error the token is left empty
+// so the upstream rejects with 401 instead of the proxy inventing one.
+func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, token string) {
+	header, prefix = up.AuthHeader, up.AuthValuePrefix
 	if header == "" {
 		header = "Authorization"
 		prefix = "Bearer "
 	}
+	token = up.Auth
+	if up.AuthProvider != nil {
+		if got, err := up.AuthProvider(ctx); err == nil {
+			token = got
+		}
+	}
+	return header, prefix, token
+}
+
+// resolveTargetAuth resolves the credential for a native Anthropic target,
+// falling back to the parent Upstream's provider/header when the target leaves
+// them empty.
+func resolveTargetAuth(ctx context.Context, t *UpstreamTarget, up *Upstream) (header, prefix, token string) {
+	header, prefix = t.AuthHeader, t.AuthValuePrefix
+	if header == "" {
+		header, prefix = up.AuthHeader, up.AuthValuePrefix
+	}
+	if header == "" {
+		header = "Authorization"
+		prefix = "Bearer "
+	}
+	token = t.Auth
+	if token == "" {
+		token = up.Auth
+	}
+	provider := t.AuthProvider
+	if provider == nil {
+		provider = up.AuthProvider
+	}
+	if provider != nil {
+		if got, err := provider(ctx); err == nil {
+			token = got
+		}
+	}
+	return header, prefix, token
+}
+
+func applyExtraHeaders(out *http.Request, headers []ExtraHeader) {
+	for _, h := range headers {
+		if h.Name != "" {
+			out.Header.Set(h.Name, h.Value)
+		}
+	}
+}
+
+func injectUpstreamAuthFields(ctx context.Context, out *http.Request, up *Upstream) {
+	header, prefix, token := resolveUpstreamAuth(ctx, up)
 	out.Header.Del("Authorization")
 	out.Header.Del("x-api-key")
 	out.Header.Del("api-key")
-	out.Header.Set(header, prefix+up.Auth)
+	out.Header.Set(header, prefix+token)
+	applyExtraHeaders(out, up.ExtraHeaders)
 }
 
 func extractRequestID(body []byte) string {

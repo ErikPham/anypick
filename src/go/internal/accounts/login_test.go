@@ -13,7 +13,6 @@ import (
 	"github.com/outof0/anypick/go/internal/db"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/store"
-	"github.com/outof0/anypick/go/internal/transport"
 )
 
 // fakeLauncher writes an executable script and returns its absolute path
@@ -252,35 +251,6 @@ func TestSelectLoginMethodPreferenceOrdering(t *testing.T) {
 	if err == nil || wantCode(t, err) != "PROVIDER_LOGIN_METHOD_UNKNOWN" {
 		t.Fatalf("unknown id must fail: %v", err)
 	}
-}
-
-// cancelAfterLauncherProvider cancels the context the moment its fake launcher
-// exits successfully, deterministically landing the cancel inside the
-// commit window between Login returning and SetActive.
-type cancelAfterLauncher struct{ pv provider.Provider }
-
-func (c *cancelAfterLauncher) ID() string          { return c.pv.ID() }
-func (c *cancelAfterLauncher) Name() string        { return c.pv.Name() }
-func (c *cancelAfterLauncher) Description() string { return c.pv.Description() }
-func (c *cancelAfterLauncher) CanProxy() bool      { return false }
-func (c *cancelAfterLauncher) AccountAdapter(n string, p bool) transport.Adapter {
-	return c.pv.AccountAdapter(n, p)
-}
-func (c *cancelAfterLauncher) DetectLive() (provider.LiveAuthStatus, error) {
-	return c.pv.DetectLive()
-}
-func (c *cancelAfterLauncher) Backup(d string) (provider.SnapshotInfo, error) {
-	return c.pv.Backup(d)
-}
-func (c *cancelAfterLauncher) Restore(d string) error { return c.pv.Restore(d) }
-func (c *cancelAfterLauncher) DescribeSnapshot(d string) (provider.SnapshotInfo, error) {
-	return c.pv.DescribeSnapshot(d)
-}
-func (c *cancelAfterLauncher) LoginMethods() []provider.LoginMethod {
-	if m, ok := c.pv.(provider.LoginMethodsProvider); ok {
-		return m.LoginMethods()
-	}
-	return nil
 }
 
 func TestLoginCancelInCommitWindowRollsBack(t *testing.T) {

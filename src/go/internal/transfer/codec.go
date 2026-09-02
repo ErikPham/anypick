@@ -323,7 +323,6 @@ func decodeFiles(files map[string]json.RawMessage) (map[string]string, error) {
 	sortStrings(keys)
 
 	out := make(map[string]string, len(files))
-	type seenEntry struct{ norm string }
 	var seen []string
 	total := 0
 	for _, key := range keys {

@@ -132,7 +132,7 @@ func (s *Service) SaveInput(ctx context.Context, providerID, name string, in Cre
 		if existing != nil {
 			meta.CreatedAt = existing.Meta.CreatedAt
 		}
-		if err := s.Store.WriteMeta(meta, snapshotDir); err != nil {
+		if err := s.Store.WriteMetaContext(c, meta, snapshotDir); err != nil {
 			_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
 			return err
 		}
@@ -257,11 +257,13 @@ func (s *Service) Delete(ctx context.Context, providerID, name string) error {
 				return err
 			}
 		}
-		return s.Store.Delete(providerID, accountName)
+		// `c` carries the coordinator lock this closure runs under; `ctx` does
+		// not, and re-entering with it would block on our own lock (ADR 0009).
+		return s.Store.DeleteContext(c, providerID, accountName)
 	})
 }
 
-func (s *Service) saveLocked(_ context.Context, pv provider.Provider, accountName string, existing *store.Account) (store.Meta, error) {
+func (s *Service) saveLocked(ctx context.Context, pv provider.Provider, accountName string, existing *store.Account) (store.Meta, error) {
 	snapshotDir, _, err := s.Store.PrepareSnapshot(pv.ID(), accountName)
 	if err != nil {
 		return store.Meta{}, err
@@ -285,7 +287,7 @@ func (s *Service) saveLocked(_ context.Context, pv provider.Provider, accountNam
 	if existing != nil {
 		meta.CreatedAt = existing.Meta.CreatedAt
 	}
-	if err := s.Store.WriteMeta(meta, snapshotDir); err != nil {
+	if err := s.Store.WriteMetaContext(ctx, meta, snapshotDir); err != nil {
 		_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
 		return store.Meta{}, err
 	}
@@ -370,9 +372,9 @@ func (s *Service) RestoreLiveAuthCheckpoint(ctx context.Context, cp *Checkpoint)
 			"SWITCH_ROLLBACK_UNAVAILABLE")
 	}
 	if cp.ActiveAccount != nil && *cp.ActiveAccount != "" {
-		return s.Store.SetActive(cp.ProviderID, *cp.ActiveAccount)
+		return s.Store.SetActiveContext(ctx, cp.ProviderID, *cp.ActiveAccount)
 	}
-	return s.Store.ClearActive(cp.ProviderID)
+	return s.Store.ClearActiveContext(ctx, cp.ProviderID)
 }
 
 func (s *Service) DiscardLiveAuthCheckpoint(cp *Checkpoint) error {

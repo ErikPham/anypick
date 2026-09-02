@@ -22,11 +22,6 @@ func (r *sseRecorder) rawLines() []string {
 	return strings.Split(r.buf.String(), "\n\n")
 }
 
-type namedEvent struct {
-	name string
-	data string
-}
-
 func (r *sseRecorder) events() []string {
 	var out []string
 	for _, block := range r.rawLines() {
@@ -42,8 +37,6 @@ func (r *sseRecorder) events() []string {
 	}
 	return out
 }
-
-var _ = namedEvent{}
 
 // fakeSSEResponse wraps a raw SSE body as an *http.Response.
 func newFakeSSEResponse(body string) *http.Response {

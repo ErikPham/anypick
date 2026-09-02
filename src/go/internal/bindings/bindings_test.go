@@ -1,6 +1,7 @@
 package bindings
 
 import (
+	"context"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/db"
@@ -35,14 +36,14 @@ func TestGlobalUpsertGetDelete(t *testing.T) {
 		Spec:       spec(),
 		Provenance: Provenance{Kind: "direct"},
 	}
-	saved, err := s.UpsertGlobal(g)
+	saved, err := s.UpsertGlobalContext(context.Background(), g)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved.CreatedAt == "" || saved.UpdatedAt == "" {
 		t.Fatalf("timestamps empty: %#v", saved)
 	}
-	got, err := s.GetGlobal("claude")
+	got, err := s.GetGlobalContext(context.Background(), "claude")
 	if err != nil || got == nil {
 		t.Fatalf("GetGlobal: %v %v", got, err)
 	}
@@ -51,7 +52,7 @@ func TestGlobalUpsertGetDelete(t *testing.T) {
 	}
 	created := saved.CreatedAt
 	g.Spec.Model = ExplicitModel("grok-1")
-	saved2, err := s.UpsertGlobal(g)
+	saved2, err := s.UpsertGlobalContext(context.Background(), g)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,10 +62,10 @@ func TestGlobalUpsertGetDelete(t *testing.T) {
 	if saved2.Spec.Model.ID != "grok-1" {
 		t.Fatalf("model not updated: %#v", saved2.Spec.Model)
 	}
-	if err := s.DeleteGlobal("claude"); err != nil {
+	if err := s.DeleteGlobalContext(context.Background(), "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetGlobal("claude"); got != nil {
+	if got, _ := s.GetGlobalContext(context.Background(), "claude"); got != nil {
 		t.Fatalf("want deleted, got %#v", got)
 	}
 }
@@ -72,7 +73,7 @@ func TestGlobalUpsertGetDelete(t *testing.T) {
 func TestGlobalGetMissingNil(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
-	got, err := s.GetGlobal("nope")
+	got, err := s.GetGlobalContext(context.Background(), "nope")
 	if err != nil || got != nil {
 		t.Fatalf("GetGlobal missing = %#v %v want nil,nil", got, err)
 	}
@@ -87,14 +88,14 @@ func TestProjectUpsertGetDelete(t *testing.T) {
 		Spec:        spec(),
 		Provenance:  Provenance{Kind: "direct"},
 	}
-	saved, err := s.UpsertProject(p)
+	saved, err := s.UpsertProjectContext(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved.CreatedAt == "" {
 		t.Fatalf("CreatedAt empty")
 	}
-	got, err := s.GetProject("/tmp/proj", "claude")
+	got, err := s.GetProjectContext(context.Background(), "/tmp/proj", "claude")
 	if err != nil || got == nil {
 		t.Fatalf("GetProject: %v %v", got, err)
 	}
@@ -103,14 +104,14 @@ func TestProjectUpsertGetDelete(t *testing.T) {
 	}
 	// Update preserves CreatedAt.
 	p.Spec.Model = ExplicitModel("grok-2")
-	saved2, _ := s.UpsertProject(p)
+	saved2, _ := s.UpsertProjectContext(context.Background(), p)
 	if saved2.CreatedAt != saved.CreatedAt {
 		t.Fatalf("CreatedAt changed")
 	}
-	if err := s.DeleteProject("/tmp/proj", "claude"); err != nil {
+	if err := s.DeleteProjectContext(context.Background(), "/tmp/proj", "claude"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetProject("/tmp/proj", "claude"); got != nil {
+	if got, _ := s.GetProjectContext(context.Background(), "/tmp/proj", "claude"); got != nil {
 		t.Fatalf("want deleted, got %#v", got)
 	}
 }

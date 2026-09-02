@@ -191,7 +191,7 @@ func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name
 			CredentialKind:  envelope.Meta.CredentialKind,
 			CredentialClass: envelope.Meta.CredentialClass,
 		}
-		if werr := deps.Store.WriteMeta(meta, snapshotDir); werr != nil {
+		if werr := deps.Store.WriteMetaContext(ctx, meta, snapshotDir); werr != nil {
 			failure = werr
 			meta = store.Meta{}
 		}

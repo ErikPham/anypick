@@ -119,7 +119,7 @@ func TestRegisterBuiltin(t *testing.T) {
 	if err := RegisterBuiltin(r, home); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode"} {
+	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy"} {
 		if !r.Has(id) {
 			t.Fatalf("missing builtin %q", id)
 		}

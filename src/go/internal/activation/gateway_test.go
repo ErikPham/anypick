@@ -89,7 +89,7 @@ func TestExecuteGatewayActivation(t *testing.T) {
 		t.Errorf("ANTHROPIC_MODEL = %q, want large", doc.Env["ANTHROPIC_MODEL"])
 	}
 
-	binding, _ := env.Deps.Bindings.GetGlobal("claude")
+	binding, _ := env.Deps.Bindings.GetGlobalContext(context.Background(), "claude")
 	if binding == nil || binding.Spec.Source.Kind != refs.KindGateway ||
 		binding.Spec.Source.Name != "or-work" {
 		t.Fatalf("binding = %+v", binding)

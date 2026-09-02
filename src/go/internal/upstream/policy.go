@@ -286,13 +286,6 @@ func WriteState(path string, state State) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

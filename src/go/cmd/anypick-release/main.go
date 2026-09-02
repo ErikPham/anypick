@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -29,7 +28,12 @@ import (
 // version should be readable and diffable without a toolchain.
 const versionFile = "VERSION"
 
-const xcodeProject = "macos/AnyPick.xcodeproj/project.pbxproj"
+// Relative to the repository root, which repoRoot() resolves by walking up to
+// the VERSION file. `make gates` runs this command, so a stale path here fails
+// CI instead of silently skipping the only cross-check on the macOS version.
+const xcodeProject = "src/macos/AnyPick.xcodeproj/project.pbxproj"
+const cargoToml = "src/tauri/src-tauri/Cargo.toml"
+const tauriConf = "src/tauri/src-tauri/tauri.conf.json"
 
 var stableVersion = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$`)
 
@@ -63,6 +67,8 @@ func run(args []string) int {
 			return 2
 		}
 		return cmdBump(root, args[1])
+	case "plan":
+		return cmdPlan(root)
 	default:
 		usage()
 		return 2
@@ -70,7 +76,7 @@ func run(args []string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: anypick-release check | set <x.y.z> | bump <major|minor|patch>")
+	fmt.Fprintln(os.Stderr, "usage: anypick-release check | plan | set <x.y.z> | bump <major|minor|patch>")
 }
 
 func cmdCheck(root string) int {
@@ -83,15 +89,21 @@ func cmdCheck(root string) int {
 		fmt.Fprintf(os.Stderr, "error: %s must be a stable x.y.z version, got %q\n", versionFile, version)
 		return 1
 	}
-	xcode, err := readXcodeMarketingVersion(root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+	ok := true
+	for _, src := range secondarySources {
+		got, rerr := src.read(root)
+		if rerr != nil {
+			fmt.Fprintln(os.Stderr, "error:", rerr)
+			ok = false
+			continue
+		}
+		if got != version {
+			fmt.Fprintf(os.Stderr, "error: %s = %s but %s = %s\n",
+				versionFile, version, src.label, got)
+			ok = false
+		}
 	}
-	if xcode != version {
-		fmt.Fprintf(os.Stderr,
-			"error: version sources disagree: %s = %s, Xcode MARKETING_VERSION = %s\n",
-			versionFile, version, xcode)
+	if !ok {
 		return 1
 	}
 	fmt.Printf("Release versions are synchronized at %s.\n", version)
@@ -116,34 +128,11 @@ func cmdBump(root, part string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	fields := strings.Split(current, ".")
-	if len(fields) != 3 {
-		fmt.Fprintf(os.Stderr, "error: %s does not look like x.y.z: %q\n", versionFile, current)
+	next, berr := bumpVersion(current, part)
+	if berr != nil {
+		fmt.Fprintf(os.Stderr, "error: %s: %v\n", versionFile, berr)
 		return 1
 	}
-	nums := make([]int, 3)
-	for i, f := range fields {
-		n, err := strconv.Atoi(f)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s is not numeric: %q\n", versionFile, current)
-			return 1
-		}
-		nums[i] = n
-	}
-	switch part {
-	case "major":
-		nums[0]++
-		nums[1], nums[2] = 0, 0
-	case "minor":
-		nums[1]++
-		nums[2] = 0
-	case "patch":
-		nums[2]++
-	default:
-		fmt.Fprintf(os.Stderr, "error: bump part must be major, minor or patch, got %q\n", part)
-		return 2
-	}
-	next := fmt.Sprintf("%d.%d.%d", nums[0], nums[1], nums[2])
 	return cmdSet(root, next)
 }
 
@@ -153,9 +142,11 @@ func writeVersion(root, next string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := writeXcodeMarketingVersion(root, next); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+	for _, src := range secondarySources {
+		if werr := src.write(root, next); werr != nil {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", src.label, werr)
+			return 1
+		}
 	}
 	return 0
 }
@@ -184,7 +175,7 @@ func readXcodeMarketingVersion(root string) (string, error) {
 	first := strings.TrimSpace(matches[0][1])
 	for _, m := range matches[1:] {
 		if strings.TrimSpace(m[1]) != first {
-			return "", fmt.Errorf("Xcode MARKETING_VERSION values disagree: %s vs %s",
+			return "", fmt.Errorf("xcode MARKETING_VERSION values disagree: %s vs %s",
 				first, strings.TrimSpace(m[1]))
 		}
 	}

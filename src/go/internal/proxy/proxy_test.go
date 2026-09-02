@@ -442,12 +442,12 @@ func seedAccount(t *testing.T, svc *Service, name string, enabled bool) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := svc.Store.WriteMeta(store.Meta{
+	if err := svc.Store.WriteMetaContext(context.Background(), store.Meta{
 		Name: name, Provider: "codex", CreatedAt: now, UpdatedAt: now,
 	}, staging); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Store.SetProxyConfig("codex", name, store.ProxyConfig{Enabled: enabled}); err != nil {
+	if err := svc.Store.SetProxyConfigContext(context.Background(), "codex", name, store.ProxyConfig{Enabled: enabled}); err != nil {
 		t.Fatal(err)
 	}
 	_ = svc.Store.DiscardPreparedSnapshot(staging)

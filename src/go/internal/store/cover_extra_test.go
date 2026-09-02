@@ -22,11 +22,11 @@ func TestProxyConfigRoundTrip(t *testing.T) {
 	// Create account then set/get
 	snap, _, _ := s.PrepareSnapshot("grok", "p1")
 	_ = os.WriteFile(filepath.Join(snap, "f"), []byte("x"), 0o600)
-	if err := s.WriteMeta(meta("grok", "p1"), snap); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("grok", "p1"), snap); err != nil {
 		t.Fatal(err)
 	}
 	want := ProxyConfig{Enabled: true, Port: 4100, Host: "127.0.0.1"}
-	if err := s.SetProxyConfig("grok", "p1", want); err != nil {
+	if err := s.SetProxyConfigContext(context.Background(), "grok", "p1", want); err != nil {
 		t.Fatalf("SetProxyConfig: %v", err)
 	}
 	got, err := s.GetProxyConfig("grok", "p1")
@@ -44,7 +44,7 @@ func TestProxyConfigRoundTrip(t *testing.T) {
 
 func TestSetProxyConfigMissingAccount(t *testing.T) {
 	s := testStore(t)
-	if err := s.SetProxyConfig("grok", "ghost", ProxyConfig{Enabled: true}); err == nil {
+	if err := s.SetProxyConfigContext(context.Background(), "grok", "ghost", ProxyConfig{Enabled: true}); err == nil {
 		t.Fatal("want ACCOUNT_NOT_FOUND for missing account")
 	}
 }
@@ -59,7 +59,7 @@ func TestGetProxyConfigCorruptJSON(t *testing.T) {
 	s := New(root, database)
 	snap, _, _ := s.PrepareSnapshot("grok", "c1")
 	_ = os.WriteFile(filepath.Join(snap, "f"), []byte("x"), 0o600)
-	if err := s.WriteMeta(meta("grok", "c1"), snap); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("grok", "c1"), snap); err != nil {
 		t.Fatal(err)
 	}
 	// Corrupt proxy_json directly
@@ -181,7 +181,7 @@ func TestStoreListAndActiveHelpers(t *testing.T) {
 	for _, name := range []string{"a", "b"} {
 		snap, _, _ := s.PrepareSnapshot("grok", name)
 		_ = os.WriteFile(filepath.Join(snap, "f"), []byte("x"), 0o600)
-		if err := s.WriteMeta(meta("grok", name), snap); err != nil {
+		if err := s.WriteMetaContext(context.Background(), meta("grok", name), snap); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -190,13 +190,13 @@ func TestStoreListAndActiveHelpers(t *testing.T) {
 		t.Fatalf("ListAccounts = %d want 2", len(list))
 	}
 	// Active helpers
-	if err := s.SetActive("grok", "a"); err != nil {
+	if err := s.SetActiveContext(context.Background(), "grok", "a"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.GetActive("grok"); got != "a" {
 		t.Fatalf("GetActive = %q", got)
 	}
-	if err := s.ClearActive("grok"); err != nil {
+	if err := s.ClearActiveContext(context.Background(), "grok"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.GetActiveContext(context.Background(), "grok"); got != "" {

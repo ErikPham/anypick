@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/outof0/anypick/go/internal/db"
 )
@@ -37,15 +39,32 @@ func openCodeLiveDataDir(home string) string {
 }
 
 // liveOpenCodePlatformKeys lists platform API keys from the live CLI install's
-// credential database.
+// credential database (liveOpenCodeDbPath in the TypeScript port).
 func liveOpenCodePlatformKeys() []openCodePlatformKey {
-	path := filepath.Join(openCodeLiveDataDir(homeDirOf()), "opencode.db")
+	return readOpenCodeDBKeys(filepath.Join(openCodeLiveDataDir(homeDirOf()), "opencode.db"))
+}
+
+// openCodeSnapshotDBKeys ports readDbPlatformCredentials(opencodeDbPathFor()):
+// the credential database that sits BESIDE a saved auth.json. A snapshot dir
+// written by Backup never carries one, but the TypeScript proxy checked it
+// before the mirror and a caller pointing at a live data directory does have
+// one, so the port keeps the step.
+func openCodeSnapshotDBKeys(snapshotDir string) []openCodePlatformKey {
+	return readOpenCodeDBKeys(filepath.Join(snapshotDir, "opencode.db"))
+}
+
+// readOpenCodeDBKeys is readDbPlatformCredentials: best-effort and read-only,
+// where a missing file, an older schema or a foreign row shape all mean "no
+// credentials here", never an error.
+func readOpenCodeDBKeys(path string) []openCodePlatformKey {
 	d, err := db.OpenForeign(path, true)
 	if err != nil {
 		return nil
 	}
 	defer d.Close()
-	rows, err := d.Query("SELECT integration_id, value FROM credential")
+	// ORDER BY keeps the ring deterministic: two platform rows in one store
+	// must always resolve to the same key, and an unordered scan does not.
+	rows, err := d.Query("SELECT integration_id, value FROM credential ORDER BY integration_id")
 	if err != nil {
 		return nil
 	}
@@ -56,7 +75,7 @@ func liveOpenCodePlatformKeys() []openCodePlatformKey {
 		if rows.Scan(&integrationID, &value) != nil {
 			continue
 		}
-		if !openCodePlatformServices[integrationID] || value == "" {
+		if !openCodePlatformServices[strings.ToLower(integrationID)] || value == "" {
 			continue
 		}
 		// Api keys are stored as {"type":"key"|"api","key":"sk-…"}; oauth rows
@@ -73,6 +92,116 @@ func liveOpenCodePlatformKeys() []openCodePlatformKey {
 		}
 	}
 	return out
+}
+
+// mirrorState is why a saved auth.json could not supply a gateway key. The
+// TypeScript proxy raised a different message for each — "no login at all" and
+// "logged in without a Zen/Go key" send the user to different commands — so the
+// port keeps the distinction instead of collapsing it into one error.
+type mirrorState int
+
+const (
+	mirrorMissing mirrorState = iota // no auth.json in the snapshot
+	mirrorUnreadable
+	mirrorRead
+)
+
+// openCodeSnapshotKeys lists platform keys from a saved auth.json mirror
+// (listPlatformCredentials). A snapshot dir carries no credential database —
+// Backup copies auth.json and the optional account.json only — so the mirror is
+// the whole material a saved account can contribute.
+//
+// Rows come back in service order: a mirror holding several platform rows must
+// resolve the same key every time, and a Go map iteration does not.
+func openCodeSnapshotKeys(snapshotDir string) ([]openCodePlatformKey, mirrorState) {
+	raw, err := os.ReadFile(filepath.Join(snapshotDir, "auth.json"))
+	if err != nil {
+		return nil, mirrorMissing
+	}
+	var data map[string]json.RawMessage
+	if json.Unmarshal(raw, &data) != nil {
+		return nil, mirrorUnreadable
+	}
+	services := make([]string, 0, len(data))
+	for service := range data {
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	var out []openCodePlatformKey
+	for _, service := range services {
+		if !openCodePlatformServices[strings.ToLower(service)] {
+			continue
+		}
+		// Platform rows are {"type":"api","key":"sk-…"}; older builds spelled
+		// the field apiKey or token. OAuth rows carry "access" and never
+		// satisfy a Zen/Go gateway, so they contribute nothing here.
+		var entry struct {
+			Key    string `json:"key"`
+			APIKey string `json:"apiKey"`
+			Token  string `json:"token"`
+		}
+		if json.Unmarshal(data[service], &entry) != nil {
+			continue
+		}
+		key := entry.Key
+		if key == "" {
+			key = entry.APIKey
+		}
+		if key == "" {
+			key = entry.Token
+		}
+		if key == "" {
+			continue
+		}
+		out = append(out, openCodePlatformKey{Service: service, Key: key})
+	}
+	return out, mirrorRead
+}
+
+// pickOpenCodeGatewayKey is pickPreferredKey: a Go subscription row wins,
+// otherwise the first Zen/Go row. Only platform rows are candidates here, so a
+// row for another vendor can never win.
+//
+// This deliberately differs from preferredLiveOpenCodeKey: a compatible
+// definition is pinned to one catalog (Zen never takes a Go row), while the
+// native provider serves both.
+func pickOpenCodeGatewayKey(keys []openCodePlatformKey) (key, service string) {
+	for _, k := range keys {
+		if strings.EqualFold(k.Service, "opencode-go") {
+			return k.Key, k.Service
+		}
+	}
+	for _, k := range keys {
+		return k.Key, k.Service
+	}
+	return "", ""
+}
+
+// openCodeGatewayKey resolves the credential the Zen/Go gateway must use,
+// porting resolveOpenCodeCredentials (auto mode, one auth path):
+//
+//  1. the live CLI install's credential table — the beta CLI stopped rewriting
+//     auth.json on login, so a saved mirror can hold a previous account's key;
+//  2. the credential database beside the mirror, when there is one;
+//  3. the mirror itself.
+//
+// One divergence, on purpose: the TypeScript ring pushed live rows in database
+// scan order and applied the Go preference only to the file branch. An
+// unordered scan is not a rule, so the port prefers the Go row on every branch.
+// state reports why no key was found when key is empty.
+func openCodeGatewayKey(snapshotDir string) (key, service string, state mirrorState) {
+	if key, service = pickOpenCodeGatewayKey(liveOpenCodePlatformKeys()); key != "" {
+		return key, service, mirrorRead
+	}
+	if key, service = pickOpenCodeGatewayKey(openCodeSnapshotDBKeys(snapshotDir)); key != "" {
+		return key, service, mirrorRead
+	}
+	keys, state := openCodeSnapshotKeys(snapshotDir)
+	if state != mirrorRead {
+		return "", "", state
+	}
+	key, service = pickOpenCodeGatewayKey(keys)
+	return key, service, state
 }
 
 // preferredLiveOpenCodeKey picks the live key that backs a compatible gateway:

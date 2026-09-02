@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +37,7 @@ func TestWriteMetaAtomicCommit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap1, "auth.json"), []byte(`{"v":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteMeta(meta("grok", "work"), snap1); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("grok", "work"), snap1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +53,7 @@ func TestWriteMetaAtomicCommit(t *testing.T) {
 	if err := os.WriteFile(snap2, []byte("not a dir"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteMeta(Meta{Name: "work", Provider: "grok"}, snap2); err == nil {
+	if err := s.WriteMetaContext(context.Background(), Meta{Name: "work", Provider: "grok"}, snap2); err == nil {
 		t.Fatal("expected ingest failure to abort commit")
 	}
 
@@ -75,7 +76,7 @@ func TestWriteMetaReplacesSnapshotAtomically(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "auth.json"), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteMeta(meta("codex", "personal"), snap); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("codex", "personal"), snap); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,7 +90,7 @@ func TestWriteMetaReplacesSnapshotAtomically(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap2, "extra.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteMeta(meta("codex", "personal"), snap2); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("codex", "personal"), snap2); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,13 +122,13 @@ func TestDeleteClearsActivePointer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "f"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WriteMeta(meta("gemini", "a"), snap); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("gemini", "a"), snap); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetActive("gemini", "a"); err != nil {
+	if err := s.SetActiveContext(context.Background(), "gemini", "a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Delete("gemini", "a"); err != nil {
+	if err := s.DeleteContext(context.Background(), "gemini", "a"); err != nil {
 		t.Fatal(err)
 	}
 	active, err := s.GetActive("gemini")
@@ -143,10 +144,10 @@ func TestPatchMeta(t *testing.T) {
 	s := testStore(t)
 	snap, _, _ := s.PrepareSnapshot("grok", "w")
 	_ = os.WriteFile(filepath.Join(snap, "f"), []byte("x"), 0o600)
-	if err := s.WriteMeta(meta("grok", "w"), snap); err != nil {
+	if err := s.WriteMetaContext(context.Background(), meta("grok", "w"), snap); err != nil {
 		t.Fatal(err)
 	}
-	next, err := s.PatchMeta("grok", "w", MetaPatch{LabelSet: true, Label: "Work"})
+	next, err := s.PatchMetaContext(context.Background(), "grok", "w", MetaPatch{LabelSet: true, Label: "Work"})
 	if err != nil {
 		t.Fatal(err)
 	}

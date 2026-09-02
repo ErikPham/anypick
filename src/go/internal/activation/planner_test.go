@@ -184,7 +184,7 @@ func TestPlannerManagedProxyAccountStillWritesNativeAuth(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "opencode", "x", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Accounts.Svc.Store.SetProxyConfig("opencode", "x",
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "opencode", "x",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

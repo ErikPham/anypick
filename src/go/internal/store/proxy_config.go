@@ -36,13 +36,14 @@ func (s *AccountStore) GetProxyConfigContext(ctx context.Context, providerID, na
 	return out, nil
 }
 
-// SetProxyConfig persists per-account proxy configuration. Requires the
-// account to exist — enabling a proxy for a phantom account is a caller bug.
-func (s *AccountStore) SetProxyConfig(providerID, name string, cfg ProxyConfig) error {
-	return s.SetProxyConfigContext(context.Background(), providerID, name, cfg)
+// SetProxyConfigContext is mutation-guarded (ADR 0009).
+func (s *AccountStore) SetProxyConfigContext(ctx context.Context, providerID, name string, cfg ProxyConfig) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.setProxyConfigContext(ctx, providerID, name, cfg)
+	})
 }
 
-func (s *AccountStore) SetProxyConfigContext(ctx context.Context, providerID, name string, cfg ProxyConfig) error {
+func (s *AccountStore) setProxyConfigContext(ctx context.Context, providerID, name string, cfg ProxyConfig) error {
 	account, err := s.GetContext(ctx, providerID, name)
 	if err != nil {
 		return err

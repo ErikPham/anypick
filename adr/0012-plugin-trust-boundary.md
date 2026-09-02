@@ -4,17 +4,17 @@
 
 ## Context
 
-Hotplug's extension points were already open: `ProviderRegistry`,
+AnyPick's extension points were already open: `ProviderRegistry`,
 `CatalogRegistry`, and `ClientRegistry` accept third-party implementations, and
 `tests/provider-extension.test.ts` proves an out-of-tree provider is a
 first-class citizen. But the only way to use them was to depend on
-`@hotplug/core` and compose your own `createApp` — the shipped binary loaded
+`@anypick/core` and compose your own `createApp` — the shipped binary loaded
 exactly the built-ins. Every real extension request ("add a provider we run
 internally", "point a client we wrote at an account") therefore required forking
 the CLI.
 
 Loading third-party code changes the threat model rather than extending it.
-Hotplug's process reads and rewrites live credential files for Claude, Codex,
+AnyPick's process reads and rewrites live credential files for Claude, Codex,
 Gemini, and Kiro, and holds per-instance proxy secrets in memory (ADR-0006). Any
 module `import()`ed into that process can read all of it at module top level,
 before a single line of plugin API is called. `SECURITY.md` previously claimed
@@ -28,9 +28,9 @@ code cannot be fetched at the point it needs to register.
 
 ## Decision
 
-1. **Presence on disk is not permission to run.** `hotplug plugin add <dir>`
+1. **Presence on disk is not permission to run.** `anypick plugin add <dir>`
    records a plugin **disabled**. Enabling is a separate, interactive decision
-   (`hotplug plugin enable`, which prompts, or `--yes`), because that is the
+   (`anypick plugin enable`, which prompts, or `--yes`), because that is the
    moment the user grants in-process execution alongside their credentials.
    `HOTPLUG_NO_PLUGINS=1` skips loading entirely, for bisecting a bad plugin.
 2. **The trusted artifact is a SHA-256 digest verified before `import()`.**
@@ -40,7 +40,7 @@ code cannot be fetched at the point it needs to register.
    compares it, and refuses on mismatch with `PLUGIN_UNTRUSTED`. Verification
    after the import would be theatre — top-level code has already run. A changed
    plugin stops loading until the user reviews it and runs
-   `hotplug plugin trust`, so an upgrade or a `git pull` in a plugin directory is
+   `anypick plugin trust`, so an upgrade or a `git pull` in a plugin directory is
    surfaced rather than silently adopted.
 3. **The registry lives in SQLite, not a config file.** Plugin mutations are
    transactional with the rest of the data root and run under the coordinator on
@@ -63,19 +63,19 @@ code cannot be fetched at the point it needs to register.
    `TypeError`.
 6. **A refused plugin is a degraded condition, not a crash.** Load failures are
    collected into `pluginRuntime.failures`, emitted as `plugin_load_failed`
-   events (ADR-0010), listed by `hotplug plugin list`, and reported by `doctor`.
+   events (ADR-0010), listed by `anypick plugin list`, and reported by `doctor`.
    The framework's job is switching real logins; one broken third-party
-   extension must not make `hotplug` unusable.
+   extension must not make `anypick` unusable.
 7. **A plugin entry may not escape its own directory.** `resolveEntry` rejects an
    absolute `main` and any path that resolves outside the plugin root, so a
-   manifest obtained from a third party cannot make Hotplug import an arbitrary
+   manifest obtained from a third party cannot make AnyPick import an arbitrary
    module from elsewhere on disk under the plugin's name.
 
 ## Consequences
 
 - The advertised extension points are reachable from the shipped binary. Adding a
   provider or client no longer requires forking the CLI.
-- `SECURITY.md` is amended: Hotplug now loads third-party code, but only code the
+- `SECURITY.md` is amended: AnyPick now loads third-party code, but only code the
   user installed by path and enabled by name, and only at a digest they
   approved. It still never downloads or installs anything itself — there is no
   registry, no `npm install`, and no auto-update.
@@ -83,7 +83,7 @@ code cannot be fetched at the point it needs to register.
   throw. Unwinding a partial contribution would mean removing entries from a
   registry, which is precisely the mutable-graph behaviour sealing exists to
   prevent. The failure is reported instead.
-- Editing a plugin during development means re-running `hotplug plugin trust`.
+- Editing a plugin during development means re-running `anypick plugin trust`.
   This is the intended friction: the digest is the trust decision, not a cache.
 - Plugin failures are visible in three places (events, `plugin list`, `doctor`)
   because a plugin silently not loading looks identical to a plugin that never
@@ -103,7 +103,7 @@ code cannot be fetched at the point it needs to register.
 - **`await import()` lazily at first use, keeping registries unsealed.** Would
   let a long-lived process resolve a different provider graph mid-activation,
   reintroducing exactly what sealing closed.
-- **Handing plugins the `HotplugApp`.** Ergonomic and unbounded: it would grant
+- **Handing plugins the `AnyPickApp`.** Ergonomic and unbounded: it would grant
   every plugin read access to every credential snapshot and proxy secret. If a
   future plugin genuinely needs more, widening `PluginContext` is a security
   decision that gets its own ADR.

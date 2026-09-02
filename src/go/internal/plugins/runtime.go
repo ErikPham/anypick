@@ -88,7 +88,7 @@ func (s *Service) Inspect(ctx context.Context) (Runtime, error) {
 		untrusted := false
 		if err == nil && digest != record.Digest {
 			untrusted = true
-			err = fmt.Errorf("Plugin %s has changed since you trusted it.", record.Name)
+			err = fmt.Errorf("plugin %s has changed since you trusted it", record.Name)
 		}
 		if err != nil {
 			runtime.Failures = append(runtime.Failures, LoadFailure{

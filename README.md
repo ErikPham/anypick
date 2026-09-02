@@ -75,12 +75,16 @@ Useful checks:
 ```bash
 xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
-pnpm macos:design                  # in-memory UI fixture, not production launch
-pnpm macos:design:check
 ```
 
-`pnpm macos:design` uses `swiftc` only as a repository fixture/build check.
-Users of a future distributed app will not compile Swift or Go at runtime.
+The app is one binary with two data sources: run it with no environment
+variables and it talks to the Go service over `~/.anypick`; set
+`ANYPICK_MACOS_FIXTURE` and it renders an in-memory fixture instead, with no
+service and no disk access. Set it in the scheme (**Product → Scheme → Edit
+Scheme → Run → Arguments → Environment Variables**), then Run. The full list of
+fixture variables is in `src/macos/README.md`.
+
+Users of a distributed app will not compile Swift or Go at runtime.
 
 ### CLI and terminal UI
 

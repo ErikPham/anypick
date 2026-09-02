@@ -66,7 +66,7 @@ func TestExecuteManagedProxyActivation(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "px", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Accounts.Svc.Store.SetProxyConfig("codex", "px",
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "codex", "px",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestExecuteProxyRollbackStopsProxy(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "rb", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Accounts.Svc.Store.SetProxyConfig("codex", "rb",
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "codex", "rb",
 		store.ProxyConfig{Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

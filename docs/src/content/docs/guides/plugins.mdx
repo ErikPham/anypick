@@ -1,54 +1,67 @@
 ---
 title: Plugins
-description: Extend AnyPick with your own provider, client, or gateway catalog — and what enabling one actually grants.
+description: What the plugin registry does in a native AnyPick build — install, pin, enable — and why no plugin code is executed.
 ---
 
-A plugin adds a provider, a client, or a gateway catalog entry to the `anypick`
-you already have installed. It is the answer to "we run our own model endpoint
-internally" and "we wrote our own coding agent" without forking the CLI.
+A native AnyPick build keeps the plugin **registry** but not the plugin
+**host**. You can install a plugin, pin it to a whole-package digest and enable
+it by name; nothing loads or runs its code.
 
-<Aside type="caution" title="Enabling a plugin is a trust decision">
-Plugins run **inside the AnyPick process**, which reads and rewrites the live
-credential files for Claude, Codex, Gemini, and Kiro. Enabling one is closer to
-installing a shell plugin than to changing a setting. AnyPick never downloads,
-discovers, or auto-updates a plugin — you install a directory by path, and it
-stays inert until you enable it by name.
+<Aside type="caution" title="No plugin code runs in a native build">
+Earlier releases loaded third-party plugin modules into the AnyPick process.
+Native builds do not: there is no plugin host, so an enabled plugin grants
+third-party code no access to your credentials today. See
+[ADR-0021](https://github.com/outof0/anypick/blob/main/adr/0021-plugin-host-removed-from-native-builds.md).
+Treat this as the current state, not a permanent guarantee — if a Go-native
+executor lands, this page and `SECURITY.md` change in the same commit.
 </Aside>
 
-## Install one
+## What still works
 
 ```bash
 anypick plugin add ./acme-provider   # recorded, disabled, digest pinned
 anypick plugin list
-anypick plugin enable acme-provider  # prompts — this is the trust decision
+anypick plugin enable acme-provider  # prompts — records the trust decision
 ```
 
-`add` never enables. Between the two commands the plugin exists in AnyPick's
-registry and does not run.
+`add` never enables. The plugin is recorded in AnyPick's registry either way.
 
 ```
   off  acme-provider        1.0.0      82aae3b7898d
     /Users/you/src/acme-provider
 ```
 
-The short hex is a SHA-256 digest of the whole plugin package (manifest and every
-shipped file under the directory), pinned when you added it. AnyPick recomputes
-it and compares **before** importing the entry module, so code — including
-helpers the entry imports — that changed since you approved it never executes.
+The short hex is a SHA-256 digest of the whole plugin package (manifest and
+every shipped file under the directory). AnyPick recomputes and compares it on
+every load, so a package that changed since you approved it is refused:
 
-### Popular API and coding-plan providers
-
-AnyPick ships one reviewed provider pack in its npm package. It follows the same
-disabled-first trust flow as a plugin you add by path:
-
-```bash
-anypick plugin add bundled:popular-providers
-anypick plugin enable popular-providers
+```
+  fail acme-provider        1.0.0      82aae3b7898d
+    plugin acme-provider has changed since you trusted it
+    → anypick plugin trust acme-provider
 ```
 
-The next AnyPick command can add the model vendors, coding-plan gateways, and
-inference clouds below as managed accounts. API billing and coding subscriptions
-are different account kinds because their keys and endpoints are not interchangeable:
+That is intentional friction, not a cache miss — the digest is what you
+approved. Review the diff, then re-pin with `anypick plugin trust acme-provider`.
+
+## What changed
+
+Because there is no host, every candidate reports a load failure rather than
+loading. This is deliberate: a silent empty list would look like a healthy
+plugin set, so `anypick doctor`, `plugin list` and the desktop app all surface
+the reason instead.
+
+```bash
+anypick plugin disable acme-provider  # keep it installed, stop considering it
+anypick plugin remove acme-provider   # uninstall
+ANYPICK_NO_PLUGINS=1 anypick doctor   # skip every plugin for one run
+```
+
+## Compatible providers are built in
+
+The providers that used to ship as the `bundled:popular-providers` pack are now
+registered directly by the Go engine. You do not install anything — they are
+available as managed accounts out of the box.
 
 ```bash
 # Omit the --secret value to use the masked prompt.
@@ -102,108 +115,9 @@ Endpoint and product choices follow the providers' current documentation:
 [SiliconFlow](https://docs.siliconflow.com/en/userguide/quickstart), and
 [NVIDIA NIM](https://docs.api.nvidia.com/nim/reference/z-ai-glm5.1-infer).
 
-## When the code changes
+## Adding a provider today
 
-Pull a new version, or rebuild during development, and the plugin stops loading:
-
-```
-  fail acme-provider        1.0.0      82aae3b7898d
-    Plugin acme-provider has changed since you trusted it.
-    → anypick plugin trust acme-provider
-```
-
-Nothing else breaks — the rest of AnyPick works normally, and `anypick doctor`
-reports the refusal. Review the diff, then re-pin:
-
-```bash
-anypick plugin trust acme-provider
-```
-
-This is intentional friction, not a cache miss. The digest is what you approved.
-
-## Turning plugins off
-
-```bash
-anypick plugin disable acme-provider  # keep it installed, stop loading it
-anypick plugin remove acme-provider   # uninstall
-ANYPICK_NO_PLUGINS=1 anypick doctor   # skip every plugin for one run
-```
-
-The environment variable is the fast way to tell a plugin bug from a AnyPick bug.
-
-## Writing one
-
-A plugin is a directory with a `anypick.plugin.json` and an ESM entry module:
-
-```json title="anypick.plugin.json"
-{
-  "name": "acme-provider",
-  "version": "1.0.0",
-  "apiVersion": 1,
-  "main": "dist/index.mjs"
-}
-```
-
-```js title="dist/index.mjs"
-export default {
-  activate(ctx) {
-    ctx.registerProvider(new AcmeProvider());
-  },
-};
-```
-
-`activate` is synchronous and runs during startup, in the same window where
-AnyPick's built-in providers register and immediately before the registries are
-sealed. Register everything there; the context is not usable afterwards.
-
-`ctx` is deliberately narrow — `registerProvider`, `registerClient`,
-`registerCatalogProvider`, and `registerCompatibleProvider`. There is no
-database handle, store, service, or data root, so a plugin extends the
-composition graph without receiving a general capability to read the accounts
-that graph manages.
-
-For an official OpenAI/Anthropic-compatible service, prefer the declarative
-registration. AnyPick then owns secret snapshots, local authentication,
-Responses/Messages translation, model discovery, pool failover, and Proxy Hub:
-
-```js title="index.mjs"
-export default {
-  activate(ctx) {
-    ctx.registerCompatibleProvider({
-      id: 'acme',
-      name: 'ACME AI',
-      description: 'ACME API and Coding Plan',
-      models: ['acme-coder'],
-      credentials: [
-        {
-          kind: 'api-key',
-          label: 'API key',
-          profiles: [
-            {
-              id: 'global',
-              openaiBase: 'https://api.acme.example/v1',
-              anthropicBase: 'https://api.acme.example/anthropic',
-              // Optional: 'bearer' or 'api-key'; default is 'x-api-key'.
-              anthropicAuth: 'bearer',
-            },
-          ],
-        },
-      ],
-    });
-  },
-};
-```
-
-Implement and register a full `Provider` when authentication is not a supplied
-key, the upstream is not an official HTTPS compatible API, or the provider needs
-a custom credential lifecycle.
-
-`main` must resolve inside the plugin directory; an absolute path or one that
-escapes with `../` is refused. `apiVersion` is checked against the version this
-AnyPick build supports, so a mismatched plugin is refused with a version message
-rather than a stack trace.
-
-The `Provider`, `ClientAdapter`, and `CatalogProvider` interfaces are exported
-from the package root, and the contributor guide covers what a good provider
-implements — particularly its model policy, which is what keeps your provider
-from inheriting another vendor's model ids.
+Until a Go-native executor exists, adding a provider means building AnyPick
+from source and registering it in-tree. The contributor guide covers what a
+good provider implements — including its model policy, which is what keeps your
+provider from inheriting another vendor's model ids.

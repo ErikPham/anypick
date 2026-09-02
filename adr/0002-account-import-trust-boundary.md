@@ -6,7 +6,7 @@
 ## Context
 
 Before SEC-01, `importAccount` did `mkdir(join(root, rel))` with file keys taken
-verbatim from an untrusted `.hotplug.json` envelope, and never checked
+verbatim from an untrusted `.anypick.json` envelope, and never checked
 `payload.meta.provider === requestedProviderId`. A malicious export could either
 write a file outside the staging root (path traversal) or forge provider
 ownership. The envelope also lacked any version/kind check, so
@@ -22,7 +22,7 @@ validated *before* any caller mutates state (DB, snapshot, live auth).
    `decodeAccountEnvelope(raw: unknown, expectedProviderId)` and
    `stagedFilePath(stagingRoot, relKey)`. Decoding never touches the
    filesystem, so a rejection leaves no partial state. Envelope must be a
-   JSON object with `kind: 'hotplug-account'` and `version: 1`; nothing else
+   JSON object with `kind: 'anypick-account'` and `version: 1`; nothing else
    is accepted, and future versions are refused (not overwritten).
 2. **Validate every file key before mutation.** A new pure helper
    `validateImportFileKey(key)` rejects empty keys, NUL bytes, absolute POSIX
@@ -37,7 +37,7 @@ validated *before* any caller mutates state (DB, snapshot, live auth).
    provider-specific secret/network options are dropped and re-derived by the
    provider on activation.
 5. **Controlled error codes.** Malformed/forged/unsafe envelopes throw
-   `HotplugError` with `IMPORT_FORMAT` (exit 8) or `IMPORT_LIMIT` (exit 9);
+   `AnyPickError` with `IMPORT_FORMAT` (exit 8) or `IMPORT_LIMIT` (exit 9);
    secret material is never echoed.
 6. **Atomic, owner-only export.** `exportAccount` writes to an owner-only
    temp file, `rename`s atomically, and `chmod`s the destination to `0o600`,
