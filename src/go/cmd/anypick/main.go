@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/mattn/go-isatty"
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -68,6 +69,22 @@ func run(args []string) int {
 		// payload; hidden helpers keep their argv byte-exact.
 		args = normalizeGlobalFlags(args)
 	}
+	// The TTY guard runs here, before any service is touched (AGENTS.md).
+	// app.Ready's startup maintenance runs RecoverIncompleteOperations — which
+	// compensates half-applied activation steps, i.e. it rewrites real
+	// credential files — and reaps detached proxy leases. A scheduled
+	// `anypick tui < /dev/null` must not do any of that only to be refused
+	// afterwards, and it must never kill proxies the desktop app is using.
+	//
+	// Only the explicitly named surface is knowable this early. A bare
+	// invocation resolves ui.defaultSurface from config, which cannot be read
+	// until startup has opened the database; that path still reaches the guard
+	// inside tui.Run, one startup later.
+	if isExplicitTuiSurface(args) && !isatty.IsTerminal(os.Stdin.Fd()) {
+		fmt.Fprintln(os.Stderr, "error:", tui.ErrNoTTY)
+		return int(anyerr.InvalidUsage)
+	}
+
 	a, closeFn, err := app.Ready(ctx, app.Options{SkipMaintenance: !maintenance})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -171,6 +188,12 @@ func run(args []string) int {
 // The UI is a bubbletea program over the same services the CLI commands use
 // (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime, so the
 // Ink/React tree in src/tui cannot be the one users get.
+// isExplicitTuiSurface reports whether argv names the terminal UI. It must not
+// consult config: it runs before the app is built, so nothing is touched.
+func isExplicitTuiSurface(args []string) bool {
+	return len(args) > 0 && (args[0] == "tui" || args[0] == "--tui")
+}
+
 func runTuiSurface(ctx context.Context, a *app.App) int {
 	if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

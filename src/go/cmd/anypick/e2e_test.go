@@ -136,6 +136,44 @@ func TestRootGlobalFlagsBeforeCommand(t *testing.T) {
 	}
 }
 
+// TestTuiWithoutTTYRefusesBeforeTouchingServices is the regression for the
+// TTY guard's position.
+//
+// app.Ready's startup maintenance runs RecoverIncompleteOperations — which
+// compensates half-applied activation steps, i.e. it rewrites real credential
+// files — and reaps detached proxy leases. Under cron or CI,
+// `anypick tui < /dev/null` must be refused before any of that, not after
+// (AGENTS.md: "The TTY guard runs before any service is touched"). Placing the
+// guard inside tui.Run left a scheduled job able to destroy backups and kill
+// the proxies the desktop app was using.
+func TestTuiWithoutTTYRefusesBeforeTouchingServices(t *testing.T) {
+	base := isolateEnv(t)
+	// isolateEnv creates only "home", so ANYPICK_HOME must not exist yet.
+	dataRoot := filepath.Join(base, "data")
+
+	// Redirect stdin away from a terminal, the way cron and CI invoke it.
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	origStdin := os.Stdin
+	os.Stdin = devNull
+	defer func() { os.Stdin = origStdin }()
+
+	code := -1
+	captureBoth(t, func() { code = run([]string{"tui"}) })
+
+	if code != int(anyerr.InvalidUsage) {
+		t.Fatalf("exit = %d, want InvalidUsage (%d)", code, anyerr.InvalidUsage)
+	}
+	// The regression: refusing must precede app.Ready. Move the guard back
+	// after app.Ready and the data root gets created, so this fails.
+	if _, err := os.Stat(dataRoot); err == nil {
+		t.Fatalf("data root %s exists — services were touched before the TTY guard", dataRoot)
+	}
+}
+
 func TestVersionFlag(t *testing.T) {
 	base := isolateEnv(t)
 	if code := run([]string{"--version"}); code != 0 {
