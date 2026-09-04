@@ -193,6 +193,9 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 			// see only opaquely. Vendor-authored text only, safe to log.
 			proxyLogf("upstream %d; vendor says: %s", resp.StatusCode, describeVendorError(raw))
 			proxyLogf("upstream %d; failed shape: %s", resp.StatusCode, describeAnthropicShape(body))
+			if strings.Contains(raw, "11128") {
+				proxyLogf("upstream 11128; sanitized: %s", describeSanitizedOpenAI(translated))
+			}
 		}
 		if IsContextWindowError(raw) {
 			body := anthropicContextWindowErrorBody(raw, resp.Header.Get("request-id"))
@@ -449,6 +452,40 @@ func describeAnthropicShape(body []byte) string {
 func stringOrEmpty(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// describeSanitizedOpenAI summarizes the body we actually sent upstream
+// after translation/sanitizer. Fingerprints only — no prompt text.
+func describeSanitizedOpenAI(body []byte) string {
+	var v map[string]any
+	if json.Unmarshal(body, &v) != nil {
+		return "unparseable"
+	}
+	var sb strings.Builder
+	if m, ok := v["model"].(string); ok {
+		sb.WriteString("model=" + m + " ")
+	}
+	raw := strings.ToLower(string(body))
+	for _, p := range []string{
+		"official cli", "x-anthropic-billing-header", "github.com/anthropics",
+		"claude-haiku", "claude-sonnet", "claude-opus",
+	} {
+		if strings.Contains(raw, p) {
+			sb.WriteString("has=" + strings.ReplaceAll(p, " ", "_") + " ")
+		}
+	}
+	if msgs, ok := v["messages"].([]any); ok {
+		sb.WriteString("n=" + strconv.Itoa(len(msgs)) + " ")
+		if len(msgs) > 0 {
+			if mm, ok := msgs[0].(map[string]any); ok {
+				sb.WriteString("lead=" + stringOrEmpty(mm["role"]) + " ")
+			}
+		}
+	}
+	if tools, ok := v["tools"].([]any); ok {
+		sb.WriteString("tools=" + strconv.Itoa(len(tools)))
+	}
+	return sb.String()
 }
 
 // describeVendorError extracts the vendor envelope code/message/requestId.
