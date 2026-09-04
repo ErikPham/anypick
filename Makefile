@@ -127,6 +127,31 @@ sandbox: build ## Same, against a throwaway HOME and ANYPICK_HOME
 # failure surfaces much later as a confusing build error. This target makes the
 # assumption explicit and cheap to check. If you move a directory under src/,
 # run `make paths` before anything else.
+#
+# NEVER put a `#` comment inside this recipe's backslash-continuation chain.
+# Make joins the continuation into a single line before the shell sees it, so
+# the first `#` comments out the rest of the target — including the final
+# `exit 1`. That is exactly what happened here: a four-line explanation of
+# `--no-index` silently disabled the git-ignored-source check, the
+# authority-documents check, and the failure exit, so `make paths` reported
+# success no matter what. It was dead from the commit that added it, while
+# CODE_REVIEW.md §10 recorded it as landed. Put comments here, above the
+# target, or on their own `true # …` line.
+#
+# What the checks below cover, and why each exists:
+#   - git-ignored .go source: an unanchored .gitignore pattern swallowed
+#     src/go/internal/refs once, so main did not build and `git status` said
+#     nothing. `--no-index` matters: plain `git check-ignore` skips paths that
+#     are already tracked, so it would never flag a pattern that happens to
+#     match something in the index. Ask what the pattern excludes.
+#   - tracked build artifacts: naming them individually is how src/go/anypick,
+#     a 16.9 MB Mach-O, got committed — the old pattern was `go/anypick`,
+#     written before commit 44e5046 moved everything under src/, and once a
+#     file is tracked .gitignore no longer applies to it. So detect the
+#     artifact (`grep -I` treats a binary as non-matching) instead of listing
+#     names.
+#   - authority documents: AGENTS.md points at documents a clean checkout must
+#     have, and an untracked doc breaks review for every agent starting fresh.
 paths: ## Verify every script still resolves the repository root
 	@set -e; \
 	fail=0; \
@@ -174,10 +199,6 @@ paths: ## Verify every script still resolves the repository root
 	  else echo "  FAIL working-directory '$$wd' does not exist"; fail=1; fi; \
 	done < <(grep -h -o 'working-directory:[[:space:]]*[^[:space:]]*' .github/workflows/*.yml \
 	         | sed 's/working-directory:[[:space:]]*//' | sort -u); \
-	# `--no-index` matters: plain `git check-ignore` skips paths that are already \
-	# tracked, so it would never flag a pattern that swallows a directory which \
-	# happens to be in the index. Ask what the pattern excludes, not what git \
-	# currently happens to have. \
 	echo "checking no Go source is git-ignored"; \
 	ignored="$$(find $(GO_DIR) -name '*.go' -not -path '*/bin/*' \
 	          | git check-ignore --no-index --stdin 2>/dev/null || true)"; \
@@ -188,6 +209,19 @@ paths: ## Verify every script still resolves the repository root
 	  fail=1; \
 	else \
 	  echo "  OK   every .go file under $(GO_DIR) is visible to git"; \
+	fi; \
+	echo "checking no build artifact is tracked"; \
+	total="$$(git ls-files src/ | wc -l | tr -d ' ')"; \
+	text="$$(git grep -Il . -- src/ 2>/dev/null | wc -l | tr -d ' ')"; \
+	empty="$$(git ls-files src/ | while read -r f; do [ -s "$$f" ] || echo "$$f"; done | wc -l | tr -d ' ')"; \
+	not_artifact="$$((text + empty))"; \
+	if [ "$$total" != "$$not_artifact" ]; then \
+	  echo "  FAIL $$((total - not_artifact)) tracked binary(ies) under src/ (total $$total, text $$text, empty $$empty)"; \
+	  echo "       list them:  git ls-files src/ | grep -vFxf <(git grep -Il . -- src/)"; \
+	  echo "       untrack it: git rm --cached <path> (the file stays on disk)"; \
+	  fail=1; \
+	else \
+	  echo "  OK   every tracked file under src/ is text (no binary committed)"; \
 	fi; \
 	echo "checking the authority documents are tracked"; \
 	for doc in AGENTS.md CODE_REVIEW.md CONTRIBUTING.md src/macos/README.md; do \
