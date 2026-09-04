@@ -101,6 +101,31 @@ func TestRequireProxyAuthRejects(t *testing.T) {
 	}
 }
 
+// Claude Code can send a claude.ai OAuth token as Authorization: Bearer
+// *and* the proxy secret as x-api-key. The Bearer must not mask the key.
+func TestRequireProxyAuthAcceptsMatchingXAPIKeyWhenBearerDiffers(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer sk-ant-oauth-not-the-proxy")
+	req.Header.Set("x-api-key", "tok")
+	if !requireProxyAuth(rec, req, "tok") {
+		t.Fatal("matching x-api-key must be accepted even when Bearer differs")
+	}
+}
+
+func TestRequireProxyAuthRejectsWhenNeitherHeaderMatches(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer nope")
+	req.Header.Set("x-api-key", "also-nope")
+	if requireProxyAuth(rec, req, "tok") {
+		t.Fatal("mismatched dual headers must be rejected")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
 // ---- Server behaviour ----
 
 type upstreamProbe struct {
@@ -177,6 +202,44 @@ func TestServerHealthUnauthenticatedEchoesOwnership(t *testing.T) {
 	if !payload.OK || payload.InstanceID != s.InstanceID || payload.PID != ownPID() ||
 		payload.Provider != "codex" || payload.Account != "work" {
 		t.Errorf("health = %+v", payload)
+	}
+}
+
+// Claude Code probes ANTHROPIC_BASE_URL with HEAD / and no credentials.
+// 401 on that probe is what the WorkBuddy proxy was reporting as a hard
+// auth failure even while POST /v1/messages would succeed.
+func TestHandlerRootLivenessDoesNotRequireCredentials(t *testing.T) {
+	up := newUpstreamProbe(t)
+	s := newTestServer(t, up.url)
+
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		req, _ := http.NewRequest(method, s.Endpoint+"/", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s /: %v", method, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s / status = %d, want 200 (Claude Code liveness)", method, resp.StatusCode)
+		}
+		if strings.Contains(string(body), s.Token) || strings.Contains(string(body), "upstream-secret") {
+			t.Fatalf("%s / leaked a credential: %s", method, body)
+		}
+		if up.gotPath != "" {
+			t.Fatalf("%s / reached upstream at %q", method, up.gotPath)
+		}
+	}
+
+	req, _ := http.NewRequest(http.MethodHead, s.Endpoint+"/v1/messages", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("HEAD /v1/messages = %d, want 401: only / is liveness", resp.StatusCode)
 	}
 }
 

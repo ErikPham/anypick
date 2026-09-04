@@ -67,6 +67,10 @@ func (s *PoolServer) Handler() http.Handler {
 			`","pid":` + strconv.Itoa(ownPID()) + `,"provider":"` + s.ProviderID + `","account":""}`))
 	})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unauthenticatedLiveness(r) {
+			writeLiveness(w, r)
+			return
+		}
 		if !requireProxyAuth(w, r, s.Token) {
 			return
 		}

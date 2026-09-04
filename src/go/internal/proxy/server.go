@@ -111,25 +111,63 @@ func SafeEqual(expected, provided string) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
-// bearerToken extracts Authorization: Bearer <token> or x-api-key.
+// bearerToken extracts Authorization: Bearer <token>, falling back to
+// x-api-key when no Bearer is present. Prefer presentedProxyCredentials when
+// both headers may be set: Claude Code can send a claude.ai OAuth Bearer
+// alongside the proxy token in x-api-key, and the Bearer must not win just
+// because it arrived first.
 func bearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		return strings.TrimSpace(auth[len("Bearer "):])
+	bearer, apiKey := presentedProxyCredentials(r)
+	if bearer != "" {
+		return bearer
 	}
-	return strings.TrimSpace(r.Header.Get("x-api-key"))
+	return apiKey
 }
 
-// requireProxyAuth mirrors requireProxyAuth in src/providers/proxy-shared.ts:
-// 401 JSON on missing/incorrect credentials, fail-closed on empty secret.
+func presentedProxyCredentials(r *http.Request) (bearer, apiKey string) {
+	auth := r.Header.Get("Authorization")
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		bearer = strings.TrimSpace(auth[len("Bearer "):])
+	}
+	apiKey = strings.TrimSpace(r.Header.Get("x-api-key"))
+	return bearer, apiKey
+}
+
+// requireProxyAuth gates credential-authority routes (ADR 0006): 401 JSON on
+// missing/incorrect credentials, fail-closed on empty secret. Either the
+// Bearer or x-api-key matching is enough — Claude Code may present both, and
+// the one that is the proxy token is not always Authorization.
 func requireProxyAuth(w http.ResponseWriter, r *http.Request, expectedToken string) bool {
-	if !SafeEqual(expectedToken, bearerToken(r)) {
+	bearer, apiKey := presentedProxyCredentials(r)
+	okBearer := SafeEqual(expectedToken, bearer)
+	okKey := SafeEqual(expectedToken, apiKey)
+	if !okBearer && !okKey {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid proxy credentials"}}`))
 		return false
 	}
 	return true
+}
+
+// unauthenticatedLiveness is Claude Code's connectivity probe against
+// ANTHROPIC_BASE_URL: HEAD / (and GET /) with no credentials. It is not a
+// credential-authority route — it never reaches upstream — so it stays open
+// like /health (ADR 0006). Returning 401 here is what the WorkBuddy × Claude
+// Code session surfaces as a hard 401 even when POST /v1/messages would work.
+func unauthenticatedLiveness(r *http.Request) bool {
+	if r.URL.Path != "/" && r.URL.Path != "" {
+		return false
+	}
+	return r.Method == http.MethodHead || r.Method == http.MethodGet
+}
+
+func writeLiveness(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}
 }
 
 // Server is one running builtin proxy instance.
@@ -197,6 +235,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		if unauthenticatedLiveness(r) {
+			writeLiveness(rec, r)
+			logProxyLine(r, rec.status, time.Since(start))
+			return
+		}
 		if !requireProxyAuth(rec, r, s.Token) {
 			logProxyLine(r, rec.status, time.Since(start))
 			return
