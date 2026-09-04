@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -129,6 +130,16 @@ func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts 
 		return 0, backupError("BACKUP_LIMIT", "Backup package exceeds the encoded size limit.")
 	}
 
+	if overwrite {
+		if werr := atomicfile.Write(destination, encoded, 0o600); werr != nil {
+			return 0, werr
+		}
+		return len(selected), nil
+	}
+	// Non-overwrite is a different operation, not a rename: a hard link never
+	// clobbers an existing destination, so there is no window in which a
+	// failed export has already replaced the file. Stage beside the target so
+	// the link stays on one filesystem.
 	if mkErr := os.MkdirAll(filepath.Dir(destination), 0o700); mkErr != nil {
 		return 0, mkErr
 	}
@@ -141,19 +152,11 @@ func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts 
 	if werr := os.WriteFile(stagedFile, encoded, 0o600); werr != nil {
 		return 0, werr
 	}
-	_ = os.Chmod(stagedFile, 0o600)
-	if overwrite {
-		if rerr := os.Rename(stagedFile, destination); rerr != nil {
-			return 0, rerr
+	if lerr := os.Link(stagedFile, destination); lerr != nil {
+		if os.IsExist(lerr) {
+			return 0, backupError("BACKUP_DESTINATION_EXISTS", "The backup destination already exists.")
 		}
-	} else {
-		// A hard link never clobbers an existing destination.
-		if lerr := os.Link(stagedFile, destination); lerr != nil {
-			if os.IsExist(lerr) {
-				return 0, backupError("BACKUP_DESTINATION_EXISTS", "The backup destination already exists.")
-			}
-			return 0, lerr
-		}
+		return 0, lerr
 	}
 	return len(selected), nil
 }

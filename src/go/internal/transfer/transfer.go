@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -51,19 +51,13 @@ func ExportEnvelope(st *store.AccountStore, ctx context.Context, providerID, nam
 	if merr != nil {
 		return merr
 	}
-	stage, err := os.MkdirTemp("", "anypick-export-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
-	tmpPath := filepath.Join(stage, "account.json")
-	if werr := os.WriteFile(tmpPath, append(raw, '\n'), 0o600); werr != nil {
+	// Stage beside the destination rather than in the system temp dir:
+	// os.Rename cannot cross a filesystem, so staging in /tmp fails with EXDEV
+	// whenever outPath is on another volume (a different drive on Windows, a
+	// tmpfs /tmp on Linux).
+	if werr := atomicfile.Write(outPath, append(raw, '\n'), 0o600); werr != nil {
 		return werr
 	}
-	if rerr := os.Rename(tmpPath, outPath); rerr != nil {
-		return rerr
-	}
-	_ = os.Chmod(outPath, 0o600)
 	fmt.Fprintf(os.Stderr,
 		"Warning: exported account %q contains credentials. Store %s safely.\n",
 		payload.Meta.Name, outPath)

@@ -18,6 +18,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/outof0/anypick/go/internal/atomicfile"
 )
 
 // RecordVersion is bumped only when the record shape changes incompatibly;
@@ -126,11 +128,9 @@ func writeAtomic(path string, rec *Record) error {
 	if err != nil {
 		return err
 	}
-	stage := path + ".tmp"
-	if err := os.WriteFile(stage, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(stage, path)
+	// atomicfile uses a randomly named staging file. The fixed ".tmp" suffix
+	// this used to write meant two concurrent writers raced on one path.
+	return atomicfile.Write(path, raw, 0o600)
 }
 
 // Load reads the ownership record and fails closed: it returns nil when the

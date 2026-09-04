@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -940,11 +941,7 @@ func adoptReboundScopedChild(
 		return nil, fmt.Errorf("encode adopted scoped proxy record for pid %d: %w", h.PID, err)
 	}
 	pidPath := filepath.Join(req.RuntimeDir, "proxy.pid")
-	stage := pidPath + ".tmp"
-	if err := os.WriteFile(stage, data, 0o600); err != nil {
-		return nil, fmt.Errorf("stage adopted scoped proxy record for pid %d: %w", h.PID, err)
-	}
-	if err := os.Rename(stage, pidPath); err != nil {
+	if err := atomicfile.Write(pidPath, data, 0o600); err != nil {
 		return nil, fmt.Errorf("commit adopted scoped proxy record for pid %d: %w", h.PID, err)
 	}
 	return &adopted, nil

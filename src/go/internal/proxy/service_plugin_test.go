@@ -1300,12 +1300,17 @@ func TestAdoptReboundScopedChildNeverSignalsBeforePersist(t *testing.T) {
 	child, endpoint, _ := spawnScopedChild(t, instanceID, planned, 100)
 	writeScopedRecord(t, req, instanceID, staleOwner, endpoint, time.Now(), nil)
 
-	// Block persistence at the staged-write step: occupying proxy.pid.tmp makes
-	// every WriteFile fail BEFORE Rename could ever commit the adopted pid,
-	// while the record itself stays readable and intact.
-	if err := os.MkdirAll(filepath.Join(req.RuntimeDir, "proxy.pid.tmp"), 0o700); err != nil {
+	// Block persistence before the commit: with the runtime directory
+	// read-only, staging the rewritten record fails, so the adopted pid is
+	// never committed. The record itself stays readable and intact.
+	//
+	// This used to occupy proxy.pid.tmp and relied on the staging file having a
+	// fixed name. Staging names are randomised now (internal/atomicfile), so
+	// the injection removes write permission instead of guessing the path.
+	if err := os.Chmod(req.RuntimeDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Chmod(req.RuntimeDir, 0o700) })
 
 	dark, huntErr := svc.proveTerminatedChildrenDark(context.Background(), req)
 	if dark {
