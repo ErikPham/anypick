@@ -101,11 +101,14 @@ old superseded.
 Breaking one of these is a correctness or security regression, not a style nit.
 
 1. **Capability pairs come from `TransportFor`** in `src/go/internal/transport`.
-   `claude`, `codex`, and `opencode` may accept a source from a different
-   provider; `gemini` and `kiro` return `unsupported` for anything but their
-   own. `src/go/internal/client` lists what *exists*, not what is *allowed* — never
-   infer a pairing from the registry, and never publish one in docs or marketing
-   copy without reading the adapter.
+   `claude`, `codex`, `opencode`, and `zcode` may accept a source from a
+   different provider; `gemini` and `kiro` return `unsupported` for anything but
+   their own. `src/go/internal/client` lists what *exists*, not what is
+   *allowed* — never infer a pairing from the registry, and never publish one in
+   docs or marketing copy without reading the adapter.
+   `internal/transport/adapter_test.go` requires an explicit expectation for
+   every registered client in every adapter row, so adding a client without
+   classifying it there fails the build.
 2. **Proxy secrets never cross an output boundary.** Every local proxy
    authenticates each request with a per-instance secret (ADR 0006) and binds
    loopback only. `StartResult.Token` is deliberately discarded by every
