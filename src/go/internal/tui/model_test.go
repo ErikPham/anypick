@@ -2,9 +2,11 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/outof0/anypick/go/internal/doctor"
 )
 
 // key builds a KeyMsg the way bubbletea delivers a single printable rune.
@@ -36,7 +38,7 @@ func TestQuitKeysExitFromTheHomeScreen(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := New(context.Background(), nil)
-			m.screen = screenProviders
+			m.board = boardApps
 
 			got, cmd := updateModel(t, m, tc.msg)
 
@@ -53,24 +55,24 @@ func TestQuitKeysExitFromTheHomeScreen(t *testing.T) {
 	}
 }
 
-func TestQuitDoesNotFireFromAScreenTheUserNavigatedInto(t *testing.T) {
+func TestQuitDoesNotFireFromASecondaryBoard(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
-	m.providerID = "codex"
+	m.board = boardAccounts
+	m.accountDrill = false
 
 	got, cmd := updateModel(t, m, key('q'))
 
 	if got.quitting {
-		t.Error("quitting = true, want false: a stray q inside a provider must not drop the user out")
+		t.Error("quitting = true, want false: a stray q inside a board must not drop the user out")
 	}
 	if cmd != nil {
 		t.Errorf("cmd = %v, want nil", cmd)
 	}
 }
 
-func TestCtrlCStillExitsFromAnyScreen(t *testing.T) {
+func TestCtrlCStillExitsFromAnyBoard(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
+	m.board = boardAccounts
 
 	got, _ := updateModel(t, m, special(tea.KeyCtrlC))
 
@@ -79,42 +81,44 @@ func TestCtrlCStillExitsFromAnyScreen(t *testing.T) {
 	}
 }
 
-func TestEscapeWalksBackUpTheScreenStack(t *testing.T) {
+func TestEscapeWalksBackToApps(t *testing.T) {
 	m := New(context.Background(), nil)
 
-	m.screen = screenDetail
-	if got, _ := updateModel(t, m, special(tea.KeyEsc)); got.screen != screenAccounts {
-		t.Errorf("esc from detail = %v, want accounts", got.screen)
+	// From a drilled Accounts list, esc returns to the provider list.
+	m.board = boardAccounts
+	m.accountDrill = true
+	if got, _ := updateModel(t, m, special(tea.KeyEsc)); got.accountDrill {
+		t.Errorf("esc from drilled accounts left accountDrill = true, want false")
 	}
 
-	m.screen = screenAccounts
+	// From the provider list, esc returns to the Apps board.
+	m.board = boardAccounts
+	m.accountDrill = false
 	got, _ := updateModel(t, m, special(tea.KeyEsc))
-	if got.screen != screenProviders {
-		t.Errorf("esc from accounts = %v, want providers", got.screen)
+	if got.board != boardApps {
+		t.Errorf("esc from accounts = %v, want apps", got.board)
 	}
 }
 
-func TestHelpOpensAndReturnsToWhereItWasOpenedFrom(t *testing.T) {
+func TestHelpOpensAndCloses(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
+	m.board = boardAccounts
 
 	got, _ := updateModel(t, m, key('?'))
-	if got.screen != screenHelp {
-		t.Fatalf("? = %v, want help", got.screen)
-	}
-	if got.back != screenAccounts {
-		t.Errorf("back = %v, want accounts so esc returns the user", got.back)
+	if !got.showHelp {
+		t.Fatalf("? = showHelp %v, want true", got.showHelp)
 	}
 
 	got, _ = updateModel(t, got, special(tea.KeyEsc))
-	if got.screen != screenAccounts {
-		t.Errorf("esc from help = %v, want accounts", got.screen)
+	if got.showHelp {
+		t.Errorf("esc from help left showHelp = true, want false")
 	}
 }
 
 func TestCursorStaysInsideTheList(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenProviders
+	m.board = boardAccounts
+	m.accountDrill = false
 	m.providers = []ProviderRow{{ID: "a"}, {ID: "b"}, {ID: "c"}}
 
 	for i := 0; i < 5; i++ {
@@ -133,8 +137,9 @@ func TestCursorStaysInsideTheList(t *testing.T) {
 
 func TestActionResultSetsFooterStatusAndReloads(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
-	m.providerID = "codex"
+	m.board = boardAccounts
+	m.accountDrill = true
+	m.accountProvider = "codex"
 
 	got, cmd := updateModel(t, m, actionMsg{text: "switched codex: a → b"})
 	if got.status != "switched codex: a → b" {
@@ -144,7 +149,7 @@ func TestActionResultSetsFooterStatusAndReloads(t *testing.T) {
 		t.Error("statusErr = true for a successful action")
 	}
 	if cmd == nil {
-		t.Error("cmd = nil, want a reload of the current screen")
+		t.Error("cmd = nil, want a reload of the current board")
 	}
 
 	failed, _ := updateModel(t, m, actionMsg{err: context.Canceled})
@@ -155,7 +160,8 @@ func TestActionResultSetsFooterStatusAndReloads(t *testing.T) {
 
 func TestConfirmGatesDestructiveAction(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
+	m.board = boardAccounts
+	m.accountDrill = true
 	m.accounts = []AccountRow{{ProviderID: "codex", Name: "work"}}
 
 	got, _ := updateModel(t, m, key('d'))
@@ -175,10 +181,174 @@ func TestConfirmGatesDestructiveAction(t *testing.T) {
 
 func TestDeleteIsNotOfferedWhenThereAreNoAccounts(t *testing.T) {
 	m := New(context.Background(), nil)
-	m.screen = screenAccounts
+	m.board = boardAccounts
+	m.accountDrill = true
 
 	got, _ := updateModel(t, m, key('d'))
 	if got.confirm != nil {
 		t.Error("confirm = set with an empty account list")
+	}
+}
+
+func TestProviderFilterNarrowsTheList(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = false
+	m.providers = []ProviderRow{
+		{ID: "claude", DisplayName: "Claude"},
+		{ID: "codex", DisplayName: "Codex"},
+		{ID: "openai", DisplayName: "OpenAI"},
+	}
+
+	got, _ := updateModel(t, m, key('f'))
+	if !got.filtering {
+		t.Fatal("f did not enter filtering mode")
+	}
+
+	got, _ = updateModel(t, got, key('l'))
+	if len(got.providers) != 1 || got.providers[0].ID != "claude" {
+		t.Errorf("filter 'l' = %v, want [claude]", got.providers)
+	}
+	if got.filterText != "l" {
+		t.Errorf("filterText = %q, want l", got.filterText)
+	}
+
+	// backspace re-widens the list.
+	got, _ = updateModel(t, got, special(tea.KeyBackspace))
+	if len(got.providers) != 3 {
+		t.Errorf("after backspace providers = %v, want all 3", got.providers)
+	}
+
+	// esc leaves filtering and triggers a reload of the full list.
+	left, cmd := updateModel(t, got, special(tea.KeyEsc))
+	if left.filtering {
+		t.Error("esc did not leave filtering mode")
+	}
+	if cmd == nil {
+		t.Error("esc from filter should reload providers")
+	}
+}
+
+func TestAddLoginTriggersSaveCommand(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = false
+	m.providers = []ProviderRow{{ID: "codex", DisplayName: "Codex"}}
+
+	_, cmd := updateModel(t, m, key('a'))
+	if cmd == nil {
+		t.Fatal("a did not produce a save (add-login) command")
+	}
+}
+
+func TestProviderDetailsShowsStatus(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = false
+	m.providers = []ProviderRow{{ID: "codex", DisplayName: "Codex", SavedCount: 3, Relation: RelationNoLive}}
+
+	got, _ := updateModel(t, m, key('v'))
+	if got.status == "" {
+		t.Error("v produced no detail status for the provider")
+	}
+}
+
+func TestExportProviderLaunchesCommand(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = false
+	m.providers = []ProviderRow{{ID: "codex", DisplayName: "Codex"}}
+
+	_, cmd := updateModel(t, m, key('e'))
+	if cmd == nil {
+		t.Fatal("e did not produce an export command for the provider")
+	}
+}
+
+func TestExportAccountLaunchesCommand(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = true
+	m.accounts = []AccountRow{{ProviderID: "codex", Name: "work"}}
+
+	_, cmd := updateModel(t, m, key('e'))
+	if cmd == nil {
+		t.Fatal("e did not produce an export command for the drilled account")
+	}
+}
+
+func TestImportOpensPathPrompt(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = false
+	m.providers = []ProviderRow{{ID: "codex", DisplayName: "Codex"}}
+
+	opened, _ := updateModel(t, m, key('i'))
+	if !opened.prompting {
+		t.Fatal("i did not open the import path prompt")
+	}
+	if opened.promptRun == nil {
+		t.Error("the import prompt has no run callback")
+	}
+
+	// Typing extends the path; esc cancels without running anything.
+	typed, _ := updateModel(t, opened, key('a'))
+	if typed.promptText != "a" {
+		t.Errorf("promptText = %q, want a", typed.promptText)
+	}
+	cancelled, cmd := updateModel(t, typed, special(tea.KeyEsc))
+	if cancelled.prompting {
+		t.Error("esc did not cancel the prompt")
+	}
+	if cmd != nil {
+		t.Error("esc from the prompt must not run a command")
+	}
+
+	// enter runs the prompt callback and clears prompting.
+	_, run := updateModel(t, opened, special(tea.KeyEnter))
+	if run == nil {
+		t.Error("enter did not produce the import command")
+	}
+}
+
+func TestDiagnoseLaunchesCommand(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardApps
+	m.apps = []AppRow{{ClientID: "claude", DisplayName: "Claude"}}
+
+	_, cmd := updateModel(t, m, key('d'))
+	if cmd == nil {
+		t.Fatal("d did not produce a diagnose command")
+	}
+}
+
+func TestDiagnoseOverlayDismissesOnAnyKey(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.diagnosis = &doctor.Report{ClientID: "claude", Status: doctor.StatusOK}
+
+	got, cmd := updateModel(t, m, key('q'))
+	if got.diagnosis != nil {
+		t.Error("the diagnosis overlay was not dismissed by a key press")
+	}
+	if cmd != nil {
+		t.Error("dismissing the diagnosis must not run a command")
+	}
+}
+
+func TestAccountDetailsShowsStatus(t *testing.T) {
+	m := New(context.Background(), nil)
+	m.board = boardAccounts
+	m.accountDrill = true
+	m.accounts = []AccountRow{{
+		ProviderID: "codex", Name: "work",
+		Identity: "x@example.com", Active: true, ProxyRunning: true,
+	}}
+
+	got, _ := updateModel(t, m, key('v'))
+	if got.status == "" {
+		t.Error("v produced no detail status for the account")
+	}
+	if !strings.Contains(got.status, "active") || !strings.Contains(got.status, "proxy running") {
+		t.Errorf("account detail = %q, want active + proxy running", got.status)
 	}
 }

@@ -2,9 +2,13 @@ package tui
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/app"
+	"github.com/outof0/anypick/go/internal/client"
+	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
 
@@ -222,16 +226,55 @@ func TestTruncateRespectsRunesNotBytes(t *testing.T) {
 
 func TestViewRendersWithoutAWindowSize(t *testing.T) {
 	// The first paint happens before WindowSizeMsg arrives, so View must not
-	// divide by zero or index out of range with a zero width/height.
+	// divide by zero or index out of range with a zero width/height. The Apps
+	// board needs a real *app.App, so this guard exercises the Accounts board
+	// (drilled) which only reads cached account rows.
 	m := New(context.Background(), nil)
-	m.providers = []ProviderRow{{ID: "codex", DisplayName: "OpenAI Codex", Identity: "signed out"}}
-	if got := m.View(); got == "" {
-		t.Error("View() = empty before the first window-size message")
-	}
-
-	m.screen = screenAccounts
+	m.board = boardAccounts
+	m.accountDrill = true
 	m.accounts = []AccountRow{{ProviderID: "codex", Name: "work"}}
 	if got := m.View(); got == "" {
-		t.Error("View() = empty on the accounts screen")
+		t.Error("View() = empty on the accounts board before the first window-size message")
+	}
+}
+
+// TestEveryRegisteredClientIsReachableInTheTUI fails when a registered client
+// can be reached from nowhere in the terminal UI.
+//
+// The Apps board enumerates clients through routingAppIDs only — it is the
+// single place the TUI lists them — so a client absent from that allowlist is
+// reachable solely by being a provider AnyPick logs in for, which is how
+// gemini/kiro/opencode/workbuddy work under Accounts. zcode is neither: it
+// shipped registered as a client, usable from the CLI and the desktop app, and
+// invisible here. Pick one of the two surfaces when adding a client.
+func TestEveryRegisteredClientIsReachableInTheTUI(t *testing.T) {
+	a := &app.App{Providers: provider.NewRegistry(), Clients: client.NewRegistry()}
+	if err := provider.RegisterBuiltin(a.Providers, t.TempDir()); err != nil {
+		t.Fatalf("RegisterBuiltin(providers): %v", err)
+	}
+	if err := provider.RegisterBuiltinCompatibles(a.Providers); err != nil {
+		t.Fatalf("RegisterBuiltinCompatibles: %v", err)
+	}
+	if err := client.RegisterBuiltin(a.Clients, t.TempDir()); err != nil {
+		t.Fatalf("RegisterBuiltin(clients): %v", err)
+	}
+
+	routable := make(map[string]bool, len(routingAppAllowlist))
+	for _, id := range routingAppAllowlist {
+		routable[id] = true
+	}
+
+	ids := a.Clients.IDs()
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		t.Fatal("the client registry registered nothing; the check below would pass vacuously")
+	}
+	for _, id := range ids {
+		if routable[id] || a.Providers.Has(id) {
+			continue
+		}
+		t.Errorf("client %q is invisible in the TUI: it is not in routingAppAllowlist "+
+			"and no provider named %q exists to switch its login under Accounts — "+
+			"either add it to routingAppAllowlist or give it a provider", id, id)
 	}
 }
