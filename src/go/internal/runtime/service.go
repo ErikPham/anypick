@@ -14,6 +14,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/catalog"
 	"github.com/outof0/anypick/go/internal/client"
+	"github.com/outof0/anypick/go/internal/compensation"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -204,52 +205,22 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string) ([]str
 	return records, nil
 }
 
-// RestoreClientConfigRecovery replays compensation records ("src=>dest" or
-// "delete=>dest").
+// RestoreClientConfigRecovery replays compensation records.
+//
+// Both the parse and the direction live in internal/compensation so the
+// in-process undo and the crash-recovery path in internal/activation cannot
+// disagree about which way a record reads (ADR 0004).
 func RestoreClientConfigRecovery(records []string) error {
 	for _, record := range records {
-		src, dest, ok := splitRecord(record)
+		rec, ok := compensation.Parse(record)
 		if !ok {
 			continue
 		}
-		if src == "delete" {
-			if err := os.RemoveAll(dest); err != nil {
-				return err
-			}
-			continue
-		}
-		data, err := os.ReadFile(dest)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(src, data, 0o600); err != nil {
+		if err := rec.Apply(); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func splitRecord(record string) (src, dest string, ok bool) {
-	for i := 0; i+1 < len(record); i++ {
-		if record[i] == '=' && record[i+1] == '>' {
-			return trimSpace(record[:i]), trimSpace(record[i+2:]), true
-		}
-	}
-	return "", "", false
-}
-
-func trimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
-		end--
-	}
-	return s[start:end]
 }
 
 func sanitize(s string) string {

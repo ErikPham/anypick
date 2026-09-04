@@ -272,9 +272,19 @@ func TestRecoverRestoresExactFileBackups(t *testing.T) {
 	deps := env.Deps
 	ctx := context.Background()
 
+	// src is the LIVE client config; dstFile is the backup
+	// runtime.PrepareClientConfigRecovery took before activation mutated it.
+	// Recovery reads the backup and writes the live file.
 	src := filepath.Join(t.TempDir(), "config.toml")
 	dstFile := filepath.Join(t.TempDir(), "nested", "config.toml")
-	if err := os.WriteFile(src, []byte("original"), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dstFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstFile, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Activation got as far as rewriting the live file, then died.
+	if err := os.WriteFile(src, []byte("post-activation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	result := &RecoveryResult{}
@@ -286,9 +296,69 @@ func TestRecoverRestoresExactFileBackups(t *testing.T) {
 	}
 	recover(ctx, deps, entry, result)
 
-	data, rerr := os.ReadFile(dstFile)
+	data, rerr := os.ReadFile(src)
 	if rerr != nil || string(data) != "original" {
-		t.Fatalf("dest not restored: %q %v", data, rerr)
+		t.Fatalf("live file not restored from backup: %q %v", data, rerr)
+	}
+	// The backup must survive recovery untouched: it is the only copy
+	// (ADR 0004). Reading the record the other way round clobbers it.
+	if kept, err := os.ReadFile(dstFile); err != nil || string(kept) != "original" {
+		t.Fatalf("backup clobbered by recovery: %q %v", kept, err)
+	}
+	if result.Recovered != 1 || len(result.Failed) != 0 {
+		t.Fatalf("result %+v", result)
+	}
+}
+
+// TestRecoverUsesRealProducerRecords drives recover() with compensation records
+// from the real runtime.PrepareClientConfigRecovery rather than hand-built
+// strings, because a hand-built record can encode the wrong direction and still
+// pass — which is exactly how the inverted rollback survived (ADR 0004).
+func TestRecoverUsesRealProducerRecords(t *testing.T) {
+	env := newTestEnv(t)
+	deps := env.Deps
+	ctx := context.Background()
+
+	live := filepath.Join(env.Home, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := deps.Runtime.PrepareClientConfigRecovery("claude", "journal-abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("want 1 compensation record, got %d (%v)", len(records), records)
+	}
+	parts := strings.SplitN(records[0], "=>", 2)
+	if len(parts) != 2 {
+		t.Fatalf("record is not src=>dest: %q", records[0])
+	}
+	backup := strings.TrimSpace(parts[1])
+
+	// Activation rewrote the live file and then died mid-flight.
+	if err := os.WriteFile(live, []byte("post-activation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := &RecoveryResult{}
+	entry := &journal.Entry{
+		ID:          "journal-abc",
+		State:       journal.StateExecuting,
+		Params:      map[string]interface{}{},
+		BackupPaths: records,
+	}
+	recover(ctx, deps, entry, result)
+
+	if data, err := os.ReadFile(live); err != nil || string(data) != "original" {
+		t.Fatalf("live client config not restored: %q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(backup); err != nil || string(data) != "original" {
+		t.Fatalf("backup destroyed by recovery: %q err=%v", data, err)
 	}
 	if result.Recovered != 1 || len(result.Failed) != 0 {
 		t.Fatalf("result %+v", result)

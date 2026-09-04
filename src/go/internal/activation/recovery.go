@@ -3,9 +3,9 @@ package activation
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/outof0/anypick/go/internal/compensation"
 	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -114,37 +114,26 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 
 	restoredDurableState := false
 
-	// Exact file rollback from "src=>dest" / "delete=>dest" records.
+	// Exact file rollback from compensation records.
+	//
+	// The parse and the direction live in internal/compensation, shared with
+	// runtime.RestoreClientConfigRecovery. Two readers of one wire format is
+	// how the direction got inverted once already: this path used to copy the
+	// live file over its own backup, destroying the only copy (ADR 0004).
+	// record_test.go fails the build if a second parser appears.
 	if len(entry.BackupPaths) > 0 {
 		allRestored := true
 		for _, backup := range entry.BackupPaths {
-			if strings.Contains(backup, "=>") {
-				parts := strings.SplitN(backup, "=>", 2)
-				src := strings.TrimSpace(parts[0])
-				dest := strings.TrimSpace(parts[1])
-				if src == "" || dest == "" {
+			rec, ok := compensation.Parse(backup)
+			if !ok {
+				// Not a record: a bare backup path, which must still be there.
+				if _, err := os.Stat(backup); err != nil {
 					allRestored = false
 					break
 				}
-				if src == "delete" {
-					_ = os.RemoveAll(dest)
-					continue
-				}
-				if _, err := os.Stat(src); err != nil {
-					allRestored = false
-					break
-				}
-				data, err := os.ReadFile(src)
-				if err != nil {
-					allRestored = false
-					break
-				}
-				if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil ||
-					os.WriteFile(dest, data, 0o600) != nil {
-					allRestored = false
-					break
-				}
-			} else if _, err := os.Stat(backup); err != nil {
+				continue
+			}
+			if err := rec.Apply(); err != nil {
 				allRestored = false
 				break
 			}

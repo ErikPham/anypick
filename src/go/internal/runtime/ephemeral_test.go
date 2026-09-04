@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/outof0/anypick/go/internal/compensation"
 )
 
 func TestCreateEphemeralClaude(t *testing.T) {
@@ -129,20 +131,16 @@ func TestHelpersSanitizeAndSplit(t *testing.T) {
 	if len(sanitize(long)) != 24 {
 		t.Fatalf("sanitize trunc len = %d", len(sanitize(long)))
 	}
-	// splitRecord
-	src, dest, ok := splitRecord("a=>b")
-	if !ok || src != "a" || dest != "b" {
-		t.Fatalf("splitRecord a=>b = %q %q %v", src, dest, ok)
+	// The record parse now lives in internal/compensation, shared with the
+	// crash-recovery path, so there is one reader of the wire format.
+	if rec, ok := compensation.Parse("a=>b"); !ok || rec.Src != "a" || rec.Dest != "b" {
+		t.Fatalf("Parse a=>b = %+v ok=%v", rec, ok)
 	}
-	src, dest, ok = splitRecord(" delete => /tmp/x ")
-	if !ok || src != "delete" || dest != "/tmp/x" {
-		t.Fatalf("splitRecord spaced = %q %q %v", src, dest, ok)
+	if rec, ok := compensation.Parse(" delete => /tmp/x "); !ok || rec.Src != "delete" || rec.Dest != "/tmp/x" {
+		t.Fatalf("Parse spaced = %+v ok=%v", rec, ok)
 	}
-	if _, _, ok := splitRecord("nope"); ok {
-		t.Fatalf("splitRecord should fail for missing =>")
-	}
-	if got := trimSpace(" \t hi \t "); got != "hi" {
-		t.Fatalf("trimSpace = %q", got)
+	if _, ok := compensation.Parse("nope"); ok {
+		t.Fatal("Parse should fail for missing =>")
 	}
 	// copyIfPresent: missing src is no error and dest not created
 	tmp := t.TempDir()
