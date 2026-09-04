@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/outof0/anypick/go/internal/hub"
-
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -215,22 +213,30 @@ func backupDestination(p string) string {
 }
 
 // handleGatewayTest probes a gateway endpoint with the profile's key. Only a
-// status code is reported — the key never appears in output.
+// status code is reported — the key never appears in output. When no saved
+// profile matches (pre-create test from Add Gateway), the supplied endpoint
+// and key are probed directly instead of failing with "gateway not found".
 func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 	result := Result{Version: ProtocolVersion, RequestID: m.RequestID}
-	pr, err := s.Deps.Profiles.GetContext(ctx, m.Name)
-	if err != nil {
-		result.Status, result.Message = "error", err.Error()
-		return result
+	endpoint, apiKey := strings.TrimSpace(m.Endpoint), m.APIKey
+	if s.Deps.Profiles != nil {
+		pr, err := s.Deps.Profiles.GetContext(ctx, m.Name)
+		if err != nil {
+			result.Status, result.Message = "error", err.Error()
+			return result
+		}
+		if pr != nil {
+			endpoint, apiKey = pr.Meta.Endpoint, pr.Secrets.APIKey
+		}
 	}
-	if pr == nil {
+	if endpoint == "" {
 		result.Status, result.Message = "error", "gateway not found"
 		return result
 	}
 	client := &http.Client{Timeout: 6 * time.Second}
-	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(pr.Meta.Endpoint, "/")+"/models", nil)
-	if rerr == nil && pr.Secrets.APIKey != "" {
-		req.Header.Set("authorization", "Bearer "+pr.Secrets.APIKey)
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(endpoint, "/")+"/models", nil)
+	if rerr == nil && apiKey != "" {
+		req.Header.Set("authorization", "Bearer "+apiKey)
 	}
 	if rerr != nil {
 		result.Status, result.Message = "error", rerr.Error()
@@ -250,42 +256,5 @@ func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 	return result
 }
 
-// handleHubSourceToggle adds or removes one source on an existing hub config.
-// Presence toggles: an attached source is removed, an absent one is added.
-func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
-	result := Result{Version: ProtocolVersion, RequestID: m.RequestID}
-	name := orString(m.Name, "default")
-	account := orString(m.SourceID, m.Label)
-	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
-		cfg, gerr := s.Deps.Hub.GetConfigContext(c, name)
-		if gerr != nil {
-			return gerr
-		}
-		if cfg == nil {
-			return anyerr.Newf("Proxy Hub not found: "+name, "HUB_NOT_FOUND",
-				anyerr.WithExitCode(anyerr.NotFound))
-		}
-		found := false
-		kept := make([]hub.Source, 0, len(cfg.Sources))
-		for _, src := range cfg.Sources {
-			if src.ProviderID == m.ProviderID && src.Account == account {
-				found = true
-				continue
-			}
-			kept = append(kept, src)
-		}
-		if !found {
-			if m.ProviderID == "" || account == "" {
-				return anyerr.Newf("source needs both providerId and account", "INVALID_USAGE")
-			}
-			kept = append(kept, hub.Source{ProviderID: m.ProviderID, Account: account})
-		}
-		cfg.Sources = kept
-		_, uerr := s.Deps.Hub.UpsertConfigContext(c, *cfg)
-		return uerr
-	})
-	if err != nil {
-		result.Status, result.Message = "error", err.Error()
-	}
-	return result
-}
+// handleHubSourceToggle lives in hub_snapshot.go: explicit Enabled is
+// honored, the hub config is created on first enable.

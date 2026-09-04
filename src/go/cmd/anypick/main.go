@@ -820,6 +820,7 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Clients:           a.Clients,
 		Profiles:          a.Runtime.Profiles,
 		Bindings:          a.Bindings,
+		Journal:           a.Journal,
 		Activation:        a.Deps,
 		Hub:               a.Hub,
 		Config:            a.Config,

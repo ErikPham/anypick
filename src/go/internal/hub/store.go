@@ -128,6 +128,45 @@ func (s *Store) GetConfig(name string) (*Config, error) {
 	return s.GetConfigContext(context.Background(), name)
 }
 
+// ListConfigsContext returns every hub configuration by name. A corrupt row
+// fails the whole list: like decodeHubConfig, a half-loaded hub set would
+// serve requests against the wrong sources.
+func (s *Store) ListConfigsContext(ctx context.Context) ([]Config, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT name, config_json FROM proxy_hubs ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Config{}
+	for rows.Next() {
+		var name, data string
+		if err := rows.Scan(&name, &data); err != nil {
+			return nil, err
+		}
+		cfg, err := decodeHubConfig([]byte(data), name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *cfg)
+	}
+	return out, rows.Err()
+}
+
+// RouteModelsContext returns the pinned models of a hub's default route
+// (model → owning source index). Nil route (never attached) yields no pins,
+// not an error: an unconfigured hub simply publishes nothing yet.
+func (s *Store) RouteModelsContext(ctx context.Context, hubName string) ([]ModelRoute, error) {
+	route, err := s.routeByID(ctx, DefaultRouteID(hubName))
+	if err != nil {
+		return nil, err
+	}
+	if route == nil {
+		return nil, nil
+	}
+	return route.Models, nil
+}
+
 func (s *Store) GetConfigContext(ctx context.Context, name string) (*Config, error) {
 	var data string
 	err := s.DB.QueryRowContext(ctx,

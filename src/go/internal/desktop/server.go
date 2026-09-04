@@ -20,6 +20,7 @@ import (
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
+	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/plugins"
@@ -49,6 +50,10 @@ type Deps struct {
 	Clients   *client.Registry
 	Profiles  *profile.Store
 	Bindings  *bindings.Store
+	// Journal is the operation history backing the Activity snapshot section.
+	// Read-only here: the snapshot maps recent entries to display rows and
+	// never writes. Nil (legacy tests) yields an honest empty list.
+	Journal *journal.OperationJournal
 	// Activation drives model-role re-activation and other planned mutations.
 	Activation *activation.Deps
 	Hub        *hub.Store
@@ -489,6 +494,31 @@ func (s *Server) activateRoute(ctx context.Context, clientID string, source refs
 	return err
 }
 
+// reapplyClientsBoundTo rewrites every persistent client whose global binding
+// is this account. Starting a proxy from the Proxies pane does not go through
+// `use`, so without this the live token and ~/.claude/settings.json diverge
+// and Claude Code 401s until the next activation.
+func (s *Server) reapplyClientsBoundTo(ctx context.Context, source refs.Ref) error {
+	if s.Deps.Activation == nil || s.Deps.Bindings == nil || s.Deps.Clients == nil {
+		return nil
+	}
+	want := refs.SerializeRef(source)
+	var errs []error
+	for _, clientID := range s.Deps.Clients.IDs() {
+		b, err := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
+		if err != nil || b == nil {
+			continue
+		}
+		if refs.SerializeRef(b.Spec.Source) != want {
+			continue
+		}
+		if err := s.activateRoute(ctx, clientID, source); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func (s *Server) handle(ctx context.Context, cmd *Command) error {
 	switch cmd.Kind {
 	case "open", "navigate", "restart":
@@ -609,8 +639,18 @@ func (s *Server) handleLogs(ctx context.Context, payload json.RawMessage) error 
 	// Provider-owned readProxyLogs (plugin proxies) and the engine's own log
 	// file both flow through the Service: historical logs survive a stop and
 	// provider-controlled text is secret-screened before it is framed to the
-	// native app.
-	if text, terr := s.Deps.Proxy.ProxyLogs(ctx, p.ProviderID, p.Name, p.Lines); terr == nil && text != "" {
+	// native app. A read failure reports "error" WITHOUT blanking the tail:
+	// the client keeps its last good text (L4). Only a successful read may
+	// replace it.
+	text, terr := s.Deps.Proxy.ProxyLogs(ctx, p.ProviderID, p.Name, p.Lines)
+	if p.ProviderID == "proxy-hub" {
+		// Hub children log to runtime/hub/<name>/service.log, not an
+		// account runtime dir, so the account tail below would always miss.
+		text, terr = tailHubLog(s.Deps.Root, p.Name, p.Lines)
+	}
+	if terr != nil {
+		res.State = "error"
+	} else if text != "" {
 		res.State = "ready"
 		res.Text = text
 	}

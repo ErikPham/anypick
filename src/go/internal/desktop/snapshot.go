@@ -9,6 +9,7 @@ import (
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/config"
+	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -28,6 +29,7 @@ type Snapshot struct {
 	Accounts           []AccountRow         `json:"accounts"`
 	HubSources         []map[string]any     `json:"hubSources"`
 	HubConflicts       []map[string]any     `json:"hubConflicts"`
+	HubPublishedModels []map[string]any     `json:"hubPublishedModels"`
 	LogSources         []LogSourceRow       `json:"logSources"`
 	Gateways           []GatewayRow         `json:"gateways"`
 	AccountProviders   []AccountProviderRow `json:"accountProviders"`
@@ -189,6 +191,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		Accounts:           []AccountRow{},
 		HubSources:         []map[string]any{},
 		HubConflicts:       []map[string]any{},
+		HubPublishedModels: []map[string]any{},
 		LogSources:         []LogSourceRow{},
 		Gateways:           []GatewayRow{},
 		AccountProviders:   []AccountProviderRow{},
@@ -275,7 +278,11 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			})
 
 			cfg, _ := s.Deps.Store.GetProxyConfigContext(ctx, providerID, name)
-			if !cfg.Enabled {
+			// Emit a row for every saved account behind a proxy-capable
+			// provider, not just enabled ones: the Proxies pane is the only
+			// place that offers the first Start, and without a row the
+			// toggle action is never registered so enabling stays silent.
+			if !pv.CanProxy() {
 				continue
 			}
 			st, statusErr := s.Deps.Proxy.Status(providerID, name)
@@ -288,23 +295,36 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				Detail:          detailFor(running, cfg.Port),
 				Address:         address,
 				Running:         running,
-				Enabled:         true,
+				Enabled:         cfg.Enabled,
+				LogsAvailable:   true,
 				ToggleActionID:  toggleID,
 				RestartActionID: restartID,
 			})
 			registry[toggleID] = func(c context.Context) error {
-				if running {
+				// Re-check liveness inside the handler: `running` was captured
+				// at snapshot build and the child may have died (or started)
+				// since, which used to run the wrong branch with a false
+				// success (PX2).
+				if st, serr := s.Deps.Proxy.StatusContext(c, providerID, name); serr == nil && st != nil && st.Running {
 					return s.Deps.Proxy.Stop(c, providerID, name)
 				}
-				_, serr := s.Deps.Proxy.StartProxy(c, providerID, name)
-				return serr
+				if _, serr := s.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
+					return serr
+				}
+				return s.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
 			}
 			registry[restartID] = func(c context.Context) error {
-				_ = s.Deps.Proxy.Stop(c, providerID, name)
-				_, serr := s.Deps.Proxy.StartProxy(c, providerID, name)
-				return serr
+				if err := s.Deps.Proxy.Stop(c, providerID, name); err != nil {
+					return err
+				}
+				if _, serr := s.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
+					return serr
+				}
+				return s.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
 			}
-			snap.ProxyCount = len(snap.Proxies)
+			if cfg.Enabled {
+				snap.ProxyCount++
+			}
 		}
 
 		// accountProviders rows for file-snapshot providers.
@@ -324,7 +344,13 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		}
 		row := AccountProviderRow{
 			ID: providerID, ProviderID: providerID,
-			Label: pv.Name(), Detail: pv.Description(),
+			// ClientID lets the native client resolve this provider to its
+			// managed app row (Store.managedAppClientIDs). Without it the
+			// Apps view can only see providers that already own actions, so
+			// a provider with zero saved accounts (e.g. fresh WorkBuddy)
+			// never appears.
+			ClientID: providerID,
+			Label:    pv.Name(), Detail: pv.Description(),
 			Installed: installed, LoginMethods: loginMethods,
 		}
 		if lerr == nil {
@@ -338,11 +364,6 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			row.CanClear = true
 		}
 		snap.AccountProviders = append(snap.AccountProviders, row)
-
-		snap.LogSources = append(snap.LogSources, LogSourceRow{
-			ID: providerID + "/__provider__", ProviderID: providerID,
-			Name: "__provider__", Label: pv.Name(),
-		})
 	}
 
 	// Gateway providers: compatible vendors (fixed endpoint) plus first-party
@@ -596,7 +617,9 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			var berr error
 			binding, berr = s.Deps.Bindings.GetGlobalContext(ctx, clientID)
 			if berr != nil {
-				return nil, berr
+				// A single client binding must not blank the whole snapshot
+				// (Proxies pane included). Treat it as unbound.
+				binding = nil
 			}
 		}
 		nativePresent := false
@@ -648,6 +671,27 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	// without rebuilding and polling the full snapshot.
 	snap.Usage = s.buildUsage(ctx)
 
+	// Activity: mutation history from the operation journal (the single source
+	// of truth — never re-derived). A nil journal or a read failure yields an
+	// honest empty list, never a fabricated event.
+	snap.Activity = s.buildActivity(ctx)
+
+	// Log sources mirror the proxies that can actually serve ProxyLogs
+	// (providerID/accountName). The old per-provider "__provider__" placeholder
+	// never matched a real proxy.log file, so every log request returned empty
+	// and the Live Logs pane stayed blank.
+	snap.LogSources = logSourcesForProxies(snap.Proxies)
+
+	// Proxy Hub sections (H1/H2/H3): sources for every saved account, one
+	// lifecycle-managed proxy row per hub, pinned published models. Hub
+	// entries append to Proxies/LogSources; conflicts stay empty (no
+	// fabricated rows without model catalogs).
+	if err := s.buildHubSections(ctx, snap, registry, actionID); err != nil {
+		// Account proxy rows are already filled. A hub-store read must not
+		// drop the snapshot and leave Proxies empty.
+		s.logErr(err)
+	}
+
 	s.actionsMu.Lock()
 	s.prevActions = s.actions
 	s.actions = registry
@@ -655,6 +699,164 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	s.actionOrder = snapActionsOrder(snap)
 	s.actionsMu.Unlock()
 	return snap, nil
+}
+
+// buildActivity maps the operation journal to the Activity snapshot section.
+// The journal is the single source of truth for mutation history (invariant:
+// ActivationPlan.steps drives execution; the snapshot never re-derives it).
+// Only display-safe fields cross the boundary: ids, timestamps, affected
+// resource identities and the terminal state. Entry params may carry
+// credential-adjacent metadata and are never read here.
+func (s *Server) buildActivity(ctx context.Context) []map[string]any {
+	out := []map[string]any{}
+	if s.Deps.Journal == nil {
+		return out
+	}
+	entries, err := s.Deps.Journal.ListRecentContext(ctx, 50)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		createdAt := e.StartedAt
+		if createdAt == "" {
+			createdAt = e.UpdatedAt
+		}
+		out = append(out, map[string]any{
+			"id":        e.ID,
+			"createdAt": createdAt,
+			"message":   activityMessage(e),
+			"isError":   activityIsError(e),
+			"kind":      activityKind(e),
+		})
+	}
+	return out
+}
+
+// activityKind classifies a journal entry for the native client's subtitle and
+// symbol mapping. Activation entries fall through to the client's default
+// ("App routing updated.") — they bind a client to a source rather than
+// changing a saved login, so the account/gateway/proxy/quota/settings kinds
+// would all mistitle them.
+func activityKind(e journal.Entry) string {
+	t := e.Type
+	switch {
+	case strings.HasPrefix(t, "activate:"):
+		return "activation"
+	case strings.Contains(t, "gateway"):
+		return "gateway"
+	case strings.Contains(t, "proxy") || strings.Contains(t, "pool"):
+		return "proxy"
+	case strings.Contains(t, "quota"):
+		return "quota"
+	case strings.Contains(t, "setting") || strings.Contains(t, "config"):
+		return "settings"
+	default:
+		return "activation"
+	}
+}
+
+func activityIsError(e journal.Entry) bool {
+	return e.State == journal.StateFailed || e.State == journal.StateRolledBack
+}
+
+// activityMessage renders a human title from affected resources and terminal
+// state. Affected entries use SerializeRef identities ("account/grok/a",
+// "gateway/gw1") plus the "client/<id>" scope the executor records — plain
+// display names, never secrets.
+func activityMessage(e journal.Entry) string {
+	client, source := splitAffected(e.AffectedResources)
+	clientLabel := ""
+	if client != "" {
+		clientLabel = designAppName(client)
+	}
+	switch e.State {
+	case journal.StateCommitted:
+		if clientLabel != "" && source != "" {
+			return clientLabel + " now uses " + source + "."
+		}
+		if clientLabel != "" {
+			return clientLabel + " updated."
+		}
+		return "Operation completed."
+	case journal.StateFailed:
+		if clientLabel != "" {
+			return clientLabel + " change failed."
+		}
+		return "Operation failed."
+	case journal.StateRolledBack:
+		if clientLabel != "" {
+			return clientLabel + " change was rolled back."
+		}
+		return "Operation was rolled back."
+	case journal.StateRollingBack:
+		if clientLabel != "" {
+			return clientLabel + " change is rolling back."
+		}
+		return "Operation is rolling back."
+	default:
+		if clientLabel != "" {
+			return clientLabel + " change in progress."
+		}
+		return "Operation in progress."
+	}
+}
+
+func splitAffected(affected []string) (client, source string) {
+	for _, r := range affected {
+		if c, ok := strings.CutPrefix(r, "client/"); ok {
+			if client == "" {
+				client = c
+			}
+			continue
+		}
+		if source == "" {
+			source = displayAffected(r)
+		}
+	}
+	return client, source
+}
+
+func displayAffected(r string) string {
+	if name, ok := strings.CutPrefix(r, "account/"); ok {
+		return name
+	}
+	if name, ok := strings.CutPrefix(r, "gateway/"); ok {
+		return name
+	}
+	if name, ok := strings.CutPrefix(r, "hub/"); ok {
+		return "hub:" + name
+	}
+	if name, ok := strings.CutPrefix(r, "pool/"); ok {
+		return "pool:" + name
+	}
+	if name, ok := strings.CutPrefix(r, "preset/"); ok {
+		return "@" + name
+	}
+	return r
+}
+
+// logSourcesForProxies mirrors the proxies that can actually serve ProxyLogs.
+// Each source id is the proxy id (providerID/accountName) so the logs command
+// resolves to the same proxy.log file the engine tails.
+func logSourcesForProxies(proxies []ProxyRow) []LogSourceRow {
+	out := []LogSourceRow{}
+	for _, p := range proxies {
+		name := p.ID
+		if i := strings.Index(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		if name == "" {
+			continue
+		}
+		out = append(out, LogSourceRow{
+			ID:         p.ID,
+			ProviderID: p.ProviderID,
+			Name:       name,
+			Label:      p.Label,
+			Detail:     p.Detail,
+		})
+	}
+	return out
 }
 
 func (s *Server) buildUsage(ctx context.Context) []UsageSnapshotRow {
@@ -776,6 +978,8 @@ func designAppName(client string) string {
 		return "Grok"
 	case "opencode":
 		return "OpenCode"
+	case "zcode":
+		return "ZCode"
 	default:
 		return strings.ToUpper(client[:1]) + client[1:]
 	}
@@ -798,7 +1002,7 @@ func (s *Server) managedAppClientIDs() []string {
 			add(a.ClientID)
 		}
 	}
-	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy"} {
+	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy", "zcode"} {
 		add(id)
 	}
 	return out
