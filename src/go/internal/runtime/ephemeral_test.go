@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,110 @@ func TestCreateEphemeralCodex(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "proxy.example") {
 		t.Fatalf("proxy block missing: %s", raw)
+	}
+}
+
+// TestCreateEphemeralZCode covers the isolated home the `run` path builds.
+// ZCode resolves its config and its whole storage tree from $HOME (see the
+// provenance comment on zcodeAdapter.Capabilities), so an isolated run must
+// produce a working config inside the temp home *and* leave the user's real
+// ~/.zcode alone.
+func TestCreateEphemeralZCode(t *testing.T) {
+	s := testService(t)
+	liveCfg := filepath.Join(s.Home, ".zcode", "cli", "config.json")
+	if err := os.MkdirAll(filepath.Dir(liveCfg), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const liveBody = `{"provider":{"deepseek":{"id":"deepseek","name":"DeepSeek"}}}`
+	if err := os.WriteFile(liveCfg, []byte(liveBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := s.CreateEphemeralRuntime(EphemeralSpec{
+		ClientID:     "zcode",
+		Endpoint:     "http://127.0.0.1:8080",
+		APIKey:       "sk-proxy",
+		DefaultModel: "glm-4.6",
+	})
+	if err != nil {
+		t.Fatalf("CreateEphemeralRuntime zcode: %v", err)
+	}
+	defer func() { _ = rt.Cleanup() }()
+	if rt.Environment["HOME"] != rt.Home {
+		t.Fatalf("zcode HOME env = %q want %q", rt.Environment["HOME"], rt.Home)
+	}
+
+	isoCfg := filepath.Join(rt.Home, ".zcode", "cli", "config.json")
+	raw, err := os.ReadFile(isoCfg)
+	if err != nil {
+		t.Fatalf("isolated config missing: %v", err)
+	}
+	var doc struct {
+		Provider map[string]struct {
+			Options struct {
+				BaseURL string `json:"baseURL"`
+			} `json:"options"`
+		} `json:"provider"`
+		Model map[string]string `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("isolated config: %v", err)
+	}
+	if _, ok := doc.Provider["anypick"]; !ok {
+		t.Fatalf("isolated config missing managed provider:\n%s", raw)
+	}
+	if doc.Provider["anypick"].Options.BaseURL != "http://127.0.0.1:8080" {
+		t.Fatalf("isolated baseURL = %q", doc.Provider["anypick"].Options.BaseURL)
+	}
+	if doc.Model["main"] != "anypick/glm-4.6" {
+		t.Fatalf("isolated model.main = %q", doc.Model["main"])
+	}
+	// The user's own provider must survive the carry-over.
+	if _, ok := doc.Provider["deepseek"]; !ok {
+		t.Fatalf("user provider dropped from isolated config:\n%s", raw)
+	}
+
+	// The whole point: the live config was never written to.
+	if got, err := os.ReadFile(liveCfg); err != nil || string(got) != liveBody {
+		t.Fatalf("live config changed (got %s, err %v)", got, err)
+	}
+
+	if err := rt.Cleanup(); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(rt.Directory); !os.IsNotExist(err) {
+		t.Fatal("directory should be removed after Cleanup")
+	}
+}
+
+// TestCreateEphemeralZCodeWithoutALiveConfig covers the machine this adapter
+// was written on: ~/.zcode/cli exists as a runtime directory but holds no
+// config.json, so the isolated run has to create one from nothing.
+func TestCreateEphemeralZCodeWithoutALiveConfig(t *testing.T) {
+	s := testService(t)
+	if err := os.MkdirAll(filepath.Join(s.Home, ".zcode", "cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := s.CreateEphemeralRuntime(EphemeralSpec{
+		ClientID:     "zcode",
+		Endpoint:     "http://127.0.0.1:8080",
+		APIKey:       "sk-proxy",
+		DefaultModel: "glm-4.6",
+	})
+	if err != nil {
+		t.Fatalf("CreateEphemeralRuntime zcode: %v", err)
+	}
+	defer func() { _ = rt.Cleanup() }()
+
+	raw, err := os.ReadFile(filepath.Join(rt.Home, ".zcode", "cli", "config.json"))
+	if err != nil {
+		t.Fatalf("isolated config not created: %v", err)
+	}
+	if !strings.Contains(string(raw), "anypick") {
+		t.Fatalf("isolated config missing managed provider:\n%s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(s.Home, ".zcode", "cli", "config.json")); !os.IsNotExist(err) {
+		t.Fatal("a config was created in the live ~/.zcode/cli, which must stay untouched")
 	}
 }
 

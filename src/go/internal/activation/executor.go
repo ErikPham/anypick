@@ -439,9 +439,25 @@ func createEphemeralHome(ctx context.Context, plan *Plan, deps *Deps, actx *acti
 	if mp := plan.Transport.ManagedProxy; mp != nil && mp.Token != "" {
 		apiKey = mp.Token
 	}
+	endpoint := plan.Transport.Endpoint
+	model := explicitModelID(plan.Model)
+	// A gateway carries its own endpoint, credential and default model on the
+	// saved profile; the plan only ever sees the raw URL. Resolve it the same
+	// way the persistent write does, or `run` silently produces a config with
+	// a placeholder key and no model where `use` would have written both.
+	if ref.Kind == refs.KindGateway && deps.Profiles != nil {
+		in, inErr := deps.Runtime.GatewayApplyInputFor(ctx, ref.Name, plan.Client)
+		if inErr != nil {
+			return inErr
+		}
+		endpoint, apiKey = in.Endpoint, in.APIKey
+		if model == "" {
+			model = in.Model
+		}
+	}
 	iso, err := deps.Runtime.CreateEphemeralRuntimeContext(ctx, runtime.EphemeralSpec{
-		ClientID: plan.Client, Endpoint: plan.Transport.Endpoint, APIKey: apiKey,
-		DefaultModel: explicitModelID(plan.Model), ModelRoles: rolesFromSpec(plan.BindingSpec),
+		ClientID: plan.Client, Endpoint: endpoint, APIKey: apiKey,
+		DefaultModel: model, ModelRoles: rolesFromSpec(plan.BindingSpec),
 		SourceKind: string(ref.Kind), SourceProvider: ref.Provider, SourceName: ref.Name,
 		TransportCapability: plan.Transport.Capability,
 	})

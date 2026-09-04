@@ -2,9 +2,9 @@
 // src/core/capabilities.ts.
 //
 // INVARIANT (AGENTS.md #1): capability pairs come from these adapters.
-// claude, codex, and opencode may accept a source from a different provider;
-// gemini and kiro return Unsupported for anything but their own. The client
-// registry lists what exists, never what is allowed.
+// claude, codex, opencode, and zcode may accept a source from a different
+// provider; gemini and kiro return Unsupported for anything but their own. The
+// client registry lists what exists, never what is allowed.
 package transport
 
 import (
@@ -154,7 +154,7 @@ func ClaudeAccountAdapter(provider, name string) Adapter {
 }
 
 // GeminiAccountAdapter: direct for gemini ONLY (invariant); builtin proxy for
-// claude/codex/opencode.
+// claude/codex/opencode/zcode.
 func GeminiAccountAdapter(provider, name string) Adapter {
 	a := Adapter{
 		Capabilities: baseAccountCapabilities("gemini", func(c *Capabilities) {
@@ -167,7 +167,7 @@ func GeminiAccountAdapter(provider, name string) Adapter {
 		switch clientID {
 		case "gemini":
 			return Direct
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "zcode":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -184,7 +184,7 @@ func GrokAccountAdapter(provider, name string) Adapter {
 	a.SourceRef = accountSourceRef(provider, name)
 	a.TransportFor = func(clientID string) Capability {
 		switch clientID {
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "zcode":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -218,8 +218,8 @@ func OpenCodeAccountAdapter(provider, name string) Adapter {
 }
 
 // WorkBuddyAccountAdapter: direct for workbuddy; its OpenAI-compatible accounts
-// can also back claude/codex/opencode through the managed builtin proxy (same
-// shape as OpenCodeAccountAdapter).
+// can also back claude/codex/opencode/zcode through the managed builtin proxy
+// (same shape as OpenCodeAccountAdapter).
 func WorkBuddyAccountAdapter(provider, name string) Adapter {
 	a := Adapter{
 		Capabilities: baseAccountCapabilities("workbuddy", func(c *Capabilities) {
@@ -233,7 +233,7 @@ func WorkBuddyAccountAdapter(provider, name string) Adapter {
 		switch clientID {
 		case "workbuddy":
 			return Direct
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "zcode":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -258,7 +258,7 @@ func KiroAccountAdapter(provider, name string, findExecutable func() string) Ada
 		switch clientID {
 		case "kiro":
 			return Direct
-		case "claude", "codex", "opencode":
+		case "claude", "codex", "opencode", "zcode":
 			if findExecutable != nil && findExecutable() != "" {
 				return ManagedExternalProxy
 			}
@@ -278,7 +278,7 @@ func PoolAdapterFor(providerID string, info ProviderInfo, proxyTransport Capabil
 		accepted[c] = true
 	}
 	if len(accepted) == 0 {
-		for _, c := range []string{"claude", "codex", "opencode"} {
+		for _, c := range []string{"claude", "codex", "opencode", "zcode"} {
 			accepted[c] = true
 		}
 	}
@@ -328,7 +328,7 @@ func GenericAccountAdapter(provider, name string, info ProviderInfo) Adapter {
 		// what is safe to pair (ADR 0011).
 		if info.CanProxy {
 			switch clientID {
-			case "claude", "codex", "opencode":
+			case "claude", "codex", "opencode", "zcode":
 				return ManagedBuiltinProxy
 			}
 		}

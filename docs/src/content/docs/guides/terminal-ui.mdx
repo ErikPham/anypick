@@ -1,6 +1,6 @@
 ---
 title: Apps & Terminal UI
-description: How Apps routes Claude Code and Codex — pick a source, set models, preview, then activate.
+description: How Apps routes Claude Code, Codex and ZCode — pick a source, set models, preview, then activate.
 sidebar:
   label: Apps & Terminal UI
 ---
@@ -8,7 +8,7 @@ sidebar:
 Run `anypick` (or `anypick tui`). You land on **Apps**. That screen is the product:
 it answers one question for each coding tool —
 
-> **What should Claude Code / Codex use right now?**
+> **What should Claude Code / Codex / ZCode use right now?**
 
 Everything else (accounts, gateways, proxies) exists to feed that answer.
 
@@ -32,8 +32,8 @@ anypick
 
 Read it top to bottom:
 
-1. **Each row is an app** — Claude Code or Codex. Gemini and Kiro are *not*
-   here; they only switch their own login under Accounts.
+1. **Each row is an app** — Claude Code, Codex, or ZCode. Gemini and Kiro are
+   *not* here; they only switch their own login under Accounts.
 2. **The middle column** is who powers it (account, gateway, …) and which model
    AnyPick set.
 3. **The status** on the right is plain English: ready, native, not set, or
@@ -90,7 +90,7 @@ Three groups, in plain language:
 
 | Group | Pick this when… |
 | --- | --- |
-| **Native accounts** | You want Claude or Codex on *its own* provider login. AnyPick switches the live credential; the app keeps its own model picker. |
+| **Native accounts** | You want Claude or Codex on *its own* provider login. AnyPick switches the live credential; the app keeps its own model picker. ZCode has no entry here — AnyPick does not manage a ZCode login — so route it through a gateway or an account proxy instead. |
 | **Gateways & proxies** | You want another provider, an API key endpoint, a multi-account pool, or the Proxy Hub. AnyPick will set models next. |
 | **Saved setups** | You already saved a full recipe with `--save` / a preset (`@name`). |
 

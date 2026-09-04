@@ -105,50 +105,92 @@ func (s *Service) ApplyProxyEndpoint(ctx context.Context, clientID string, opts 
 	return cad.Apply(actx)
 }
 
-// ApplyGatewayProfile resolves a saved gateway profile and applies it to the
-// client (gateway branch of WriteClientConfig).
-func (s *Service) ApplyGatewayProfile(ctx context.Context, profileName, clientID string) (*client.ApplyResult, error) {
+// GatewayApplyInput is what a saved gateway contributes to a client's config.
+//
+// Two execution paths need exactly these fields: the persistent write
+// (ApplyGatewayProfile) and the ephemeral isolated home (activation's
+// createEphemeralHome). Resolving them separately is how `use <client> --with
+// <gateway>` and `run <client> --with <gateway>` drift apart — the second one
+// shipped without the model, the credential or the protocol-aware endpoint
+// until a client that requires a model made the difference visible.
+type GatewayApplyInput struct {
+	// Endpoint is the gateway's URL mapped onto the surface that speaks the
+	// client's protocol (SmartEndpointFor).
+	Endpoint string
+	APIKey   string
+	Model    string
+	Provider string
+	Models   map[string]string // role → model override
+}
+
+// GatewayApplyInputFor resolves a gateway profile for one client.
+func (s *Service) GatewayApplyInputFor(ctx context.Context, profileName, clientID string) (GatewayApplyInput, error) {
 	cad, err := s.Clients.Get(clientID)
 	if err != nil {
-		return nil, err
+		return GatewayApplyInput{}, err
 	}
 	pr, err := s.Profiles.GetContext(ctx, profileName)
 	if err != nil {
-		return nil, err
+		return GatewayApplyInput{}, err
 	}
 	if pr == nil {
-		return nil, anyerr.Newf("Gateway `"+profileName+"` was not found.", "GATEWAY_NOT_FOUND",
+		return GatewayApplyInput{}, anyerr.Newf("Gateway `"+profileName+"` was not found.", "GATEWAY_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound))
 	}
-	endpoint := pr.Meta.Endpoint
-	if endpoint == "" {
-		return nil, anyerr.Newf(
+	if pr.Meta.Endpoint == "" {
+		return GatewayApplyInput{}, anyerr.Newf(
 			fmt.Sprintf("Gateway %s has no endpoint. Set one before use: anypick profile edit %s --endpoint …",
 				profileName, profileName),
 			"CLIENT_CONFIG_INVALID")
 	}
 	// Smart routing: pick the surface that speaks THIS client's protocol.
-	endpoint = SmartEndpointFor(cad.Capabilities(), pr.Meta.Provider, endpoint, s.Catalog)
+	endpoint := SmartEndpointFor(cad.Capabilities(), pr.Meta.Provider, pr.Meta.Endpoint, s.Catalog)
 
 	apiKey := pr.Secrets.APIKey
 	if apiKey == "" {
 		apiKey = "anypick-proxy"
 	}
+	in := GatewayApplyInput{
+		Endpoint: endpoint,
+		APIKey:   apiKey,
+		Model:    pr.Meta.DefaultModel,
+		Provider: pr.Meta.Provider,
+	}
+	if pr.Meta.Models != nil {
+		in.Models = map[string]string{}
+		for role, model := range pr.Meta.Models {
+			in.Models[role] = model
+		}
+	}
+	return in, nil
+}
+
+// ApplyGatewayProfile resolves a saved gateway profile and applies it to the
+// client (gateway branch of WriteClientConfig).
+func (s *Service) ApplyGatewayProfile(ctx context.Context, profileName, clientID string) (*client.ApplyResult, error) {
+	in, err := s.GatewayApplyInputFor(ctx, profileName, clientID)
+	if err != nil {
+		return nil, err
+	}
+	cad, err := s.Clients.Get(clientID)
+	if err != nil {
+		return nil, err
+	}
 	actx := &client.ApplyContext{
-		Endpoint:            endpoint,
-		APIKey:              apiKey,
-		DefaultModel:        pr.Meta.DefaultModel,
+		Endpoint:            in.Endpoint,
+		APIKey:              in.APIKey,
+		DefaultModel:        in.Model,
 		AnyPickRoot:         s.Root,
 		Home:                clientHome(s),
 		SourceKind:          "gateway",
-		SourceProvider:      pr.Meta.Provider,
+		SourceProvider:      in.Provider,
 		SourceName:          profileName,
 		TransportCapability: transport.Direct,
 		Mode:                "persistent",
 	}
-	if actx.ModelRoles == nil && pr.Meta.Models != nil {
+	if actx.ModelRoles == nil && in.Models != nil {
 		actx.ModelRoles = map[string]string{}
-		for role, model := range pr.Meta.Models {
+		for role, model := range in.Models {
 			actx.ModelRoles[role] = model
 		}
 	}
@@ -171,6 +213,8 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string) ([]str
 		sources = append(sources, filepath.Join(clientHome(s), ".claude", "settings.json"))
 	case "codex":
 		sources = append(sources, codexConfigPath(s))
+	case "zcode":
+		sources = append(sources, client.ZCodeConfigPaths(clientHome(s))...)
 	default:
 		return nil, nil
 	}
@@ -178,10 +222,15 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string) ([]str
 	if err := os.MkdirAll(recoveryDir, 0o700); err != nil {
 		return nil, anyerr.Wrapf(err, "create client config recovery directory", "CLIENT_CONFIG_BACKUP_FAILED")
 	}
+	// Two sources can share a basename — ZCode keeps a config.json under both
+	// ~/.zcode/cli and ~/.zcode/v2. Restoring one into the other's path is far
+	// worse than a slightly uglier backup name, so disambiguate with the
+	// parent directory.
+	names := recoveryBackupNames(sources)
 	var records []string
-	for _, src := range sources {
+	for i, src := range sources {
 		data, readErr := os.ReadFile(src)
-		dest := filepath.Join(recoveryDir, filepath.Base(src)+"."+sanitize(journalID)+".bak")
+		dest := filepath.Join(recoveryDir, names[i]+"."+sanitize(journalID)+".bak")
 		if readErr == nil {
 			if writeErr := os.WriteFile(dest, data, 0o600); writeErr != nil {
 				return nil, anyerr.Wrapf(
@@ -203,6 +252,24 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string) ([]str
 		}
 	}
 	return records, nil
+}
+
+// recoveryBackupNames derives a distinct backup filename for each source path.
+func recoveryBackupNames(sources []string) []string {
+	counts := map[string]int{}
+	for _, src := range sources {
+		counts[filepath.Base(src)]++
+	}
+	out := make([]string, 0, len(sources))
+	for _, src := range sources {
+		base := filepath.Base(src)
+		if counts[base] > 1 {
+			out = append(out, filepath.Base(filepath.Dir(src))+"-"+base)
+			continue
+		}
+		out = append(out, base)
+	}
+	return out
 }
 
 // RestoreClientConfigRecovery replays compensation records.

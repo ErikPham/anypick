@@ -95,6 +95,22 @@ func (s *Service) CreateEphemeralRuntimeContext(
 			return nil, err
 		}
 		out.Environment["HOME"] = out.Home
+	case "zcode":
+		// Only the CLI face matters for a spawned child; the desktop app is
+		// never launched through an isolated home.
+		isoZCode := filepath.Dir(client.ZCodeCLIConfigPath(out.Home))
+		if err := os.MkdirAll(isoZCode, 0o700); err != nil {
+			_ = out.Cleanup()
+			return nil, err
+		}
+		if err := copyIfPresent(
+			client.ZCodeCLIConfigPath(live),
+			client.ZCodeCLIConfigPath(out.Home),
+		); err != nil {
+			_ = out.Cleanup()
+			return nil, err
+		}
+		out.Environment["HOME"] = out.Home
 	default:
 		_ = out.Cleanup()
 		return nil, fmt.Errorf("client %s does not support isolated homes", cad.ID())

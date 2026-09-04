@@ -119,7 +119,7 @@ func TestRegisterBuiltin(t *testing.T) {
 	if err := RegisterBuiltin(r, home); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy"} {
+	for _, id := range []string{"claude", "codex", "gemini", "kiro", "opencode", "workbuddy", "zcode"} {
 		if !r.Has(id) {
 			t.Fatalf("missing builtin %q", id)
 		}
@@ -146,6 +146,14 @@ func TestCapabilitiesAcceptProtocols(t *testing.T) {
 	codex, _ := r.Get("codex")
 	if !hasProtocol(codex.Capabilities().AcceptedProtocols, transport.OpenAI) {
 		t.Fatalf("codex should accept openai")
+	}
+	zcode, _ := r.Get("zcode")
+	if !hasProtocol(zcode.Capabilities().AcceptedProtocols, transport.Anthropic) {
+		t.Fatalf("zcode should accept anthropic")
+	}
+	if zcode.Capabilities().ProtocolPreference != transport.Anthropic {
+		t.Fatalf("zcode protocol preference = %q, want anthropic",
+			zcode.Capabilities().ProtocolPreference)
 	}
 }
 

@@ -155,3 +155,70 @@ func TestGatewayProtocolNarrowing(t *testing.T) {
 		t.Fatalf("capability = %s", plan.Transport.Capability)
 	}
 }
+
+// TestEphemeralGatewayCarriesModelKeyAndSurface locks the ephemeral path to the
+// same gateway resolution the persistent write uses. Before both shared one
+// helper, `run <client> --with <gateway>` wrote a placeholder API key, no model
+// and the raw URL — invisible for clients that tolerate a missing model, and
+// fatal for one that requires it.
+func TestEphemeralGatewayCarriesModelKeyAndSurface(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	seedGateway(t, env, "or-work")
+
+	plan, err := PlanActivation(ctx, Request{
+		Mode:   ModeEphemeral,
+		Client: "zcode",
+		Source: refPtr(refs.GatewayRef("or-work")),
+	}, env.Deps, Options{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	result, err := Execute(ctx, plan, env.Deps, ExecuteOptions{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.Isolated == nil {
+		t.Fatal("ephemeral gateway run produced no isolated runtime")
+	}
+	defer func() { _ = result.Isolated.Cleanup() }()
+
+	raw, err := os.ReadFile(filepath.Join(result.Isolated.Home, ".zcode", "cli", "config.json"))
+	if err != nil {
+		t.Fatalf("isolated config: %v", err)
+	}
+	var doc struct {
+		Provider map[string]json.RawMessage `json:"provider"`
+		Model    map[string]string          `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	rawEntry, ok := doc.Provider["anypick"]
+	if !ok {
+		t.Fatalf("no managed provider in the isolated config:\n%s", raw)
+	}
+	var entry struct {
+		Options struct {
+			BaseURL string `json:"baseURL"`
+			APIKey  string `json:"apiKey"`
+		} `json:"options"`
+		Models map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(rawEntry, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Options.APIKey != "sk-or-test" {
+		t.Fatalf("apiKey = %q, want the gateway's saved secret", entry.Options.APIKey)
+	}
+	// Smart routing strips /v1 for an Anthropic-preference client.
+	if entry.Options.BaseURL != "https://openrouter.example/api" {
+		t.Fatalf("baseURL = %q, want the /v1-stripped Anthropic surface", entry.Options.BaseURL)
+	}
+	if _, ok := entry.Models["vendor/large"]; !ok {
+		t.Fatalf("gateway default model missing:\n%s", raw)
+	}
+	if doc.Model["main"] != "anypick/vendor/large" {
+		t.Fatalf("model.main = %q, want anypick/vendor/large", doc.Model["main"])
+	}
+}

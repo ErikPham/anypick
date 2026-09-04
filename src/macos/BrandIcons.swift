@@ -169,6 +169,13 @@ extension DesignBrandAsset {
       return dark
         ? ["opencode-mark-dark.png", "opencode-mark-light.png", "opencode.svg"]
         : ["opencode-mark-light.png", "opencode-mark-dark.png", "opencode.svg"]
+    case "zcode":
+      // Full-color app icon, same convention as kiro-app.png and
+      // workbuddy-mark.png: the row shows the app's own icon so the user can
+      // tell which client is being configured. Deliberately does not cover
+      // "zai" — that is Z.ai's API-key provider, and the ZCode app icon is not
+      // the Z.ai logo, so an account row would be wearing the wrong brand.
+      return ["zcode-app.png"]
     default:
       return []
     }
@@ -210,6 +217,9 @@ enum DesignBrandAsset {
     case "openrouter": "network"
     case "grok", "xai": "sparkles"
     case "opencode": "chevron.left.forwardslash.chevron.right"
+    // Matches ProductionModel.providerSymbol so an unbundled build and one
+    // with the asset present degrade to the same glyph.
+    case "zcode": "curlybraces"
     // No bundled mark: WorkBuddy ships a full-color app icon, and these slots
     // render as monochrome templates, so its logo would come out as a blob.
     case "workbuddy", "codebuddy": "wand.and.stars"

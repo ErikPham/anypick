@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/profile"
@@ -132,6 +133,151 @@ func TestPrepareAndRestoreRecovery(t *testing.T) {
 	}
 	if _, err := os.Stat(dummy); !os.IsNotExist(err) {
 		t.Fatalf("want file deleted after restore, stat err=%v", err)
+	}
+}
+
+// TestApplyProxyEndpointWritesZCodeProvider covers the managed-proxy seam for
+// ZCode. Unlike a gateway (direct) source, this path never gets exercised by a
+// sandbox smoke test: it only runs after a real proxy has passed its health
+// check, so a fake credential cannot reach it. The adapter's own tests call
+// Apply directly and would not catch a ProxyEndpointOptions field this package
+// forgot to forward.
+func TestApplyProxyEndpointWritesZCodeProvider(t *testing.T) {
+	s := testService(t)
+	ctx := context.Background()
+	cliPath := filepath.Join(s.Home, ".zcode", "cli", "config.json")
+	v2Path := filepath.Join(s.Home, ".zcode", "v2", "config.json")
+	for _, p := range []string{cliPath, v2Path} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(`{"provider":{"zai":{"name":"Z.AI"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := s.ApplyProxyEndpoint(ctx, "zcode", ProxyEndpointOptions{
+		Endpoint:     "http://127.0.0.1:8080",
+		APIKey:       "sk-proxy",
+		DefaultModel: "glm-4.6",
+	})
+	if err != nil {
+		t.Fatalf("ApplyProxyEndpoint zcode: %v", err)
+	}
+	// The checkpoint is reported too — opencode does the same, and Reset needs
+	// it to know whether it created a file or merely edited one.
+	managed := map[string]bool{}
+	for _, p := range res.ManagedPaths {
+		managed[p] = true
+	}
+	if !managed[cliPath] || !managed[v2Path] {
+		t.Fatalf("ManagedPaths=%v, want both ZCode configs", res.ManagedPaths)
+	}
+
+	for _, p := range []string{cliPath, v2Path} {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Provider map[string]struct {
+				Name    string `json:"name"`
+				Options struct {
+					BaseURL string `json:"baseURL"`
+					APIKey  string `json:"apiKey"`
+				} `json:"options"`
+				Models map[string]any `json:"models"`
+			} `json:"provider"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		entry, ok := doc.Provider["anypick"]
+		if !ok {
+			t.Fatalf("%s: managed provider missing:\n%s", p, raw)
+		}
+		if entry.Options.BaseURL != "http://127.0.0.1:8080" {
+			t.Fatalf("%s: baseURL=%q", p, entry.Options.BaseURL)
+		}
+		if entry.Options.APIKey != "sk-proxy" {
+			t.Fatalf("%s: apiKey=%q", p, entry.Options.APIKey)
+		}
+		if _, ok := entry.Models["glm-4.6"]; !ok {
+			t.Fatalf("%s: model glm-4.6 missing:\n%s", p, raw)
+		}
+		// The pre-existing provider must survive the merge.
+		if _, ok := doc.Provider["zai"]; !ok {
+			t.Fatalf("%s: user provider zai was dropped:\n%s", p, raw)
+		}
+	}
+
+	// Only the CLI flavour has no separate selection file, so only it gets the
+	// top-level model rewrite.
+	raw, err := os.ReadFile(cliPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cliDoc struct {
+		Model map[string]string `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &cliDoc); err != nil {
+		t.Fatal(err)
+	}
+	if cliDoc.Model["main"] != "anypick/glm-4.6" {
+		t.Fatalf("cli model.main=%q, want anypick/glm-4.6", cliDoc.Model["main"])
+	}
+}
+
+// TestPrepareZCodeRecoveryKeepsBothConfigsDistinct covers the case the shared
+// basename breaks: ZCode keeps a config.json under both ~/.zcode/cli and
+// ~/.zcode/v2, so a backup-name collision would restore one flavour's content
+// into the other's path during crash recovery.
+func TestPrepareZCodeRecoveryKeepsBothConfigsDistinct(t *testing.T) {
+	s := testService(t)
+	cliPath := filepath.Join(s.Home, ".zcode", "cli", "config.json")
+	v2Path := filepath.Join(s.Home, ".zcode", "v2", "config.json")
+	for _, p := range []string{cliPath, v2Path} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(cliPath, []byte(`{"cli":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(v2Path, []byte(`{"v2":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := s.PrepareClientConfigRecovery("zcode", "journal-123")
+	if err != nil || len(records) != 2 {
+		t.Fatalf("Prepare records=%v err=%v, want one per config file", records, err)
+	}
+	dests := map[string]string{}
+	for _, r := range records {
+		parts := strings.SplitN(r, "=>", 2)
+		if len(parts) != 2 {
+			t.Fatalf("record %q is not src=>dest", r)
+		}
+		dests[parts[0]] = parts[1]
+	}
+	if dests[cliPath] == dests[v2Path] {
+		t.Fatalf("both configs backed up to the same file %q", dests[cliPath])
+	}
+
+	// Corrupt both, restore, and confirm each file got its own content back.
+	for _, p := range []string{cliPath, v2Path} {
+		if err := os.WriteFile(p, []byte(`{"corrupt":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RestoreClientConfigRecovery(records); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(cliPath); strings.TrimSpace(string(got)) != `{"cli":true}` {
+		t.Fatalf("cli config restored to %s", got)
+	}
+	if got, _ := os.ReadFile(v2Path); strings.TrimSpace(string(got)) != `{"v2":true}` {
+		t.Fatalf("v2 config restored to %s", got)
 	}
 }
 

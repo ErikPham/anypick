@@ -8,7 +8,7 @@ same way.
 
 | Word | Meaning |
 | --- | --- |
-| **Client** | The CLI you run: `claude`, `codex`, `gemini`, `kiro` |
+| **Client** | The CLI you run: `claude`, `codex`, `gemini`, `kiro`, `opencode`, `workbuddy`, `zcode` |
 | **Source** | What powers it: an account (`grok/work`), a gateway (`openrouter-work`), a pool (`pool:gemini`), the opt-in hub (`hub:default`), or a preset (`@work`) |
 | **Binding** | A concrete snapshot: this client → this source, plus model roles |
 | **Preset** | An editable template (`@name`), created only when you pass `--save` |
@@ -28,16 +28,28 @@ along with what it writes for each:
 - `codex` — Codex CLI
 - `gemini` — Gemini CLI (`GEMINI_API_KEY`, `GEMINI_MODEL`)
 - `kiro` — Kiro
+- `opencode` — OpenCode (an `anypick-managed` provider in `opencode.json`)
+- `workbuddy` — WorkBuddy AI / CodeBuddy (an AnyPick entry in `models.json`)
+- `zcode` — ZCode (an `anypick` provider in `~/.zcode/cli/config.json` and/or
+  `~/.zcode/v2/config.json`)
 
 Each client has an isolation manifest describing which files and variables
 belong to it, which is what makes `anypick reset <client>` and rollback exact
 rather than best-effort.
 
-<Aside type="note" title="Only two clients cross providers">
-`claude` and `codex` can be bound to any source, including one from a different
-provider — that is what the proxies exist for. `gemini` and `kiro` only accept
-their own provider's login, so `gemini --with grok/work` is rejected rather than
-silently proxied.
+<Aside type="caution" title="ZCode: the desktop app keeps its own model selection">
+ZCode stores its chosen model outside `config.json` — the desktop app reads it
+from `~/.zcode/v2/setting.json`, which AnyPick does not own. AnyPick writes the
+`anypick` provider and, for the CLI config, points `model.main` at it. In the
+desktop app the provider is only *registered*: pick **AnyPick** in ZCode's own
+model picker once and it stays routed until you `anypick reset zcode`.
+</Aside>
+
+<Aside type="note" title="Which clients cross providers">
+`claude`, `codex`, `opencode` and `zcode` can be bound to any source, including
+one from a different provider — that is what the proxies exist for. `gemini` and
+`kiro` only accept their own provider's login, so `gemini --with grok/work` is
+rejected rather than silently proxied.
 </Aside>
 
 That list is about *binding*. Switching which account is live is broader,

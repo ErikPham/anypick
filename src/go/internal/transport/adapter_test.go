@@ -3,10 +3,13 @@ package transport
 import "testing"
 
 // INVARIANT #1: capability pairs come from the source adapters. gemini and
-// kiro accept only their own provider; only claude/codex/opencode cross
+// kiro accept only their own provider; only claude/codex/opencode/zcode cross
 // providers through a proxy.
+//
+// Every client in `all` must have an expectation in every row. Adding a client
+// to the registry without classifying it here is how an untested pairing ships.
 func TestAccountAdapterPairingMatrix(t *testing.T) {
-	all := []string{"claude", "codex", "opencode", "gemini", "kiro"}
+	all := []string{"claude", "codex", "opencode", "zcode", "gemini", "kiro"}
 
 	type row struct {
 		name     string
@@ -19,40 +22,48 @@ func TestAccountAdapterPairingMatrix(t *testing.T) {
 	gemini := GeminiAccountAdapter("gemini", "work")
 	grok := GrokAccountAdapter("grok", "work")
 	opencode := OpenCodeAccountAdapter("opencode", "work")
+	workbuddy := WorkBuddyAccountAdapter("workbuddy", "work")
 	kiroWithBin := KiroAccountAdapter("kiro", "work", func() string { return "/usr/local/bin/kirolink" })
 	kiroNoBin := KiroAccountAdapter("kiro", "work", func() string { return "" })
 
 	rows := []row{
 		{"codex", codex, map[string]Capability{
 			"codex": Direct, "claude": Unsupported, "opencode": Unsupported,
-			"gemini": Unsupported, "kiro": Unsupported,
+			"zcode": Unsupported, "gemini": Unsupported, "kiro": Unsupported,
 		}},
 		{"claude", claude, map[string]Capability{
 			"claude": Direct, "codex": Unsupported, "opencode": Unsupported,
-			"gemini": Unsupported, "kiro": Unsupported,
+			"zcode": Unsupported, "gemini": Unsupported, "kiro": Unsupported,
 		}},
 		{"gemini", gemini, map[string]Capability{
 			"gemini": Direct, "claude": ManagedBuiltinProxy,
 			"codex": ManagedBuiltinProxy, "opencode": ManagedBuiltinProxy,
-			"kiro": Unsupported,
+			"zcode": ManagedBuiltinProxy, "kiro": Unsupported,
 		}},
 		{"grok", grok, map[string]Capability{
 			"claude": ManagedBuiltinProxy, "codex": ManagedBuiltinProxy,
-			"opencode": ManagedBuiltinProxy, "gemini": Unsupported, "kiro": Unsupported,
+			"opencode": ManagedBuiltinProxy, "zcode": ManagedBuiltinProxy,
+			"gemini": Unsupported, "kiro": Unsupported,
 		}},
 		{"opencode", opencode, map[string]Capability{
 			"opencode": Direct, "claude": ManagedBuiltinProxy,
-			"codex": ManagedBuiltinProxy, "gemini": Unsupported, "kiro": Unsupported,
+			"codex": ManagedBuiltinProxy, "zcode": Unsupported,
+			"gemini": Unsupported, "kiro": Unsupported,
+		}},
+		{"workbuddy", workbuddy, map[string]Capability{
+			"claude": ManagedBuiltinProxy, "codex": ManagedBuiltinProxy,
+			"opencode": ManagedBuiltinProxy, "zcode": ManagedBuiltinProxy,
+			"gemini": Unsupported, "kiro": Unsupported,
 		}},
 		{"kiro+bin", kiroWithBin, map[string]Capability{
 			"kiro": Direct, "claude": ManagedExternalProxy,
 			"codex": ManagedExternalProxy, "opencode": ManagedExternalProxy,
-			"gemini": Unsupported,
+			"zcode": ManagedExternalProxy, "gemini": Unsupported,
 		}},
 		{"kiro-nobin", kiroNoBin, map[string]Capability{
 			"kiro": Direct, "claude": ExternalManualProxy,
 			"codex": ExternalManualProxy, "opencode": ExternalManualProxy,
-			"gemini": Unsupported,
+			"zcode": ExternalManualProxy, "gemini": Unsupported,
 		}},
 	}
 
@@ -90,8 +101,8 @@ func TestCodexPolicyOverride(t *testing.T) {
 }
 
 func TestPoolAdapter(t *testing.T) {
-	// Default accepted clients are exactly ['claude','codex','opencode'] —
-	// even the provider's own native client is unsupported unless listed
+	// Default accepted clients are exactly ['claude','codex','opencode','zcode']
+	// — even the provider's own native client is unsupported unless listed
 	// (pools serve borrowing clients through a proxy only).
 	canProxy := ProviderInfo{ID: "gemini", CanProxy: true}
 	a := PoolAdapterFor("gemini", canProxy, ManagedBuiltinProxy)
@@ -101,6 +112,9 @@ func TestPoolAdapter(t *testing.T) {
 	}
 	if got := a.TransportFor("opencode"); got != ManagedBuiltinProxy {
 		t.Errorf("pool for opencode = %s", got)
+	}
+	if got := a.TransportFor("zcode"); got != ManagedBuiltinProxy {
+		t.Errorf("pool for zcode = %s", got)
 	}
 	if got := a.TransportFor("gemini"); got != Unsupported {
 		t.Errorf("pool default must not serve own native client, got %s", got)
