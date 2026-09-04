@@ -30,8 +30,8 @@ type GeminiModelDescriptor struct {
 
 // GeminiModelCatalog is the live account model list.
 type GeminiModelCatalog struct {
-	Models           []GeminiModelDescriptor
-	DefaultModelID   string
+	Models            []GeminiModelDescriptor
+	DefaultModelID    string
 	PreferredModelIDs []string
 }
 

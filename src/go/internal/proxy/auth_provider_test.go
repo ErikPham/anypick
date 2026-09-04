@@ -30,10 +30,10 @@ func TestUpstreamAuthProviderOverridesStatic(t *testing.T) {
 
 	// With an AuthProvider + ExtraHeaders.
 	up := &Upstream{
-		BaseURL:        base,
-		Auth:           "static-ignored",
-		AuthProvider:   func(ctx context.Context) (string, error) { providerCalls++; return "dynamic-token", nil },
-		ExtraHeaders:   []ExtraHeader{{Name: "x-grok-client-version", Value: "0.2.101"}},
+		BaseURL:      base,
+		Auth:         "static-ignored",
+		AuthProvider: func(ctx context.Context) (string, error) { providerCalls++; return "dynamic-token", nil },
+		ExtraHeaders: []ExtraHeader{{Name: "x-grok-client-version", Value: "0.2.101"}},
 	}
 	rec := httptest.NewRecorder()
 	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1/v1/models", nil)

@@ -51,8 +51,8 @@ func OpenAIResponsesToGemini(req OpenAIResponsesRequest, resolvedModel string) *
 						messages = append(messages, attachReasoning(OpenAIMessage{
 							Role: "assistant",
 							ToolCalls: []OpenAIToolCall{{
-								ID:       id,
-								Type:     "function",
+								ID:   id,
+								Type: "function",
 								Function: struct {
 									Name      string `json:"name"`
 									Arguments string `json:"arguments"`
@@ -167,8 +167,8 @@ func GeminiToOpenAIResponses(res *GeminiGenerateResponse, model string) *OpenAIR
 	}
 	if reasoningText != "" || reasoningSignature != "" {
 		item := OpenAIResponseOutputItem{
-			ID:    "rs_" + RandomID(),
-			Type:  "reasoning",
+			ID:     "rs_" + RandomID(),
+			Type:   "reasoning",
 			Status: "completed",
 		}
 		if reasoningText != "" {
@@ -185,10 +185,10 @@ func GeminiToOpenAIResponses(res *GeminiGenerateResponse, model string) *OpenAIR
 	}
 	if text != "" {
 		output = append(output, OpenAIResponseOutputItem{
-			ID:   "msg_" + RandomID(),
-			Type: "message",
+			ID:     "msg_" + RandomID(),
+			Type:   "message",
 			Status: "completed",
-			Role: "assistant",
+			Role:   "assistant",
 			Content: []OpenAIResponseContent{{
 				Type: "output_text", Text: text, Annotations: []interface{}{}, Logprobs: []interface{}{},
 			}},
@@ -200,28 +200,28 @@ func GeminiToOpenAIResponses(res *GeminiGenerateResponse, model string) *OpenAIR
 		}
 		if part.ThoughtSignature != "" {
 			output = append(output, OpenAIResponseOutputItem{
-				ID:              "rs_fc_" + RandomID(),
-				Type:            "reasoning",
-				Status:          "completed",
+				ID:               "rs_fc_" + RandomID(),
+				Type:             "reasoning",
+				Status:           "completed",
 				EncryptedContent: part.ThoughtSignature,
 			})
 		}
 		args, _ := json.Marshal(orEmptyMap(part.FunctionCall.Args))
 		output = append(output, OpenAIResponseOutputItem{
-			ID:       "fc_" + RandomID(),
-			Type:     "function_call",
-			Status:   "completed",
-			CallID:   "call_" + RandomID(),
-			Name:     part.FunctionCall.Name,
+			ID:        "fc_" + RandomID(),
+			Type:      "function_call",
+			Status:    "completed",
+			CallID:    "call_" + RandomID(),
+			Name:      part.FunctionCall.Name,
 			Arguments: string(args),
 		})
 	}
 	if len(output) == 0 {
 		output = append(output, OpenAIResponseOutputItem{
-			ID:   "msg_" + RandomID(),
-			Type: "message",
+			ID:     "msg_" + RandomID(),
+			Type:   "message",
 			Status: "completed",
-			Role: "assistant",
+			Role:   "assistant",
 			Content: []OpenAIResponseContent{{
 				Type: "output_text", Text: "", Annotations: []interface{}{}, Logprobs: []interface{}{},
 			}},
@@ -248,21 +248,21 @@ func GeminiToOpenAIResponses(res *GeminiGenerateResponse, model string) *OpenAIR
 		incompleteDetails = map[string]string{"reason": "max_output_tokens"}
 	}
 	return &OpenAIResponsesResponse{
-		ID:              responseID,
-		Object:          "response",
-		CreatedAt:       time.Now().Unix(),
-		Status:          status,
-		Error:           nil,
+		ID:                responseID,
+		Object:            "response",
+		CreatedAt:         time.Now().Unix(),
+		Status:            status,
+		Error:             nil,
 		IncompleteDetails: incompleteDetails,
-		Model:           model,
-		Output:          output,
+		Model:             model,
+		Output:            output,
 		ParallelToolCalls: true,
 		Usage: &OpenAIResponsesUsage{
-			InputTokens:        inputTokens,
-			InputTokensDetails: map[string]int{"cached_tokens": 0},
-			OutputTokens:       outputTokens,
+			InputTokens:         inputTokens,
+			InputTokensDetails:  map[string]int{"cached_tokens": 0},
+			OutputTokens:        outputTokens,
 			OutputTokensDetails: map[string]int{"reasoning_tokens": reasoningTokens},
-			TotalTokens:        totalTokens,
+			TotalTokens:         totalTokens,
 		},
 	}
 }

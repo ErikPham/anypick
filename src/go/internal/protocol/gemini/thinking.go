@@ -9,13 +9,13 @@ import (
 type ReasoningEffort string
 
 const (
-	EffortNone     ReasoningEffort = "none"
-	EffortMinimal  ReasoningEffort = "minimal"
-	EffortLow      ReasoningEffort = "low"
-	EffortMedium    ReasoningEffort = "medium"
-	EffortHigh     ReasoningEffort = "high"
-	EffortXHigh    ReasoningEffort = "xhigh"
-	EffortMax      ReasoningEffort = "max"
+	EffortNone    ReasoningEffort = "none"
+	EffortMinimal ReasoningEffort = "minimal"
+	EffortLow     ReasoningEffort = "low"
+	EffortMedium  ReasoningEffort = "medium"
+	EffortHigh    ReasoningEffort = "high"
+	EffortXHigh   ReasoningEffort = "xhigh"
+	EffortMax     ReasoningEffort = "max"
 )
 
 // ReasoningIntent is the protocol-neutral reasoning control extracted from a

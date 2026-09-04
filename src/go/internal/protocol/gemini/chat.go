@@ -224,16 +224,6 @@ func GeminiToOpenAI(res *GeminiGenerateResponse, model string) *OpenAIChatRespon
 	}
 }
 
-func appendSystem(current, addition string) string {
-	// Used only when multiple system messages arrive; keep a single joined
-	// value. current may already contain prior appends, so rebuild from the
-	// prior value minus the trailing duplicate.
-	if stringsHasSuffix(current, "\n"+addition) {
-		return current
-	}
-	return current + "\n" + addition
-}
-
 func orEmpty(s string) string { return s }
 
 func orEmptyMap(m map[string]interface{}) map[string]interface{} {
@@ -314,8 +304,4 @@ func orDefault(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-func stringsHasSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }

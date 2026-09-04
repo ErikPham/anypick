@@ -182,16 +182,16 @@ func TestGrokProxyInjectsAuthAndHeaders(t *testing.T) {
 	up.BaseURL = base
 	up.Anthropic.BaseURL = base
 	srv := &proxy.Server{
-		ProviderID:            "grok",
-		AccountName:           "test",
-		InstanceID:            "inst",
-		Token:                 "secret",
-		Upstream:              up.BaseURL,
-		UpstreamAuthHeader:    up.AuthHeader,
+		ProviderID:              "grok",
+		AccountName:             "test",
+		InstanceID:              "inst",
+		Token:                   "secret",
+		Upstream:                up.BaseURL,
+		UpstreamAuthHeader:      up.AuthHeader,
 		UpstreamAuthValuePrefix: up.AuthValuePrefix,
-		UpstreamAuthProvider:  up.AuthProvider,
-		UpstreamExtraHeaders:  up.ExtraHeaders,
-		Anthropic:             up.Anthropic,
+		UpstreamAuthProvider:    up.AuthProvider,
+		UpstreamExtraHeaders:    up.ExtraHeaders,
+		Anthropic:               up.Anthropic,
 	}
 	if err := srv.Listen("127.0.0.1", 0); err != nil {
 		t.Fatal(err)
