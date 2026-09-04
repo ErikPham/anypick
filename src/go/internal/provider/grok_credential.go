@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
@@ -335,7 +336,21 @@ func writeGrokSession(authPath string, s grokSession) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(authPath, append(out, '\n'), 0o600)
+	return writeGrokAuthAtomic(authPath, append(out, '\n'))
+}
+
+// writeGrokAuthAtomic replaces the live session file by rename, never by
+// truncation.
+//
+// authPath is the real ~/.grok/auth.json, and x.ai rotates the refresh token on
+// every redemption, so this runs while serving traffic rather than during a
+// user action. An in-place write interrupted by SIGKILL or power loss leaves
+// the user's Grok login empty or half-written with nothing to recover from:
+// Backup copies live->snapshot, never the reverse, so there is no second copy
+// (invariant #4, ADR 0004). The temporary file is staged beside the target so
+// the rename cannot cross a filesystem.
+func writeGrokAuthAtomic(authPath string, raw []byte) error {
+	return atomicfile.Write(authPath, raw, 0o600)
 }
 
 // grokUpstream builds the shared-proxy Upstream for this account's saved auth
