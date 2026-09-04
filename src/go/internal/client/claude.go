@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
@@ -214,7 +215,10 @@ func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(settings, append(out, '\n'), 0o600); err != nil {
+	// settings is the user's real ~/.claude/settings.json. A truncated write
+	// here leaves their Claude Code config unreadable with no copy to fall back
+	// on, so replace by rename rather than overwriting in place.
+	if err := atomicfile.Write(settings, append(out, '\n'), 0o600); err != nil {
 		return nil, err
 	}
 
