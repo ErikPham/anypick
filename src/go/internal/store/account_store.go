@@ -535,6 +535,52 @@ func (s *AccountStore) clearProxyStateAndLeasesContext(ctx context.Context, prov
 	})
 }
 
+// ReleaseProxyRuntime releases an account's proxy liveness (endpoint, pid,
+// instance, started-at) and ALL of its leases in one transaction, but KEEPS
+// the persisted bearer token. Client configs are written once at activation
+// holding that token; rotating it on every stop would 401 every configured
+// app until the next activation rewrote it, so stopping must not rotate.
+// Dropping the secret stays explicit via ClearProxyStateAndLeasesContext.
+// There is deliberately no ctx-less form: AGENTS.md invariant 5 forbids one
+// for a mutating method, and nothing needs it — every caller already holds a
+// context from the proxy lifecycle it is cleaning up after.
+//
+// ReleaseProxyRuntimeContext is mutation-guarded (ADR 0009).
+func (s *AccountStore) ReleaseProxyRuntimeContext(ctx context.Context, providerID, name string) error {
+	return s.mutate(ctx, providerID, func(ctx context.Context) error {
+		return s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
+			var raw sql.NullString
+			if err := tx.QueryRow(
+				`SELECT state_json FROM proxy_state WHERE provider = ? AND account = ?`,
+				providerID, name).Scan(&raw); err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			token := ""
+			if raw.Valid && raw.String != "" {
+				var state ProxyRuntimeState
+				if json.Unmarshal([]byte(raw.String), &state) == nil {
+					token = state.Token
+				}
+			}
+			if _, err := tx.Exec(
+				`DELETE FROM proxy_leases WHERE provider = ? AND account = ?`, providerID, name); err != nil {
+				return err
+			}
+			if token == "" {
+				_, err := tx.Exec(
+					`DELETE FROM proxy_state WHERE provider = ? AND account = ?`, providerID, name)
+				return err
+			}
+			_, err := tx.Exec(
+				`INSERT INTO proxy_state (provider, account, state_json)
+				 VALUES (?, ?, ?)
+				 ON CONFLICT(provider, account) DO UPDATE SET state_json = excluded.state_json`,
+				providerID, name, marshalJSON(ProxyRuntimeState{AccountName: name, Token: token}))
+			return err
+		})
+	})
+}
+
 // Delete removes the account, its proxy state, and a stale active pointer in
 // ONE durable commit — clearing the pointer after cleanup could strand it
 // after a crash.

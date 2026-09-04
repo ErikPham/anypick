@@ -547,6 +547,63 @@ func TestStartReusesLiveInstance(t *testing.T) {
 	}
 }
 
+func TestStopClearsEnabledSoItStaysStopped(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "work", true)
+
+	if _, err := ts.Service.StartProxy(ctx, "codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "work")
+	if err != nil || !before.Enabled || before.Port == 0 {
+		t.Fatalf("config after start = %+v, %v", before, err)
+	}
+	if err := ts.Service.Stop(ctx, "codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Enabled {
+		t.Fatalf("config after stop = %+v, want Enabled=false", after)
+	}
+	if after.Port != before.Port {
+		t.Fatalf("stop changed port %d → %d", before.Port, after.Port)
+	}
+}
+
+// The bearer token is stable per account: client configs written once at
+// activation must survive restarts, or every configured app 401s until the
+// next activation rewrites it.
+func TestProxyTokenStableAcrossRestart(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "work", true)
+
+	first, err := ts.Service.StartProxy(ctx, "codex", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Token == "" {
+		t.Fatal("first start issued no token")
+	}
+	if err := ts.Service.Stop(ctx, "codex", "work"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := ts.Service.StartProxy(ctx, "codex", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Token != first.Token {
+		t.Fatal("proxy token rotated across restart: client configs would 401")
+	}
+	if second.Endpoint != first.Endpoint {
+		t.Fatalf("endpoint moved %s → %s", first.Endpoint, second.Endpoint)
+	}
+}
+
 func TestStartMissingAccountFailsClosed(t *testing.T) {
 	ts := newTestServices(t)
 	if _, err := ts.Service.StartProxy(context.Background(), "codex", "ghost"); err == nil {

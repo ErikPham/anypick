@@ -69,9 +69,13 @@ func (s *Service) cleanupStoppedInstance(ctx context.Context, providerID, accoun
 		if state == nil || state.InstanceID != instanceID {
 			return leaseErr
 		}
+		// Release (not Clear): the bearer token is stable per account so
+		// client configs written at activation keep working. Clearing the
+		// row here is how every SIGTERM minted a new secret and Claude
+		// Code 401'd until the next `use`.
 		return errors.Join(
 			leaseErr,
-			s.Store.ClearProxyStateContext(c, providerID, accountName),
+			s.Store.ReleaseProxyRuntimeContext(c, providerID, accountName),
 		)
 	}, 0)
 }

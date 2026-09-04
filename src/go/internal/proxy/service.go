@@ -447,9 +447,22 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 	if err != nil {
 		return nil, anyerr.Wrapf(err, "generate instance id", "PROXY_START_FAILED")
 	}
-	token, err := NewToken()
-	if err != nil {
-		return nil, anyerr.Wrapf(err, "generate proxy token", "PROXY_START_FAILED")
+	// The bearer token is stable per account: it is persisted in proxy_state
+	// and reused across restarts so client configs written once at
+	// activation keep working. Only a first-ever start (or a state row
+	// without one) mints a fresh token. Rotating here would 401 every
+	// configured app until the next activation rewrote it.
+	token := ""
+	mintedFresh := false
+	if state != nil {
+		token = state.Token
+	}
+	if token == "" {
+		mintedFresh = true
+		token, err = NewToken()
+		if err != nil {
+			return nil, anyerr.Wrapf(err, "generate proxy token", "PROXY_START_FAILED")
+		}
 	}
 	endpoint := fmt.Sprintf("http://%s:%d", normalizedLoopback(host), port)
 	if err := s.Store.SetProxyConfigContext(ctx, providerID, accountName, cfg); err != nil {
@@ -463,7 +476,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		PID: 0, InstanceID: instanceID, StartedAt: nowISO(), Token: token,
 	}
 	if err := s.Store.WriteProxyStateContext(ctx, providerID, accountName, st); err != nil {
-		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg)
+		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg, mintedFresh)
 		return nil, errors.Join(err, cleanupErr)
 	}
 
@@ -472,7 +485,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		logPath := paths.ProxyLogPath(s.Store.Root, providerID, accountName)
 		pid, err = s.Spawner(providerID, accountName, st, logPath)
 		if err != nil {
-			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg)
+			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg, mintedFresh)
 			return nil, errors.Join(
 				anyerr.Wrapf(err, "spawn proxy child", "PROXY_START_FAILED"),
 				cleanupErr,
@@ -482,12 +495,12 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		// In-process mode (tests/library): same lifecycle as before.
 		server := s.buildServer(providerID, accountName, instanceID, token, upstream)
 		if err := server.Listen(host, port); err != nil {
-			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg)
+			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg, mintedFresh)
 			return nil, errors.Join(err, cleanupErr)
 		}
 		if err := server.WaitReady(healthTimeout); err != nil {
 			_ = server.Close()
-			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg)
+			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg, mintedFresh)
 			return nil, errors.Join(err, cleanupErr)
 		}
 		s.servers.put(providerID, accountName, server)
@@ -497,7 +510,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 	// Ownership proof before declaring success: the server must echo OUR new
 	// instance id, whatever process hosts it.
 	if err := waitHealthInstance(endpoint, instanceID, healthTimeout); err != nil {
-		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, "", originalCfg)
+		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, "", originalCfg, mintedFresh)
 		return nil, errors.Join(err, cleanupErr)
 	}
 
@@ -509,7 +522,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 	// Persist the serving pid before publishing a lease or returning success.
 	st.PID = pid
 	if err := s.Store.WriteProxyStateContext(ctx, providerID, accountName, st); err != nil {
-		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, "", originalCfg)
+		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, "", originalCfg, mintedFresh)
 		return nil, errors.Join(err, cleanupErr)
 	}
 
@@ -518,7 +531,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		Port: portOf(endpoint), Host: host, Endpoint: endpoint,
 		OwnerPID: pid, InstanceID: instanceID,
 	}); lErr != nil {
-		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, leaseID, originalCfg)
+		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, leaseID, originalCfg, mintedFresh)
 		return nil, errors.Join(lErr, cleanupErr)
 	}
 
@@ -532,12 +545,16 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 // abortStart compensates every mutation made by a failed start. The cleanup
 // context retains the caller's held-lock identity while ignoring cancellation,
 // so rollback can finish without racing another provider mutation.
+// mintedFresh tells whether this attempt minted the bearer token: only then
+// is the state row dropped outright. A reused stable token survives the abort
+// because live client configs may still hold it.
 func (s *Service) abortStart(
 	ctx context.Context,
 	providerID, accountName, instanceID, endpoint string,
 	pid int,
 	leaseID string,
 	originalCfg store.ProxyConfig,
+	mintedFresh bool,
 ) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*healthTimeout)
 	defer cancel()
@@ -573,10 +590,21 @@ func (s *Service) abortStart(
 		if leaseID != "" {
 			cleanupErrs = append(cleanupErrs, s.Jobs.DeleteContext(cleanupCtx, leaseID))
 		}
-		cleanupErrs = append(
-			cleanupErrs,
-			s.Store.ClearProxyStateContext(cleanupCtx, providerID, accountName),
-		)
+		if mintedFresh {
+			// Never served with this token and nothing referenced it:
+			// drop it outright instead of persisting a stillborn secret.
+			cleanupErrs = append(
+				cleanupErrs,
+				s.Store.ClearProxyStateContext(cleanupCtx, providerID, accountName),
+			)
+		} else {
+			// Release (not full clear): the token predates this attempt
+			// and may still back live client configs.
+			cleanupErrs = append(
+				cleanupErrs,
+				s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName),
+			)
+		}
 	}
 	cleanupErrs = append(
 		cleanupErrs,
@@ -627,8 +655,11 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 		closeErr := server.Close()
 		// Drop the runtime state and every lease as ONE SQLite transaction;
 		// a half-landed cleanup would strand the survivors (ADR 0004 discipline).
-		clearErr := s.Store.ClearProxyStateAndLeasesContext(cleanupCtx, providerID, accountName)
-		return errors.Join(closeErr, clearErr)
+		// The bearer token survives: client configs written at activation
+		// hold it, so stop must not rotate it.
+		clearErr := s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName)
+		return errors.Join(closeErr, clearErr,
+			s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 	}
 
 	state, err := s.Store.ReadProxyStateContext(cleanupCtx, providerID, accountName)
@@ -636,12 +667,14 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 		return err
 	}
 	if state == nil {
-		return nil
+		return s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName)
 	}
 	health := healthOwnership(state.Endpoint)
 	if health.InstanceID != state.InstanceID {
-		// Not ours / already dead: drop stale records atomically.
-		return s.Store.ClearProxyStateAndLeasesContext(cleanupCtx, providerID, accountName)
+		// Not ours / already dead: drop stale records atomically, keep token.
+		return errors.Join(
+			s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName),
+			s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 	}
 	pid := health.PID
 	if pid <= 0 {
@@ -665,7 +698,25 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 	}
 	// Verified dead: drop the runtime state and every lease as ONE SQLite
 	// transaction, so neither half can strand the other (ADR 0004 discipline).
-	return s.Store.ClearProxyStateAndLeasesContext(cleanupCtx, providerID, accountName)
+	// The bearer token survives like every other stop path.
+	return errors.Join(
+		s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName),
+		s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
+}
+
+// disableProxyConfigIfSet records Enabled=false (preserving port/host) so a
+// stopped proxy stays stopped across proxy auto-start (PX1). No-op when
+// already disabled, so stopping a never-configured account writes nothing.
+func (s *Service) disableProxyConfigIfSet(ctx context.Context, providerID, accountName string) error {
+	cfg, err := s.Store.GetProxyConfigContext(ctx, providerID, accountName)
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	cfg.Enabled = false
+	return s.Store.SetProxyConfigContext(ctx, providerID, accountName, cfg)
 }
 
 func (s *Service) cleanupLeases(providerID, accountName, instanceID string) error {

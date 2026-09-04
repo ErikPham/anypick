@@ -61,3 +61,34 @@ func TestProxyStateCorruptReturnsNil(t *testing.T) {
 		t.Fatalf("corrupt should return nil,nil, got %#v %v", got, err)
 	}
 }
+
+// Release drops endpoint/pid/instance/leases but keeps the bearer token so
+// a later start can reuse it. Deleting the row here is how every restart
+// minted a new secret and configured clients 401'd.
+func TestReleaseProxyRuntimeKeepsToken(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.WriteProxyStateContext(ctx, "workbuddy", "work", ProxyRuntimeState{
+		AccountName: "work",
+		Endpoint:    "http://127.0.0.1:50785",
+		PID:         4242,
+		InstanceID:  "inst-1",
+		StartedAt:   nowISO(),
+		Token:       "stable-secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseProxyRuntimeContext(ctx, "workbuddy", "work"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadProxyState("workbuddy", "work")
+	if err != nil || got == nil {
+		t.Fatalf("ReadProxyState after release: %v %v", got, err)
+	}
+	if got.Token != "stable-secret" {
+		t.Fatalf("token = %q, want stable-secret", got.Token)
+	}
+	if got.Endpoint != "" || got.InstanceID != "" || got.PID != 0 {
+		t.Fatalf("liveness survived release: %#v", got)
+	}
+}

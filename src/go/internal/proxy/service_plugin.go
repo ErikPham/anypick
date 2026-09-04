@@ -143,9 +143,18 @@ func (s *Service) startForwardedLocked(
 		}, nil
 	}
 
-	token, err := NewToken()
-	if err != nil {
-		return nil, anyerr.Wrapf(err, "generate proxy token", "PROXY_START_FAILED")
+	token := ""
+	if state != nil {
+		token = state.Token
+	}
+	if token == "" {
+		// First-ever start mints the stable per-account token; restarts
+		// reuse it so client configs written once at activation keep
+		// working (same contract as startLocked/pickPoolToken).
+		token, err = NewToken()
+		if err != nil {
+			return nil, anyerr.Wrapf(err, "generate proxy token", "PROXY_START_FAILED")
+		}
 	}
 	if err := s.Store.SetProxyConfigContext(ctx, providerID, accountName, cfg); err != nil {
 		return nil, err
@@ -286,7 +295,9 @@ func (s *Service) failForwardedStart(
 	defer cancel()
 	var errs []error
 	if proven {
-		errs = append(errs, s.Store.ClearProxyStateContext(cleanupCtx, req.ProviderID, req.AccountName))
+		// Release, not full clear: the token stays stable per account so
+		// surviving client configs keep working (same contract as stop).
+		errs = append(errs, s.Store.ReleaseProxyRuntimeContext(cleanupCtx, req.ProviderID, req.AccountName))
 	} else if req.Config.Port > 0 {
 		// Fail closed like abortStart: an orphaned credential-bearing proxy is
 		// safer to diagnose than to forget. The record carries everything the
