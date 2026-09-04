@@ -252,10 +252,34 @@ func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Up
 // non-committed (≥400) responses into the capture writer.
 func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseURL *url.URL, up *Upstream) {
 	target := *baseURL
+	chatPath := ""
+	var sanitized []byte
+	sanitizing := false
+	if up != nil && up.OpenAIPath != "" && r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
+		chatPath = strings.TrimSuffix(target.Path, "/") + up.OpenAIPath
+		if up.SanitizeOpenAIBody != nil {
+			if raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<20)); err == nil {
+				sanitized = up.SanitizeOpenAIBody(raw)
+				sanitizing = true
+			}
+		}
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
 			pr.Out.Host = target.Host
+			if chatPath != "" {
+				pr.Out.URL.Path = chatPath
+				pr.Out.URL.RawPath = ""
+			}
+			if sanitizing {
+				pr.Out.Body = io.NopCloser(bytes.NewReader(sanitized))
+				pr.Out.ContentLength = int64(len(sanitized))
+				pr.Out.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(sanitized)), nil
+				}
+			}
 			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
 		},
 		FlushInterval: 10 * time.Millisecond,
@@ -300,6 +324,9 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 	if terr != nil {
 		w.commitJSON(http.StatusBadRequest, jsonErrorBody("invalid_request_error", terr.Error()))
 		return
+	}
+	if up.SanitizeOpenAIBody != nil {
+		translated = up.SanitizeOpenAIBody(translated)
 	}
 	target := *up.BaseURL
 	target.Path = strings.TrimSuffix(target.Path, "/") + "/chat/completions"

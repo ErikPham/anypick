@@ -198,6 +198,12 @@ type Server struct {
 	Gemini *GeminiTarget
 	// Anthropic: optional native /v1/messages target (vendor /anthropic base).
 	Anthropic *UpstreamTarget
+	// OpenAIPath: upstream path serving the OpenAI chat surface (see
+	// Upstream.OpenAIPath). Composed into the egress by upstreamValue().
+	OpenAIPath string
+	// SanitizeOpenAIBody rewrites verbatim-forwarded OpenAI bodies before
+	// egress. Composed into the egress by upstreamValue().
+	SanitizeOpenAIBody func([]byte) []byte
 
 	srv   *http.Server
 	errCh chan error
@@ -315,6 +321,8 @@ func (s *Server) upstreamValue() *Upstream {
 		TranslateAnthropic: s.TranslateAnthropic,
 		TranslateGemini:    s.TranslateGemini,
 		Gemini:             s.Gemini,
+		OpenAIPath:         s.OpenAIPath,
+		SanitizeOpenAIBody: s.SanitizeOpenAIBody,
 	}
 }
 

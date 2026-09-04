@@ -76,6 +76,19 @@ type Upstream struct {
 	// outlier backend that needs a full translate-and-reissue egress, so it
 	// gets its own branch rather than riding TranslateAnthropic.
 	TranslateGemini bool
+	// OpenAIPath, when non-empty, is the upstream path serving the OpenAI
+	// chat surface, joined onto the base path and REPLACING the inbound
+	// /v1/chat/completions (or /v1/completions) path. Vendors whose
+	// subscription channel lives under a versioned base (WorkBuddy: …/v2 +
+	// /chat/completions) need this: plain reverse-proxy joining would send
+	// …/v2/v1/chat/completions, which the vendor reads as an API-key
+	// channel call and rejects (WorkBuddy code 11128). Empty keeps the
+	// default join for vendors whose base carries no version segment.
+	OpenAIPath string
+	// SanitizeOpenAIBody, when set, rewrites a verbatim-forwarded OpenAI
+	// request body before egress (e.g. stripping Anthropic billing metadata
+	// the vendor's filter rejects). Nil passes the body through untouched.
+	SanitizeOpenAIBody func([]byte) []byte
 	// Gemini carries the mode-specific egress facts (api-key vs OAuth/code
 	// assist) used by the serveGemini branch.
 	Gemini *GeminiTarget
@@ -627,6 +640,8 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 		UpstreamExtraHeaders:    upstream.ExtraHeaders,
 		TranslateAnthropic:      upstream.TranslateAnthropic,
 		Anthropic:               upstream.Anthropic,
+		OpenAIPath:              upstream.OpenAIPath,
+		SanitizeOpenAIBody:      upstream.SanitizeOpenAIBody,
 	}
 }
 
