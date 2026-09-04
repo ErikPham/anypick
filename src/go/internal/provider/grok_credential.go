@@ -26,11 +26,11 @@ import (
 // snapshot stays in sync.
 
 const (
-	grokOIDCIssuer    = "https://auth.x.ai"
-	grokClientVersion = "0.2.101"
+	grokOIDCIssuer      = "https://auth.x.ai"
+	grokClientVersion   = "0.2.101"
 	grokDefaultUpstream = "https://cli-chat-proxy.grok.com"
-	grokRefreshSkew    = 60 * time.Second
-	grokOIDCTimeout    = 30 * time.Second
+	grokRefreshSkew     = 60 * time.Second
+	grokOIDCTimeout     = 30 * time.Second
 	// grokRefreshLockTimeout must comfortably exceed the in-flight OIDC refresh
 	// (grokOIDCTimeout) so a waiter adopting a winner's rotated token does not
 	// time out while the holder is mid-redemption.
