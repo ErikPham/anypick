@@ -50,8 +50,6 @@
 		100000000000000000000029 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		10000000000000000000002A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
 		110000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000001 /* Assets.xcassets */; };
-		110000000000000000000002 /* brands in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000002 /* brands */; };
-		110000000000000000000003 /* anypick in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000003 /* anypick */; };
 		110000000000000000000004 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000004 /* icons */; };
 		110000000000000000000005 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000005 /* AppIcon.png */; };
 		120000000000000000000001 /* AnyPickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000001 /* AnyPickTests.swift */; };
@@ -115,8 +113,6 @@
 		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		220000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		220000000000000000000002 /* brands */ = {isa = PBXFileReference; lastKnownFileType = folder; name = brands; path = ../../design/assets/brands; sourceTree = "<group>"; };
-		220000000000000000000003 /* anypick */ = {isa = PBXFileReference; lastKnownFileType = folder; name = anypick; path = ../../design/assets/anypick; sourceTree = "<group>"; };
 		220000000000000000000004 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Resources/icons; sourceTree = "<group>"; };
 		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
 		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
@@ -210,8 +206,6 @@
 			children = (
 				220000000000000000000001 /* Assets.xcassets */,
 				220000000000000000000005 /* AppIcon.png */,
-				220000000000000000000002 /* brands */,
-				220000000000000000000003 /* anypick */,
 				220000000000000000000004 /* icons */,
 			);
 			name = Resources;
@@ -336,8 +330,6 @@
 			files = (
 				110000000000000000000001 /* Assets.xcassets in Resources */,
 				110000000000000000000005 /* AppIcon.png in Resources */,
-				110000000000000000000002 /* brands in Resources */,
-				110000000000000000000003 /* anypick in Resources */,
 				110000000000000000000004 /* icons in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
