@@ -18,9 +18,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -193,12 +195,63 @@ func (s *Server) Handler() http.Handler {
 			s.InstanceID, ownPID(), s.ProviderID, s.AccountName)))
 	})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !requireProxyAuth(w, r, s.Token) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		if !requireProxyAuth(rec, r, s.Token) {
+			logProxyLine(r, rec.status, time.Since(start))
 			return
 		}
-		Serve(w, r, s.upstreamValue())
+		Serve(rec, r, s.upstreamValue())
+		logProxyLine(r, rec.status, time.Since(start))
 	}))
 	return mux
+}
+
+// statusRecorder captures the status Serve commits so the access log can
+// report it. The proxy never logs headers, query strings, or bodies:
+// only method, path, status, and latency cross into proxy.log.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rec *statusRecorder) WriteHeader(status int) {
+	rec.status = status
+	rec.ResponseWriter.WriteHeader(status)
+}
+
+// Flush delegates when the underlying writer supports it. Without this
+// method *statusRecorder does NOT implement http.Flusher (the embedded
+// http.ResponseWriter interface only carries Header/Write/WriteHeader),
+// so TranslateStreamingResponse bailed before writing a byte and every
+// streamed translation came back `200` with an empty body.
+func (rec *statusRecorder) Flush() {
+	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func logProxyLine(r *http.Request, status int, latency time.Duration) {
+	path := r.URL.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	// Design ngJKM ("Activity · Live Logs") shapes every console line as
+	// `HH:MM:SS  <message>` — timestamp first, human message after. No
+	// headers/query/bodies: only method, path, status, latency cross into
+	// proxy.log, so Fprintf (not log.Printf, whose own date prefix would
+	// fight the design format).
+	proxyLogf("%s %s → %d in %d ms", r.Method, path, status, latency.Milliseconds())
+}
+
+// proxyLogSink is os.Stderr in production (the spawned child redirects it
+// to proxy.log); tests point it at a buffer.
+var proxyLogSink io.Writer = os.Stderr
+
+// proxyLogf writes one design-shaped console line to the child log.
+func proxyLogf(format string, args ...any) {
+	fmt.Fprintf(proxyLogSink, "%s  %s\n",
+		time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 }
 
 // upstreamValue composes the single egress description consumed by Serve.

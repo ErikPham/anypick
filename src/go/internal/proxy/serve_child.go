@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/outof0/anypick/go/internal/lock"
@@ -36,6 +37,9 @@ func (s *Service) ServeExisting(ctx context.Context, providerID, accountName str
 	if err := server.Listen("127.0.0.1", port); err != nil {
 		return err
 	}
+
+	proxyLogf("%s/%s listening on %s", providerID, accountName,
+		strings.TrimPrefix(state.Endpoint, "http://"))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

@@ -18,7 +18,7 @@ func ExecSpawner(selfExe string) Spawner {
 		cmd := exec.Command(selfExe, "_serve-proxy", providerID, accountName)
 		cmd.Env = append(os.Environ(), "ANYPICK_PROXY_CHILD=1")
 		if logPath != "" {
-			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			f, err := openProxyLogFile(logPath)
 			if err == nil {
 				cmd.Stdout = f
 				cmd.Stderr = f
