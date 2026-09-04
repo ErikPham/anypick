@@ -19,10 +19,6 @@ docs/dist/
 /*.jpg
 /*.jpeg
 /*.webp
-go/bin/
-go/anypick
-/go/anypick.exe
-go/go/
 npm/*/bin/
 *.db-wal
 *.db-shm
@@ -47,5 +43,13 @@ src/tauri/src-tauri/binaries/*.exe
 src/tauri/src-tauri/binaries/anypick-core-*
 src/tauri/ui/node_modules/
 
-# Go build output
-src/go/bin/
+# Go build output. Every path here is anchored to the repository root.
+#
+# The old entries were `go/bin/`, `go/anypick` and `go/go/` — written before
+# commit 44e5046 grouped all source under src/. After the move they matched
+# nothing, and an unanchored pattern is exactly how src/go/internal/refs once
+# got swallowed. The built binary is a release artifact: `make build` and the
+# release workflow produce it, so it must never be committed.
+/src/go/bin/
+/src/go/anypick
+/src/go/anypick.exe
