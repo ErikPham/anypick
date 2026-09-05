@@ -43,6 +43,9 @@ class MacOSDesignModel: ObservableObject {
   @Published var pendingStartupFlow: String?
   @Published var pendingGatewayConnectID: String?
   @Published var pendingGatewayConnectName: String?
+  /// Set by tray search to drill into one account once the Accounts pane shows.
+  /// MainWindow consumes (pushes the detail) and clears it.
+  @Published var pendingAccountDetailID: String?
   @Published var liveLogins: [DesignLiveLogin] = []
   @Published var pendingImportBackupID: String?
   @Published var isBusy = false
@@ -717,6 +720,25 @@ class MacOSDesignModel: ObservableObject {
     )
   }
 
+  /// Fixture twin of the account-save-input engine path: stores a typed
+  /// credential (API key / plan key) without a live login behind it.
+  func saveCredentialInput(
+    provider: String,
+    name: String,
+    kind: String,
+    profile: String,
+    secret: String
+  ) -> Bool {
+    let trimmedSecret = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSecret.isEmpty else { return false }
+    return addSavedAccount(
+      provider: provider,
+      name: name,
+      label: "",
+      identity: "API key"
+    )
+  }
+
   func cancelAccountLogin() {}
 
   func addGateway(
@@ -1133,7 +1155,10 @@ class MacOSDesignModel: ObservableObject {
 
   func dismissFirstRunWelcome() {
     showFirstRunWelcome = false
-    showGettingStarted = true
+    // Don't pin showGettingStarted here: the checklist derives from real
+    // state (isFirstRun / core complete), and pinning it defeated the
+    // auto-dismiss in OverviewView. Settings can still pin it explicitly via
+    // showGettingStartedAgain.
     destination = .overview
   }
 
@@ -1282,7 +1307,7 @@ class MacOSDesignModel: ObservableObject {
   }
 
   private func routeName(_ routeID: String, for app: DesignApp) -> String {
-    app.routeOptions.first(where: { $0.id == routeID })?.name ?? "Native Login"
+    app.routeOptions.first(where: { $0.id == routeID })?.name ?? friendlyRouteKindLabel(.native)
   }
 
   func providerID(forRoute route: DesignRoute) -> String {

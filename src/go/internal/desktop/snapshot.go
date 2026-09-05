@@ -117,6 +117,26 @@ type AccountProviderRow struct {
 	LiveIdentity string           `json:"liveIdentity,omitempty"`
 	LoginMethods []LoginMethodRow `json:"loginMethods"`
 	CanClear     bool             `json:"canClear,omitempty"`
+	// CredentialKinds lists the explicit credential products this provider
+	// accepts through account-save-input (API keys / plan keys for compatible
+	// vendors). Native-only providers leave it empty: their accounts come
+	// from a live login or a browser sign-in, never from typed input.
+	// Definitions only — no secrets cross this boundary.
+	CredentialKinds []CredentialKindRow `json:"credentialKinds,omitempty"`
+}
+
+// CredentialKindRow is one BackupInput credential product: its kind id, the
+// label the UI shows, and the endpoint profiles the user can attach it to.
+type CredentialKindRow struct {
+	Kind     string                 `json:"kind"`
+	Label    string                 `json:"label"`
+	Profiles []CredentialProfileRow `json:"profiles"`
+}
+
+// CredentialProfileRow is one endpoint profile within a credential kind.
+type CredentialProfileRow struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // LoginMethodRow is the non-secret provider-owned browser-login capability
@@ -362,6 +382,15 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		}
 		if clearer, ok := pv.(provider.LiveClearer); ok && clearer != nil {
 			row.CanClear = true
+		}
+		// Compatible vendors (and any future BackupInputer) accept typed
+		// credentials even though they have no live login and no browser
+		// flow. Publishing the kinds/profiles is what lets the native Add
+		// Account sheet offer "API key" input instead of a disabled row.
+		if def, ok := pv.(interface {
+			Definition() *provider.CompatibleDefinition
+		}); ok {
+			row.CredentialKinds = credentialKindRows(def.Definition())
 		}
 		snap.AccountProviders = append(snap.AccountProviders, row)
 	}
@@ -835,6 +864,32 @@ func displayAffected(r string) string {
 	return r
 }
 
+// credentialKindRows maps a compatible definition's credential products to
+// snapshot rows. Profiles with an empty label fall back to their id so the
+// picker never shows a blank option.
+func credentialKindRows(def *provider.CompatibleDefinition) []CredentialKindRow {
+	if def == nil {
+		return nil
+	}
+	out := make([]CredentialKindRow, 0, len(def.Credentials))
+	for _, c := range def.Credentials {
+		profiles := make([]CredentialProfileRow, 0, len(c.Profiles))
+		for _, ep := range c.Profiles {
+			label := ep.Label
+			if label == "" {
+				label = ep.ID
+			}
+			profiles = append(profiles, CredentialProfileRow{ID: ep.ID, Label: label})
+		}
+		label := c.Label
+		if label == "" {
+			label = c.Kind
+		}
+		out = append(out, CredentialKindRow{Kind: c.Kind, Label: label, Profiles: profiles})
+	}
+	return out
+}
+
 // logSourcesForProxies mirrors the proxies that can actually serve ProxyLogs.
 // Each source id is the proxy id (providerID/accountName) so the logs command
 // resolves to the same proxy.log file the engine tails.
@@ -980,6 +1035,8 @@ func designAppName(client string) string {
 		return "OpenCode"
 	case "zcode":
 		return "ZCode"
+	case "dsh":
+		return "DeepSeek Harness"
 	default:
 		return strings.ToUpper(client[:1]) + client[1:]
 	}

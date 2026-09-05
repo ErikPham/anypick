@@ -82,7 +82,7 @@ enum DesignFixture {
         routeOptions: [
           DesignRoute(
             id: "native-claude",
-            name: "Native Login",
+            name: "Direct account",
             detail: "Login managed by Claude Code",
             symbol: "laptopcomputer",
             kind: .native
@@ -114,7 +114,7 @@ enum DesignFixture {
         routeOptions: [
           DesignRoute(
             id: "native-codex",
-            name: "Native Login",
+            name: "Direct account",
             detail: "Login managed by Codex CLI",
             symbol: "laptopcomputer",
             kind: .native
@@ -157,7 +157,7 @@ enum DesignFixture {
           ),
         ],
         fastModel: "gemini-2.5-flash",
-        reasoningModel: "Native Login",
+        reasoningModel: "Direct account",
         useCompatibleFallback: false
       ),
       DesignApp(
@@ -186,7 +186,7 @@ enum DesignFixture {
           ),
         ],
         fastModel: "auto",
-        reasoningModel: "Native Login",
+        reasoningModel: "Direct account",
         useCompatibleFallback: true
       ),
       DesignApp(
@@ -208,7 +208,7 @@ enum DesignFixture {
           ),
         ],
         fastModel: "auto",
-        reasoningModel: "Native Login",
+        reasoningModel: "Direct account",
         useCompatibleFallback: false
       ),
       DesignApp(
@@ -234,14 +234,14 @@ enum DesignFixture {
           ),
         ],
         fastModel: "auto",
-        reasoningModel: "Native Login",
+        reasoningModel: "Direct account",
         useCompatibleFallback: false
       ),
       DesignApp(
         id: "workbuddy",
         name: "WorkBuddy",
         detail: "Uses WorkBuddy international",
-        symbol: "wand.and.stars",
+        symbol: "briefcase.fill",
         status: .ready,
         accountCount: 1,
         selectedRouteID: "workbuddy-international",
@@ -256,7 +256,7 @@ enum DesignFixture {
           ),
         ],
         fastModel: "auto",
-        reasoningModel: "Native Login",
+        reasoningModel: "Direct account",
         useCompatibleFallback: false
       ),
     ]
@@ -407,19 +407,21 @@ enum DesignFixture {
       ),
     ]
 
+    // Console copy follows design ngJKM ("Activity · Live Logs"):
+    // `HH:MM:SS  <message>`, timestamp first, human message after.
     let liveLogLines = [
-      "09:15:01.120  hub        listening on 127.0.0.1:41401",
-      "09:15:01.184  hub        published 47 models from 3 accounts",
-      "09:15:02.003  claude     relay ready on 127.0.0.1:41411",
-      "09:15:02.410  codex      relay stopped",
-      "09:15:08.771  hub        GET /v1/models 200  12ms",
-      "09:15:12.044  claude     POST /v1/messages 200  840ms",
-      "09:15:18.902  hub        routing claude-opus-4-1 → Work",
-      "09:15:22.116  kiro       bridge unavailable — waiting for login",
-      "09:15:30.551  hub        GET /healthz 200  1ms",
-      "09:15:41.003  claude     stream open  request_id=req_7f3a",
-      "09:15:44.882  claude     stream close tokens_in=412 tokens_out=188",
-      "09:15:50.100  hub        idle",
+      "09:42:11  Proxy Hub listening on 127.0.0.1:41401",
+      "09:42:12  Loaded 28 published model IDs",
+      "09:42:14  claude-sonnet-4-5 → Work",
+      "09:42:17  POST /v1/chat/completions → 200 in 842 ms",
+      "09:42:24  gpt-5.6-codex → Personal",
+      "09:42:25  POST /v1/responses → 200 in 611 ms",
+      "09:42:31  workbuddy/work listening on 127.0.0.1:41411",
+      "09:42:38  Credentials redacted from diagnostic output",
+      "09:42:41  codex/work listening on 127.0.0.1:41412",
+      "09:42:44  POST /v1/messages → 200 in 388 ms",
+      "09:42:50  kiro bridge unavailable — waiting for login",
+      "09:42:55  GET /health → 200 in 1 ms",
     ]
 
     return (apps, accounts, proxies, activity, liveLogLines, backups)

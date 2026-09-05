@@ -181,6 +181,22 @@ struct DesignProviderOption: Identifiable, Hashable {
   var kind: String = "gateway"
   var regions: [String] = []
   var defaultRegion: String? = nil
+  /// Typed credential products (API keys / plan keys) accepted through
+  /// account-save-input. Non-empty for compatible vendors: the Add Account
+  /// sheet offers key input instead of a disabled row.
+  var credentialKinds: [DesignCredentialKind] = []
+}
+
+struct DesignCredentialKind: Identifiable, Hashable {
+  var id: String { kind }
+  let kind: String
+  var label: String
+  var profiles: [DesignCredentialProfile] = []
+}
+
+struct DesignCredentialProfile: Identifiable, Hashable {
+  let id: String
+  var label: String
 }
 
 struct DesignHubSource: Identifiable, Hashable {
@@ -280,7 +296,7 @@ struct DesignUsageWindow: Identifiable, Hashable {
 enum DesignAccountKind: String, CaseIterable {
   case saved = "Saved Account"
   case gateway = "API Gateway"
-  case native = "Native Login"
+  case native = "Direct Account"
 }
 
 struct DesignAccount: Identifiable, Hashable {

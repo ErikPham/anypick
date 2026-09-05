@@ -26,6 +26,13 @@ import (
 // Tencent actually serves.
 const workbuddyUserAgent = "CLI/2.63.2 CodeBuddy/2.63.2"
 
+// workbuddyHTTPTimeout bounds one sign-in request. The device-flow poll loop
+// already has a five-minute deadline between iterations, but http.DefaultClient
+// has no timeout of its own: a single stalled connection would hold the poll
+// — and the desktop Add Account sheet's spinner — past that deadline with no
+// terminal result. A per-request client keeps the bound off the shared default.
+var workbuddyHTTPTimeout = 30 * time.Second
+
 const (
 	workbuddyStatePath = "/v2/plugin/auth/state"
 	workbuddyTokenPath = "/v2/plugin/auth/token"
@@ -127,12 +134,11 @@ func workbuddyStartLogin(ctx context.Context, site workbuddySite) (string, strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Domain", site.Domain)
 	req.Header.Set("X-Product", "SaaS")
-	// This first call is unauthenticated; these headers tell the gateway to
-	// skip the identity checks it applies to signed requests.
-	req.Header.Set("X-No-Authorization", "true")
-	req.Header.Set("X-User-Id", "true")
-	req.Header.Set("X-Enterprise-Id", "true")
-	req.Header.Set("X-Department-Info", "true")
+	// No identity headers here: this call is unauthenticated, and the
+	// gateway rejects the state issue with "enterprise not found" when the
+	// X-No-Authorization / X-User-Id / X-Enterprise-Id / X-Department-Info
+	// set recovered from the old CLI is sent (verified live 2026-09-04:
+	// with them the service answers code 10000, without them code 0).
 
 	env, err := workbuddyFetch(ctx, req)
 	if err != nil {
@@ -204,6 +210,12 @@ func workbuddyPollToken(ctx context.Context, site workbuddySite, state string) (
 	return &data, false, nil
 }
 
+// workbuddyHTTPClient builds the sign-in client per request so tests can
+// shrink the timeout without touching the shared default client.
+func workbuddyHTTPClient() *http.Client {
+	return &http.Client{Timeout: workbuddyHTTPTimeout}
+}
+
 // workbuddyFetch performs one request and returns the service envelope
 // uninterpreted: the token endpoint uses non-zero codes for "not yet", so only
 // the caller can decide what a code means.
@@ -213,7 +225,7 @@ func workbuddyFetch(ctx context.Context, req *http.Request) (*workbuddyEnvelope,
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	resp, err := workbuddyHTTPClient().Do(req.WithContext(ctx))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, anyerr.Newf("WorkBuddy sign-in was cancelled.", "PROVIDER_LOGIN_CANCELLED")

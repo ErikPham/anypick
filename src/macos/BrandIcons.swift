@@ -112,6 +112,17 @@ struct DesignProviderPicker: NSViewRepresentable {
       if let image = DesignBrandAsset.image(for: option.id, pointSize: iconSize, dark: dark) {
         image.size = NSSize(width: iconSize, height: iconSize)
         item.image = image
+      } else if let symbol = NSImage(
+        systemSymbolName: DesignBrandAsset.fallbackSymbol(for: option.id),
+        accessibilityDescription: option.label
+      ) {
+        // Vendors without a bundled mark (compatible API providers, ZCode,
+        // WorkBuddy) get the same monochrome glyph the SwiftUI rows use.
+        // A template symbol follows the menu label color, so disabled rows
+        // dim correctly instead of rendering a dark tile.
+        symbol.size = NSSize(width: iconSize, height: iconSize)
+        symbol.isTemplate = true
+        item.image = symbol
       }
       button.menu?.addItem(item)
     }
@@ -169,6 +180,33 @@ extension DesignBrandAsset {
       return dark
         ? ["opencode-mark-dark.png", "opencode-mark-light.png", "opencode.svg"]
         : ["opencode-mark-light.png", "opencode-mark-dark.png", "opencode.svg"]
+    case "opencodezen", "opencodego":
+      // Zen/Go rows share OpenCode's own mark: they are OpenCode products,
+      // not third-party vendors.
+      return ["opencode.svg"]
+    case "deepseek":
+      return ["deepseek.svg"]
+    case "kimi", "moonshot":
+      return ["kimi.svg"]
+    case "zai", "glm":
+      return ["zai.svg"]
+    case "qwen", "dashscope":
+      return ["qwen.svg"]
+    case "mistral":
+      return ["mistral.svg"]
+    case "mimo", "xiaomi":
+      return ["mimo.svg"]
+    case "minimax":
+      return ["minimax.svg"]
+    case "doubao", "bytedance":
+      // Doubao is ByteDance's AI app; the company mark identifies the row.
+      return ["doubao.svg"]
+    case "hunyuan":
+      return ["hunyuan.svg"]
+    case "modelscope":
+      return ["modelscope.svg"]
+    case "nvidia", "nvidianim":
+      return ["nvidia.svg"]
     case "zcode":
       // Full-color app icon, same convention as kiro-app.png and
       // workbuddy-mark.png: the row shows the app's own icon so the user can
@@ -220,9 +258,10 @@ enum DesignBrandAsset {
     // Matches ProductionModel.providerSymbol so an unbundled build and one
     // with the asset present degrade to the same glyph.
     case "zcode": "curlybraces"
-    // No bundled mark: WorkBuddy ships a full-color app icon, and these slots
-    // render as monochrome templates, so its logo would come out as a blob.
-    case "workbuddy", "codebuddy": "wand.and.stars"
+    // WorkBuddy ships a full-color app icon, but every other row here is a
+    // monochrome mark, so the row uses a briefcase glyph that reads as
+    // "Work" at list size in both appearances.
+    case "workbuddy", "codebuddy": "briefcase.fill"
     default: "server.rack"
     }
   }

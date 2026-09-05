@@ -79,6 +79,12 @@ type Mutate struct {
 	Enabled      bool   `json:"enabled"`
 	Name         string `json:"name"`
 	Path         string `json:"path"`
+	// account-save-input carries the credential product the user picked in
+	// the native Add Account sheet. The secret itself travels in APIKey —
+	// the same field gateway-create already uses for profile secrets — so
+	// no second secret-shaped field is introduced.
+	Kind    string `json:"kind"`
+	Profile string `json:"profile"`
 	// Backup-package operations (TrayBackupAccountRef / import flow).
 	Accounts           []BackupAccountRef `json:"accounts,omitempty"`
 	InspectionID       string             `json:"inspectionId,omitempty"`

@@ -68,6 +68,9 @@ struct HubSourceSnapshot: Decodable, Identifiable {
   let label: String
   let detail: String
   let enabled: Bool
+  /// Hub owning this source row ("default" when unset by older helpers).
+  /// Sent back as Name on hub-source-toggle so the engine touches the right hub.
+  let hub: String?
   let status: String?
   let modelCount: Int?
   let warning: String?
@@ -97,7 +100,7 @@ struct HubPublishedModelSnapshot: Decodable, Identifiable {
   let needsChoice: Bool
 }
 
-struct LogSourceSnapshot: Decodable, Identifiable {
+struct LogSourceSnapshot: Decodable, Identifiable, Equatable {
   let id: String
   let label: String
   let detail: String
@@ -163,6 +166,27 @@ struct AccountProviderSnapshot: Decodable, Identifiable {
   let loginMethods: [ProviderLoginMethodSnapshot]?
   /// Provider can wipe the live app login so a second account can sign in.
   let canClear: Bool?
+  /// Typed credential products (API keys / plan keys) this provider accepts
+  /// through account-save-input. Empty for native-only providers.
+  let credentialKinds: [ProviderCredentialKindSnapshot]?
+}
+
+struct ProviderCredentialKindSnapshot: Decodable, Identifiable {
+  var id: String { kind }
+  let kind: String
+  let label: String
+  let profiles: [ProviderCredentialProfileSnapshot]?
+}
+
+struct ProviderCredentialProfileSnapshot: Decodable, Identifiable {
+  var id: String { profileID }
+  let profileID: String
+  let label: String
+
+  private enum CodingKeys: String, CodingKey {
+    case profileID = "id"
+    case label
+  }
 }
 
 struct GatewayProviderSnapshot: Decodable, Identifiable {
@@ -185,7 +209,7 @@ struct TraySettingsSnapshot: Decodable {
   let quotaGuardEnabled: Bool
 }
 
-struct ActivityEvent: Decodable, Identifiable {
+struct ActivityEvent: Decodable, Identifiable, Equatable {
   let id: String
   let createdAt: String
   let message: String
@@ -290,6 +314,10 @@ struct Mutation: Encodable {
   let defaultModel: String?
   let overwrite: Bool?
   let enabled: Bool?
+  /// account-save-input: the credential product kind (e.g. api-key).
+  let kind: String?
+  /// account-save-input: the endpoint profile id within the kind.
+  let profile: String?
 }
 
 struct CancellationRequest: Encodable {

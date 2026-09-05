@@ -25,6 +25,10 @@ struct AddSavedAccountSheet: View {
   @State private var confirmClear = false
   @State private var isVerifying = false
   @State private var isDetecting = false
+  @State private var credentialKind = ""
+  @State private var credentialProfile = ""
+  @State private var apiSecret = ""
+  @State private var revealSecret = false
   @State private var detectionTask: Task<Void, Never>?
   @State private var loginTask: Task<Void, Never>?
   @FocusState private var nameFocused: Bool
@@ -36,7 +40,41 @@ struct AddSavedAccountSheet: View {
   private var selectedLoginMethod: DesignLoginMethod? {
     loginMethods.first { $0.id == loginMethod }
   }
+  /// Tencent's WorkBuddy/CodeBuddy endpoints are undocumented — the method
+  /// carries provenance "community", so say so instead of "official".
+  private var isCommunityFlow: Bool { selectedLoginMethod?.provenance == "community" }
+  private var isWorkBuddyProvider: Bool {
+    ["workbuddy", "codebuddy"].contains(provider.lowercased())
+  }
+  /// The WorkBuddy desktop app never shares its login (Electron safeStorage),
+  /// so "On This Mac" only sees a previous AnyPick sign-in. When the app is
+  /// present we say so explicitly instead of the flat "No login on this Mac".
+  private var workBuddyAppInstalled: Bool {
+    guard isWorkBuddyProvider else { return false }
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return [".workbuddy-ai", ".workbuddy", ".codebuddy"].contains {
+      var isDir: ObjCBool = false
+      return
+        FileManager.default.fileExists(
+          atPath: home + "/" + $0, isDirectory: &isDir) && isDir.boolValue
+    }
+  }
   private var supportsNewAccountLogin: Bool { !loginMethods.isEmpty }
+  /// Typed credential input for compatible vendors (API keys / plan keys).
+  /// These providers have no live login to snapshot and no browser flow, so
+  /// the sheet collects the key instead of offering On This Mac / New Account.
+  private var credentialKinds: [DesignCredentialKind] { selectedProvider?.credentialKinds ?? [] }
+  private var isKeyInputMode: Bool { !supportsNewAccountLogin && !credentialKinds.isEmpty }
+  private var selectedCredentialKind: DesignCredentialKind? {
+    credentialKinds.first { $0.kind == credentialKind } ?? credentialKinds.first
+  }
+  private var availableProfiles: [DesignCredentialProfile] {
+    selectedCredentialKind?.profiles ?? []
+  }
+  private var selectedProfileID: String {
+    if availableProfiles.contains(where: { $0.id == credentialProfile }) { return credentialProfile }
+    return availableProfiles.first?.id ?? ""
+  }
 
   private var currentLogin: DesignLiveLogin? {
     liveLogin(for: selectedProvider)
@@ -53,6 +91,10 @@ struct AddSavedAccountSheet: View {
   private var canSubmit: Bool {
     let named = !accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     if isVerifying || isDetecting { return false }
+    if isKeyInputMode {
+      let keyed = !apiSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      return named && keyed && selectedProvider?.enabled == true
+    }
     if sourceMode == .newAccount, !hasIdentity {
       return named && selectedLoginMethod?.available == true && selectedProvider?.enabled == true
     }
@@ -73,7 +115,7 @@ struct AddSavedAccountSheet: View {
     DesignSheetHost(
       title: "Add Account",
       width: 440,
-      height: 310,
+      height: isKeyInputMode ? 390 : 310,
       primaryTitle: primaryTitle,
       primaryDisabled: !canSubmit || model.isBusy,
       primaryIdentifier: "account-flow.save",
@@ -99,7 +141,20 @@ struct AddSavedAccountSheet: View {
               .accessibilityIdentifier("account-flow.provider")
           }
 
-          currentLoginRow
+          if isKeyInputMode {
+            keyInputRows
+          } else {
+            currentLoginRow
+            if sourceMode == .newAccount, loginMethods.count > 1 {
+              Picker("Sign-in method", selection: $loginMethod) {
+                ForEach(loginMethods) { method in
+                  Text(method.label).tag(method.id)
+                }
+              }
+              .accessibilityIdentifier("account-flow.method")
+              .help(selectedLoginMethod?.detail ?? "")
+            }
+          }
           TextField("Account Name", text: $accountName, prompt: Text("Personal"))
             .focused($nameFocused)
             .accessibilityIdentifier("account-flow.name")
@@ -112,6 +167,7 @@ struct AddSavedAccountSheet: View {
       .onAppear {
         selectInitialProvider()
         selectDefaultLoginMethod()
+        selectDefaultCredential()
         syncCurrentLogin()
         if accountName.isEmpty {
           accountName = suggestedAccountName
@@ -119,7 +175,9 @@ struct AddSavedAccountSheet: View {
         nameFocused = true
       }
       .task(id: autoDetectionKey) {
-        guard sourceMode == .thisMac, !provider.isEmpty else { return }
+        // Key-input vendors have no live login to detect: probing them only
+        // produces a "no live login" error modal over the API-key form.
+        guard sourceMode == .thisMac, !provider.isEmpty, !isKeyInputMode else { return }
         await Task.yield()
         guard !Task.isCancelled else { return }
         detectLogin()
@@ -129,7 +187,10 @@ struct AddSavedAccountSheet: View {
         detectedSource = ""
         isVerifying = false
         isDetecting = false
+        apiSecret = ""
+        revealSecret = false
         selectDefaultLoginMethod()
+        selectDefaultCredential()
         if !supportsNewAccountLogin { sourceMode = .thisMac }
         if sourceMode == .thisMac { syncCurrentLogin() }
       }
@@ -145,6 +206,9 @@ struct AddSavedAccountSheet: View {
       }
       .onChange(of: model.operationResult) { _, result in
         if result?.operation == "account-login" {
+          isVerifying = false
+          if result?.succeeded == true { dismiss() }
+        } else if result?.operation == "account-save-input" {
           isVerifying = false
           if result?.succeeded == true { dismiss() }
         } else if result?.operation == "account-detect" {
@@ -188,6 +252,10 @@ struct AddSavedAccountSheet: View {
   }
 
   private var sourceFooter: String {
+    if isKeyInputMode {
+      return
+        "AnyPick stores this key so supported apps can use \(providerLabel) through a local proxy."
+    }
     if isDetecting { return "AnyPick will fill in the account when it appears." }
     if isVerifying || (sourceMode == .newAccount && !hasIdentity) {
       return "AnyPick saves the account when the browser flow finishes."
@@ -209,7 +277,17 @@ struct AddSavedAccountSheet: View {
       return detectedSourceText
     }
     if sourceMode == .newAccount {
-      return "Opens \(providerLabel)’s official browser flow"
+      return isCommunityFlow
+        ? "Opens \(providerLabel)’s community-supported browser flow"
+        : "Opens \(providerLabel)’s official browser flow"
+    }
+    // WorkBuddy has no shared login with its desktop app: AnyPick owns the
+    // token end to end, so "On This Mac" only ever sees a previous AnyPick
+    // sign-in — first-timers must use New Account.
+    if isWorkBuddyProvider {
+      return workBuddyAppInstalled
+        ? "WorkBuddy app is on this Mac but keeps its own login — link it with New Account"
+        : "WorkBuddy doesn’t share its app login — use New Account to sign in"
     }
     return sourceAppName
   }
@@ -220,7 +298,9 @@ struct AddSavedAccountSheet: View {
 
   private var checkAgainHelp: String {
     if sourceMode == .newAccount, !hasIdentity {
-      return "Opens \(providerLabel)’s official browser flow"
+      return isCommunityFlow
+        ? "Opens \(providerLabel)’s community-supported browser flow"
+        : "Opens \(providerLabel)’s official browser flow"
     }
     return "Checks the \(sourceAppName) account currently active on this Mac."
   }
@@ -247,6 +327,50 @@ struct AddSavedAccountSheet: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("account-flow.identity")
+  }
+
+  private var keyInputRows: some View {
+    Group {
+      if credentialKinds.count > 1 {
+        Picker("Credential", selection: $credentialKind) {
+          ForEach(credentialKinds) { kind in
+            Text(kind.label).tag(kind.kind)
+          }
+        }
+        .accessibilityIdentifier("account-flow.credential-kind")
+        .onChange(of: credentialKind) { _, _ in credentialProfile = "" }
+      }
+      if availableProfiles.count > 1 {
+        Picker("Profile", selection: $credentialProfile) {
+          ForEach(availableProfiles) { profile in
+            Text(profile.label).tag(profile.id)
+          }
+        }
+        .accessibilityIdentifier("account-flow.credential-profile")
+      }
+      LabeledContent(selectedCredentialKind?.label ?? "API Key") {
+        HStack(spacing: 8) {
+          Group {
+            if revealSecret {
+              TextField("", text: $apiSecret)
+            } else {
+              SecureField("", text: $apiSecret)
+            }
+          }
+          .labelsHidden()
+          .accessibilityIdentifier("account-flow.api-key")
+
+          Button {
+            revealSecret.toggle()
+          } label: {
+            Image(systemName: revealSecret ? "eye.slash" : "eye")
+              .foregroundStyle(.secondary)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(revealSecret ? "Hide API Key" : "Show API Key")
+        }
+      }
+    }
   }
 
   private var loginAccessories: some View {
@@ -327,7 +451,11 @@ struct AddSavedAccountSheet: View {
     if let liveProvider = enabledProviders.first(where: { liveLogin(for: $0) != nil }) {
       provider = liveProvider.id
     } else if !enabledProviders.contains(where: { $0.id == provider }) {
-      provider = enabledProviders[0].id
+      // Native sign-in first: key-only vendors sort before "claude", so the
+      // raw first-enabled row would default the sheet to an API-key form.
+      provider =
+        enabledProviders.first(where: { !$0.loginMethods.isEmpty })?.id
+        ?? enabledProviders[0].id
     }
   }
 
@@ -379,12 +507,52 @@ struct AddSavedAccountSheet: View {
       ?? ""
   }
 
+  private func selectDefaultCredential() {
+    if !credentialKinds.contains(where: { $0.kind == credentialKind }) {
+      credentialKind = credentialKinds.first?.kind ?? ""
+    }
+    if !availableProfiles.contains(where: { $0.id == credentialProfile }) {
+      credentialProfile = availableProfiles.first?.id ?? ""
+    }
+  }
+
   private func submit() {
+    if isKeyInputMode {
+      saveKey()
+      return
+    }
     if sourceMode == .newAccount, !hasIdentity {
       signIn()
       return
     }
     save()
+  }
+
+  private func saveKey() {
+    guard let kind = selectedCredentialKind else { return }
+    isVerifying = true
+    if model.isProduction {
+      if !model.saveCredentialInput(
+        provider: provider,
+        name: accountName,
+        kind: kind.kind,
+        profile: selectedProfileID,
+        secret: apiSecret
+      ) {
+        isVerifying = false
+      }
+      return
+    }
+    isVerifying = false
+    if model.saveCredentialInput(
+      provider: provider,
+      name: accountName,
+      kind: kind.kind,
+      profile: selectedProfileID,
+      secret: apiSecret
+    ) {
+      dismiss()
+    }
   }
 
   private func signIn() {
@@ -825,15 +993,23 @@ struct AccountInspectSheet: View {
           Section {
             Label {
               VStack(alignment: .leading, spacing: 2) {
-                Text(account.name)
-                Text("\(account.provider) · \(account.detail)")
-                  .foregroundStyle(.secondary)
+                Text(disambiguatedAccountName(for: account, in: model.accounts))
+                let identity = accountIdentityLine(provider: account.provider, detail: account.detail)
+                if !identity.isEmpty {
+                  Text(identity)
+                    .foregroundStyle(.secondary)
+                }
               }
             } icon: {
               DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)
             }
-            LabeledContent("Account", value: account.name)
-            LabeledContent("Identity", value: "\(account.provider) · \(account.detail)")
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
+            LabeledContent("Account", value: disambiguatedAccountName(for: account, in: model.accounts))
+            let identityValue = accountIdentityLine(provider: account.provider, detail: account.detail)
+            if !identityValue.isEmpty {
+              LabeledContent("Identity", value: identityValue)
+            }
             if model.isCurrentAccount(account) {
               LabeledContent("Status") {
                 Label("Current", systemImage: "checkmark.circle.fill")

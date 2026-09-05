@@ -26,7 +26,9 @@ extension TrayStore {
       region: nil,
       defaultModel: nil,
       overwrite: overwrite,
-      enabled: nil
+      enabled: nil,
+      kind: nil,
+      profile: nil
     )
     return sendMutation(mutation, activityLabel: activityLabel)
   }

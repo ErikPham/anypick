@@ -15,6 +15,9 @@ final class ProductionDesignModel: MacOSDesignModel {
   private var pendingOperations = [String: String]()
   private var pendingRouteChanges = [(appID: String, routeID: String)]()
   private var serviceRequests = [String: (id: String, operation: DesignServiceOperation)]()
+  /// Watchdogs that fail a service operation when no snapshot confirms it
+  /// in time. Without them a lost snapshot would spin the row forever.
+  private var serviceTimeoutTasks = [String: Task<Void, Never>]()
   private var clearedActivityIDs = Set<String>()
   private var clearedLogLineCount = [String: Int]()
   private var importedBackupFileName: String?
@@ -137,6 +140,44 @@ final class ProductionDesignModel: MacOSDesignModel {
     store.cancelMutation(requestId: requestID)
   }
 
+  /// Typed credential save for compatible vendors (API keys / plan keys).
+  /// The secret travels in the mutation's apiKey field — the same field
+  /// gateway-create already uses for profile secrets.
+  override func saveCredentialInput(
+    provider: String,
+    name: String,
+    kind: String,
+    profile: String,
+    secret: String
+  ) -> Bool {
+    guard let source = accountProvider(for: provider) else {
+      showFeedback("No credential source is available for \(provider).", kind: .error)
+      return false
+    }
+    let kinds = source.credentialKinds ?? []
+    guard kinds.contains(where: { $0.kind == kind }) else {
+      showFeedback("\(source.label) does not accept that credential type.", kind: .error)
+      return false
+    }
+    let accountName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !accountName.isEmpty, !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return false }
+    guard
+      let requestID = store.mutate(
+        operation: "account-save-input",
+        name: accountName,
+        providerId: source.providerId,
+        apiKey: secret,
+        kind: kind,
+        profile: profile.isEmpty ? nil : profile,
+        activityLabel: "saving \(source.label) account"
+      )
+    else { return false }
+    pendingOperations[requestID] = "account-save-input"
+    operationResult = nil
+    return true
+  }
+
   override func clearLiveLogin(provider: String) {
     guard let source = accountProvider(for: provider) else {
       showFeedback("No live login source is available for \(provider).", kind: .error)
@@ -179,8 +220,12 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
     let app = apps.first { $0.id == appID }
     let from = app?.routeOptions.first { $0.id == app?.selectedRouteID }?.name ?? ""
+    // invoke() refuses while another mutation is in flight (nil): only enter
+    // inFlight when the request was actually accepted, or the sheet hangs in
+    // Applying… with no result ever arriving (A1).
+    guard action.enabled else { return }
+    guard store.invoke(actionId: action.id, label: action.label) != nil else { return }
     switchPhase = .inFlight(appID: appID, from: from, to: action.label)
-    store.invoke(action)
   }
 
   override func updateAppConfiguration(
@@ -425,10 +470,14 @@ final class ProductionDesignModel: MacOSDesignModel {
 
   override func setHubSource(_ accountID: String, enabled: Bool) {
     guard let source = store.hubSources.first(where: { $0.id == accountID }) else { return }
+    // Contract with the engine (hub_snapshot.go): Name = hub, SourceID =
+    // account. The old call sent the account label as Name, which the engine
+    // read as the hub name and answered HUB_NOT_FOUND (H2).
     _ = store.mutate(
       operation: "hub-source-toggle",
-      name: source.name,
+      name: source.hub ?? "default",
       providerId: source.providerId,
+      sourceId: source.name,
       enabled: enabled,
       activityLabel: "updating Proxy Hub sources"
     )
@@ -449,7 +498,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     else { return }
     let serviceID = designServiceID(proxy)
     let operation: DesignServiceOperation = enabled ? .starting : .stopping
-    serviceOperations[serviceID] = operation
+    trackServiceOperation(operation, for: serviceID)
     serviceFailures.removeValue(forKey: serviceID)
     serviceRequests[requestID] = (serviceID, operation)
   }
@@ -472,7 +521,7 @@ final class ProductionDesignModel: MacOSDesignModel {
       )
     else { return }
     let serviceID = designServiceID(proxy)
-    serviceOperations[serviceID] = .restarting
+    trackServiceOperation(.restarting, for: serviceID)
     serviceFailures.removeValue(forKey: serviceID)
     serviceRequests[requestID] = (serviceID, .restarting)
   }
@@ -628,21 +677,25 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   override func setActivityShowsLogs(_ enabled: Bool) {
-    activityShowsLogs = enabled
+    // The Events/Live Logs segmented binding already wrote the value before
+    // onChange re-enters here; @Published fires on every set even when equal,
+    // and each fire rebuilds the pane. Only publish on a real toggle.
+    if activityShowsLogs != enabled {
+      activityShowsLogs = enabled
+    }
     if enabled, let source = selectedLogSource {
       store.selectLogSource(source.id)
       store.requestLogs(source)
     }
-    liveLogLines = designLogLines()
-    activity = designActivity()
   }
 
   override func selectLogSource(_ id: String) {
     guard let source = store.logSources.first(where: { $0.id == id }) else { return }
-    selectedLogSourceID = id
+    if selectedLogSourceID != id {
+      selectedLogSourceID = id
+    }
     store.selectLogSource(id)
     store.requestLogs(source)
-    liveLogLines = designLogLines()
   }
 
   override func refreshSelectedLogSource() {
@@ -719,7 +772,15 @@ final class ProductionDesignModel: MacOSDesignModel {
         symbol: providerSymbol($0.providerId)
       )
     }
-    selectedLogSourceID = selectedLogSource?.id ?? ""
+    // The store re-emits the full snapshot on every poll. @Published fires on
+    // every assignment even when unchanged, rebuilding the Activity list and
+    // re-laying out the pane — the visible flicker. Only publish on change.
+    // (selectLogSource sets both sides synchronously, so a plain mirror here
+    // cannot fight the user's just-made choice.)
+    let resolvedLogSourceID = selectedLogSource?.id ?? ""
+    if selectedLogSourceID != resolvedLogSourceID {
+      selectedLogSourceID = resolvedLogSourceID
+    }
     synchronizeLogState()
     openAtLogin = store.settings.launchAtLogin
     showUsage = store.settings.showQuota
@@ -747,19 +808,34 @@ final class ProductionDesignModel: MacOSDesignModel {
         switchPhase = .recovery(appID: appID, requested: to, kept: from)
       }
     }
-    liveLogLines = designLogLines()
-    activity = designActivity()
+    // @Published fires on every set even when the value is identical; each
+    // fire rebuilds the Activity list and re-lays out the pane. Only publish
+    // on real change so background polls with identical tails stay quiet.
+    let freshLogLines = designLogLines()
+    if liveLogLines != freshLogLines {
+      liveLogLines = freshLogLines
+    }
+    let freshActivity = designActivity()
+    if activity != freshActivity {
+      activity = freshActivity
+    }
     synchronizeOnboarding()
     synchronizeBackupPreview()
     synchronizeBackupInspectionState()
+    confirmServiceOperations()
 
     if let result = store.lastResult, result.requestId != lastResultId {
       lastResultId = result.requestId
       if let service = serviceRequests.removeValue(forKey: result.requestId) {
-        serviceOperations.removeValue(forKey: service.id)
         if result.status == "success" {
+          // Success only means the engine accepted the action. The spinner
+          // stays until a snapshot confirms the target state
+          // (confirmServiceOperations); otherwise a fast result flashes
+          // "done" over a still-stopped proxy.
           serviceFailures.removeValue(forKey: service.id)
         } else {
+          cancelServiceTimeout(for: service.id)
+          serviceOperations.removeValue(forKey: service.id)
           serviceFailures[service.id] =
             result.message ?? "The service could not complete that action."
         }
@@ -798,19 +874,20 @@ final class ProductionDesignModel: MacOSDesignModel {
     let route = store.route(clientId: clientID)
     let selected = actions.first(where: \.selected)
     let config = store.modelConfig(clientID)
-    let options = nativeFirstRoutes(
+    let options = uniqueCompatibleRoutes(
       actions.map {
         DesignRoute(
           id: $0.id,
           name: $0.routeKind == "direct-account"
             ? ($0.upstreamSourceLabel ?? $0.label)
             : $0.label,
-          detail: $0.detail ?? $0.routeKind ?? "Available route",
+          detail: friendlyRouteDetail($0.detail, routeKind: $0.routeKind),
           symbol: routeSymbol($0.routeKind),
           kind: designRouteKind($0.routeKind),
           providerID: $0.upstreamProviderId
         )
-      })
+      },
+      selectedID: selected?.id)
     let selectedName = selected.flatMap { action in
       options.first { $0.id == action.id }?.name
     }
@@ -849,7 +926,7 @@ final class ProductionDesignModel: MacOSDesignModel {
       detail: connectionDetail,
       symbol: appSymbol(clientID),
       status: status,
-      showInQuickPanel: AppPreferences.quickPanelShown(for: clientID) ?? true,
+      showInQuickPanel: AppPreferences.quickPanelShown(for: clientID) ?? (selected != nil),
       accountCount: options.count,
       selectedRouteID: selected?.id ?? "",
       routeOptions: options,
@@ -903,13 +980,13 @@ final class ProductionDesignModel: MacOSDesignModel {
     let required = proxyIsRequired(proxy)
     return DesignProxy(
       id: proxy.id,
-      name: proxy.label,
+      name: friendlyProxyName(label: proxy.label, providerId: proxy.providerId),
       detail: proxy.address ?? proxy.detail,
       symbol: providerSymbol(proxy.providerId),
       provider: proxy.providerId,
       status: proxy.running ? .running : proxy.enabled && required ? .attention : .stopped,
       port: port(from: proxy.address) ?? 0,
-      enabled: proxy.running
+      enabled: proxy.enabled
     )
   }
 
@@ -926,24 +1003,11 @@ final class ProductionDesignModel: MacOSDesignModel {
     return selectedByApp || selectedByHub
   }
 
+  // Activity is always the journal-backed event history. Live logs travel on
+  // the separate liveLogLines path; mapping them into DesignActivity here used
+  // index-based ids ("log-<index>-<hash>") that shifted on every appended
+  // line, re-identifying the whole list on each 1.75s poll — the flicker.
   private func designActivity() -> [DesignActivity] {
-    if activityShowsLogs, let source = selectedLogSource,
-      let text = store.logsBySource[source.id], !text.isEmpty
-    {
-      let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-      let hiddenCount = min(clearedLogLineCount[source.id] ?? 0, lines.count)
-      return lines.dropFirst(hiddenCount).suffix(160).reversed()
-        .enumerated().map { index, line in
-          DesignActivity(
-            id: "log-\(index)-\(line.hashValue)",
-            time: "",
-            title: source.label,
-            detail: String(line),
-            symbol: "terminal",
-            status: line.localizedCaseInsensitiveContains("error") ? .attention : .ready
-          )
-        }
-    }
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm"
     return store.activity.filter { !clearedActivityIDs.contains($0.id) }.map {
@@ -980,14 +1044,21 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   private func synchronizeLogState() {
+    // Every assignment below goes through setLogState so an unchanged
+    // state/message pair stays quiet instead of rebuilding the pane.
     guard let source = selectedLogSource else {
-      logState = .unavailable
-      logStateMessage = "Choose another log source or return to Activity."
+      setLogState(
+        .unavailable, message: "Choose another log source or return to Activity.")
       return
     }
-    if store.loadingLogSourceId == source.id {
-      logState = .loading
-      logStateMessage = "Loading \(source.label) logs…"
+    // Background polls set loadingLogSourceId on every 1.75s tick. Flipping
+    // to .loading each time swaps the notice row (ProgressView in/out) and
+    // hides the Live badge — the flicker. When a tail is already on screen,
+    // stay .ready through the refresh; only the first load shows .loading.
+    if store.loadingLogSourceId == source.id,
+      store.logsBySource[source.id]?.isEmpty != false
+    {
+      setLogState(.loading, message: "Loading \(source.label) logs…")
       return
     }
     let serviceRunning: Bool =
@@ -999,23 +1070,34 @@ final class ProductionDesignModel: MacOSDesignModel {
         true
       }
     if !serviceRunning {
-      logState = .stopped
-      logStateMessage = "Prior logs remain visible. Start the service to view new entries."
+      setLogState(
+        .stopped,
+        message: "Prior logs remain visible. Start the service to view new entries.")
       return
     }
     switch store.logStatesBySource[source.id] {
     case "error":
-      logState = .error
-      logStateMessage = "Showing the most recent logs that loaded successfully. Try again."
+      setLogState(
+        .error, message: "Showing the most recent logs that loaded successfully. Try again.")
     case "empty":
-      logState = .empty
-      logStateMessage = "The service is running but has not written any log entries."
+      setLogState(
+        .empty, message: "The service is running but has not written any log entries.")
     case "ready":
-      logState = .ready
-      logStateMessage = nil
+      setLogState(.ready, message: nil)
     default:
-      logState = store.logsBySource[source.id]?.isEmpty == false ? .ready : .idle
-      logStateMessage = nil
+      setLogState(
+        store.logsBySource[source.id]?.isEmpty == false ? .ready : .idle, message: nil)
+    }
+  }
+
+  /// @Published fires on every set even when the value is identical; route
+  /// all log-state writes through here so steady states stay quiet.
+  private func setLogState(_ state: DesignLogState, message: String?) {
+    if logState != state {
+      logState = state
+    }
+    if logStateMessage != message {
+      logStateMessage = message
     }
   }
 
@@ -1124,8 +1206,9 @@ final class ProductionDesignModel: MacOSDesignModel {
       DesignProviderOption(
         id: $0.id,
         label: $0.label,
-        detail: $0.detail,
-        enabled: $0.installed || ($0.loginMethods ?? []).contains(where: \.available),
+        detail: Self.accountProviderDetail($0),
+        enabled: $0.installed || ($0.loginMethods ?? []).contains(where: \.available)
+          || !($0.credentialKinds ?? []).isEmpty,
         canClear: $0.canClear == true,
         loginMethods: ($0.loginMethods ?? []).map {
           DesignLoginMethod(
@@ -1136,6 +1219,15 @@ final class ProductionDesignModel: MacOSDesignModel {
             preferred: $0.preferred,
             available: $0.available,
             unavailableReason: $0.unavailableReason
+          )
+        },
+        credentialKinds: ($0.credentialKinds ?? []).map {
+          DesignCredentialKind(
+            kind: $0.kind,
+            label: $0.label,
+            profiles: ($0.profiles ?? []).map {
+              DesignCredentialProfile(id: $0.profileID, label: $0.label)
+            }
           )
         }
       )
@@ -1194,6 +1286,19 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
   }
 
+  /// Tooltip for the provider picker. A row the user cannot act on keeps the
+  /// engine's description, except when a sign-in method exists but its
+  /// launcher is missing — then the picker says so instead of just dimming.
+  private static func accountProviderDetail(_ source: AccountProviderSnapshot) -> String {
+    let methods = source.loginMethods ?? []
+    if !methods.isEmpty, !methods.contains(where: \.available), source.livePresent != true {
+      if let reason = methods.compactMap(\.unavailableReason).first(where: { !$0.isEmpty }) {
+        return reason
+      }
+    }
+    return source.detail
+  }
+
   private func accountProvider(for value: String) -> AccountProviderSnapshot? {
     store.accountProviders.first {
       $0.id.caseInsensitiveCompare(value) == .orderedSame
@@ -1225,6 +1330,61 @@ final class ProductionDesignModel: MacOSDesignModel {
     proxy.providerId == "proxy-hub" ? "hub" : proxy.id
   }
 
+  /// How long a service spinner may wait for snapshot confirmation before
+  /// failing loudly instead of spinning forever.
+  private static let serviceConfirmTimeout: UInt64 = 15_000_000_000
+
+  private func trackServiceOperation(_ operation: DesignServiceOperation, for serviceID: String) {
+    serviceOperations[serviceID] = operation
+    cancelServiceTimeout(for: serviceID)
+    serviceTimeoutTasks[serviceID] = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: Self.serviceConfirmTimeout)
+      guard let self, !Task.isCancelled else { return }
+      guard self.serviceOperations[serviceID] != nil else { return }
+      self.serviceOperations.removeValue(forKey: serviceID)
+      self.serviceFailures[serviceID] =
+        "The service didn’t confirm in time. Check Live Logs for details."
+      self.showFeedback(
+        "The service didn’t confirm in time. Check Live Logs for details.",
+        kind: .error)
+    }
+  }
+
+  private func cancelServiceTimeout(for serviceID: String) {
+    serviceTimeoutTasks.removeValue(forKey: serviceID)?.cancel()
+  }
+
+  /// Clears service spinners whose target state a snapshot now confirms.
+  /// Runs on every synchronize (after proxies sync), so the spinner stops
+  /// on `running`, not on the faster command-accepted result.
+  private func confirmServiceOperations() {
+    for (serviceID, operation) in serviceOperations {
+      let running: Bool?
+      if serviceID == "hub" {
+        running = store.proxyHub?.running
+      } else if let proxy = store.proxies.first(where: { $0.id == serviceID }) {
+        running = proxy.running
+      } else {
+        running = nil
+      }
+      guard let running else {
+        // Row vanished (account removed mid-flight): never strand a spinner.
+        cancelServiceTimeout(for: serviceID)
+        serviceOperations.removeValue(forKey: serviceID)
+        continue
+      }
+      let confirmed =
+        switch operation {
+        case .starting, .restarting: running
+        case .stopping: !running
+        }
+      if confirmed {
+        cancelServiceTimeout(for: serviceID)
+        serviceOperations.removeValue(forKey: serviceID)
+      }
+    }
+  }
+
   private func providerSymbol(_ provider: String) -> String {
     switch provider.lowercased() {
     case "claude", "anthropic": return "sparkles"
@@ -1232,7 +1392,8 @@ final class ProductionDesignModel: MacOSDesignModel {
     case "gemini", "google", "antigravity": return "diamond.fill"
     case "kiro": return "shippingbox.fill"
     case "proxy-hub": return "point.3.connected.trianglepath.dotted"
-    case "workbuddy", "codebuddy": return "wand.and.stars"
+    case "workbuddy", "codebuddy": return "briefcase.fill"
+    case "zcode": return "curlybraces"
     default: return "network"
     }
   }
@@ -1248,6 +1409,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     case "grok": return "Grok"
     case "opencode": return "OpenCode"
     case "workbuddy", "codebuddy": return "WorkBuddy"
+    case "zcode": return "ZCode"
     default: return anypickDisplayName(client)
     }
   }
@@ -1283,7 +1445,7 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   private func nativeAppOrder(_ lhs: DesignApp, _ rhs: DesignApp) -> Bool {
-    let priority = ["claude", "codex", "gemini", "kiro", "grok", "opencode", "workbuddy"]
+    let priority = ["claude", "codex", "gemini", "kiro", "grok", "opencode", "workbuddy", "zcode"]
     let lhsIndex = priority.firstIndex(of: lhs.id) ?? priority.count
     let rhsIndex = priority.firstIndex(of: rhs.id) ?? priority.count
     if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }

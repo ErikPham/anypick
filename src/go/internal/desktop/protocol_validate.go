@@ -121,7 +121,8 @@ var mutationOperations = map[string]bool{
 	"account-detect": true, "account-import": true, "account-export": true,
 	"account-backup-all": true, "account-backup-export": true, "account-backup-import": true,
 	"account-login": true, "account-save-current": true, "account-save": true,
-	"account-edit": true, "account-refresh": true, "account-remove": true,
+	"account-save-input": true,
+	"account-edit":       true, "account-refresh": true, "account-remove": true,
 	"account-clear": true, "gateway-create": true, "gateway-test": true,
 	"gateway-edit": true, "gateway-refresh": true, "gateway-remove": true,
 	"client-reset": true, "hub-source-toggle": true,
@@ -213,7 +214,7 @@ func validateMutate(fields map[string]json.RawMessage) error {
 	for key, limit := range map[string]int{
 		"providerId": 64, "sourceId": 64, "methodId": 128, "name": 128,
 		"label": 160, "endpoint": 2048, "apiKey": 8192, "region": 64,
-		"defaultModel": 256,
+		"defaultModel": 256, "kind": 64, "profile": 64,
 	} {
 		if _, err := optionalStringField(fields, key, limit); err != nil {
 			return err
@@ -316,6 +317,23 @@ func validateMutate(fields map[string]json.RawMessage) error {
 			(hasKey(fields, "name") && !safeStr(name, 128)) ||
 			!keysSubset(fields, "version", "requestId", "operation", "providerId", "sourceId", "name") {
 			return fmt.Errorf("invalid account-save-current payload")
+		}
+	case "account-save-input":
+		// Typed credential save for compatible vendors: the secret travels
+		// in apiKey (the same field gateway-create uses for profile
+		// secrets), while kind/profile name the credential product from the
+		// provider's published credentialKinds. An empty profile selects the
+		// kind's first endpoint profile server-side.
+		providerID, name, kind, apiKey := "", "", "", ""
+		_ = json.Unmarshal(fields["providerId"], &providerID)
+		_ = json.Unmarshal(fields["name"], &name)
+		_ = json.Unmarshal(fields["kind"], &kind)
+		_ = json.Unmarshal(fields["apiKey"], &apiKey)
+		if !safeStr(providerID, 64) || !safeStr(name, 128) || !safeStr(kind, 64) ||
+			len(apiKey) == 0 || len(apiKey) > 8192 ||
+			!keysSubset(fields, "version", "requestId", "operation",
+				"providerId", "name", "kind", "profile", "apiKey") {
+			return fmt.Errorf("invalid account-save-input payload")
 		}
 	default:
 		name := ""

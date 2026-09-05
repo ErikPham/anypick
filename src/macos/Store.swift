@@ -313,6 +313,8 @@ final class TrayStore: ObservableObject {
     defaultModel: String? = nil,
     overwrite: Bool? = nil,
     enabled: Bool? = nil,
+    kind: String? = nil,
+    profile: String? = nil,
     activityLabel: String
   ) -> String? {
     let requestId = UUID().uuidString
@@ -330,7 +332,9 @@ final class TrayStore: ObservableObject {
       region: region,
       defaultModel: defaultModel,
       overwrite: overwrite,
-      enabled: enabled
+      enabled: enabled,
+      kind: kind,
+      profile: profile
     )
     return sendMutation(mutation, activityLabel: activityLabel)
   }
@@ -445,7 +449,7 @@ final class TrayStore: ObservableObject {
         guard let self else { return }
         guard self.logPollSourceId == sourceId else { return }
         if let source = self.logSources.first(where: { $0.id == sourceId }),
-           self.loadingLogSourceId == nil {
+           self.loadingLogRequestId == nil {
           self.requestLogs(source, silent: true)
         }
         try? await Task.sleep(nanoseconds: 1_750_000_000)
@@ -466,7 +470,14 @@ final class TrayStore: ObservableObject {
     lines: Int,
     silent: Bool = false
   ) {
-    guard loadingLogSourceId == nil else { return }
+    // Foreground loads own loadingLogSourceId (drives the Loading UI).
+    // Background polls must not touch it: flipping to .loading on every
+    // 1.75s tick swaps the notice row and hides the Live badge — the jump.
+    // Either kind still needs a free request slot to match the response.
+    guard loadingLogRequestId == nil else { return }
+    if !silent {
+      guard loadingLogSourceId == nil else { return }
+    }
     let requestId = UUID().uuidString
     let request = ProxyLogsRequest(
       requestId: requestId,
@@ -476,7 +487,9 @@ final class TrayStore: ObservableObject {
     )
     guard let data = try? JSONEncoder().encode(request) else { return }
     logRequestTimeoutTask?.cancel()
-    loadingLogSourceId = id
+    if !silent {
+      loadingLogSourceId = id
+    }
     loadingLogRequestId = requestId
     emit("logs\t\(data.base64EncodedString())")
     logRequestTimeoutTask = Task { @MainActor [weak self] in
@@ -528,7 +541,7 @@ final class TrayStore: ObservableObject {
   }
 
   func quitAnyPick() {
-    NSApp.terminate(nil)
+    AnyPickAppDelegate.requestQuit()
   }
 
   private func consume(_ line: String) {
@@ -576,8 +589,18 @@ final class TrayStore: ObservableObject {
        result.requestId == loadingLogRequestId {
       logRequestTimeoutTask?.cancel()
       logRequestTimeoutTask = nil
-      logsBySource[result.proxyId] = result.text
-      logStatesBySource[result.proxyId] = result.state ?? (result.text.isEmpty ? "empty" : "ready")
+      // Background polls re-deliver identical tails every 1.75s. Publishing
+      // them unconditionally re-renders the log view and resets its scroll,
+      // so skip the write when nothing changed. An "error" frame never
+      // carries replacement text: keep the last good tail on screen (L4)
+      // and only publish the state flip.
+      let nextState = result.state ?? (result.text.isEmpty ? "empty" : "ready")
+      if nextState != "error", logsBySource[result.proxyId] != result.text {
+        logsBySource[result.proxyId] = result.text
+      }
+      if logStatesBySource[result.proxyId] != nextState {
+        logStatesBySource[result.proxyId] = nextState
+      }
       if loadingLogSourceId == result.proxyId { loadingLogSourceId = nil }
       loadingLogRequestId = nil
       return
@@ -629,25 +652,36 @@ final class TrayStore: ObservableObject {
     hubSources = snapshot.hubSources ?? []
     hubConflicts = snapshot.hubConflicts ?? []
     hubPublishedModels = snapshot.hubPublishedModels ?? []
-    logSources = snapshot.logSources ?? snapshot.proxies.compactMap { proxy in
-      guard proxy.logsAvailable != false else { return nil }
-      return LogSourceSnapshot(
-        id: proxy.id,
-        label: proxy.label,
-        detail: proxy.detail,
-        providerId: proxy.providerId,
-        name: proxy.id.components(separatedBy: "/").dropFirst().joined(separator: "/")
-      )
-    }
     clientModelConfigs = snapshot.clientModelConfigs ?? []
-    if !logSources.contains(where: { $0.id == selectedLogSourceId }) {
-      selectedLogSourceId = logSources.first?.id ?? ""
-    }
     gateways = snapshot.gateways
     accountProviders = snapshot.accountProviders
     gatewayProviders = snapshot.gatewayProviders
     settings = snapshot.settings
-    activity = snapshot.activity
+    // Every snapshot re-delivers the full lists. @Published fires on every
+    // assignment even when the value is identical, and each fire rebuilds the
+    // Activity list and resets the log scroll — the visible flicker. Only
+    // publish on real change.
+    let resolvedLogSources =
+      snapshot.logSources
+      ?? snapshot.proxies.compactMap { proxy in
+        guard proxy.logsAvailable != false else { return nil }
+        return LogSourceSnapshot(
+          id: proxy.id,
+          label: proxy.label,
+          detail: proxy.detail,
+          providerId: proxy.providerId,
+          name: proxy.id.components(separatedBy: "/").dropFirst().joined(separator: "/")
+        )
+      }
+    if logSources != resolvedLogSources {
+      logSources = resolvedLogSources
+    }
+    if !logSources.contains(where: { $0.id == selectedLogSourceId }) {
+      selectedLogSourceId = logSources.first?.id ?? ""
+    }
+    if activity != snapshot.activity {
+      activity = snapshot.activity
+    }
     degradedConditions = snapshot.degradedConditions ?? []
     snapshotReady = true
     lastSnapshotAt = Date()

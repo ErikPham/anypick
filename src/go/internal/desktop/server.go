@@ -723,6 +723,8 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 		}
 	case "account-save":
 		result = s.handleAccountSave(ctx, payload, m)
+	case "account-save-input":
+		result = s.handleAccountSaveInput(ctx, m)
 	case "account-edit":
 		result = s.handleAccountEdit(ctx, payload, m)
 	case "account-refresh":
@@ -991,6 +993,71 @@ func (s *Server) handleAccountSave(ctx context.Context, raw json.RawMessage, m M
 	}
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: "Saved " + label + "."}
+}
+
+// handleAccountSaveInput saves a typed credential (API key / plan key) for a
+// compatible vendor — the native Add Account sheet's key path. Unlike
+// account-save there is no live login to snapshot; unlike gateway-create the
+// credential lands in the account store, so apps can be bound to it. An empty
+// profile selects the kind's first endpoint profile.
+func (s *Server) handleAccountSaveInput(ctx context.Context, m Mutate) Result {
+	if m.ProviderID == "" || m.Name == "" || m.Kind == "" || strings.TrimSpace(m.APIKey) == "" {
+		return errorResult(m.RequestID,
+			anyerr.Newf("account-save-input needs providerId, name, kind and apiKey", "INVALID_USAGE"))
+	}
+	if s.Deps.Accounts == nil {
+		return errorResult(m.RequestID,
+			anyerr.Newf("accounts service unavailable", "SERVICE_UNAVAILABLE"))
+	}
+	profileID := strings.TrimSpace(m.Profile)
+	if profileID == "" {
+		first, err := s.defaultCredentialProfile(m.ProviderID, m.Kind)
+		if err != nil {
+			return errorResult(m.RequestID, err)
+		}
+		profileID = first
+	}
+	meta, err := s.Deps.Accounts.SaveInput(ctx, m.ProviderID, m.Name,
+		accounts.CredentialInput{Kind: m.Kind, Secret: m.APIKey, Profile: profileID}, false)
+	if err != nil {
+		return errorResult(m.RequestID, err)
+	}
+	label := meta.Label
+	if label == "" {
+		label = meta.Name
+	}
+	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
+		Message: "Saved " + meta.Provider + "/" + label + "."}
+}
+
+// defaultCredentialProfile resolves an omitted endpoint profile to the kind's
+// first declared profile, so single-profile vendors stay one field simpler
+// for every client. Unknown providers and kinds fail here with the same
+// coded error BackupInput would raise.
+func (s *Server) defaultCredentialProfile(providerID, kind string) (string, error) {
+	pv, err := s.Deps.Providers.Get(providerID)
+	if err != nil {
+		return "", err
+	}
+	definer, ok := pv.(interface {
+		Definition() *provider.CompatibleDefinition
+	})
+	if !ok || definer.Definition() == nil {
+		return "", anyerr.Newf(
+			"Provider "+providerID+" does not accept credential inputs. Sign in natively and use save.",
+			"UNSUPPORTED_CREDENTIAL_INPUT")
+	}
+	for _, c := range definer.Definition().Credentials {
+		if c.Kind == kind {
+			if len(c.Profiles) == 0 {
+				break
+			}
+			return c.Profiles[0].ID, nil
+		}
+	}
+	return "", anyerr.Newf(
+		"Provider "+providerID+" does not accept credential kind \""+kind+"\".",
+		"UNSUPPORTED_CREDENTIAL_INPUT")
 }
 
 func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result {

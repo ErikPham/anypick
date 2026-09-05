@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -305,5 +308,126 @@ func TestOpenBrowserURLRejectsNonHTTPS(t *testing.T) {
 		if err := openBrowserURL(raw); err == nil {
 			t.Fatalf("openBrowserURL(%q) accepted", raw)
 		}
+	}
+}
+
+// TestWorkBuddyStateIssueSendsNoEnterpriseHeaders pins the live-service fix:
+// with X-No-Authorization / X-User-Id / X-Enterprise-Id / X-Department-Info
+// the gateway answers code 10000 "enterprise not found" and Sign In dies
+// instantly; without them it issues a state (verified live 2026-09-04).
+func TestWorkBuddyStateIssueSendsNoEnterpriseHeaders(t *testing.T) {
+	var sawForbiddenHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, h := range []string{
+			"X-No-Authorization", "X-User-Id", "X-Enterprise-Id", "X-Department-Info",
+		} {
+			if r.Header.Get(h) != "" {
+				sawForbiddenHeader = h
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(
+			`{"code":0,"msg":"OK","data":{"state":"st-1","authUrl":"https://example.com/login?state=st-1"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	site := workbuddySite{
+		MethodID: "test", Label: "Test", Description: "Test",
+		Base: srv.URL, Domain: "example.com",
+	}
+	state, authURL, err := workbuddyStartLogin(context.Background(), site)
+	if err != nil {
+		t.Fatalf("start login: %v", err)
+	}
+	if sawForbiddenHeader != "" {
+		t.Fatalf("state request carried %s", sawForbiddenHeader)
+	}
+	if state != "st-1" || authURL != "https://example.com/login?state=st-1" {
+		t.Fatalf("state = %q authURL = %q", state, authURL)
+	}
+}
+
+func TestWorkBuddySanitizeOpenAIBodyShapesSubscriptionChannel(t *testing.T) {
+	in := []byte(`{"model":"hy4","messages":[{"role":"user","content":"hi"}]}`)
+	out := workbuddySanitizeOpenAIBody(in)
+	var v map[string]any
+	if json.Unmarshal(out, &v) != nil {
+		t.Fatalf("unreadable: %s", out)
+	}
+	if v["model"] != "hy4" {
+		t.Fatalf("model = %v, want the caller's slug untouched", v["model"])
+	}
+	msgs, _ := v["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want system+user", len(msgs))
+	}
+	sys, _ := msgs[0].(map[string]any)
+	if sys["role"] != "system" {
+		t.Fatalf("leading role = %v, want system (vendor 11128 without it)", sys["role"])
+	}
+	already := []byte(`{"model":"hy3","messages":[{"role":"system","content":"Keep."},{"role":"user","content":"hi"}]}`)
+	got := workbuddySanitizeOpenAIBody(already)
+	var v2 map[string]any
+	_ = json.Unmarshal(got, &v2)
+	msgs2, _ := v2["messages"].([]any)
+	if len(msgs2) != 2 {
+		t.Fatalf("existing system was duplicated: %s", got)
+	}
+}
+
+func TestWorkBuddyResolveUpstreamCarriesCLIHeaders(t *testing.T) {
+	p := newWorkBuddy(t.TempDir())
+	snap := t.TempDir()
+	if err := writeWorkBuddyAuthDocument(filepath.Join(snap, workbuddyAuthFile), workbuddyAuthDocument{
+		Version: workbuddyAuthVersion, Kind: workbuddyKindSub,
+		MethodID: "workbuddy-international", Base: "https://www.codebuddy.ai",
+		Domain: "www.codebuddy.ai", AccessToken: "at-123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	up, err := p.ResolveUpstream(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, h := range up.ExtraHeaders {
+		got[h.Name] = h.Value
+	}
+	if got["User-Agent"] != workbuddyUserAgent {
+		t.Fatalf("User-Agent = %q", got["User-Agent"])
+	}
+	if got["X-Domain"] != "www.codebuddy.ai" || got["X-Product"] != "SaaS" {
+		t.Fatalf("channel headers = %+v", got)
+	}
+}
+
+// TestWorkBuddyStalledServerFailsFast pins the per-request timeout: the poll
+// loop's five-minute deadline only applies between iterations, so without a
+// bound on one request a stalled connection holds Sign In — and the desktop
+// sheet's spinner — forever with no terminal result.
+func TestWorkBuddyStalledServerFailsFast(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	t.Cleanup(srv.Close)
+	site := workbuddySite{
+		MethodID: "test", Label: "Test", Description: "Test",
+		Base: srv.URL, Domain: "example.com",
+	}
+
+	old := workbuddyHTTPTimeout
+	workbuddyHTTPTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { workbuddyHTTPTimeout = old })
+
+	start := time.Now()
+	_, _, err := workbuddyStartLogin(context.Background(), site)
+	if err == nil {
+		t.Fatal("stalled state request succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Fatalf("stalled request took %v, want a fast failure", elapsed)
+	}
+	var ae *anyerr.Error
+	if !errors.As(err, &ae) || ae.Code != "PROVIDER_LOGIN_FAILED" {
+		t.Fatalf("code = %v, want PROVIDER_LOGIN_FAILED", err)
 	}
 }
