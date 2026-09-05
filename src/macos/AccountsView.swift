@@ -81,6 +81,16 @@ struct AccountsView: View {
     }
     .searchable(text: $searchQuery, placement: .toolbar, prompt: "Search Accounts")
     .accessibilityIdentifier("accounts.list")
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button("Add Account…") { activeSheet = .addAccount }
+          .accessibilityIdentifier("accounts.toolbar.save-login")
+      }
+      ToolbarItem {
+        Button("Add API Gateway…") { activeSheet = .addGateway }
+          .accessibilityIdentifier("accounts.toolbar.add-gateway")
+      }
+    }
     .sheet(item: $activeSheet) { sheet in
       switch sheet {
       case .addAccount: AddSavedAccountSheet(model: model)
@@ -247,6 +257,8 @@ private struct AccountInventoryRow: View {
   var onEdit: () -> Void
   var onConnect: (() -> Void)? = nil
   var onRemove: () -> Void
+  /// Trailing Switch/Connect stay hidden until hover (native list behavior).
+  @State private var isHovered = false
 
   private var showsSwitch: Bool {
     account.kind == .saved && !model.isCurrentAccount(account)
@@ -276,14 +288,13 @@ private struct AccountInventoryRow: View {
     HStack(spacing: 10) {
       DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)
         .frame(width: 20, height: 20)
+        .accessibilityHidden(true)
       Button(action: onInspect) {
         VStack(alignment: .leading, spacing: 2) {
-          Text(account.name)
-          if !account.detail.isEmpty {
-            Text(account.detail)
-              .foregroundStyle(.secondary)
-              .lineLimit(1)
-          }
+          Text(disambiguatedAccountName(for: account, in: model.accounts))
+          Text(accountIdentityLine(provider: account.provider, detail: account.detail))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
           if let quotaLine {
             Text(quotaLine)
               .font(.caption)
@@ -295,11 +306,12 @@ private struct AccountInventoryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
       }
       .buttonStyle(.plain)
+      .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
       HStack(spacing: 9) {
         actionSlot
         statusSlot
         EllipsisCircleMenu(
-          accessibilityName: "More actions for \(account.name)",
+          accessibilityName: "More actions for \(accountAccessibilityLabel(for: account, in: model.accounts))",
           identifier: "accounts.more.\(account.id)",
           onDetail: onInspect,
           onEdit: onEdit,
@@ -310,8 +322,10 @@ private struct AccountInventoryRow: View {
       .fixedSize()
     }
     .contentShape(Rectangle())
+    .onHover { hovering in isHovered = hovering }
     .contextMenu { rowMenu }
-    .accessibilityElement(children: .contain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
     .accessibilityIdentifier("accounts.row.\(account.id)")
     .modifier(
       AccountRowAccessibilityActions(
@@ -325,21 +339,34 @@ private struct AccountInventoryRow: View {
 
   @ViewBuilder
   private var actionSlot: some View {
+    // Switch/Connect reveal on hover only; the switching spinner always
+    // shows. Opacity (not removal) keeps the row geometry stable.
+    // HIG: while busy the button stays and spins inside it — it is never
+    // swapped out for a bare spinner.
+    let switching = model.switchingAccountID == account.id
     ZStack {
-      if model.switchingAccountID == account.id {
-        ProgressView()
-          .controlSize(.small)
-          .accessibilityLabel("Switching")
-      } else if showsSwitch {
-        Button("Switch") { model.makeAccountCurrent(id: account.id) }
-          .disabled(model.isBusy)
-          .accessibilityIdentifier("accounts.switch.\(account.id)")
+      if showsSwitch {
+        Button {
+          model.makeAccountCurrent(id: account.id)
+        } label: {
+          if switching { ProgressView().controlSize(.small) } else { Text("Switch") }
+        }
+        .disabled(model.isBusy)
+        .accessibilityIdentifier("accounts.switch.\(account.id)")
       } else if showsConnect {
-        Button("Connect") { onConnect?() }
-          .disabled(model.isBusy || account.status == .unavailable)
-          .accessibilityIdentifier("accounts.connect.\(account.id)")
+        Button {
+          onConnect?()
+        } label: {
+          if switching { ProgressView().controlSize(.small) } else { Text("Connect") }
+        }
+        .disabled(model.isBusy || account.status == .unavailable)
+        .accessibilityIdentifier("accounts.connect.\(account.id)")
       }
     }
+    .buttonStyle(.bordered)
+    .controlSize(.small)
+    .opacity(switching || isHovered ? 1 : 0)
+    .allowsHitTesting(switching || isHovered)
     .fixedSize()
   }
 
@@ -352,9 +379,13 @@ private struct AccountInventoryRow: View {
         Image(systemName: "checkmark.circle.fill")
           .foregroundStyle(.green)
           .accessibilityLabel(model.isCurrentAccount(account) ? "Current" : "Ready")
-      } else if account.status == .attention || account.status == .unavailable {
-        Image(systemName: "exclamationmark.circle.fill")
-          .foregroundStyle(.orange)
+      } else if account.status == .attention {
+        Image(systemName: DesignStatus.attention.symbol)
+          .foregroundStyle(DesignStatus.attention.color)
+          .accessibilityLabel(account.status.rawValue)
+      } else if account.status == .unavailable {
+        Image(systemName: DesignStatus.unavailable.symbol)
+          .foregroundStyle(DesignStatus.unavailable.color)
           .accessibilityLabel(account.status.rawValue)
       }
     }

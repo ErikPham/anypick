@@ -285,6 +285,7 @@ func RegisterBuiltin(r *Registry, home string) error {
 		newOpenCode(home),
 		newWorkBuddy(home),
 		newZCode(home),
+		newDsh(home),
 	} {
 		if err := r.Register(a); err != nil {
 			return err

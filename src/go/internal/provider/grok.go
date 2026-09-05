@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/browserlogin"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -158,10 +159,10 @@ func (p *grok) Restore(srcDir string) error {
 		return err
 	}
 	dest := p.authPath()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, data, 0o600)
+	// dest is the user's real ~/.grok/auth.json. A truncated write here
+	// destroys their live login with nothing to fall back on, so replace by
+	// rename rather than overwriting in place.
+	return atomicfile.Write(dest, data, 0o600)
 }
 
 func (p *grok) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {

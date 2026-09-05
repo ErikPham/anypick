@@ -130,6 +130,34 @@ have to be able to finish after the operation that triggered them is cancelled.
 2. Register it in-tree, or — for a third-party provider — pass it to the app
    before services start resolving adapters. Registries are sealed once startup
    begins.
+
+   Registering a *client* means touching every site that enumerates one. Miss
+   one and the feature half-works — it shows up in the CLI but not the desktop
+   app, or activates but cannot be rolled back — which is worse than not
+   landing it:
+
+   - `internal/client/client.go` — the builtin registry.
+   - `internal/transport/adapter.go` — every `TransportFor` closure that names
+     accepted clients (gemini, grok, workbuddy, kiro, pool, generic).
+   - `internal/runtime/service.go` — `PrepareClientConfigRecovery`, so a failed
+     activation can restore what the adapter is about to overwrite.
+   - `internal/desktop/snapshot.go` — `designAppName` and
+     `managedAppClientIDs`.
+   - `src/macos/ProductionModel.swift` — `providerSymbol`, `designAppName` and
+     `nativeAppOrder`.
+   - `docs/src/content/docs/concepts.mdx` — the client list.
+   - `internal/tui/data.go` — `routingAppAllowlist`. `routingAppIDs` is the
+     **only** place the terminal UI enumerates clients, so a client that is
+     neither listed here nor a provider AnyPick can log in for is invisible
+     there. `TestEveryRegisteredClientIsReachableInTheTUI` fails the build on
+     exactly that. A client with no provider of its own (`zcode`) *must* be
+     added; one whose login AnyPick already manages (gemini, kiro, opencode,
+     workbuddy) must not.
+
+   `internal/transport/adapter_test.go` requires an explicit expectation for
+   every registered client in every adapter row, so a client that was
+   registered but never classified fails the build instead of shipping as
+   `Unsupported`.
 3. Put the provider's **model policy** on the provider itself
    (`roleDefaults`, `suggestModels`, `roleFriendlyModels`,
    `staticFallbackModels`, `roleModelHints`). Core, CLI and TUI ask the

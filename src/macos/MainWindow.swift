@@ -1,31 +1,23 @@
 import AppKit
 import SwiftUI
 
-/// System Settings shell: sidebar search + List, detail is a NavigationStack.
+/// System Settings shell: sidebar List, detail is a NavigationStack.
 struct MainWindow: View {
   @ObservedObject var model: MacOSDesignModel
   @Environment(\.openWindow) private var openWindow
-  @State private var sidebarSearch = ""
   @State private var path = NavigationPath()
-
-  private var filteredDestinations: [DesignDestination] {
-    guard !sidebarSearch.isEmpty else { return DesignDestination.allCases }
-    return DesignDestination.allCases.filter {
-      $0.title.localizedCaseInsensitiveContains(sidebarSearch)
-    }
-  }
 
   var body: some View {
     NavigationSplitView {
       sidebarColumn
-        .navigationSplitViewColumnWidth(min: 200, ideal: 216, max: 260)
-        .toolbar(removing: .sidebarToggle)
+        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
         .safeAreaInset(edge: .bottom, spacing: 0) { sidebarServiceStatus }
     } detail: {
       detailColumn
-        .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+        // minWidth: 0 so the Form's ideal width does not grow the window.
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
     }
-    .searchable(text: $sidebarSearch, placement: .sidebar, prompt: "Search")
+    .navigationSplitViewStyle(.balanced)
     .alert(
       "Unable to Complete",
       isPresented: Binding(
@@ -38,7 +30,7 @@ struct MainWindow: View {
       Text(model.feedback?.message ?? "")
     }
     .followingDesignAppearance(model.appearance)
-    .frame(minWidth: 820, minHeight: 560)
+    .frame(minWidth: 920, minHeight: 640)
     .sheet(
       isPresented: Binding(
         get: { model.showFirstRunWelcome },
@@ -54,6 +46,12 @@ struct MainWindow: View {
       }
     }
     .onChange(of: model.destination) { path = NavigationPath() }
+    .onChange(of: model.pendingAccountDetailID) { _, id in
+      guard let id else { return }
+      model.destination = .accounts
+      path.append(DesignRouteID.account(id))
+      model.pendingAccountDetailID = nil
+    }
     .onChange(of: model.announcementRequested) {
       NSAccessibility.post(
         element: NSApplication.shared,
@@ -65,12 +63,8 @@ struct MainWindow: View {
   @ViewBuilder
   private var sidebarColumn: some View {
     List(selection: $model.destination) {
-      if filteredDestinations.isEmpty {
-        ContentUnavailableView.search(text: sidebarSearch)
-      } else {
-        ForEach(filteredDestinations) { destination in
-          sidebarRow(destination)
-        }
+      ForEach(DesignDestination.allCases) { destination in
+        sidebarRow(destination)
       }
     }
     .listStyle(.sidebar)
@@ -96,7 +90,8 @@ struct MainWindow: View {
 
   /// Sidebar footer service status — "2 proxies running".
   private var serviceStatusSummary: String {
-    let running = model.proxies.filter(\.enabled).count + (model.proxyHubEnabled ? 1 : 0)
+    let running = model.proxies.filter { $0.status == .running }.count
+      + (model.proxyHubEnabled ? 1 : 0)
     if running == 0 { return "No proxies running" }
     return running == 1 ? "1 proxy running" : "\(running) proxies running"
   }
@@ -152,6 +147,16 @@ struct MainWindow: View {
       NavigationStack(path: $path) {
         rootPane
           .navigationTitle(model.destination.title)
+          // Accounts & Activity install a toolbar (search). Without one on
+          // Apps / Overview the unified titlebar appears and disappears, and
+          // the sidebar column changes height. Keep the chrome mounted.
+          .toolbar {
+            ToolbarItem(placement: .automatic) {
+              Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            }
+          }
           .navigationDestination(for: DesignRouteID.self) { route in
             switch route {
             case .app(let id):
@@ -159,6 +164,12 @@ struct MainWindow: View {
             case .account(let id):
               if let account = model.accounts.first(where: { $0.id == id }) {
                 AccountDetailView(model: model, accountID: account.id)
+              } else {
+                DesignEmptyState(
+                  title: "Account Is No Longer Available",
+                  message: "Return to Accounts & APIs and choose another account.",
+                  symbol: "person.2"
+                )
               }
             case .proxy(let id):
               ProxyDetailView(model: model, proxyID: id)

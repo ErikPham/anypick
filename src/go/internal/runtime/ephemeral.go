@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -111,6 +112,16 @@ func (s *Service) CreateEphemeralRuntimeContext(
 			return nil, err
 		}
 		out.Environment["HOME"] = out.Home
+	case "dsh":
+		// dsh resolves its harness home from $DSH_HOME or ~/.dsh and reads
+		// DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL as environment layers; Apply
+		// below also writes them to the isolated ~/.dsh/.env. Pointing
+		// baseURL at the managed proxy lets dsh ride any upstream the
+		// account proxies to. The harness appends /chat/completions itself,
+		// so the base must already carry the OpenAI /v1 prefix.
+		out.Environment["HOME"] = out.Home
+		out.Environment["DEEPSEEK_API_KEY"] = spec.APIKey
+		out.Environment["DEEPSEEK_BASE_URL"] = strings.TrimSuffix(spec.Endpoint, "/") + "/v1"
 	default:
 		_ = out.Cleanup()
 		return nil, fmt.Errorf("client %s does not support isolated homes", cad.ID())

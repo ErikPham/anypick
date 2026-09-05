@@ -25,9 +25,14 @@ func openDesignSettings() {
 extension DesignApp {
   /// Copy shown when an app has no working login; `nil` keeps the row clean.
   var issue: String? {
+    if !isAppRouteConfigured(self) {
+      return "No login chosen. Open the app to choose one."
+    }
     switch status {
-    case .attention, .unavailable: "This app doesn’t have a working login."
-    case .ready, .running, .stopped: nil
+    case .attention, .unavailable:
+      return "This app doesn’t have a working login."
+    case .ready, .running, .stopped:
+      return nil
     }
   }
 }
@@ -127,6 +132,7 @@ struct DesignEmptyState: View {
         Button(actionTitle, action: action)
       }
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }
 
@@ -195,6 +201,10 @@ struct DesignGroupedPane<Content: View, Actions: View>: View {
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     }
+    // Fill the detail column. A hugging ScrollView lets each destination
+    // publish a different ideal size, so NavigationSplitView resizes the
+    // sidebar (and the window) when switching Apps ↔ Accounts & APIs.
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 }
 
@@ -269,6 +279,8 @@ struct DesignSheetButton: NSViewRepresentable {
 }
 
 /// Sheet: Form group, then Cancel + default under that group.
+/// Content-fitted: the sheet hugs short content (no scrollbar for 3–4 rows)
+/// and scrolls only when content exceeds the max height.
 struct DesignSheetHost<Content: View>: View {
   let title: String
   var width: CGFloat = 480
@@ -284,9 +296,15 @@ struct DesignSheetHost<Content: View>: View {
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 12) {
-      content()
-        .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      ScrollView {
+        content()
+          .formStyle(.grouped)
+          .frame(maxWidth: .infinity)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .scrollIndicators(.automatic)
+      .frame(maxWidth: .infinity)
+      .frame(minHeight: 80, idealHeight: min(height, 480), maxHeight: 560)
 
       HStack(spacing: 12) {
         if showsCancel {
@@ -307,7 +325,7 @@ struct DesignSheetHost<Content: View>: View {
       .padding(.bottom, 16)
     }
     .background(Color(nsColor: .windowBackgroundColor))
-    .frame(width: width)
-    .frame(minHeight: 280, idealHeight: height, maxHeight: 640)
+    .frame(minWidth: 320, idealWidth: width, maxWidth: 600)
+    .fixedSize(horizontal: false, vertical: true)
   }
 }

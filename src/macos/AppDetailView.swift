@@ -62,6 +62,12 @@ struct AppDetailView: View {
             }
           } header: {
             Text("Models")
+          } footer: {
+            if !app.modelEditingAvailable, let reason = app.modelUnavailableReason,
+              !reason.isEmpty
+            {
+              Text(reason)
+            }
           }
         }
 

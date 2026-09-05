@@ -183,3 +183,20 @@ func (gemini *gemini) ShortName() string { return "Gemini" }
 func (p *gemini) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	return geminiUpstream(snapshotDir)
 }
+
+// GatewayUpstreamWithKey resolves the upstream for a Gemini gateway from a
+// profile API key held in memory.
+//
+// A gateway has no account snapshot: the credential lives in the profile store,
+// which owns it (invariant #6). It must therefore never be copied into a
+// snapshot .env. ResolveUpstream runs once per request, so writing it to disk
+// there is not just a redundant copy — it races any concurrent `anypick backup`
+// with a half-written file, and a stale copy keeps resolving after the profile
+// key is rotated or deleted (invariant #4). Passing the key through memory
+// removes the write entirely.
+func (p *gemini) GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, anyerr.Newf("No Gemini API key in this gateway profile.", "NO_CREDENTIAL")
+	}
+	return geminiKeyUpstream(apiKey)
+}

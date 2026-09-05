@@ -5,74 +5,53 @@ struct MenuBarFirstRun: View {
   var openAccounts: () -> Void
 
   var body: some View {
-    VStack(spacing: 9) {
-      VStack(spacing: 6) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(TrayPaint.accent)
-            .frame(width: 44, height: 44)
+    VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 4) {
+        Label {
+          Text(model.currentLiveLogin == nil ? "Add a login to start" : "Save a login to start")
+            .font(.headline)
+        } icon: {
           Image(systemName: "sparkle")
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.accentColor)
         }
-        Text(model.currentLiveLogin == nil ? "Add a login to start" : "Save a login to start")
-          .font(.system(size: 17, weight: .semibold))
         Text(firstRunDescription)
-          .font(.system(size: 11))
+          .font(.caption)
           .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
-      .padding(.top, 4)
-      .padding(.horizontal, 8)
 
       if let login = model.currentLiveLogin {
-        HStack(spacing: 10) {
-          DesignProviderIcon(provider: login.providerID, fallbackSymbol: login.symbol, size: 32)
-          VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 8) {
+          DesignProviderIcon(provider: login.providerID, fallbackSymbol: login.symbol, size: 28)
+            .accessibilityHidden(true)
+          VStack(alignment: .leading, spacing: 1) {
             Text(login.appName)
-              .font(.system(size: 12, weight: .semibold))
+              .font(.callout)
+              .fontWeight(.semibold)
+              .lineLimit(1)
             Text(login.identity ?? "Current login detected")
-              .font(TrayFont.detail)
+              .font(.caption)
               .foregroundStyle(.secondary)
+              .lineLimit(1)
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
           Spacer(minLength: 6)
-          HStack(spacing: 4) {
-            Circle().fill(TrayPaint.ready).frame(width: 6, height: 6)
-            Text("Active")
-              .font(TrayFont.detailStrong)
-              .foregroundStyle(TrayPaint.ready)
-          }
-          .padding(.horizontal, 6)
-          .frame(height: 20)
-          .background(
-            TrayPaint.ready.opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-          )
+          Label("Active", systemImage: "checkmark.circle.fill")
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundStyle(.green)
         }
-        .padding(10)
-        .frame(height: 62)
-        .background(TrayPaint.cardFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(TrayPaint.hairline, lineWidth: 0.5)
-        )
-      }
-
-      if let login = model.currentLiveLogin {
-        VStack(alignment: .leading, spacing: 7) {
+        .padding(.vertical, 6)
+        Divider()
+        VStack(alignment: .leading, spacing: 4) {
           trustRow("Keeps the current \(login.appName) session signed in")
           trustRow("Stores an encrypted local snapshot for switching")
           trustRow("You can remove or replace it at any time")
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-          TrayPaint.accent.opacity(0.12),
-          in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
       }
 
       Button(action: saveDetected) {
-        HStack(spacing: 7) {
+        HStack(spacing: 6) {
           if model.isBusy {
             ProgressView().controlSize(.small)
           } else {
@@ -96,45 +75,47 @@ struct MenuBarFirstRun: View {
         .controlSize(.large)
       }
 
-      HStack(spacing: 8) {
-        stepBadge(1, current: true)
+      HStack(spacing: 6) {
+        Text("1")
+          .font(.caption)
+          .fontWeight(.semibold)
+          .foregroundStyle(.white)
+          .frame(width: 18, height: 18)
+          .background(Color.accentColor, in: Circle())
+          .accessibilityHidden(true)
         Text(model.currentLiveLogin == nil ? "Add login" : "Save login")
-          .font(TrayFont.detailStrong)
+          .font(.caption)
+          .fontWeight(.semibold)
         Rectangle()
-          .fill(Color.primary.opacity(0.18))
+          .fill(Color.secondary.opacity(0.3))
           .frame(height: 1)
-        stepBadge(2, current: false)
+          .accessibilityHidden(true)
+        Text("2")
+          .font(.caption)
+          .fontWeight(.semibold)
+          .foregroundStyle(.secondary)
+          .frame(width: 18, height: 18)
+          .background(Color.secondary.opacity(0.15), in: Circle())
+          .accessibilityHidden(true)
         Text("Point an app")
-          .font(TrayFont.detailStrong)
+          .font(.caption)
+          .fontWeight(.semibold)
           .foregroundStyle(.secondary)
       }
-      .padding(.top, 3)
-      .padding(.horizontal, 2)
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Step 1 of 2: \(model.currentLiveLogin == nil ? "Add login" : "Save login"). Step 2: Point an app.")
     }
   }
 
   private func trustRow(_ text: String) -> some View {
-    HStack(alignment: .center, spacing: 7) {
-      Image(systemName: "checkmark.circle")
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(TrayPaint.accent)
+    Label {
       Text(text)
-        .font(TrayFont.detailMedium)
-        .foregroundStyle(TrayPaint.accentInk)
+        .font(.caption)
         .fixedSize(horizontal: false, vertical: true)
+    } icon: {
+      Image(systemName: "checkmark.circle")
+        .foregroundStyle(Color.accentColor)
     }
-    .frame(height: 19, alignment: .leading)
-  }
-
-  private func stepBadge(_ number: Int, current: Bool) -> some View {
-    Text("\(number)")
-      .font(TrayFont.detailStrong)
-      .foregroundStyle(current ? Color.white : Color.secondary)
-      .frame(width: 18, height: 18)
-      .background(
-        current ? Color.primary : Color.primary.opacity(0.15),
-        in: Circle()
-      )
   }
 
   private func saveDetected() {

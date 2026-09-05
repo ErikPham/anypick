@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// In-panel Use With (board 29). Instant-apply; not a Settings sheet.
+/// In-panel account switcher. Instant-apply native rows with a Menu-free
+/// list: each route is its own button with visible keyboard focus.
 struct MenuBarUseWithSheet: View {
   @ObservedObject var model: MacOSDesignModel
   let appID: String
@@ -16,7 +17,7 @@ struct MenuBarUseWithSheet: View {
 
   private var accountRoutes: [DesignRoute] {
     guard let app else { return [] }
-    return trayAccountRoutes(in: app)
+    return compatibleAccountRoutes(in: app)
   }
 
   private var filteredAccountRoutes: [DesignRoute] {
@@ -38,7 +39,7 @@ struct MenuBarUseWithSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
+    VStack(alignment: .leading, spacing: 8) {
       header
       searchField
       savedAccountsHeader
@@ -56,53 +57,43 @@ struct MenuBarUseWithSheet: View {
   }
 
   private var header: some View {
-    HStack(spacing: 9) {
+    HStack(spacing: 8) {
       Button(action: onDismiss) {
         Image(systemName: "chevron.left")
-          .font(.system(size: 11, weight: .semibold))
-          .frame(width: 18, height: 18)
       }
       .buttonStyle(.bordered)
       .controlSize(.small)
       .accessibilityLabel("Back")
       if let app {
-        DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol, size: 30)
-        VStack(alignment: .leading, spacing: 2) {
+        DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol, size: 28)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 1) {
           Text("Switch \(app.name) Account")
-            .font(.system(size: 14, weight: .semibold))
+            .font(.headline)
+            .lineLimit(1)
           Text(headerDetail(for: app))
-            .font(TrayFont.detail)
+            .font(.caption)
             .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
       }
       Spacer(minLength: 0)
     }
-    .frame(height: 42)
   }
 
+  @ViewBuilder
   private var searchField: some View {
-    HStack(spacing: 7) {
+    HStack(spacing: 6) {
       Image(systemName: "magnifyingglass")
-        .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
+        .accessibilityHidden(true)
       TextField(searchPrompt, text: $query)
         .textFieldStyle(.plain)
-        .font(TrayFont.detail)
+        .font(.callout)
         .focused($searchFocused)
-      Text("⌘F")
-        .font(TrayFont.detailStrong)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 5)
-        .frame(height: 18)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
     }
-    .padding(.horizontal, 9)
-    .frame(height: 32)
-    .background(TrayPaint.cardFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(TrayPaint.hairline, lineWidth: 0.5)
-    )
+    .padding(.horizontal, 8)
+    .frame(height: 30)
     .overlay {
       Button("Find") { searchFocused = true }
         .keyboardShortcut("f", modifiers: .command)
@@ -110,28 +101,22 @@ struct MenuBarUseWithSheet: View {
         .accessibilityHidden(true)
     }
     .accessibilityIdentifier("tray.use-with.search")
+    Divider()
   }
 
   private var savedAccountsHeader: some View {
-    traySectionTitle("Accounts · \(accountRoutes.count)")
-      .frame(height: 15)
+    traySectionTitle("Compatible Accounts · \(accountRoutes.count)")
   }
 
   @ViewBuilder
   private var accountGroup: some View {
     if filteredAccountRoutes.isEmpty {
-      VStack(spacing: 4) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(.secondary)
-        Text("No matching accounts")
-          .font(TrayFont.detailMedium)
-        Text("Try another name or email address.")
-          .font(TrayFont.detail)
-          .foregroundStyle(.secondary)
-      }
-      .frame(maxWidth: .infinity)
-      .frame(height: 86)
-      .background(TrayPaint.recessedFill, in: RoundedRectangle(cornerRadius: 10))
+      ContentUnavailableView(
+        "No matching accounts",
+        systemImage: "magnifyingglass",
+        description: Text("Try another name or email address.")
+      )
+      .frame(maxWidth: .infinity, minHeight: 86)
     } else {
       ScrollView {
         LazyVStack(spacing: 0) {
@@ -141,13 +126,7 @@ struct MenuBarUseWithSheet: View {
           }
         }
       }
-      .frame(height: accountGroupHeight)
-      .background(TrayPaint.recessedFill, in: RoundedRectangle(cornerRadius: 10))
-      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .strokeBorder(TrayPaint.hairline, lineWidth: 0.5)
-      )
+      .frame(maxHeight: 258)
     }
   }
 
@@ -158,51 +137,60 @@ struct MenuBarUseWithSheet: View {
     } label: {
       HStack(spacing: 8) {
         TrayInlineRouteMark(state: state)
+          .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 1) {
           Text(route.name)
-            .font(state == .current ? TrayFont.detailStrong : TrayFont.detailMedium)
+            .font(.callout)
+            .fontWeight(state == .current ? .semibold : .regular)
             .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
           if !route.detail.isEmpty {
             Text(route.detail)
-              .font(TrayFont.detail)
+              .font(.caption)
               .foregroundStyle(.secondary)
               .lineLimit(1)
+              .truncationMode(.tail)
           }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         Spacer(minLength: 6)
         routeStateLabel(state, fallback: trailing)
       }
-      .padding(.horizontal, 10)
-      .frame(height: 42)
-      .background(rowBackground(for: state))
+      .padding(.vertical, 6)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(model.isBusy)
     .accessibilityLabel(routeAccessibilityLabel(route, state: state))
+    .help("\(route.name) — \(route.detail)")
   }
 
   @ViewBuilder
   private func routeStateLabel(_ state: TrayInlineSwitchState, fallback: String) -> some View {
     switch state {
     case .current:
-      Text(fallback)
-        .font(TrayFont.detailStrong)
-        .foregroundStyle(TrayPaint.accent)
+      Text(fallback.isEmpty ? "Current" : fallback)
+        .font(.caption)
+        .fontWeight(.semibold)
+        .foregroundStyle(Color.accentColor)
     case .switching:
-      HStack(spacing: 5) {
+      HStack(spacing: 4) {
         ProgressView().controlSize(.small)
         Text("Switching…")
       }
-      .font(TrayFont.detailStrong)
+      .font(.caption)
+      .fontWeight(.semibold)
       .foregroundStyle(.secondary)
     case .retry:
       Label("Try again", systemImage: "exclamationmark.triangle.fill")
-        .font(TrayFont.detailStrong)
-        .foregroundStyle(TrayPaint.attention)
+        .font(.caption)
+        .fontWeight(.semibold)
+        .foregroundStyle(.orange)
     case .available:
       if !fallback.isEmpty {
         Text(fallback)
-          .font(TrayFont.detailMedium)
+          .font(.caption)
           .foregroundStyle(.secondary)
       }
     }
@@ -210,40 +198,36 @@ struct MenuBarUseWithSheet: View {
 
   private var sharedHeader: some View {
     traySectionTitle("Or Use Shared")
-      .frame(height: 15)
   }
 
   private func sharedHubRow(_ route: DesignRoute) -> some View {
     Button {
       model.setRoute(appID: appID, routeID: route.id)
     } label: {
-      HStack(spacing: 9) {
+      HStack(spacing: 8) {
         Image(systemName: "point.3.connected.trianglepath.dotted")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(TrayPaint.accent)
-          .frame(width: 28, height: 28)
-        VStack(alignment: .leading, spacing: 2) {
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 20)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 1) {
           Text("Proxy Hub")
-            .font(TrayFont.detailStrong)
+            .font(.callout)
+            .fontWeight(.semibold)
           Text(hubDetail)
-            .font(TrayFont.detail)
+            .font(.caption)
             .foregroundStyle(.secondary)
         }
         Spacer(minLength: 6)
         Text(model.proxyHubEnabled ? "Running" : "Stopped")
-          .font(TrayFont.detailStrong)
-          .foregroundStyle(model.proxyHubEnabled ? TrayPaint.ready : Color.secondary)
+          .font(.caption)
+          .fontWeight(.semibold)
+          .foregroundStyle(model.proxyHubEnabled ? .green : .secondary)
         Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .medium))
           .foregroundStyle(.tertiary)
+          .accessibilityHidden(true)
       }
-      .padding(.horizontal, 9)
-      .frame(height: 50)
-      .background(TrayPaint.cardFill, in: RoundedRectangle(cornerRadius: 10))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .strokeBorder(TrayPaint.hairline, lineWidth: 0.5)
-      )
+      .padding(.vertical, 6)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(model.isBusy || !model.proxyHubEnabled)
@@ -252,28 +236,24 @@ struct MenuBarUseWithSheet: View {
 
   private var gatewaySummary: some View {
     Button { openDestination(.accounts) } label: {
-      HStack(spacing: 9) {
+      HStack(spacing: 8) {
         Image(systemName: "network")
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(TrayPaint.accent)
-          .frame(width: 28, height: 28)
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 20)
+          .accessibilityHidden(true)
         Text("API Gateways")
-          .font(TrayFont.detailStrong)
+          .font(.callout)
+          .fontWeight(.semibold)
         Spacer(minLength: 6)
         Text("\(gatewayRoutes.count)")
-          .font(TrayFont.detail)
+          .font(.caption)
           .foregroundStyle(.secondary)
         Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .medium))
           .foregroundStyle(.tertiary)
+          .accessibilityHidden(true)
       }
-      .padding(.horizontal, 9)
-      .frame(height: 50)
-      .background(TrayPaint.cardFill, in: RoundedRectangle(cornerRadius: 10))
-      .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .strokeBorder(TrayPaint.hairline, lineWidth: 0.5)
-      )
+      .padding(.vertical, 6)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("tray.use-with.gateways")
@@ -296,18 +276,13 @@ struct MenuBarUseWithSheet: View {
       .controlSize(.small)
       .keyboardShortcut("o", modifiers: .command)
     }
-    .frame(height: 28)
-  }
-
-  private var accountGroupHeight: CGFloat {
-    min(CGFloat(filteredAccountRoutes.count * 43), 258)
   }
 
   private var searchPrompt: String {
     let name = app?.name
       .replacingOccurrences(of: " Code", with: "")
       .replacingOccurrences(of: " CLI", with: "") ?? "app"
-    return "Search \(accountRoutes.count) \(name) accounts…"
+    return "Search \(accountRoutes.count) compatible \(name) accounts"
   }
 
   private var hubDetail: String {
@@ -318,30 +293,24 @@ struct MenuBarUseWithSheet: View {
 
   private func headerDetail(for app: DesignApp) -> String {
     let current = app.routeOptions.first { $0.id == app.selectedRouteID }?.name ?? "Not selected"
-    return "Current: \(current) · \(accountRoutes.count) saved accounts"
-  }
-
-  private func rowBackground(for state: TrayInlineSwitchState) -> Color {
-    switch state {
-    case .current, .switching:
-      Color(nsColor: .selectedContentBackgroundColor).opacity(0.12)
-    case .retry:
-      .clear
-    case .available:
-      .clear
-    }
+    return "Current: \(current) · \(accountRoutes.count) compatible accounts"
   }
 
   private func routeAccessibilityLabel(_ route: DesignRoute, state: TrayInlineSwitchState) -> String {
+    let provider = route.providerID.map(nativeProviderName) ?? ""
+    let identity = [route.name, provider, route.detail]
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: ", ")
     switch state {
     case .current:
-      return "\(route.name), current account"
+      return "\(identity), current account"
     case .switching:
-      return "\(route.name), switching account"
+      return "\(identity), switching account"
     case .retry:
-      return "\(route.name), switch failed, try again"
+      return "\(identity), switch failed, try again"
     case .available:
-      return "Use \(route.name)"
+      return "Use \(identity)"
     }
   }
 

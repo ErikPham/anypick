@@ -78,6 +78,7 @@ struct AppCommands: Commands {
 
   private func open(_ destination: DesignDestination) {
     model.destination = destination
+    NSApp.setActivationPolicy(.regular)
     openWindow(id: "main")
     NSApp.activate(ignoringOtherApps: true)
   }

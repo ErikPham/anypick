@@ -90,7 +90,10 @@ struct BackupsView: View {
             LabeledContent {
               HStack {
                 Button("Review") {
-                  backupPresentation = BackupPresentation(id: backup.id, importedPackage: true)
+                  // Backups born in this list are restored, not imported:
+                  // only a package picked via Choose/pendingImport carries
+                  // importedPackage: true (presentImportedBackup).
+                  backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
                 }
                 Button("Forget Review…", role: .destructive) {
                   pendingForgetBackup = backup

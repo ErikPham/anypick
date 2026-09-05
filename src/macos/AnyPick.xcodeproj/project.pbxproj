@@ -49,12 +49,16 @@
 		100000000000000000000028 /* AppEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* AppEntry.swift */; };
 		100000000000000000000029 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		10000000000000000000002A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
+		10000000000000000000002B /* DesignDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DesignDisplay.swift */; };
 		110000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000001 /* Assets.xcassets */; };
 		110000000000000000000004 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000004 /* icons */; };
 		110000000000000000000005 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000005 /* AppIcon.png */; };
 		120000000000000000000001 /* AnyPickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000001 /* AnyPickTests.swift */; };
 		120000000000000000000002 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		120000000000000000000003 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
+		120000000000000000000004 /* DesignTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DesignTypes.swift */; };
+		120000000000000000000005 /* DesignDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DesignDisplay.swift */; };
+		120000000000000000000006 /* AppIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -110,11 +114,13 @@
 		200000000000000000000028 /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* AppServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServiceClient.swift; sourceTree = "<group>"; };
 		20000000000000000000002A /* GoServiceProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoServiceProcess.swift; sourceTree = "<group>"; };
+		20000000000000000000002B /* DesignDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignDisplay.swift; sourceTree = "<group>"; };
 		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		220000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		220000000000000000000004 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Resources/icons; sourceTree = "<group>"; };
 		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
+		220000000000000000000006 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
 		240000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		240000000000000000000002 /* AnyPick.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AnyPick.entitlements; sourceTree = "<group>"; };
@@ -156,6 +162,7 @@
 			isa = PBXGroup;
 			children = (
 				200000000000000000000001 /* DesignTypes.swift */,
+				20000000000000000000002B /* DesignDisplay.swift */,
 				200000000000000000000002 /* DesignFixture.swift */,
 				200000000000000000000003 /* HubRouting.swift */,
 				200000000000000000000004 /* SnapshotTypes.swift */,
@@ -205,6 +212,7 @@
 			isa = PBXGroup;
 			children = (
 				220000000000000000000001 /* Assets.xcassets */,
+				220000000000000000000006 /* AppIcon.icns */,
 				220000000000000000000005 /* AppIcon.png */,
 				220000000000000000000004 /* icons */,
 			);
@@ -258,6 +266,7 @@
 				400000000000000000000001 /* Frameworks */,
 				400000000000000000000003 /* Resources */,
 				400000000000000000000004 /* Bundle Go Helper */,
+				400000000000000000000007 /* Install Dock Icon */,
 			);
 			buildRules = (
 			);
@@ -361,6 +370,27 @@
 			shellPath = /bin/bash;
 			shellScript = "/bin/bash \"${SRCROOT}/scripts/bundle-go-helper.sh\"\n";
 		};
+		400000000000000000000007 /* Install Dock Icon */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Resources/AppIcon.icns",
+			);
+			name = "Install Dock Icon";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AppIcon.icns",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "cp \"${SRCROOT}/Resources/AppIcon.icns\" \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/AppIcon.icns\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -369,6 +399,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000001 /* DesignTypes.swift in Sources */,
+				10000000000000000000002B /* DesignDisplay.swift in Sources */,
 				100000000000000000000002 /* DesignFixture.swift in Sources */,
 				100000000000000000000003 /* HubRouting.swift in Sources */,
 				100000000000000000000004 /* SnapshotTypes.swift in Sources */,
@@ -420,6 +451,9 @@
 				120000000000000000000001 /* AnyPickTests.swift in Sources */,
 				120000000000000000000002 /* AppServiceClient.swift in Sources */,
 				120000000000000000000003 /* SnapshotTypes.swift in Sources */,
+				120000000000000000000004 /* DesignTypes.swift in Sources */,
+				120000000000000000000005 /* DesignDisplay.swift in Sources */,
+				120000000000000000000006 /* AppIcon.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -541,6 +575,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -564,6 +599,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

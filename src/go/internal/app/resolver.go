@@ -10,7 +10,6 @@ import (
 
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/catalog"
-	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
@@ -20,8 +19,8 @@ import (
 // snapshotUpstreamResolver resolves forwarding targets from account
 // snapshots: compatible vendors use their saved endpoint profile + scheme;
 // codex uses the ChatGPT backend with the snapshot's OAuth token. Gateway
-// profiles created via gateway-create carry no account snapshot, so for
-// ResolveUpstream providers (gemini) it seeds one from the saved profile key.
+// profiles created via gateway-create carry no account snapshot, so the
+// provider is handed the profile credential in memory instead.
 type snapshotUpstreamResolver struct {
 	store     *store.AccountStore
 	providers *provider.Registry
@@ -40,22 +39,21 @@ func (r *snapshotUpstreamResolver) ResolveUpstream(ctx context.Context, provider
 	}
 	if acct == nil {
 		// Gateway profiles (gateway-create) hold the credential in the profile
-		// store, not an account snapshot. For gemini — which serves the Google
-		// Gemini API through the engine's OpenAI-compatible translation — seed a
-		// snapshot .env from the profile key so ResolveUpstream resolves it.
-		if providerID == "gemini" && r.profiles != nil {
+		// store, not an account snapshot. A provider that can serve a gateway
+		// from a profile key implements GatewayUpstreamWithKey and receives it
+		// in memory.
+		//
+		// The key is deliberately never written to a snapshot .env: this runs
+		// once per request, so a cleartext write here races a concurrent
+		// `anypick backup` with a half-written file, and a stale copy keeps
+		// resolving after the key is rotated or deleted (invariants #2 and #4).
+		if gw, ok := pv.(interface {
+			GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error)
+		}); ok && r.profiles != nil {
 			if pr, perr := r.profiles.GetContext(ctx, accountName); perr == nil &&
-				pr != nil && pr.Meta.Provider == "gemini" && pr.Secrets.APIKey != "" {
-				snapDir := paths.AccountSnapshotDir(r.store.Root, "gemini", accountName)
-				if mkErr := os.MkdirAll(snapDir, 0o700); mkErr == nil {
-					if wErr := os.WriteFile(filepath.Join(snapDir, ".env"),
-						[]byte("GEMINI_API_KEY="+pr.Secrets.APIKey+"\n"), 0o600); wErr == nil {
-						if up, uerr := pv.(interface {
-							ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
-						}).ResolveUpstream(snapDir); uerr == nil {
-							return up, nil
-						}
-					}
+				pr != nil && pr.Meta.Provider == providerID && pr.Secrets.APIKey != "" {
+				if up, uerr := gw.GatewayUpstreamWithKey(pr.Secrets.APIKey); uerr == nil {
+					return up, nil
 				}
 			}
 		}

@@ -61,13 +61,13 @@ struct AppsView: View {
   }
 
   private func appModel(_ app: DesignApp) -> String {
-    if app.selectedRouteID.hasPrefix("native-") { return "Native Login" }
+    if app.selectedRouteID.hasPrefix("native-") { return friendlyRouteKindLabel(.native) }
     if let modelID = app.modelRoles.first(where: { $0.id == "default" && !$0.modelID.isEmpty })?
       .modelID
     {
       return modelID
     }
-    if app.reasoningModel == "Native Login" { return "Native Login" }
+    if app.reasoningModel == "Direct account" { return friendlyRouteKindLabel(.native) }
     return ""
   }
 }

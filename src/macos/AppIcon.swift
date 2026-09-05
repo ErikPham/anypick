@@ -1,27 +1,42 @@
 import AppKit
 
-/// Dock / Cmd-Tab app icon. Prefers bundle Resources, then a generated mark.
+/// Dock / Cmd-Tab app icon. Point size is 128 (Dock tile); pixel reps come
+/// from the bundled icns. Assigning the 1024px PNG as 1024pt made the tile
+/// huge; skipping `applicationIconImage` after an incomplete actool icns
+/// made the tile blank.
 enum AnyPickAppIcon {
-  static let image: NSImage = {
-    if let bundled = NSImage(named: "AppIcon") { return bundled }
-    if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
-      ?? Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
-      let image = NSImage(contentsOf: url)
-    {
-      return image
-    }
-    if let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() {
-      let resources = exeDir.deletingLastPathComponent().appendingPathComponent("Resources")
-      for file in ["AppIcon.icns", "AppIcon.png"] {
-        let url = resources.appendingPathComponent(file)
-        if let image = NSImage(contentsOf: url) { return image }
-      }
-    }
-    return generatedColorMark(size: 256)
-  }()
-
   static func applyToApp() {
-    NSApp.applicationIconImage = image
+    NSApp.applicationIconImage = dockImage()
+  }
+
+  private static func dockImage() -> NSImage {
+    let source =
+      NSImage(named: "AppIcon")
+      ?? icnsFromBundle()
+      ?? generatedColorMark(size: 128)
+    let dock = NSImage(size: NSSize(width: 128, height: 128))
+    let reps = source.representations
+    if !reps.isEmpty {
+      for rep in reps { dock.addRepresentation(rep) }
+      return dock
+    }
+    dock.lockFocus()
+    NSGraphicsContext.current?.imageInterpolation = .high
+    source.draw(
+      in: NSRect(origin: .zero, size: dock.size),
+      from: NSRect(origin: .zero, size: source.size),
+      operation: .copy,
+      fraction: 1
+    )
+    dock.unlockFocus()
+    return dock
+  }
+
+  private static func icnsFromBundle() -> NSImage? {
+    let url =
+      Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+      ?? Bundle.main.url(forResource: "AppIcon", withExtension: "png")
+    return url.flatMap { NSImage(contentsOf: $0) }
   }
 
   private static func generatedColorMark(size: CGFloat) -> NSImage {
@@ -87,6 +102,7 @@ func anypickDisplayName(_ client: String) -> String {
   // inside it; AnyPick keys everything on "workbuddy" and treats the other as
   // an alias so either install resolves to one row.
   case "workbuddy", "codebuddy": return "WorkBuddy"
+  case "zcode": return "ZCode"
   default: return client
   }
 }

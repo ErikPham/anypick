@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/protocol"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -267,12 +268,85 @@ func (p *workbuddy) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
 	if err != nil {
 		return nil, anyerr.Wrapf(err, "parse WorkBuddy upstream base", "PROXY_START_FAILED")
 	}
+	// A snapshot written before the issuing host was recorded (or a blank
+	// Base) parses as a path-only URL with no host. The loopback health
+	// check would still pass and the failure would only surface on the first
+	// forwarded request with a confusing error — fail here instead, while the
+	// user can still act on it.
+	if !u.IsAbs() || u.Hostname() == "" {
+		return nil, anyerr.Newf(
+			"The saved WorkBuddy login has no usable endpoint. Sign in again to repair it.",
+			"PROXY_START_FAILED",
+			anyerr.WithSuggestions("anypick login workbuddy"),
+		)
+	}
+	domain := strings.TrimSpace(doc.Domain)
+	if domain == "" {
+		if site, ok := workbuddySiteByMethod(doc.MethodID); ok {
+			domain = site.Domain
+		}
+	}
+	headers := []proxy.ExtraHeader{
+		{Name: "User-Agent", Value: workbuddyUserAgent},
+		{Name: "X-Product", Value: "SaaS"},
+	}
+	if domain != "" {
+		headers = append(headers, proxy.ExtraHeader{Name: "X-Domain", Value: domain})
+	}
 	return &proxy.Upstream{
 		BaseURL:            u,
 		Auth:               doc.AccessToken,
 		AuthHeader:         "Authorization",
 		AuthValuePrefix:    "Bearer ",
+		ExtraHeaders:       headers,
 		TranslateAnthropic: true,
+		// The subscription chat surface is …/v2/chat/completions: the
+		// inbound /v1/… path must never reach the vendor, which reads it
+		// as an API-key channel marker and rejects the call (code 11128).
+		OpenAIPath: "/chat/completions",
+		// Claude Code's system prompt carries an x-anthropic-billing-header
+		// line the vendor's filter reads as channel spoofing (same 11128).
+		// Subscription chat also requires a system-first message. Model id
+		// is left untouched: the caller must send a slug the vendor
+		// actually serves.
+		SanitizeOpenAIBody: workbuddySanitizeOpenAIBody,
 		QuotaErrorPatterns: []string{"quota", "balance", "insufficient", "billing"},
 	}, nil
+}
+
+// workbuddySanitizeOpenAIBody is the subscription-channel rewrite: billing
+// boilerplate out, and a system message prepended when Claude Code sent
+// only user blocks (vendor 11128 otherwise). The model id is not rewritten
+// — inventing a slug would break the day the vendor ships that name.
+func workbuddySanitizeOpenAIBody(body []byte) []byte {
+	body = protocol.SanitizeOpenAIBody(body)
+	var v map[string]interface{}
+	if json.Unmarshal(body, &v) != nil {
+		return body
+	}
+	msgs, _ := v["messages"].([]interface{})
+	if !workbuddyHasLeadingSystem(msgs) {
+		sys := map[string]interface{}{
+			"role":    "system",
+			"content": "You are a helpful coding assistant.",
+		}
+		v["messages"] = append([]interface{}{sys}, msgs...)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func workbuddyHasLeadingSystem(msgs []interface{}) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	mm, ok := msgs[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	role, _ := mm["role"].(string)
+	return role == "system"
 }

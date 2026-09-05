@@ -2,7 +2,7 @@
 // src/core/capabilities.ts.
 //
 // INVARIANT (AGENTS.md #1): capability pairs come from these adapters.
-// claude, codex, opencode, and zcode may accept a source from a different
+// claude, codex, opencode, zcode, and dsh may accept a source from a different
 // provider; gemini and kiro return Unsupported for anything but their own. The
 // client registry lists what exists, never what is allowed.
 package transport
@@ -167,7 +167,7 @@ func GeminiAccountAdapter(provider, name string) Adapter {
 		switch clientID {
 		case "gemini":
 			return Direct
-		case "claude", "codex", "opencode", "zcode":
+		case "claude", "codex", "opencode", "zcode", "dsh":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -184,7 +184,7 @@ func GrokAccountAdapter(provider, name string) Adapter {
 	a.SourceRef = accountSourceRef(provider, name)
 	a.TransportFor = func(clientID string) Capability {
 		switch clientID {
-		case "claude", "codex", "opencode", "zcode":
+		case "claude", "codex", "opencode", "zcode", "dsh":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -233,7 +233,7 @@ func WorkBuddyAccountAdapter(provider, name string) Adapter {
 		switch clientID {
 		case "workbuddy":
 			return Direct
-		case "claude", "codex", "opencode", "zcode":
+		case "claude", "codex", "opencode", "zcode", "dsh":
 			return ManagedBuiltinProxy
 		default:
 			return Unsupported
@@ -258,7 +258,7 @@ func KiroAccountAdapter(provider, name string, findExecutable func() string) Ada
 		switch clientID {
 		case "kiro":
 			return Direct
-		case "claude", "codex", "opencode", "zcode":
+		case "claude", "codex", "opencode", "zcode", "dsh":
 			if findExecutable != nil && findExecutable() != "" {
 				return ManagedExternalProxy
 			}
@@ -278,7 +278,7 @@ func PoolAdapterFor(providerID string, info ProviderInfo, proxyTransport Capabil
 		accepted[c] = true
 	}
 	if len(accepted) == 0 {
-		for _, c := range []string{"claude", "codex", "opencode", "zcode"} {
+		for _, c := range []string{"claude", "codex", "opencode", "zcode", "dsh"} {
 			accepted[c] = true
 		}
 	}
@@ -328,7 +328,7 @@ func GenericAccountAdapter(provider, name string, info ProviderInfo) Adapter {
 		// what is safe to pair (ADR 0011).
 		if info.CanProxy {
 			switch clientID {
-			case "claude", "codex", "opencode", "zcode":
+			case "claude", "codex", "opencode", "zcode", "dsh":
 				return ManagedBuiltinProxy
 			}
 		}

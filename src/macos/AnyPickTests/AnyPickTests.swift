@@ -162,4 +162,149 @@ final class AnyPickTests: XCTestCase {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     return "\(prefix)\t\(data.base64EncodedString())"
   }
+
+  // MARK: - P1-01 route dedupe
+
+  func testCompatibleRoutesDedupeKeepsCurrentOnce() {
+    let selected = DesignRoute(
+      id: "b", name: "Work", detail: "alex@studio.example", symbol: "person",
+      kind: .account, providerID: "claude")
+    let app = DesignApp(
+      id: "claude", name: "Claude Code", detail: "Uses Work", symbol: "s",
+      status: .ready, accountCount: 3, selectedRouteID: "b",
+      routeOptions: [
+        DesignRoute(
+          id: "a", name: "Work", detail: "alex@studio.example", symbol: "person",
+          kind: .account, providerID: "claude"),
+        selected,
+        DesignRoute(
+          id: "c", name: "WORK", detail: "alex@studio.example", symbol: "person",
+          kind: .account, providerID: "Claude"),
+      ],
+      fastModel: "", reasoningModel: "", useCompatibleFallback: true)
+    let routes = compatibleAccountRoutes(in: app)
+    XCTAssertEqual(routes.count, 1)
+    XCTAssertEqual(routes.first?.id, "b")
+  }
+
+  func testCompatibleRoutesKeepDifferentProvidersSeparate() {
+    let app = DesignApp(
+      id: "codex", name: "Codex", detail: "", symbol: "s", status: .ready,
+      accountCount: 2, selectedRouteID: "a",
+      routeOptions: [
+        DesignRoute(
+          id: "a", name: "Work", detail: "alex@studio.example", symbol: "p",
+          kind: .account, providerID: "claude"),
+        DesignRoute(
+          id: "b", name: "Work", detail: "alex@studio.example", symbol: "p",
+          kind: .account, providerID: "codex"),
+      ],
+      fastModel: "", reasoningModel: "", useCompatibleFallback: true)
+    XCTAssertEqual(compatibleAccountRoutes(in: app).count, 2)
+  }
+
+  // MARK: - P1-02 identity
+
+  func testAccountIdentityLineHasNoDanglingSeparator() {
+    XCTAssertEqual(accountIdentityLine(provider: "Claude", detail: ""), "Claude")
+    XCTAssertEqual(accountIdentityLine(provider: "", detail: "alex@example.com"), "alex@example.com")
+    XCTAssertEqual(accountIdentityLine(provider: "", detail: ""), "")
+    XCTAssertEqual(
+      accountIdentityLine(provider: "Claude", detail: "alex@example.com"),
+      "Claude · alex@example.com")
+  }
+
+  func testAccountAccessibilityLabelDistinguishesDuplicates() {
+    let first = DesignAccount(
+      id: "1", name: "Work", detail: "alex@studio.example", provider: "Claude",
+      symbol: "s", kind: .saved, status: .ready, lastUsed: "")
+    let second = DesignAccount(
+      id: "2", name: "Work", detail: "maya@studio.example", provider: "Codex",
+      symbol: "s", kind: .saved, status: .ready, lastUsed: "")
+    let all = [first, second]
+    let firstLabel = accountAccessibilityLabel(for: first, in: all)
+    let secondLabel = accountAccessibilityLabel(for: second, in: all)
+    XCTAssertNotEqual(firstLabel, secondLabel)
+    XCTAssertTrue(firstLabel.contains("Claude"))
+    XCTAssertTrue(secondLabel.contains("Codex"))
+    XCTAssertTrue(firstLabel.contains("1 of 2"))
+    XCTAssertFalse(accountIdentityLine(provider: "Claude", detail: "").hasSuffix("·"))
+  }
+
+  // MARK: - P1-03 friendly copy
+
+  func testFriendlyRouteDetailHidesInternalKinds() {
+    XCTAssertEqual(friendlyRouteDetail(nil, routeKind: "direct-account"), "Direct account")
+    XCTAssertEqual(friendlyRouteDetail("account", routeKind: "account"), "Saved account")
+    XCTAssertEqual(friendlyRouteDetail("", routeKind: "gateway"), "API gateway")
+    XCTAssertEqual(friendlyRouteDetail("Shared models", routeKind: "hub"), "Shared models")
+    for raw in ["direct-account", "account", "provider/internal-id proxy"] {
+      XCTAssertFalse(friendlyRouteDetail(raw, routeKind: raw).contains("/"))
+      XCTAssertFalse(["direct-account", "account"].contains(friendlyRouteDetail(raw, routeKind: raw)))
+    }
+  }
+
+  func testFriendlyProxyNameHidesCompositeID() {
+    XCTAssertEqual(
+      friendlyProxyName(label: "claude/abc123 proxy", providerId: "claude"), "Claude proxy")
+    XCTAssertEqual(friendlyProxyName(label: "Claude Relay", providerId: "claude"), "Claude Relay")
+  }
+
+  // MARK: - P1-04 transport
+
+  func testTransportNeverDirectWhenUnconfigured() {
+    let app = DesignApp(
+      id: "claude", name: "Claude Code", detail: "No login chosen", symbol: "s",
+      status: .stopped, accountCount: 0, selectedRouteID: "",
+      routeOptions: [], fastModel: "", reasoningModel: "", useCompatibleFallback: true)
+    XCTAssertEqual(transportDisplayName(for: app), "Not Configured")
+    XCTAssertFalse(isAppRouteConfigured(app))
+  }
+
+  // MARK: - P1-10 hub gating
+
+  func testHubStartRequiresUsableModel() {
+    XCTAssertEqual(usablePublishedModelCount([]), 0)
+    let waiting = [
+      DesignPublishedModel(
+        modelID: "m", ownerAccountID: nil, ownerName: "Needs a choice",
+        ownerProvider: "Claude", needsChoice: true)
+    ]
+    XCTAssertEqual(usablePublishedModelCount(waiting), 0)
+    let usable = [
+      DesignPublishedModel(
+        modelID: "m", ownerAccountID: "1", ownerName: "Work",
+        ownerProvider: "Claude", needsChoice: false)
+    ]
+    XCTAssertEqual(usablePublishedModelCount(usable), 1)
+  }
+
+  // MARK: - P1-05 activity labels stay per-event
+
+  func testActivityAccessibilityLabelContainsDayTimeStatus() {
+    let item = DesignActivity(
+      id: "a1", day: "Today", time: "09:42", title: "Claude Code now uses Work",
+      detail: "Applied.", symbol: "s", status: .ready, provider: "Claude")
+    let label = activityAccessibilityLabel(for: item)
+    XCTAssertTrue(label.contains("Today"))
+    XCTAssertTrue(label.contains("09:42"))
+    XCTAssertTrue(label.contains("Ready"))
+    XCTAssertTrue(label.contains("Claude Code now uses Work"))
+  }
+
+  // MARK: - Dense fixtures
+
+  func testLongNamesAndTwentyAccountsStayDistinguishable() {
+    let longName = String(repeating: "Very Long Account Name ", count: 6)
+    var accounts: [DesignAccount] = []
+    for index in 0..<22 {
+      accounts.append(
+        DesignAccount(
+          id: "a-\(index)", name: index < 2 ? longName : "Account \(index)",
+          detail: "user\(index)@example.com", provider: index % 2 == 0 ? "Claude" : "Codex",
+          symbol: "s", kind: .saved, status: .ready, lastUsed: ""))
+    }
+    let labels = Set(accounts.map { accountAccessibilityLabel(for: $0, in: accounts) })
+    XCTAssertEqual(labels.count, accounts.count)
+  }
 }

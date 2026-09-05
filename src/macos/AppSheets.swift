@@ -19,9 +19,8 @@ struct AppRouteSheet: View {
   private var app: DesignApp? { model.apps.first { $0.id == appID } }
 
   private var accountRoutes: [DesignRoute] {
-    nativeFirstRoutes(
-      app?.routeOptions.filter { $0.kind == .account || $0.kind == .native } ?? []
-    )
+    guard let app else { return [] }
+    return compatibleAccountRoutes(in: app)
   }
 
   private var hubRoute: DesignRoute? {
@@ -115,7 +114,7 @@ struct AppRouteSheet: View {
               .labelsHidden()
               .accessibilityIdentifier("app-route.picker")
             } header: {
-              Text("Native & Saved Accounts")
+              Text("Direct & Saved Accounts")
             }
     }
 

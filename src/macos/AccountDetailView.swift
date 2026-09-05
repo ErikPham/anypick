@@ -20,9 +20,12 @@ struct AccountDetailView: View {
         Section {
           Label {
             VStack(alignment: .leading, spacing: 2) {
-              Text(account.name)
-              Text("\(account.provider) · \(account.detail)")
-                .foregroundStyle(.secondary)
+              Text(disambiguatedAccountName(for: account, in: model.accounts))
+              let identity = accountIdentityLine(provider: account.provider, detail: account.detail)
+              if !identity.isEmpty {
+                Text(identity)
+                  .foregroundStyle(.secondary)
+              }
             }
           } icon: {
             DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)

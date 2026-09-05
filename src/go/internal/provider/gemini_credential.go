@@ -331,6 +331,30 @@ func geminiCodeAssistBase(source string) *url.URL {
 	return u
 }
 
+// geminiKeyUpstream builds the API-key Upstream from a key already in memory.
+// It is the whole of geminiUpstream's key branch, extracted so a gateway
+// profile — which has no account snapshot — can reach it without the key ever
+// touching disk. See gemini.GatewayUpstreamWithKey for why that matters.
+func geminiKeyUpstream(key string) (*proxy.Upstream, error) {
+	base, err := url.Parse(geminiAPIKeyUpstream)
+	if err != nil {
+		return nil, anyerr.Wrapf(err, "parse Gemini upstream base", "PROXY_START_FAILED")
+	}
+	if env := os.Getenv("GEMINI_API_KEY_UPSTREAM"); env != "" {
+		if ob, perr := url.Parse(strings.TrimSuffix(env, "/")); perr == nil {
+			base = ob
+		}
+	}
+	return &proxy.Upstream{
+		BaseURL:         base,
+		Auth:            key,
+		AuthHeader:      "x-goog-api-key",
+		AuthValuePrefix: "",
+		TranslateGemini: true,
+		Gemini:          &proxy.GeminiTarget{APIKeyMode: true, APIKeyBase: base},
+	}, nil
+}
+
 // geminiUpstream builds the shared-proxy Upstream for this snapshot: API-key
 // mode posts to generativelanguage.googleapis.com with x-goog-api-key; OAuth
 // mode posts through serveGemini's Code Assist envelope with a per-request
@@ -338,23 +362,7 @@ func geminiCodeAssistBase(source string) *url.URL {
 // dispatches to serveGemini.
 func geminiUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	if key := geminiApiKeyFromSnapshot(snapshotDir); key != "" {
-		base, err := url.Parse(geminiAPIKeyUpstream)
-		if err != nil {
-			return nil, anyerr.Wrapf(err, "parse Gemini upstream base", "PROXY_START_FAILED")
-		}
-		if env := os.Getenv("GEMINI_API_KEY_UPSTREAM"); env != "" {
-			if ob, perr := url.Parse(strings.TrimSuffix(env, "/")); perr == nil {
-				base = ob
-			}
-		}
-		return &proxy.Upstream{
-			BaseURL:         base,
-			Auth:            key,
-			AuthHeader:      "x-goog-api-key",
-			AuthValuePrefix: "",
-			TranslateGemini: true,
-			Gemini:          &proxy.GeminiTarget{APIKeyMode: true, APIKeyBase: base},
-		}, nil
+		return geminiKeyUpstream(key)
 	}
 	source := geminiOAuthSourceFromSnapshot(snapshotDir)
 	path := geminiOAuthCredsPath(snapshotDir, source)

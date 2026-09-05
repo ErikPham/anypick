@@ -76,9 +76,9 @@ struct SettingsUsagePane: View {
         .disabled(model.isBusy)
         .accessibilityIdentifier("settings.quota-guard")
       } header: {
-        Text("Compatibility Proxy Pools")
+        Text("Usage Alerts")
       } footer: {
-        Text("Switch pooled proxy accounts only after a confirmed usage limit. Native app logins are never switched automatically.")
+        Text("Quota Guard pauses a pooled proxy account after a confirmed usage limit. Native app logins are never switched automatically.")
       }
     }
     .formStyle(.grouped)
@@ -101,15 +101,14 @@ struct SettingsLocalProxiesPane: View {
           )
         )
         .disabled(model.isBusy)
+        LabeledContent("Proxies") {
+          Button("Open Proxies…") { open(.proxies) }
+            .accessibilityIdentifier("settings.open-proxies")
+        }
       } header: {
         Text("Startup")
       } footer: {
         Text("A proxy can still start when an app needs it.")
-      }
-
-      Section {
-        Button("Open Proxies…") { open(.proxies) }
-          .accessibilityIdentifier("settings.open-proxies")
       }
     }
     .formStyle(.grouped)

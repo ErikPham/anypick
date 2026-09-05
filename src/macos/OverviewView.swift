@@ -135,10 +135,10 @@ struct OverviewView: View {
           }
           setupRow(
             done: model.isHubReady,
-            title: "Set Up Proxy Hub",
+            title: "Set Up Proxy Hub (Optional)",
             detail: model.isHubReady
               ? "Hub sources are ready."
-              : "Optional. One local endpoint for many models.",
+              : "One local endpoint for many models. Skip it if unsure.",
             actionTitle: "Set Up…",
             identifier: "overview.onboarding.proxy-hub"
           ) {
@@ -154,23 +154,34 @@ struct OverviewView: View {
         .accessibilityIdentifier("overview.get-started")
       }
 
-      Section {
-        ForEach(model.apps) { app in
-          NavigationLink(value: DesignRouteID.app(app.id)) {
-            DesignIdentityRow(
-              title: app.name,
-              detail: connectionSummary(app)
-            ) {
-              DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol)
-            } trailing: {
-              Text(transportLabel(app))
-                .foregroundStyle(.secondary)
+      // An empty Apps header above the checklist is pure noise on first run —
+      // the "Use an App" step already covers it. Drop the section instead of
+      // hiding it so no blank space remains.
+      if !(model.apps.isEmpty && model.shouldShowOnboarding) {
+        Section {
+          ForEach(model.apps) { app in
+            NavigationLink(value: DesignRouteID.app(app.id)) {
+              DesignIdentityRow(
+                title: app.name,
+                detail: connectionSummary(app),
+                issue: appIssue(app)
+              ) {
+                DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol)
+              } trailing: {
+                Text(transportLabel(app))
+                  .foregroundStyle(isAppRouteConfigured(app) ? Color.secondary : Color.orange)
+              }
             }
+            .accessibilityIdentifier("overview.app.\(app.id)")
+            .accessibilityLabel("\(app.name), \(connectionSummary(app)), \(transportLabel(app))")
           }
-          .accessibilityIdentifier("overview.app.\(app.id)")
+        } header: {
+          Text("Apps")
+        } footer: {
+          if model.apps.contains(where: { !isAppRouteConfigured($0) }) {
+            Text("Choose a login for each app before it can run.")
+          }
         }
-      } header: {
-        Text("Apps")
       }
 
       Section {
@@ -191,36 +202,44 @@ struct OverviewView: View {
         Text("Services")
       }
 
-      Section {
-        if model.activity.isEmpty {
-          Text("Events will appear here.")
-            .foregroundStyle(.secondary)
-        } else {
-          ForEach(model.activity.prefix(3)) { item in
-            HStack(alignment: .center, spacing: 10) {
-              Image(
-                systemName: item.status == .attention
-                  ? "exclamationmark.circle.fill" : item.symbol
-              )
-              .foregroundStyle(item.status == .attention ? Color.red : Color.secondary)
-              .frame(width: 16)
-              .accessibilityLabel(item.status.rawValue)
-              Text(item.title)
-              Spacer(minLength: 8)
-              Text(item.time)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+      // While the checklist is up, an empty "Events will appear here"
+      // placeholder competes for attention without information. Show the
+      // section once there is something to show or onboarding is done.
+      if !model.activity.isEmpty || !model.shouldShowOnboarding {
+        Section {
+          if model.activity.isEmpty {
+            Text("Events will appear here.")
+              .foregroundStyle(.secondary)
+          } else {
+            ForEach(model.activity.prefix(3)) { item in
+              HStack(alignment: .center, spacing: 10) {
+                Image(
+                  systemName: item.status == .ready || item.status == .running
+                    ? item.symbol : item.status.symbol
+                )
+                .foregroundStyle(item.status.color)
+                .frame(width: 16)
+                .accessibilityLabel(item.status.rawValue)
+                Text(item.title)
+                Spacer(minLength: 8)
+                Text(item.time)
+                  .foregroundStyle(.secondary)
+                  .monospacedDigit()
+              }
+              .accessibilityElement(children: .combine)
+              .accessibilityIdentifier("overview.activity.\(item.id)")
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("overview.activity.\(item.id)")
           }
+        } header: {
+          Text("Recent Activity")
         }
-      } header: {
-        Text("Recent Activity")
       }
     }
     .onChange(of: model.isOnboardingCoreComplete) { _, done in
-      if done, !model.showGettingStarted {
+      // Dismiss as soon as the three core steps are done, however the
+      // checklist was shown. (showGettingStarted is only pinned explicitly
+      // from Settings, and a completed core means there is nothing to show.)
+      if done {
         model.dismissOnboarding()
       }
     }
@@ -228,9 +247,9 @@ struct OverviewView: View {
 
   private var onboardingFooter: String {
     if model.isOnboardingCoreComplete {
-      return "You can hide this list."
+      return "Proxy Hub is optional — you can hide this list."
     }
-    return "Save a login, then point Claude or Codex at it."
+    return "Save a login, then point an app at it. Proxy Hub is optional."
   }
 
   private func connectionSummary(_ app: DesignApp) -> String {
@@ -241,20 +260,13 @@ struct OverviewView: View {
   }
 
   private func transportLabel(_ app: DesignApp) -> String {
-    guard let kind = app.routeOptions.first(where: { $0.id == app.selectedRouteID })?.kind else {
-      return "Direct"
-    }
-    switch kind {
-    case .gateway: return "Gateway"
-    case .hub: return "Proxy Hub"
-    case .account, .native: return "Direct"
-    }
+    transportDisplayName(for: app)
   }
 
   private var runningServiceNames: [String] {
     var names: [String] = []
     if model.proxyHubEnabled { names.append("Proxy Hub") }
-    names.append(contentsOf: model.proxies.filter(\.enabled).map(\.name))
+    names.append(contentsOf: model.proxies.filter { $0.status == .running }.map(\.name))
     return names
   }
 
@@ -283,8 +295,7 @@ struct OverviewView: View {
     actionTitle: String,
     identifier: String,
     action: @escaping () -> Void
-  ) -> some View {
-    LabeledContent {
+  ) -> some View {    LabeledContent {
       if done {
         Text("Done")
           .foregroundStyle(.secondary)
@@ -300,6 +311,13 @@ struct OverviewView: View {
     }
     .accessibilityIdentifier(identifier)
     .accessibilityValue(done ? "Done" : "Not done")
+  }
+
+  private func appIssue(_ app: DesignApp) -> String? {
+    if !isAppRouteConfigured(app) {
+      return "No login chosen. Open the app to choose one."
+    }
+    return app.issue
   }
 
   private var primaryAttention:

@@ -63,10 +63,14 @@ func TestSnapshotResolverResolvesOpenCodeAccount(t *testing.T) {
 }
 
 // A gemini gateway created via gateway-create carries the key in the profile
-// store, not an account snapshot. The resolver must seed a snapshot .env from
-// the profile key and resolve the Gemini translation upstream so the shared
-// proxy actually serves it (the "no builtin upstream" error would be a dead
-// gateway entry in the UI).
+// store, not an account snapshot. The resolver must resolve the Gemini
+// translation upstream so the shared proxy actually serves it (the "no builtin
+// upstream" error would be a dead gateway entry in the UI) — and it must do so
+// WITHOUT persisting the key to a snapshot .env.
+//
+// ResolveUpstream runs once per request, so a cleartext write there races a
+// concurrent `anypick backup` with a half-written file and leaves a stale copy
+// that keeps resolving after the key is rotated or deleted (invariants #2, #4).
 func TestSnapshotResolverResolvesGeminiGatewayProfile(t *testing.T) {
 	root := t.TempDir()
 	home := t.TempDir()
@@ -99,6 +103,23 @@ func TestSnapshotResolverResolvesGeminiGatewayProfile(t *testing.T) {
 	}
 	if up.AuthHeader != "x-goog-api-key" || up.Auth != "AIza-gemini-gateway-key" {
 		t.Errorf("Auth = %q/%q, want x-goog-api-key/AIza-gemini-gateway-key", up.AuthHeader, up.Auth)
+	}
+
+	// The regression: resolving a gateway must not write the key to disk. The
+	// previous implementation seeded <snapshot>/.env on every call.
+	//
+	// Match on the filename rather than on the key's contents, because the
+	// profile store's own database legitimately holds the key — it is the
+	// owning store (invariant #6).
+	var written []string
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && info != nil && !info.IsDir() && filepath.Base(p) == ".env" {
+			written = append(written, p)
+		}
+		return nil
+	})
+	if len(written) > 0 {
+		t.Fatalf("resolver persisted the gateway credential to disk: %v", written)
 	}
 }
 

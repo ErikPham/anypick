@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -195,6 +197,7 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 			proxyLogf("upstream %d; failed shape: %s", resp.StatusCode, describeAnthropicShape(body))
 			if strings.Contains(raw, "11128") {
 				proxyLogf("upstream 11128; sanitized: %s", describeSanitizedOpenAI(translated))
+				dump11128(body, translated)
 			}
 		}
 		if IsContextWindowError(raw) {
@@ -456,6 +459,26 @@ func stringOrEmpty(v any) string {
 
 // describeSanitizedOpenAI summarizes the body we actually sent upstream
 // after translation/sanitizer. Fingerprints only — no prompt text.
+func dump11128(inbound, sanitized []byte) {
+	root := os.Getenv("ANYPICK_HOME")
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, ".anypick")
+	}
+	path := filepath.Join(root, "last-11128.json")
+	var in map[string]any
+	_ = json.Unmarshal(inbound, &in)
+	payload := map[string]any{
+		"sanitized": string(sanitized),
+		"inbound":   in,
+	}
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, raw, 0o600)
+}
+
 func describeSanitizedOpenAI(body []byte) string {
 	var v map[string]any
 	if json.Unmarshal(body, &v) != nil {

@@ -34,12 +34,12 @@ struct TrayInlineRouteMark: View {
       switch state {
       case .current:
         Image(systemName: "checkmark.circle.fill")
-          .foregroundStyle(TrayPaint.accent)
+          .foregroundStyle(Color.accentColor)
       case .switching:
         ProgressView().controlSize(.small)
       case .retry:
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(TrayPaint.attention)
+          .foregroundStyle(.orange)
       case .available:
         Image(systemName: "circle")
           .foregroundStyle(.secondary)

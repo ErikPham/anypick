@@ -32,8 +32,7 @@ struct ProxyDetailView: View {
                   .foregroundStyle(.secondary)
               }
             } else {
-              Text(proxy.status.rawValue)
-                .foregroundStyle(.secondary)
+              DesignStatusLabel(status: proxy.status)
             }
           }
           LabeledContent("Provider", value: providerName)
@@ -57,16 +56,25 @@ struct ProxyDetailView: View {
 
         Section {
           LabeledContent("Address") {
-            HStack {
-              Text("http://127.0.0.1:\(proxy.port)")
+            if proxy.port > 0 {
+              HStack {
+                Text("http://127.0.0.1:\(proxy.port)")
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+                Button(didCopy ? "Copied" : "Copy", action: copyAddress)
+                  .disabled(didCopy)
+                  .accessibilityIdentifier("proxies.inspector.copy")
+              }
+            } else {
+              Text("Not running")
                 .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-              Button(didCopy ? "Copied" : "Copy", action: copyAddress)
-                .disabled(didCopy)
                 .accessibilityIdentifier("proxies.inspector.copy")
             }
           }
-          LabeledContent("Logs", value: "Available")
+          LabeledContent("Logs") {
+            Text(proxy.enabled ? "Available" : "Unavailable while stopped")
+              .foregroundStyle(.secondary)
+          }
         } header: {
           Text("Endpoint")
         } footer: {
@@ -114,30 +122,18 @@ struct ProxyDetailView: View {
   }
 
   private var shortName: String {
-    switch proxyID {
-    case "claude-relay": "Claude"
-    case "codex-relay": "Codex"
-    case "kiro-bridge": "Kiro"
-    default: proxy?.name ?? "Proxy"
-    }
+    guard let proxy else { return "Proxy" }
+    return nativeProviderName(proxy.provider)
   }
 
   private var providerName: String {
-    switch proxyID {
-    case "claude-relay": "Claude"
-    case "codex-relay": "Codex"
-    case "kiro-bridge": "Kiro"
-    default: proxy?.name ?? "Proxy"
-    }
+    guard let proxy else { return "Proxy" }
+    return nativeProviderName(proxy.provider)
   }
 
   private var purpose: String {
-    switch proxyID {
-    case "claude-relay": "Claude Code compatibility"
-    case "codex-relay": "Codex CLI compatibility"
-    case "kiro-bridge": "Kiro compatibility"
-    default: proxy?.detail ?? "Local compatibility service"
-    }
+    guard let proxy else { return "Local compatibility service" }
+    return "\(nativeProviderName(proxy.provider)) compatibility"
   }
 
   private func copyAddress() {

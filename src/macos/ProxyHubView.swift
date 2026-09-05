@@ -9,17 +9,41 @@ struct ProxyHubView: View {
     DesignGroupedPane {
       Section {
         LabeledContent("Status") {
-          if let operation = model.serviceOperations["hub"] {
-            HStack(spacing: 6) {
-              ProgressView()
-                .controlSize(.small)
-              Text(operation.label)
-                .foregroundStyle(.secondary)
+          HStack(spacing: 8) {
+            if let operation = model.serviceOperations["hub"] {
+              HStack(spacing: 6) {
+                ProgressView()
+                  .controlSize(.small)
+                Text(operation.label)
+                  .foregroundStyle(.secondary)
+              }
+            } else {
+              DesignStatusLabel(status: hubStatus)
             }
-          } else {
-            DesignStatusLabel(status: hubStatus)
+            Spacer(minLength: 8)
+            Button(model.proxyHubEnabled ? "Stop" : "Start") {
+              if model.proxyHubEnabled {
+                confirmStop = true
+              } else {
+                model.setProxyHubEnabled(true)
+              }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
+            .help(startHelp)
+            .accessibilityIdentifier("hub.toggle-inline")
+            Button("Restart") { model.restartProxy(id: "hub") }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+              .disabled(
+                model.isBusy || !model.proxyHubEnabled || model.serviceOperations["hub"] != nil
+              )
+              .accessibilityIdentifier("hub.restart-inline")
           }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Proxy Hub status \(hubStatus.rawValue). \(startHelp)")
         LabeledContent("Address") {
           HStack(spacing: 8) {
             Text("http://127.0.0.1:\(model.proxyHubPort)")
@@ -81,6 +105,38 @@ struct ProxyHubView: View {
         } footer: {
           Text(hubMembershipFooter)
         }
+      } else if usableModelCount == 0 && !model.proxyHubEnabled {
+        Section {
+          LabeledContent {
+            Button("Open Accounts & APIs") { model.destination = .accounts }
+              .accessibilityIdentifier("hub.empty-recovery")
+          } label: {
+            Label {
+              VStack(alignment: .leading, spacing: 2) {
+                Text("No Models to Publish Yet")
+                Text("Sources are on but publish 0 usable models. Add a compatible account or resolve the catalog — starting now would serve nothing.")
+                  .foregroundStyle(.secondary)
+              }
+            } icon: {
+              DesignWarningSymbol()
+            }
+          }
+        } header: {
+          Text("Accounts in This Hub")
+        }
+        ForEach(Array(hubSourceGroups.enumerated()), id: \.element.provider) { index, group in
+          Section {
+            ForEach(group.sources) { source in
+              hubSourceRow(source)
+            }
+          } header: {
+            Text(hubSourceGroups.count == 1 ? "Accounts in This Hub" : group.provider)
+          } footer: {
+            if index == hubSourceGroups.count - 1 {
+              Text(hubMembershipFooter)
+            }
+          }
+        }
       } else {
         ForEach(Array(hubSourceGroups.enumerated()), id: \.element.provider) { index, group in
           Section {
@@ -125,11 +181,23 @@ struct ProxyHubView: View {
           model.setProxyHubEnabled(true)
         }
       }
-      .disabled(
-        model.isBusy || model.serviceOperations["hub"] != nil
-          || (!model.proxyHubEnabled && model.hubSourceIDs.isEmpty)
-      )
+      .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
+      .help(startHelp)
       .accessibilityIdentifier("hub.enabled")
+    }
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button(model.proxyHubEnabled ? "Stop Hub" : "Start Hub") {
+          if model.proxyHubEnabled {
+            confirmStop = true
+          } else {
+            model.setProxyHubEnabled(true)
+          }
+        }
+        .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
+        .help(startHelp)
+        .accessibilityIdentifier("hub.toolbar.toggle")
+      }
     }
     .confirmationDialog(
       "Stop Proxy Hub?",
@@ -166,7 +234,23 @@ struct ProxyHubView: View {
     if model.hubSourceIDs.isEmpty {
       return "Turn on a model source before starting Proxy Hub."
     }
+    if usableModelCount == 0 {
+      return "No usable models yet — add a compatible account or resolve the catalog, then start."
+    }
     return "All published model IDs are available to apps."
+  }
+
+  private var usableModelCount: Int { usablePublishedModelCount(model.publishedModels) }
+
+  private var canStartHub: Bool {
+    !model.hubSourceIDs.isEmpty && usableModelCount > 0
+  }
+
+  private var startHelp: String {
+    if model.proxyHubEnabled { return "Stop Proxy Hub" }
+    if model.hubSourceIDs.isEmpty { return "Turn on a model source first" }
+    if usableModelCount == 0 { return "No usable models to publish yet" }
+    return "Start Proxy Hub"
   }
 
   private var hubStatus: DesignStatus {

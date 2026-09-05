@@ -1,52 +1,20 @@
 import SwiftUI
 
-/// Board 29 uses the platform accent for actions and selection. AnyPick's
-/// brand color remains reserved for its identity assets.
+/// Quick Panel system styling. Production chrome uses platform controls,
+/// fonts, and colors only — no custom cards, chips, palettes, or fills.
 enum TrayPaint {
   static let accent = Color.accentColor
-  static let accentInk = Color.accentColor
-  static let cardFill = Color(nsColor: .controlBackgroundColor).opacity(0.94)
-  static let recessedFill = Color(nsColor: .controlBackgroundColor).opacity(0.62)
-  static let hairline = Color.primary.opacity(0.08)
-  static let ready = Color(nsColor: .systemGreen)
-  static let attention = Color(nsColor: .systemOrange)
-}
-
-/// Keep tray copy on the system type ramp. Pencil uses smaller proxy text,
-/// but the shipping surface follows the 11 pt product-content floor.
-enum TrayFont {
-  static let eyebrow = Font.system(size: 10, weight: .semibold)
-  static let title = Font.headline
-  static let body = Font.subheadline
-  static let bodyStrong = Font.subheadline.weight(.semibold)
-  static let detail = Font.caption
-  static let detailMedium = Font.caption.weight(.medium)
-  static let detailStrong = Font.caption.weight(.semibold)
+  static let ready = Color.green
+  static let attention = Color.orange
 }
 
 func traySectionTitle(_ title: String) -> some View {
   Text(title)
-    .font(TrayFont.eyebrow)
+    .font(.caption)
+    .fontWeight(.semibold)
     .foregroundStyle(.secondary)
     .textCase(.uppercase)
     .frame(maxWidth: .infinity, alignment: .leading)
-}
-
-struct TrayCardSurface<Content: View>: View {
-  var radius: CGFloat = 11
-  var fill: Color = TrayPaint.cardFill
-  var stroke: Color = TrayPaint.hairline
-  var strokeWidth: CGFloat = 0.5
-  @ViewBuilder var content: () -> Content
-
-  var body: some View {
-    content()
-      .background(fill, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: radius, style: .continuous)
-          .strokeBorder(stroke, lineWidth: strokeWidth)
-      )
-  }
 }
 
 struct TrayFillButton: View {
@@ -74,34 +42,8 @@ struct TrayTextButton: View {
   var body: some View {
     Button(title, action: action)
       .buttonStyle(.borderless)
-      .font(TrayFont.detailMedium)
-  }
-}
-
-struct TrayAccountChip: View {
-  let title: String
-  let selected: Bool
-  var compact = false
-  var action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Text(selected ? "✓ \(title)" : title)
-        .font(selected ? TrayFont.detailStrong : TrayFont.detailMedium)
-        .padding(.horizontal, compact ? 6 : 7)
-        .frame(height: compact ? 20 : 23)
-        .background(chipFill, in: RoundedRectangle(cornerRadius: compact ? 6 : 7, style: .continuous))
-        .foregroundStyle(chipInk)
-    }
-    .buttonStyle(.plain)
-  }
-
-  private var chipFill: Color {
-    selected ? TrayPaint.accent : Color.primary.opacity(0.08)
-  }
-
-  private var chipInk: Color {
-    selected ? Color.white : Color.primary.opacity(0.82)
+      .font(.caption)
+      .fontWeight(.medium)
   }
 }
 
@@ -116,43 +58,13 @@ struct TrayRoutingHeader: View {
       if showDetails {
         Button("Details", action: openDetails)
           .buttonStyle(.borderless)
-          .font(TrayFont.detailMedium)
-          .foregroundStyle(TrayPaint.accent)
+          .font(.caption)
+          .fontWeight(.medium)
+          .foregroundStyle(Color.accentColor)
           .accessibilityIdentifier("tray.routing.details")
       }
     }
     .frame(height: 16)
-  }
-}
-
-struct TrayMetaPill: View {
-  let title: String
-
-  var body: some View {
-    Text(title)
-      .font(TrayFont.detailMedium)
-      .padding(.horizontal, 6)
-      .frame(height: 20)
-      .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-  }
-}
-
-struct TrayRadioMark: View {
-  var selected: Bool
-  var size: CGFloat = 18
-
-  var body: some View {
-    ZStack {
-      Circle()
-        .strokeBorder(selected ? TrayPaint.accent : Color.secondary.opacity(0.45), lineWidth: 1)
-        .background(Circle().fill(selected ? TrayPaint.accent : Color.clear))
-        .frame(width: size, height: size)
-      if selected {
-        Image(systemName: "checkmark")
-          .font(.system(size: size < 16 ? 7 : 8, weight: .bold))
-          .foregroundStyle(.white)
-      }
-    }
   }
 }
 
@@ -186,7 +98,7 @@ func trayOtherApps(from apps: [DesignApp]) -> [DesignApp] {
 }
 
 func trayAccountRoutes(in app: DesignApp) -> [DesignRoute] {
-  nativeFirstRoutes(app.routeOptions.filter { $0.kind == .account || $0.kind == .native })
+  compatibleAccountRoutes(in: app)
 }
 
 func trayGatewayRoutes(in app: DesignApp) -> [DesignRoute] {
@@ -204,6 +116,18 @@ func trayAttentionItems(from model: MacOSDesignModel) -> [TrayAttentionItem] {
       TrayAttentionItem(
         id: "app.\(app.id)",
         title: app.attentionMessage ?? "\(shortName) live login does not match the selected account",
+        actionTitle: "Hide",
+        destination: .apps
+      )
+    )
+  }
+  // Apps with no chosen route are setup work, not silent Ready.
+  for app in model.apps where !isAppRouteConfigured(app) {
+    if items.contains(where: { $0.id == "app.\(app.id)" }) { continue }
+    items.append(
+      TrayAttentionItem(
+        id: "app.\(app.id)",
+        title: "\(app.name) needs a login chosen",
         actionTitle: "Hide",
         destination: .apps
       )

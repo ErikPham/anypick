@@ -30,7 +30,8 @@ src/go/
     hub/             Proxy Hub store/server (token-scoped routes, HMAC'd secrets)
     pools/           Provider pool store
     transfer/        Account import/export envelopes + multi-account backups (SEC-01)
-    client/          Client adapters: claude, codex, gemini, kiro, opencode
+    client/          Client adapters: claude, codex, gemini, kiro, opencode,
+                     workbuddy, zcode
     provider/        Provider adapters incl. compatible vendors
     catalog/         Vendor metadata, model policies, live model fetch
     discovery/       Model list fallback chain: fresh cache → live → stale → catalog

@@ -1,15 +1,22 @@
 ---
-title: macOS app and menu bar
-description: Native AnyPick app, main management window, menu-bar quick panel, and bundled Go-service lifecycle.
+title: Desktop apps
+description: The AnyPick desktop app on macOS, Linux and Windows, how it owns the bundled Go service, and the macOS menu-bar quick panel.
 ---
 
-AnyPick's macOS surface is one native SwiftUI application. Its main window is
-the full management surface; its menu-bar item is a compact quick panel of the
-same running app.
+AnyPick ships two native front ends over one Go engine (ADR 0020):
+
+| Platform | Front end | Source |
+| --- | --- | --- |
+| macOS | SwiftUI app with a menu-bar quick panel | `src/macos/` |
+| Linux, Windows | Tauri 2 app | `src/tauri/` |
+
+Both are front ends, not engines. Neither reads credentials or owns AnyPick
+state: each launches, handshakes with, supervises and shuts down the bundled Go
+service, then renders what that service sends it (ADR 0019 §1).
 
 <Aside type="caution" title="Source preview, not a published app">
-The native target is available in this repository for development and testing.
-There is not yet a signed/notarized DMG, Homebrew Cask, or supported macOS
+Both targets are available in this repository for development and testing.
+There is no signed/notarized DMG, Homebrew Cask, Windows installer or supported
 download. The release targets in ADR 0020 are planned distribution work, not
 currently available artifacts.
 </Aside>
@@ -19,54 +26,38 @@ currently available artifacts.
 The lifecycle is app-first:
 
 ```text
-AnyPick.app
+AnyPick.app  (or the Tauri app)
 ├── main window
-├── menu-bar quick panel
-└── Contents/Helpers/anypick-core desktop-service --stdio
+├── macOS only: menu-bar quick panel
+└── bundled Go service, spawned as:
+    anypick desktop-service --stdio
 ```
 
-On launch, the app resolves `anypick-core` relative to its own bundle and starts
-it as a child. A version and capability handshake completes before mutations
-are enabled. Frames are bounded and stdout is protocol-only. Unexpected exits
-use a bounded restart policy; an incompatible or repeatedly failing helper puts
-the UI into a degraded state instead of silently switching to another engine.
+On launch the app resolves its bundled Go executable relative to its own bundle
+and starts it as a child. A version and capability handshake completes before
+mutations are enabled. Frames are bounded and stdout is protocol-only.
 
 The app does **not** find the service on `PATH`, connect to a permanent daemon,
-or ask an installed Node process to own it. A future distributed build will
-include the helper; users will not compile Swift or Go at runtime.
+or run a Node process. There is no localhost HTTP API, no socket and no gRPC —
+any of those needs a new accepted ADR.
 
-Closing the main window leaves the application and its local services running.
-Choose **Quit AnyPick** or the quick panel's **Quit** button to stop the bundled
-service gracefully and terminate the app.
+Unexpected exits use a bounded restart policy; an incompatible or repeatedly
+failing helper puts the UI into a degraded state rather than silently switching
+to another engine.
 
-## Run the current source target
+## macOS
 
-Requirements: macOS 14+, Xcode, and a Go launcher capable of selecting the
-toolchain pinned by `go/go.mod`.
+Closing the main window leaves the app and its local services running — the
+menu-bar item stays available. Choose **Quit AnyPick** or the quick panel's
+**Quit** button to stop the bundled service gracefully and terminate the app.
 
-```bash
-open src/macos/AnyPick.xcodeproj
-```
+On Linux and Windows there is no menu-bar item, so closing the window quits the
+app and the sidecar with it.
 
-Select the shared **AnyPick** scheme and Run. Xcode builds the existing Swift
-tree in `src/macos/` and installs the Go executable at
-`AnyPick.app/Contents/Helpers/anypick-core` as part of the app build.
+### Main window
 
-For isolated UI work, use the in-memory fixture:
-
-```bash
-pnpm macos:design
-pnpm macos:design --flow tray-attention
-pnpm macos:design:check
-```
-
-The fixture's `swiftc` command is a repository development tool. It is not the
-production launch path and is not an end-user prerequisite.
-
-## Main window
-
-The regular Dock app opens a System Settings-style management window with these
-sidebar destinations:
+The macOS app opens a System Settings-style management window with these sidebar
+destinations:
 
 | Destination | Purpose |
 | --- | --- |
@@ -83,12 +74,13 @@ the main sidebar. Current panes cover General, Usage, Proxies, and Security.
 
 In **Accounts & APIs → Add Account**, a provider may expose a provider-owned
 browser sign-in. AnyPick launches that method and then verifies and saves the
-provider's resulting native credential; it does not imitate the provider's
-OAuth pages or ask for the account password.
+provider's resulting native credential; it does not imitate the provider's OAuth
+pages or ask for the account password.
 
-## Menu-bar quick panel
+### Menu-bar quick panel
 
-The menu-bar window provides quick access without becoming a second app. It can:
+The menu-bar item is a compact panel of the same running app, not a second app.
+It is **macOS only**. It can:
 
 - show ready/attention state and search saved accounts or destinations;
 - show active app routes and supported usage information;
@@ -100,38 +92,71 @@ Detailed configuration stays in the main window. The menu-bar icon may show an
 attention marker when a route or service needs review. First-run and degraded
 states use the same production view hierarchy as the ready state.
 
-## Launch at login
+### Launch at login
 
 The native Settings toggle uses macOS `SMAppService`. If macOS requires manual
-approval, AnyPick directs the user to **System Settings → General → Login
-Items**. It does not install a custom LaunchAgent from the UI.
+approval, AnyPick directs you to **System Settings → General → Login Items**. It
+does not install a custom LaunchAgent from the UI.
 
-## CLI compatibility during cutover
+## Run from source
 
-The TypeScript source tree still exposes these compatibility commands:
+**macOS** — requires macOS 14+, Xcode, and a Go launcher able to select the
+toolchain pinned by `src/go/go.mod`:
 
 ```bash
-pnpm dev tray
-pnpm dev tray start
-pnpm dev tray status
-pnpm dev tray stop
+open src/macos/AnyPick.xcodeproj
 ```
 
-They exercise the existing source supervisor and are useful while the cutover
-is being completed. They are not the lifecycle contract of the native app and
-do not describe a published installer. Native-app lifecycle is controlled by
-launching, closing, reopening, and explicitly quitting `AnyPick.app`.
+Select the shared **AnyPick** scheme and Run. A build phase installs the Go
+executable at `AnyPick.app/Contents/Helpers/anypick-core`. To build from the
+command line instead, use `make app-build`; `make app-test` runs the unit tests
+and the bundled-helper contract, and `make app-verify` additionally asserts the
+bundle contains no Node runtime.
 
-The terminal UI remains available from source with `pnpm dev tui`. Its tray
-runtime shortcuts belong to that compatibility path; closing the TUI does not
-implicitly quit a separately launched native app.
+**Linux and Windows** — from the repository root:
+
+```bash
+make tauri-dev     # run against the real Go service
+make tauri-build   # package for this platform
+```
+
+### Previewing UI states without a live account
+
+Set these in the Xcode scheme (**Product → Scheme → Edit Scheme → Run →
+Arguments → Environment Variables**), then Run. They drive an in-memory fixture,
+so no account or credential is needed:
+
+| Variable | Values |
+| --- | --- |
+| `ANYPICK_MACOS_FIXTURE` | `ready`, `loading`, `empty`, `error` |
+| `ANYPICK_MACOS_DESTINATION` | `overview`, `apps`, `accounts`, `proxyHub`, `proxies`, `activity`, `backups` |
+| `ANYPICK_MACOS_FLOW` | `add-account`, `add-gateway`, `tray`, `tray-attention`, `tray-use-with`, `tray-switching`, `tray-recovery`, and others |
+| `ANYPICK_MACOS_APPEARANCE` | `system`, `light`, `dark` |
+| `ANYPICK_MACOS_RENDER_PATH` | a path — renders the window to a PNG and exits |
+
+Preview the fixture rather than a screenshot of a previous session: a screenshot
+freezes the design at the moment it was taken, and the fixture does not.
+
+## Terminal UI
+
+The terminal UI is a separate surface, not part of the app. Build the CLI and
+run it:
+
+```bash
+make build          # -> src/go/bin/anypick-dev
+./src/go/bin/anypick-dev tui
+```
+
+or `make run ARGS="tui"`. The TUI talks to the same Go service, but it does not
+launch, supervise or shut down a separately opened desktop app; closing the TUI
+does not quit the app, and quitting the app does not close the TUI.
 
 ## Security boundary
 
-Credentials and per-instance proxy bearer tokens remain in the Go service.
-Desktop snapshots contain display-safe state and opaque action identifiers, not
-raw saved credentials. The helper's stdio connection is private to its owning
-app and is not a documented integration API.
+Credentials and per-instance proxy bearer tokens stay in the Go service. Desktop
+snapshots carry display-safe state and opaque action identifiers, not raw saved
+credentials. The helper's stdio connection is private to its owning app and is
+not a documented integration API.
 
-See [Apps & Terminal UI](/docs/guides/terminal-ui) for the source CLI workflow
-and [Proxies](/docs/guides/proxies) for proxy and Hub behavior.
+See [Apps & Terminal UI](/docs/guides/terminal-ui) for the terminal workflow and
+[Proxies](/docs/guides/proxies) for proxy and Hub behavior.

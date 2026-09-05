@@ -9,11 +9,8 @@ struct MenuBarPreview: View {
     ZStack(alignment: .topTrailing) {
       desktopBackground
       MenuBarMenu(model: model)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
-        )
+        .background(.regularMaterial)
+        .border(Color.primary.opacity(0.1))
         .shadow(color: Color.black.opacity(0.19), radius: 18, y: 10)
         .padding(18)
     }
@@ -26,15 +23,7 @@ struct MenuBarPreview: View {
     if colorScheme == .dark {
       Color(nsColor: .underPageBackgroundColor)
     } else {
-      LinearGradient(
-        colors: [
-          Color(red: 0.86, green: 0.90, blue: 0.96),
-          Color(red: 0.94, green: 0.89, blue: 0.93),
-          Color(red: 0.85, green: 0.92, blue: 0.94),
-        ],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-      )
+      Color(nsColor: .windowBackgroundColor)
     }
   }
 }

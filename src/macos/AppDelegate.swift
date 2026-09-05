@@ -5,11 +5,16 @@ import SwiftUI
 
 @MainActor
 final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
+  private static weak var instance: AnyPickAppDelegate?
+
   let isFixture: Bool
   let store: TrayStore?
   let designModel: MacOSDesignModel
   private var serviceProcess: GoServiceProcess?
   private var terminationPending = false
+  /// Tray Quit (and `quitAnyPick`) set this so Dock/⌘Q can hide to the
+  /// menu bar instead of killing the process.
+  private var allowTerminate = false
 
   override init() {
     let environment = ProcessInfo.processInfo.environment
@@ -27,6 +32,17 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       designModel = ProductionDesignModel(store: created)
     }
     super.init()
+    Self.instance = self
+  }
+
+  /// Only the menu-bar Quit button should kill the process.
+  static func requestQuit() {
+    guard let instance else {
+      NSApp.terminate(nil)
+      return
+    }
+    instance.allowTerminate = true
+    NSApp.terminate(nil)
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,6 +56,13 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     } else {
       NSApp.setActivationPolicy(.regular)
       NSApp.activate(ignoringOtherApps: true)
+      retainMainWindows()
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(windowDidBecomeKey(_:)),
+        name: NSWindow.didBecomeKeyNotification,
+        object: nil
+      )
       DispatchQueue.main.async { [weak self] in self?.presentMainWindow() }
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
         self?.presentMainWindow()
@@ -58,7 +81,17 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     startBundledService()
   }
 
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    false
+  }
+
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    // Dock Quit / ⌘Q / File → Quit: leave the Dock, keep the menu-bar extra
+    // and the helper. Only tray Quit sets `allowTerminate`.
+    if !allowTerminate {
+      withdrawToTray()
+      return .terminateCancel
+    }
     guard !isFixture, let serviceProcess else { return .terminateNow }
     if terminationPending { return .terminateLater }
     terminationPending = true
@@ -70,12 +103,40 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    if !flag { presentMainWindow() }
+    presentMainWindow()
     sender.activate(ignoringOtherApps: true)
     return true
   }
 
+  /// Hide windows and drop the Dock tile. Menu-bar extra stays.
+  private func withdrawToTray() {
+    for window in NSApp.windows where !Self.isStatusItemWindow(window) {
+      window.orderOut(nil)
+    }
+    NSApp.setActivationPolicy(.accessory)
+  }
+
+  @objc private func windowDidBecomeKey(_ notification: Notification) {
+    guard let window = notification.object as? NSWindow else { return }
+    retainIfMainWindow(window)
+  }
+
+  private func retainMainWindows() {
+    for window in NSApp.windows { retainIfMainWindow(window) }
+  }
+
+  private func retainIfMainWindow(_ window: NSWindow) {
+    guard isMainWindow(window) else { return }
+    // Keep the SwiftUI Window alive after the close button so Dock / tray
+    // can order it front instead of trying to recreate a torn-down scene.
+    window.isReleasedWhenClosed = false
+  }
+
   func presentMainWindow() {
+    if NSApp.activationPolicy() != .regular {
+      NSApp.setActivationPolicy(.regular)
+    }
+    AnyPickAppIcon.applyToApp()
     for window in NSApp.windows where !Self.isStatusItemWindow(window) {
       if window.title.isEmpty, window.frame.width > 180 {
         window.title = "AnyPick"

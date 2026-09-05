@@ -209,6 +209,14 @@ Rules:
 - Row-level commands stay **in the Form** (trailing `LabeledContent`
   button). Pane-level commands sit **under the last group**, outside
   the Form (`DesignGroupedPane`).
+- Service lifecycle (Start/Stop/Restart) also lives **in the Service row**
+  as a trailing button, and collection-create actions (Add Account, Start
+  Hub) are duplicated in the toolbar — with 20+ rows the under-form actions
+  fall below the fold and must stay reachable without scrolling to the end.
+- Quick Panel uses native rows, `Menu`, `Toggle`, `Picker` only. No custom
+  cards, chip strips, palette files, manual fonts, or `RoundedRectangle`
+  chrome. Account names wrap; the expanded proxy list scrolls in a bounded
+  region so Search/Open/Quit stay reachable.
 - `List` is for the sidebar and for true selectable collections (logs).
   Do not fake selection with `.buttonStyle(.plain)` +
   `listRowBackground`.
@@ -308,7 +316,7 @@ panes.
 - The pane is a grouped `Form`. A screenshot next to System Settings
   should share control anatomy, not just “a sidebar”.
 - No new token file, card, or pixel recipe.
-- `pnpm macos:design:check` compiles.
+- `make app-build` compiles; `make app-test` passes unit and smoke UI tests.
 - Isolation tests still forbid supervisor / `~/.anypick` references in
   this tree.
 - If a string-scan test demanded a Pencil width or a removed wrapper,

@@ -431,6 +431,24 @@ Done:
       untracked** — `internal/db/tables.go` + its test (invariant #6),
       `internal/pubgate/gate_test.go` and `internal/modelcache/store_test.go`.
       On `main` those rules were asserted by nobody.
+- [x] **`make paths` was dead on arrival.** A `#` comment inside the recipe's
+      backslash-continuation chain commented out the rest of the target —
+      including the git-ignored-source check, the authority-documents check,
+      and the final `exit 1` — so `make paths` reported success no matter what.
+      Found by mutation: adding `refs/` to `.gitignore` still left `make paths`
+      green. Every explanatory comment was moved above the target (the Makefile
+      "path integrity" block documents the trap). The same pass added the
+      "no build artifact is tracked" check the committed 16.9 MB
+      `src/go/anypick` Mach-O exposed: once a file is tracked, `.gitignore` no
+      longer applies to it, so the gate detects a tracked binary by diffing
+      `git ls-files src/` (total) against `git grep -Il . -- src/` (text) **plus**
+      empty files — rather than naming artifacts, which is how the binary got
+      committed in the first place (the old pattern was `go/anypick`, written
+      before commit 44e5046 moved everything under `src/`). Verified red by
+      force-adding a tiny binary (`FAIL … tracked binary(ies)` + `path check
+      FAILED`, exit 1) and green on a clean tree. The stale pre-move `.gitignore`
+      entries (`go/anypick`, `go/go/`, …) were removed and `/src/go/anypick` is
+      now anchored, so the release artifact can never be committed again.
 
 Open:
 
