@@ -746,5 +746,4 @@ mod tests {
             Some(Duration::from_millis(5))
         );
     }
-
 }

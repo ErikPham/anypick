@@ -7,7 +7,6 @@ struct FirstRunWelcomeSheet: View {
     DesignSheetHost(
       title: "Welcome to AnyPick",
       width: 480,
-      height: 390,
       primaryTitle: "Continue",
       showsCancel: false,
       onCancel: model.dismissFirstRunWelcome,
@@ -154,10 +153,10 @@ struct OverviewView: View {
         .accessibilityIdentifier("overview.get-started")
       }
 
-      // An empty Apps header above the checklist is pure noise on first run —
-      // the "Use an App" step already covers it. Drop the section instead of
-      // hiding it so no blank space remains.
-      if !(model.apps.isEmpty && model.shouldShowOnboarding) {
+      // No Apps section without apps (O7): an empty header above the
+      // checklist is noise on first run, and a bare header after a
+      // dismissed onboarding.
+      if !model.apps.isEmpty {
         Section {
           ForEach(model.apps) { app in
             NavigationLink(value: DesignRouteID.app(app.id)) {
@@ -220,7 +219,18 @@ struct OverviewView: View {
                 .foregroundStyle(item.status.color)
                 .frame(width: 16)
                 .accessibilityLabel(item.status.rawValue)
-                Text(item.title)
+                VStack(alignment: .leading, spacing: 1) {
+                  Text(item.title)
+                  // Detail used to be dropped here (O10): fixture "a2" lost
+                  // "Authentication failed…". The status glyph for problem
+                  // states stays — it must never read as success.
+                  if !item.detail.isEmpty {
+                    Text(item.detail)
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .lineLimit(1)
+                  }
+                }
                 Spacer(minLength: 8)
                 Text(item.time)
                   .foregroundStyle(.secondary)
@@ -253,10 +263,7 @@ struct OverviewView: View {
   }
 
   private func connectionSummary(_ app: DesignApp) -> String {
-    if let name = app.routeOptions.first(where: { $0.id == app.selectedRouteID })?.name {
-      return "Uses \(name)"
-    }
-    return "No login chosen"
+    overviewConnectionSummary(app)
   }
 
   private func transportLabel(_ app: DesignApp) -> String {
@@ -283,7 +290,11 @@ struct OverviewView: View {
 
   private var serviceStatusText: String {
     let running = runningServiceNames.count
-    let total = model.proxies.count + 1
+    let total = overviewServiceTotal(
+      proxyCount: model.proxies.count,
+      hubSourcesEmpty: model.hubSources.isEmpty,
+      hubEnabled: model.proxyHubEnabled
+    )
     return "\(running) of \(total) running"
   }
 
@@ -323,42 +334,59 @@ struct OverviewView: View {
   private var primaryAttention:
     (title: String, message: String, actionTitle: String, action: () -> Void)?
   {
-    if let proxy = model.proxies.first(where: {
-      $0.status == .attention || $0.status == .unavailable
-    }) {
+    // Priority lives in overviewAttentionTarget (O1) so it stays pinnable;
+    // this only renders the winning target.
+    guard
+      let target = overviewAttentionTarget(
+        proxies: model.proxies,
+        apps: model.apps,
+        accounts: model.accounts,
+        conflicts: model.routingConflicts
+      )
+    else { return nil }
+    switch target {
+    case .proxy(let id):
+      guard let proxy = model.proxies.first(where: { $0.id == id }) else { return nil }
       return (
         "\(proxy.name) is unavailable",
         "Apps using \(proxy.name) cannot connect.",
         "Open Proxies",
         { model.destination = .proxies }
       )
-    }
-    if let app = model.apps.first(where: {
-      $0.status == .attention || $0.status == .unavailable
-    }) {
+    case .app(let id):
+      guard let app = model.apps.first(where: { $0.id == id }) else { return nil }
       return (
         "\(app.name) doesn’t have a working login",
         "Choose a login on Apps.",
         "Open Apps",
         { model.destination = .apps }
       )
-    }
-    if let choice = model.routingConflicts.first(where: { $0.kind == .sourceChoice }) {
+    case .account(let id):
+      guard let account = model.accounts.first(where: { $0.id == id }) else { return nil }
       return (
-        "Choose a \(choice.title) account",
-        choice.detail,
-        "Open Proxy Hub",
-        { model.destination = .proxyHub }
+        "\(account.name) isn’t working",
+        "Check the login on Accounts & APIs.",
+        "Open Accounts",
+        { model.destination = .accounts }
       )
-    }
-    if let overlap = model.routingConflicts.first(where: { $0.kind == .modelOverlap }) {
+    case .conflict(let kind):
+      guard let conflict = model.routingConflicts.first(where: { $0.kind == kind }) else {
+        return nil
+      }
+      if kind == .sourceChoice {
+        return (
+          "Choose a \(conflict.title) account",
+          conflict.detail,
+          "Open Proxy Hub",
+          { model.destination = .proxyHub }
+        )
+      }
       return (
         "Overlapping models",
-        overlap.detail,
+        conflict.detail,
         "Open Proxy Hub",
         { model.destination = .proxyHub }
       )
     }
-    return nil
   }
 }

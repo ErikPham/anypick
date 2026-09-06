@@ -177,6 +177,11 @@ func GeminiAccountAdapter(provider, name string) Adapter {
 }
 
 // GrokAccountAdapter: built-in dual-protocol proxy for compatible clients.
+// No native-auth write: the proxy authenticates per request from the account
+// snapshot (grokUpstream), and TS parity (activation-planner.ts) emits
+// WriteNativeAuth only for direct transports — a cross-provider proxy binding
+// like `use claude --with grok/x` must not rewrite grok's live login or
+// active pointer as a side effect.
 func GrokAccountAdapter(provider, name string) Adapter {
 	a := Adapter{
 		Capabilities: baseAccountCapabilities("grok", nil),

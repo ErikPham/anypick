@@ -363,6 +363,12 @@ func (s *Server) cancelPendingHostEffects() {
 	}
 }
 
+// Wait blocks until every in-flight mutation handler — including its trailing
+// refresh — has finished. Tests that drive handle directly (bypassing Run's
+// graceful shutdown) must call it before closing the database; otherwise a
+// late refresh touches a closed store.
+func (s *Server) Wait() { s.inFlight.Wait() }
+
 // shutdown mirrors the TS supervisor: proxies it started are stopped, then
 // the stream closes.
 func (s *Server) shutdown(_ context.Context) error {
@@ -805,6 +811,15 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 		result = s.handleHubSourceToggle(ctx, m)
 	case "proxy-stop-all", "proxy-restart-all":
 		restart := m.Operation == "proxy-restart-all"
+		verb, infinitive := "stopped", "stop"
+		if restart {
+			verb, infinitive = "restarted", "restart"
+		}
+		// Aggregate per-proxy failures (PX4): the old loop swallowed every
+		// error and always reported success. Per-row progress would need
+		// protocol work; naming the failures in the result is what fits.
+		var failed []string
+		attempted := 0
 		for _, providerID := range s.Deps.Providers.IDs() {
 			list, lerr := s.Deps.Store.ListAccounts(providerID)
 			if lerr != nil {
@@ -815,11 +830,26 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 				if !cfg.Enabled {
 					continue
 				}
-				_ = s.Deps.Proxy.Stop(ctx, providerID, acc.Meta.Name)
+				attempted++
+				label := providerID + "/" + acc.Meta.Name
+				if serr := s.Deps.Proxy.Stop(ctx, providerID, acc.Meta.Name); serr != nil {
+					failed = append(failed, label+": "+serr.Error())
+					continue
+				}
 				if restart {
-					_, _ = s.Deps.Proxy.StartProxy(ctx, providerID, acc.Meta.Name)
+					if _, rerr := s.Deps.Proxy.StartProxy(ctx, providerID, acc.Meta.Name); rerr != nil {
+						failed = append(failed, label+": "+rerr.Error())
+					}
 				}
 			}
+		}
+		if len(failed) > 0 {
+			result.Status, result.Message = "error", fmt.Sprintf("could not %s %d of %d proxies: %s",
+				infinitive, len(failed), attempted, strings.Join(failed, "; "))
+		} else if attempted == 0 {
+			result.Message = "no enabled proxies to " + infinitive
+		} else {
+			result.Message = fmt.Sprintf("%s %d of %d proxies", verb, attempted, attempted)
 		}
 	case "setting-launch-at-login":
 		// ADR 0020 §7: the engine validates and emits a typed host effect;

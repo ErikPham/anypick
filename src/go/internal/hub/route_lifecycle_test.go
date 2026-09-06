@@ -118,7 +118,7 @@ func mustRouteToken(t *testing.T) string {
 
 func attachLifecycle(t *testing.T, st *Store, r Route) {
 	t.Helper()
-	if err := st.AttachRoute(r); err != nil {
+	if err := st.AttachRouteContext(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -158,7 +158,7 @@ func TestRouteAttachGrantRotateRevoke(t *testing.T) {
 		},
 	}
 
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "lifecycle", Enabled: true,
 		Sources: []Source{
 			{ProviderID: "glm", Account: "cn"},
@@ -259,7 +259,7 @@ func TestHubPoolSourceFailsOverQuotaClassOnly(t *testing.T) {
 		Resolver: resolver, Guard: guard,
 	}
 
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "poolhub", Enabled: true,
 		Sources: []Source{{ProviderID: "deepseek", Account: "pool:deepseek"}},
 	})
@@ -319,7 +319,7 @@ func TestHubPoolSourcePassesNonQuotaThroughOnce(t *testing.T) {
 			ProviderID:   "deepseek",
 		}),
 	}
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "poolhub500", Enabled: true,
 		Sources: []Source{{ProviderID: "deepseek", Account: "pool:deepseek"}},
 	})
@@ -354,7 +354,7 @@ func TestHubPoolSourcePassesNonQuotaThroughOnce(t *testing.T) {
 // clear upstream error instead of silently serving nothing.
 func TestHubPoolSourceFailsClosedWhenPoolDisabled(t *testing.T) {
 	st := newHubStore(t)
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "deadpool", Enabled: true,
 		Sources: []Source{{ProviderID: "deepseek", Account: "pool:deepseek"}},
 	})

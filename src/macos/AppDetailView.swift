@@ -5,8 +5,6 @@ struct AppDetailView: View {
   let appID: String
   @State private var showingRoutes = false
   @State private var showingModels = false
-  @State private var accountSheet: AccountsSheet?
-  @State private var awaitingCreatedGateway = false
   @State private var confirmReset = false
 
   private var app: DesignApp? { model.apps.first { $0.id == appID } }
@@ -31,10 +29,8 @@ struct AppDetailView: View {
           Label {
             VStack(alignment: .leading, spacing: 2) {
               Text(app.name)
-              if !app.detail.isEmpty {
-                Text(app.detail)
-                  .foregroundStyle(.secondary)
-              }
+              Text(headerSubtitle(app))
+                .foregroundStyle(.secondary)
             }
           } icon: {
             DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol)
@@ -42,10 +38,30 @@ struct AppDetailView: View {
         }
 
         Section {
-          LabeledContent("Using", value: selectedName(app))
+          LabeledContent("Uses", value: selectedName(app))
           if let detail = selectedRoute?.detail, !detail.isEmpty {
-            LabeledContent("Details", value: detail)
+            LabeledContent("Identity", value: detail)
           }
+          Button {
+            showingRoutes = true
+          } label: {
+            HStack(spacing: 8) {
+              Text("Change Connection")
+                .layoutPriority(1)
+              Spacer(minLength: 8)
+              Text("Accounts, API gateways, and Proxy Hub")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+              Image(systemName: "chevron.right")
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .disabled(model.isBusy || app.routeOptions.isEmpty)
+          .accessibilityIdentifier("app.connection.change")
         } header: {
           Text("Connection")
         }
@@ -54,12 +70,26 @@ struct AppDetailView: View {
           Section {
             LabeledContent("Default", value: defaultModel(app))
             LabeledContent("Overrides", value: overrideSummary(app))
-            LabeledContent {
-              Button("Configure Models…") { showingModels = true }
-                .disabled(!app.modelEditingAvailable || model.isBusy)
+            Button {
+              showingModels = true
             } label: {
-              Text("Catalog")
+              HStack(spacing: 8) {
+                Text("Manage Models")
+                  .layoutPriority(1)
+                Spacer(minLength: 8)
+                Text("Default and role overrides")
+                  .foregroundStyle(.secondary)
+                  .lineLimit(1)
+                  .truncationMode(.tail)
+                Image(systemName: "chevron.right")
+                  .foregroundStyle(.tertiary)
+                  .accessibilityHidden(true)
+              }
+              .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(!app.modelEditingAvailable || model.isBusy)
+            .accessibilityIdentifier("app.models.manage")
           } header: {
             Text("Models")
           } footer: {
@@ -72,28 +102,28 @@ struct AppDetailView: View {
         }
 
         if model.showUsage, !app.usageWindows.isEmpty {
-          Section("Remaining Usage") {
+          Section("Usage") {
             ForEach(app.usageWindows) { window in
               usageRow(window)
             }
           }
+        } else if model.showUsage, isAppRouteConfigured(app) {
+          // A10: a configured login with no quota API says so — as a normal
+          // boxed row like every other note in this pane.
+          Section("Usage") {
+            Text("This login doesn’t report usage.")
+              .foregroundStyle(.secondary)
+          }
         }
       }
-
     } actions: {
-      if let app {
-        Button("Add Account…") { accountSheet = .addAccount }
-          .disabled(model.isBusy)
-        Button("Add API Gateway…") { accountSheet = .addGateway }
-          .disabled(model.isBusy || model.preferredGatewayProvider(for: appID) == nil)
-        Button(supportsManagedRouting ? "Change Account or Provider…" : "Switch Account…") {
-          showingRoutes = true
-        }
-        .disabled(model.isBusy || app.routeOptions.isEmpty)
-      }
+      // Board JC9e8 + System Settings (Displays › Advanced…): pane-level
+      // actions sit under the last group, outside the Form — as real bordered
+      // controls, never floating plain text.
       if supportsManagedRouting {
-        Button("Reset App Settings…", role: .destructive) { confirmReset = true }
+        Button("Reset App Settings", role: .destructive) { confirmReset = true }
           .disabled(model.isBusy)
+          .accessibilityIdentifier("app.reset")
       }
     }
     .sheet(isPresented: $showingRoutes) {
@@ -101,20 +131,6 @@ struct AppDetailView: View {
     }
     .sheet(isPresented: $showingModels) {
       AppModelsSheet(model: model, appID: appID)
-    }
-    .sheet(item: $accountSheet) { sheet in
-      switch sheet {
-      case .addAccount:
-        AddSavedAccountSheet(model: model)
-      case .addGateway:
-        AddGatewaySheet(model: model, targetClientID: appID) {
-          awaitingCreatedGateway = true
-          connectCreatedGatewayIfReady(model.pendingGatewayConnectID)
-        }
-      }
-    }
-    .onChange(of: model.pendingGatewayConnectID) { _, id in
-      connectCreatedGatewayIfReady(id)
     }
     .navigationTitle(app?.name ?? "App")
     .confirmationDialog(
@@ -127,6 +143,14 @@ struct AppDetailView: View {
     } message: {
       Text("The official login is kept. Account and model overrides are removed.")
     }
+  }
+
+  /// "Claude account · Ready": the provider kind reads from the selected
+  /// route, so a gateway or hub route never poses as an account.
+  private func headerSubtitle(_ app: DesignApp) -> String {
+    let provider = selectedRoute?.providerID.map(nativeProviderName) ?? nativeProviderName(app.id)
+    let kind = selectedRoute?.kind == .gateway ? "gateway" : "account"
+    return "\(provider) \(kind) · \(app.status.rawValue)"
   }
 
   private func selectedName(_ app: DesignApp) -> String {
@@ -144,16 +168,10 @@ struct AppDetailView: View {
   }
 
   private func overrideSummary(_ app: DesignApp) -> String {
-    let overrides = app.modelRoles.filter { $0.id != "default" && !$0.modelID.isEmpty }
-    guard !overrides.isEmpty else { return "Same as Default" }
-    return overrides.map { "\($0.label): \($0.modelID)" }.joined(separator: " · ")
-  }
-
-  private func connectCreatedGatewayIfReady(_ gatewayID: String?) {
-    guard awaitingCreatedGateway, let gatewayID else { return }
-    awaitingCreatedGateway = false
-    model.pendingGatewayConnectID = nil
-    model.connectGateway(id: gatewayID, appIDs: [appID])
+    let roles = app.modelRoles.filter { $0.id != "default" }
+    guard !roles.isEmpty else { return "Same as Default" }
+    return roles.map { "\($0.label): \($0.modelID.isEmpty ? "Same as Default" : $0.modelID)" }
+      .joined(separator: " · ")
   }
 
   private func usageRow(_ window: DesignUsageWindow) -> some View {
@@ -161,15 +179,20 @@ struct AppDetailView: View {
       HStack {
         Text(window.label)
         Spacer()
-        Text("\(window.remainingPercent)% left")
+        Text("\(window.remainingPercent)% remaining")
           .foregroundStyle(.secondary)
           .monospacedDigit()
       }
       ProgressView(value: Double(window.remainingPercent), total: 100)
-      if let resetsAtMs = window.resetsAtMs {
+      if window.resetsAtMs != nil || usageWindowPeriod(limitWindowSeconds: window.limitWindowSeconds) != nil {
         HStack(spacing: 4) {
-          Text("Resets")
-          Text(Date(timeIntervalSince1970: resetsAtMs / 1000), style: .relative)
+          if let resetsAtMs = window.resetsAtMs {
+            Text("Resets")
+            Text(Date(timeIntervalSince1970: resetsAtMs / 1000), style: .relative)
+          }
+          if let period = usageWindowPeriod(limitWindowSeconds: window.limitWindowSeconds) {
+            Text(window.resetsAtMs != nil ? "· every \(period)" : "Every \(period)")
+          }
         }
         .font(.caption)
         .foregroundStyle(.secondary)

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -864,9 +865,32 @@ func waitHealthInstance(endpoint, want string, timeout time.Duration) error {
 }
 
 func portOf(endpoint string) int {
-	var port int
-	if _, err := fmt.Sscanf(endpoint, "http://127.0.0.1:%d", &port); err == nil {
-		return port
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return 0
 	}
-	return 0
+	// Schemeless "127.0.0.1:41401" (dynamic assignment, PX6) never parses as
+	// a URL: split host:port instead. Bracketed IPv6 ("[::1]:5150") splits
+	// on the last colon the same way.
+	if u, err := url.Parse(endpoint); err == nil {
+		if p := u.Port(); p != "" {
+			if port, perr := strconv.Atoi(p); perr == nil {
+				return port
+			}
+			return 0
+		}
+	}
+	hostPort := endpoint
+	if i := strings.Index(hostPort, "://"); i >= 0 {
+		hostPort = hostPort[i+3:]
+	}
+	i := strings.LastIndex(hostPort, ":")
+	if i < 0 {
+		return 0
+	}
+	port, err := strconv.Atoi(hostPort[i+1:])
+	if err != nil || strings.Contains(hostPort[i+1:], "/") {
+		return 0
+	}
+	return port
 }

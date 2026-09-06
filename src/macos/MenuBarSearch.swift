@@ -2,7 +2,6 @@ import SwiftUI
 
 enum TraySearchTarget: Hashable {
   case app(String)
-  case account(String)
   case destination(DesignDestination)
 }
 
@@ -50,12 +49,11 @@ struct MenuBarSearchResults: View {
         resultIcon(result)
         VStack(alignment: .leading, spacing: 1) {
           Text(result.title)
-            .font(.callout)
-            .fontWeight(.semibold)
+            .font(TrayFont.bodyStrong)
             .foregroundStyle(.primary)
             .lineLimit(1)
           Text(result.detail)
-            .font(.caption)
+            .font(TrayFont.detail)
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }

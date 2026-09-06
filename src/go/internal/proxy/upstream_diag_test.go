@@ -1,6 +1,10 @@
 package proxy
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -25,5 +29,81 @@ func TestDescribeSanitizedOpenAILeaksNoPromptText(t *testing.T) {
 func TestDescribeSanitizedOpenAIUnparseable(t *testing.T) {
 	if got := describeSanitizedOpenAI([]byte("not json at all")); got != "unparseable" {
 		t.Fatalf("fingerprint = %q, want \"unparseable\"", got)
+	}
+}
+
+// Vendor-controlled content must never reach diagnostics: an upstream can
+// echo prompts, tool arguments or secrets into its error message, and user
+// tool names are user-defined. Only status, numeric code, request id and
+// structural counts are allowlisted.
+func TestDiagnosticsLogOnlyAllowlistedFields(t *testing.T) {
+	canary := "canary-vendor-echo-must-not-persist"
+	toolName := "canary-user-tool-name"
+
+	vendor := `{"code":11128,"msg":"rejected, echoed prompt: ` + canary + `","requestId":"r1"}`
+	got := describeVendorError(vendor, 400)
+	if !strings.Contains(got, "code=11128") || !strings.Contains(got, "req=r1") {
+		t.Fatalf("fingerprint lost allowlisted fields: %q", got)
+	}
+	if strings.Contains(got, canary) {
+		t.Fatalf("vendor message leaked into diagnostics: %q", got)
+	}
+
+	got = describeVendorError("not json: "+canary, 400)
+	if strings.Contains(got, canary) {
+		t.Fatalf("raw vendor body leaked into diagnostics: %q", got)
+	}
+
+	shape := describeAnthropicShape([]byte(
+		`{"model":"m","messages":[{"role":"user","content":"` + canary + `"}],"tools":[{"name":"` + toolName + `"}]}`))
+	if !strings.Contains(shape, "tools=1") {
+		t.Fatalf("fingerprint lost tool count: %q", shape)
+	}
+	if strings.Contains(shape, canary) || strings.Contains(shape, toolName) {
+		t.Fatalf("user content leaked into shape fingerprint: %q", shape)
+	}
+}
+
+// Regression for the P0 raw dump: serving a translated request that hits
+// 11128 must never write inbound/sanitized bodies to disk. The canary stands
+// in for prompt text, history, or pasted secrets.
+func TestNoRawDumpOn11128(t *testing.T) {
+	canary := "canary-11128-b9f27d-prompt-must-not-persist"
+	dir := t.TempDir()
+	t.Setenv("ANYPICK_HOME", dir)
+	t.Setenv("HOME", dir)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"code":11128,"msg":"bad channel","requestId":"r1"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	base, _ := url.Parse(upstream.URL)
+	up := &Upstream{BaseURL: base, Auth: "k", TranslateAnthropic: true}
+
+	body := `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"` + canary + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	Serve(rec, req, up)
+
+	if rec.Code != 400 {
+		t.Fatalf("status = %d, want vendor 4xx passthrough", rec.Code)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == "last-11128.json" {
+			t.Fatalf("raw dump file must not exist")
+		}
+		p, _ := os.ReadFile(dir + "/" + e.Name())
+		if strings.Contains(string(p), canary) {
+			t.Fatalf("canary leaked into %s", e.Name())
+		}
+	}
+	if strings.Contains(rec.Body.String(), canary) {
+		t.Fatalf("canary leaked into response body")
 	}
 }

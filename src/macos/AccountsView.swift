@@ -81,16 +81,6 @@ struct AccountsView: View {
     }
     .searchable(text: $searchQuery, placement: .toolbar, prompt: "Search Accounts")
     .accessibilityIdentifier("accounts.list")
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button("Add Account…") { activeSheet = .addAccount }
-          .accessibilityIdentifier("accounts.toolbar.save-login")
-      }
-      ToolbarItem {
-        Button("Add API Gateway…") { activeSheet = .addGateway }
-          .accessibilityIdentifier("accounts.toolbar.add-gateway")
-      }
-    }
     .sheet(item: $activeSheet) { sheet in
       switch sheet {
       case .addAccount: AddSavedAccountSheet(model: model)
@@ -128,6 +118,9 @@ struct AccountsView: View {
     } message: {
       Text(removalMessage)
     }
+    // Consume the entry flow once (B1-family): without this, every return to
+    // the pane re-opens the entry sheet from a stale flag.
+    .onAppear { model.pendingStartupFlow = nil }
   }
 
   private var inventory: some View {
@@ -173,6 +166,12 @@ struct AccountsView: View {
       Button("Add Account…") { activeSheet = .addAccount }
         .accessibilityIdentifier("accounts.save-login")
       Button("Add API Gateway…") { activeSheet = .addGateway }
+        .disabled(
+          !canAddGateway(
+            isBusy: model.isBusy,
+            gatewayProviderCount: model.gatewayProviderOptions.count
+          )
+        )
         .accessibilityIdentifier("accounts.add-gateway")
     }
     .onChange(of: providers) { _, names in

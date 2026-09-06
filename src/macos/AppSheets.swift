@@ -53,7 +53,6 @@ struct AppRouteSheet: View {
     DesignSheetHost(
       title: app.map { "Change \($0.name) Connection" } ?? "Choose a Connection",
       width: 480,
-      height: 440,
       primaryTitle: primaryTitle,
       primaryDisabled: routeID.isEmpty || stage == .applying,
       primaryIdentifier: "app-route.primary.\(stageIdentifier)",
@@ -83,7 +82,7 @@ struct AppRouteSheet: View {
         switch phase {
         case .success(let id, _) where id == appID:
           stage = .success
-        case .recovery(let id, _, _) where id == appID:
+        case .recovery(let id, _, _, _) where id == appID:
           stage = .recovery
         default:
           break
@@ -266,6 +265,10 @@ struct AppModelsSheet: View {
   let appID: String
   @Environment(\.dismiss) private var dismiss
   @State private var values = [String: String]()
+  /// Production save waits for the engine result instead of dismissing on
+  /// accept: failures keep field context with the error inline.
+  @State private var awaitingSaveResult = false
+  @State private var saveError: String?
 
   private var app: DesignApp? { model.apps.first { $0.id == appID } }
 
@@ -273,19 +276,11 @@ struct AppModelsSheet: View {
     DesignSheetHost(
       title: app.map { "Models for \($0.name)" } ?? "Models",
       width: 480,
-      height: 400,
       primaryTitle: "Save",
-      primaryDisabled: values["default", default: ""].isEmpty || model.isBusy,
+      primaryDisabled: values["default", default: ""].isEmpty || model.isBusy
+        || awaitingSaveResult,
       onCancel: { dismiss() },
-      onPrimary: {
-        guard let app else { return }
-        model.updateAppModelRoles(
-          appID: appID,
-          routeID: app.selectedRouteID,
-          modelRoles: values
-        )
-        dismiss()
-      }
+      onPrimary: save
     ) {
       Form {
         if let app {
@@ -308,10 +303,58 @@ struct AppModelsSheet: View {
             Text("Changing models doesn’t switch the account.")
           }
         }
+        if let saveError {
+          Section {
+            Text(saveError)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("app-models.error")
+          }
+        }
       }
       .onAppear {
         values = Dictionary(uniqueKeysWithValues: app?.modelRoles.map { ($0.id, $0.modelID) } ?? [])
       }
+      .onChange(of: model.operationResult) { _, result in
+        guard awaitingSaveResult, result?.operation == "app-model-roles" else { return }
+        awaitingSaveResult = false
+        if result?.succeeded == true {
+          dismiss()
+        } else if let message = result?.message, !message.isEmpty {
+          saveError = message
+        } else {
+          saveError = "Couldn’t save those models. Try again."
+        }
+      }
+    }
+  }
+
+  private func save() {
+    guard let app else { return }
+    saveError = nil
+    // applyModelRoles refuses while another mutation is in flight and the
+    // void return cannot say so — the disabled primary covers the steady
+    // state, this covers the race.
+    guard !model.isBusy else { return }
+    if model.isProduction {
+      // Dismissal waits for the engine result; the fixture answers
+      // synchronously and dismisses at once below.
+      if model.updateAppModelRoles(
+        appID: appID,
+        routeID: app.selectedRouteID,
+        modelRoles: values
+      ) {
+        awaitingSaveResult = true
+      } else {
+        saveError = "Another change is in progress. Try again in a moment."
+      }
+      return
+    }
+    if model.updateAppModelRoles(
+      appID: appID,
+      routeID: app.selectedRouteID,
+      modelRoles: values
+    ) {
+      dismiss()
     }
   }
 }

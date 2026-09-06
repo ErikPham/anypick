@@ -190,7 +190,7 @@ func TestDesktopGatewayRefreshUsesStoredSecretWithoutEchoingIt(t *testing.T) {
 	t.Cleanup(models.Close)
 
 	env := newTrayEnv(t)
-	if _, err := env.Deps.Profiles.Upsert(profile.Runtime{
+	if _, err := env.Deps.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta:    profile.Meta{Name: "live-gateway", Provider: "openai", Endpoint: models.URL + "/v1"},
 		Secrets: profile.Secrets{APIKey: "sk-never-echo"},
 	}); err != nil {

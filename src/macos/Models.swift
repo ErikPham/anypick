@@ -57,9 +57,12 @@ class MacOSDesignModel: ObservableObject {
   @Published var serviceOperations: [String: DesignServiceOperation] = [:]
   @Published var serviceFailures: [String: String] = [:]
   @Published var degradedConditions: [DesignDegradedCondition] = []
-  private var undoAction: DesignUndoAction?
   private var hubCatalogs: [DesignHubCatalog] = []
   private var hubModelOwners: [String: String] = [:]
+  /// In-flight fixture simulations (L7/PX5). Production overrides every path
+  /// that uses these, so they never affect the live service.
+  private var logPollingTask: Task<Void, Never>?
+  private var proxySimTasks = [String: Task<Void, Never>]()
 
   var isProduction: Bool { false }
 
@@ -322,11 +325,13 @@ class MacOSDesignModel: ObservableObject {
             symbol: "point.3.connected.trianglepath.dotted"
           ),
           DesignLogSource(
-            id: "claude-proxy",
-            label: "Claude Proxy",
-            detail: "Claude-compatible local proxy",
-            provider: "claude",
-            symbol: "brain.head.profile"
+            // Mirrors a real fixture proxy (L6): the stopped notice's Start
+            // button needs a source id that matches a proxy row.
+            id: "codex-relay",
+            label: "Codex Relay",
+            detail: "Personal · Codex",
+            provider: "codex",
+            symbol: "terminal.fill"
           ),
         ],
       selectedLogSourceID: "hub",
@@ -369,12 +374,13 @@ class MacOSDesignModel: ObservableObject {
     } else if flow == "tray-switching" {
       trayScene = .useWith
       trayUseWithAppID = "claude"
-      switchPhase = .inFlight(appID: "claude", from: "Work", to: "Personal")
+      switchPhase = .inFlight(appID: "claude", from: "Work", to: "Personal", routeID: "personal")
       isBusy = true
     } else if flow == "tray-recovery" {
       trayScene = .useWith
       trayUseWithAppID = "claude"
-      switchPhase = .recovery(appID: "claude", requested: "Personal", kept: "Work")
+      switchPhase = .recovery(
+        appID: "claude", requested: "Personal", kept: "Work", routeID: "personal")
     } else if flow == "tray-first-run" || phase == .empty {
       trayScene = .firstRun
     } else if flow.hasPrefix("tray") {
@@ -388,19 +394,15 @@ class MacOSDesignModel: ObservableObject {
   }
 
   func isSwitching(_ appID: String) -> Bool {
-    if case .inFlight(let id, _, _) = switchPhase { return id == appID }
+    if case .inFlight(let id, _, _, _) = switchPhase { return id == appID }
     return false
   }
 
-  var hasSavedLogin: Bool { !accounts.isEmpty }
+  var hasSavedLogin: Bool { overviewHasSavedLogin(accounts: accounts) }
 
   var hasInstalledApp: Bool { !apps.isEmpty }
 
-  var hasChosenRoute: Bool {
-    apps.contains { app in
-      !app.selectedRouteID.isEmpty && !app.selectedRouteID.hasPrefix("native-")
-    }
-  }
+  var hasChosenRoute: Bool { overviewHasChosenRoute(apps: apps) }
 
   var isHubReady: Bool {
     proxyHubEnabled && !hubSourceIDs.isEmpty && routingConflicts.isEmpty
@@ -500,14 +502,8 @@ class MacOSDesignModel: ObservableObject {
   func applyRoute(appID: String, routeID: String) {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
     let previousRoute = apps[index].selectedRouteID
-    let previousStatus = apps[index].status
     guard previousRoute != routeID else { return }
-    commitRoute(
-      appID: appID,
-      routeID: routeID,
-      previousRoute: previousRoute,
-      previousStatus: previousStatus
-    )
+    commitRoute(appID: appID, routeID: routeID)
   }
 
   var quickPanelApps: [DesignApp] { apps.filter(\.showInQuickPanel) }
@@ -515,10 +511,8 @@ class MacOSDesignModel: ObservableObject {
   func setQuickPanelShown(appID: String, shows: Bool) {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
     guard apps[index].showInQuickPanel != shows else { return }
-    let previous = apps[index].showInQuickPanel
     apps[index].showInQuickPanel = shows
     AppPreferences.setQuickPanelShown(shows, for: appID)
-    undoAction = .quickPanel(appID: appID, shows: previous)
     recordActivity(
       title: "\(apps[index].name) \(shows ? "added to" : "removed from") Quick Panel",
       detail: shows
@@ -527,8 +521,7 @@ class MacOSDesignModel: ObservableObject {
       status: shows ? .ready : .stopped
     )
     showFeedback(
-      "\(apps[index].name) \(shows ? "now shows in" : "no longer shows in") the Quick Panel.",
-      offersUndo: true
+      "\(apps[index].name) \(shows ? "now shows in" : "no longer shows in") the Quick Panel."
     )
   }
 
@@ -545,23 +538,18 @@ class MacOSDesignModel: ObservableObject {
   func setRoute(appID: String, routeID: String) {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
     let previousRoute = apps[index].selectedRouteID
-    let previousStatus = apps[index].status
     guard previousRoute != routeID else { return }
     let fromName = routeName(previousRoute, for: apps[index])
     let toName = routeName(routeID, for: apps[index])
     if isProduction {
-      commitRoute(
-        appID: appID, routeID: routeID, previousRoute: previousRoute, previousStatus: previousStatus
-      )
+      commitRoute(appID: appID, routeID: routeID)
       return
     }
     isBusy = true
-    switchPhase = .inFlight(appID: appID, from: fromName, to: toName)
+    switchPhase = .inFlight(appID: appID, from: fromName, to: toName, routeID: routeID)
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 650_000_000)
-      commitRoute(
-        appID: appID, routeID: routeID, previousRoute: previousRoute, previousStatus: previousStatus
-      )
+      commitRoute(appID: appID, routeID: routeID)
       isBusy = false
       switchPhase = .success(appID: appID, name: toName)
       announce("\(apps[index].name) now uses \(toName)")
@@ -572,78 +560,69 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
-  private func commitRoute(
-    appID: String,
-    routeID: String,
-    previousRoute: String,
-    previousStatus: DesignStatus
-  ) {
+  private func commitRoute(appID: String, routeID: String) {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
     apps[index].selectedRouteID = routeID
     apps[index].status = .ready
-    undoAction = .route(appID: appID, routeID: previousRoute, status: previousStatus)
     recordActivity(
       title: "\(apps[index].name) now uses \(routeName(routeID, for: apps[index]))",
       detail: "The change applied without restarting the app.",
       symbol: "arrow.triangle.2.circlepath",
       status: .ready
     )
-    showFeedback(
-      "\(apps[index].name) now uses \(routeName(routeID, for: apps[index])).",
-      offersUndo: true
-    )
+    showFeedback("\(apps[index].name) now uses \(routeName(routeID, for: apps[index])).")
   }
 
+  @discardableResult
   func updateAppConfiguration(
     appID: String,
     routeID: String,
     fastModel: String,
     reasoningModel: String,
     useCompatibleFallback: Bool
-  ) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-    let previous = apps[index]
+  ) -> Bool {
+    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return false }
     apps[index].selectedRouteID = routeID
     apps[index].fastModel = fastModel
     apps[index].reasoningModel = reasoningModel
     apps[index].useCompatibleFallback = useCompatibleFallback
     apps[index].status = routeID.hasPrefix("native-") ? .attention : .ready
-    undoAction = .appConfiguration(previous)
     recordActivity(
       title: "\(apps[index].name) settings applied",
       detail: "Account choice and model roles were updated together.",
       symbol: "slider.horizontal.3",
       status: apps[index].status
     )
-    showFeedback("Applied settings for \(apps[index].name).", kind: .success, offersUndo: true)
+    showFeedback("Applied settings for \(apps[index].name).", kind: .success)
+    return true
   }
 
-  func updateAppModelRoles(appID: String, routeID: String, modelRoles: [String: String]) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
+  @discardableResult
+  func updateAppModelRoles(appID: String, routeID: String, modelRoles: [String: String]) -> Bool {
+    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return false }
     apps[index].selectedRouteID = routeID
     for roleIndex in apps[index].modelRoles.indices {
       let roleID = apps[index].modelRoles[roleIndex].id
       apps[index].modelRoles[roleIndex].modelID = modelRoles[roleID] ?? ""
     }
     showFeedback("Applied model roles for \(apps[index].name).", kind: .success)
+    return true
   }
 
   func resetAppConfiguration(appID: String) {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-    let previous = apps[index]
     apps[index].selectedRouteID = "native-\(appID)"
     apps[index].fastModel = ""
     apps[index].reasoningModel = ""
     apps[index].useCompatibleFallback = true
     apps[index].status = .attention
-    undoAction = .appConfiguration(previous)
     recordActivity(
       title: "\(apps[index].name) reset",
       detail: "AnyPick-managed account and model overrides were removed.",
       symbol: "arrow.counterclockwise.circle",
       status: .attention
     )
-    showFeedback("Reset \(apps[index].name) to its native login.", kind: .warning, offersUndo: true)
+    showFeedback("Reset \(apps[index].name) to its native login.", kind: .warning)
   }
 
   func addSavedAccount(
@@ -691,10 +670,15 @@ class MacOSDesignModel: ObservableObject {
   }
 
   func saveCurrentLogin(_ login: DesignLiveLogin) -> Bool {
+    // First unused name (T6): a hardcoded "Work" duplicated on second save
+    // and addSavedAccount rejects the duplicate.
+    let existing = accounts.filter {
+      $0.kind == .saved && $0.provider.caseInsensitiveCompare(login.providerName) == .orderedSame
+    }.map(\.name)
     guard
       addSavedAccount(
         provider: login.providerName,
-        name: "Work",
+        name: unusedAccountName(existing: existing),
         label: "",
         identity: login.identity ?? "Current login"
       )
@@ -783,10 +767,11 @@ class MacOSDesignModel: ObservableObject {
     return true
   }
 
-  func updateAccount(id: String, label: String) {
-    guard let index = accounts.firstIndex(where: { $0.id == id }) else { return }
+  @discardableResult
+  func updateAccount(id: String, label: String) -> Bool {
+    guard let index = accounts.firstIndex(where: { $0.id == id }) else { return false }
     let cleaned = label.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleaned.isEmpty else { return }
+    guard !cleaned.isEmpty else { return false }
     accounts[index].name = cleaned
     accounts[index].lastUsed = "Updated now"
     recordActivity(
@@ -796,6 +781,7 @@ class MacOSDesignModel: ObservableObject {
       status: .ready
     )
     showFeedback("Updated \(cleaned).", kind: .success)
+    return true
   }
 
   func refreshAccount(id: String) {
@@ -806,6 +792,23 @@ class MacOSDesignModel: ObservableObject {
       title: "\(accounts[index].name) refreshed",
       detail: "The saved credential and model availability were checked.",
       symbol: "arrow.clockwise.circle",
+      status: .ready
+    )
+    showFeedback("\(accounts[index].name) is ready.", kind: .success)
+  }
+
+  /// Re-probe a saved gateway with its stored credential (C7): the Detail
+  /// "Test Connection" button tests instead of refreshing the catalog.
+  func testSavedGateway(id: String) {
+    guard let index = accounts.firstIndex(where: { $0.id == id && $0.kind == .gateway }) else {
+      return
+    }
+    accounts[index].status = .ready
+    accounts[index].lastUsed = "Tested now"
+    recordActivity(
+      title: "\(accounts[index].name) tested",
+      detail: "The gateway answered with the saved credential.",
+      symbol: "checkmark.circle",
       status: .ready
     )
     showFeedback("\(accounts[index].name) is ready.", kind: .success)
@@ -924,14 +927,13 @@ class MacOSDesignModel: ObservableObject {
     let removed = accounts.remove(at: index)
     hubSourceIDs.remove(id)
     rebuildHubSources()
-    undoAction = .removedAccount(removed, index)
     recordActivity(
       title: "\(removed.name) removed",
       detail: "The saved \(removed.provider) connection was removed from AnyPick.",
       symbol: "trash",
       status: .attention
     )
-    showFeedback("Removed \(removed.name).", kind: .warning, offersUndo: true)
+    showFeedback("Removed \(removed.name).", kind: .warning)
   }
 
   func setHubSource(_ accountID: String, enabled: Bool) {
@@ -989,54 +991,81 @@ class MacOSDesignModel: ObservableObject {
   func setProxyEnabled(id: String, enabled: Bool) {
     guard let index = proxies.firstIndex(where: { $0.id == id }) else { return }
     let previousEnabled = proxies[index].enabled
-    let previousStatus = proxies[index].status
     guard previousEnabled != enabled else { return }
-    proxies[index].enabled = enabled
-    proxies[index].status = enabled ? .running : .stopped
-    if id == "hub" { proxyHubEnabled = enabled }
-    undoAction = .proxy(id: id, enabled: previousEnabled, status: previousStatus)
-    recordActivity(
-      title: "\(proxies[index].name) \(enabled ? "started" : "stopped")",
-      detail: "Local service on port \(proxies[index].port).",
-      symbol: enabled ? "play.circle.fill" : "stop.circle",
-      status: enabled ? .running : .stopped
-    )
-    showFeedback("\(proxies[index].name) \(enabled ? "started" : "stopped").", offersUndo: true)
+    // Fixture service simulation (PX5): brief progress like production, so
+    // the row spinners and failure slots are exercisable without the engine.
+    proxySimTasks[id]?.cancel()
+    let operation: DesignServiceOperation = enabled ? .starting : .stopping
+    serviceOperations[id] = operation
+    serviceFailures.removeValue(forKey: id)
+    let name = proxies[index].name
+    proxySimTasks[id] = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.proxySimTasks.removeValue(forKey: id)
+      self.serviceOperations.removeValue(forKey: id)
+      guard let index = self.proxies.firstIndex(where: { $0.id == id }) else { return }
+      self.proxies[index].enabled = enabled
+      self.proxies[index].status = enabled ? .running : .stopped
+      if id == "hub" { self.proxyHubEnabled = enabled }
+      self.recordActivity(
+        title: "\(name) \(enabled ? "started" : "stopped")",
+        detail: "Local service on port \(self.proxies[index].port).",
+        symbol: enabled ? "play.circle.fill" : "stop.circle",
+        status: enabled ? .running : .stopped
+      )
+      self.showFeedback("\(name) \(enabled ? "started" : "stopped").")
+    }
   }
 
   func setProxyHubEnabled(_ enabled: Bool) {
-    proxyHubEnabled = enabled
-    recordActivity(
-      title: "Proxy Hub \(enabled ? "started" : "stopped")",
-      detail: enabled ? "Listening on localhost:\(proxyHubPort)." : "Proxy Hub is stopped.",
-      symbol: enabled ? "play.circle.fill" : "stop.circle",
-      status: enabled ? .running : .stopped
-    )
-    showFeedback("Proxy Hub \(enabled ? "started" : "stopped").")
+    proxySimTasks["hub"]?.cancel()
+    let operation: DesignServiceOperation = enabled ? .starting : .stopping
+    serviceOperations["hub"] = operation
+    serviceFailures.removeValue(forKey: "hub")
+    proxySimTasks["hub"] = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.proxySimTasks.removeValue(forKey: "hub")
+      self.serviceOperations.removeValue(forKey: "hub")
+      self.proxyHubEnabled = enabled
+      self.recordActivity(
+        title: "Proxy Hub \(enabled ? "started" : "stopped")",
+        detail: enabled ? "Listening on localhost:\(self.proxyHubPort)." : "Proxy Hub is stopped.",
+        symbol: enabled ? "play.circle.fill" : "stop.circle",
+        status: enabled ? .running : .stopped
+      )
+      self.showFeedback("Proxy Hub \(enabled ? "started" : "stopped").")
+    }
   }
 
   func restartProxy(id: String) {
     if id == "hub" {
-      proxyHubEnabled = true
-      recordActivity(
-        title: "Proxy Hub restarted",
-        detail: "Listening on localhost:\(proxyHubPort).",
-        symbol: "arrow.clockwise.circle.fill",
-        status: .running
-      )
-      showFeedback("Restarted Proxy Hub.", kind: .success)
+      setProxyHubEnabled(true)
       return
     }
     guard let index = proxies.firstIndex(where: { $0.id == id }) else { return }
-    proxies[index].enabled = true
-    proxies[index].status = .running
-    recordActivity(
-      title: "\(proxies[index].name) restarted",
-      detail: "Listening on localhost:\(proxies[index].port).",
-      symbol: "arrow.clockwise.circle.fill",
-      status: .running
-    )
-    showFeedback("Restarted \(proxies[index].name).", kind: .success)
+    let name = proxies[index].name
+    let port = proxies[index].port
+    proxySimTasks[id]?.cancel()
+    serviceOperations[id] = .restarting
+    serviceFailures.removeValue(forKey: id)
+    proxySimTasks[id] = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.proxySimTasks.removeValue(forKey: id)
+      self.serviceOperations.removeValue(forKey: id)
+      guard let index = self.proxies.firstIndex(where: { $0.id == id }) else { return }
+      self.proxies[index].enabled = true
+      self.proxies[index].status = .running
+      self.recordActivity(
+        title: "\(name) restarted",
+        detail: "Listening on localhost:\(port).",
+        symbol: "arrow.clockwise.circle.fill",
+        status: .running
+      )
+      self.showFeedback("Restarted \(name).", kind: .success)
+    }
   }
 
   func restartRunningProxies() {
@@ -1178,7 +1207,15 @@ class MacOSDesignModel: ObservableObject {
   func selectLogSource(_ id: String) {
     guard logSources.contains(where: { $0.id == id }) else { return }
     selectedLogSourceID = id
-    logState = liveLogLines.isEmpty ? .empty : .ready
+    // A stopped service shows its Start action (L6), not "Output appears
+    // here…": match the source against proxy rows and the hub toggle.
+    if logSources.first(where: { $0.id == id })?.provider == "proxy-hub" {
+      logState = proxyHubEnabled ? (liveLogLines.isEmpty ? .empty : .ready) : .stopped
+    } else if let proxy = proxies.first(where: { $0.id == id }), !proxy.enabled {
+      logState = .stopped
+    } else {
+      logState = liveLogLines.isEmpty ? .empty : .ready
+    }
     logStateMessage = nil
   }
 
@@ -1187,11 +1224,46 @@ class MacOSDesignModel: ObservableObject {
     selectLogSource(selectedLogSourceID)
   }
 
-  func setLogPolling(_ enabled: Bool) {}
+  /// Fixture polling simulation (L7): Loading → settled, so the notice rows
+  /// and Live badge are exercisable without the engine. Stopped sources stay
+  /// stopped — polling must not clobber the Start action (L6). Production
+  /// overrides this with real polling.
+  func setLogPolling(_ enabled: Bool) {
+    logPollingTask?.cancel()
+    logPollingTask = nil
+    guard enabled, logState != .stopped else { return }
+    // Mirror production (synchronizeLogState): cached tails stay put, only
+    // the first load flashes Loading.
+    guard liveLogLines.isEmpty else { return }
+    logState = .loading
+    logStateMessage = "Loading logs…"
+    logPollingTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 500_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.logPollingTask = nil
+      self.logState = self.liveLogLines.isEmpty ? .empty : .ready
+      self.logStateMessage = nil
+    }
+  }
 
   func restoreBackup(id: String, accountIDs: Set<String>, overwrite: Bool) {
     guard let backup = backups.first(where: { $0.id == id }) else { return }
     let selected = backup.accounts.filter { accountIDs.contains($0.id) }
+    guard !selected.isEmpty else {
+      showFeedback("Select at least one account to import.", kind: .information)
+      return
+    }
+    // Mirror the engine rule (B7): without overwrite, already-saved accounts
+    // are skipped — an all-skipped selection warns instead of reporting
+    // a hollow "0 Accounts Imported" success.
+    let skipped = selected.filter { alreadySavedAccount($0) }.count
+    guard overwrite || skipped < selected.count else {
+      showFeedback(
+        "Nothing to import: every selected account is already saved. Choose Replace to overwrite.",
+        kind: .information
+      )
+      return
+    }
     var restored = 0
     for account in selected {
       if let index = accounts.firstIndex(where: {
@@ -1219,11 +1291,18 @@ class MacOSDesignModel: ObservableObject {
     showFeedback("Imported \(restored) \(restored == 1 ? "account" : "accounts").", kind: .success)
   }
 
-  func deleteBackup(id: String) {
-    guard let index = backups.firstIndex(where: { $0.id == id }) else { return }
+  @discardableResult
+  func deleteBackup(id: String) -> Bool {
+    guard let index = backups.firstIndex(where: { $0.id == id }) else { return false }
     let removed = backups.remove(at: index)
-    undoAction = .removedBackup(removed, index)
-    showFeedback("Deleted backup from \(removed.createdAt).", kind: .warning, offersUndo: true)
+    showFeedback("Deleted backup from \(removed.createdAt).", kind: .warning)
+    return true
+  }
+
+  /// Provider+name match the restore flows use to detect an already-saved
+  /// account — single source for the Replace dialog and the skip rule (B7).
+  func alreadySavedAccount(_ account: DesignAccount) -> Bool {
+    accounts.contains { $0.provider == account.provider && $0.name == account.name }
   }
 
   func clearActivity() {
@@ -1232,53 +1311,19 @@ class MacOSDesignModel: ObservableObject {
     showFeedback("Activity history cleared.", kind: .information)
   }
 
-  func performUndo() {
-    guard let action = undoAction else { return }
-    switch action {
-    case .removedAccount(let account, let index):
-      accounts.insert(account, at: min(index, accounts.count))
-      if DesignHubRouting.isEligible(account) { hubSourceIDs.insert(account.id) }
-      rebuildHubSources()
-    case .removedBackup(let backup, let index):
-      backups.insert(backup, at: min(index, backups.count))
-    case .route(let appID, let routeID, let status):
-      guard let index = apps.firstIndex(where: { $0.id == appID }) else { break }
-      apps[index].selectedRouteID = routeID
-      apps[index].status = status
-    case .appConfiguration(let app):
-      guard let index = apps.firstIndex(where: { $0.id == app.id }) else { break }
-      apps[index] = app
-    case .proxy(let id, let enabled, let status):
-      guard let index = proxies.firstIndex(where: { $0.id == id }) else { break }
-      proxies[index].enabled = enabled
-      proxies[index].status = status
-      if id == "hub" { proxyHubEnabled = enabled }
-    case .quickPanel(let appID, let shows):
-      guard let index = apps.firstIndex(where: { $0.id == appID }) else { break }
-      apps[index].showInQuickPanel = shows
-      AppPreferences.setQuickPanelShown(shows, for: appID)
-    }
-    undoAction = nil
-    showFeedback("Change undone.", kind: .information)
-  }
-
-  var canUndo: Bool { undoAction != nil }
-
   func dismissFeedback() {
     feedback = nil
   }
 
-  /// Blocking alert only for errors. Success / info / undo stay silent
-  /// (VoiceOver + Edit → Undo), matching System Settings.
+  /// Blocking alert only for errors. Success and information stay silent
+  /// (VoiceOver announcement), matching System Settings.
   func showFeedback(
     _ message: String,
-    kind: DesignFeedback.Kind = .information,
-    offersUndo: Bool = false
+    kind: DesignFeedback.Kind = .information
   ) {
     announce(message)
-    if !offersUndo { undoAction = nil }
     if kind == .error {
-      feedback = DesignFeedback(message: message, kind: kind, offersUndo: false)
+      feedback = DesignFeedback(message: message, kind: kind)
     } else {
       // Clear any previous error alert; do not present success modals.
       if feedback?.kind == .error { feedback = nil }

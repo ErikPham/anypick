@@ -158,16 +158,26 @@ func TestRouteByTokenMigratesLegacySHA256(t *testing.T) {
 		t.Fatalf("found=%+v err=%v", found, err)
 	}
 
-	// The row must have been migrated to the HMAC secret.
-	hashed, herr := st.hashToken(context.Background(), token)
-	if herr != nil {
-		t.Fatal(herr)
-	}
+	// The row is untouched by the read; migration is an explicit write.
 	var stored string
 	if err := st.DB.QueryRow(`SELECT token_secret FROM proxy_hub_routes WHERE route_id='r-sha'`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored != hashed {
+	if stored != legacySHA256(token) {
+		t.Fatal("read path must not migrate the legacy row")
+	}
+	if err := st.MigrateRouteTokenContext(context.Background(), "r-sha", token); err != nil {
+		t.Fatal(err)
+	}
+	hashed, herr := st.hashToken(context.Background(), token)
+	if herr != nil {
+		t.Fatal(herr)
+	}
+	var migrated string
+	if err := st.DB.QueryRow(`SELECT token_secret FROM proxy_hub_routes WHERE route_id='r-sha'`).Scan(&migrated); err != nil {
+		t.Fatal(err)
+	}
+	if migrated != hashed {
 		t.Fatal("legacy row was not migrated to HMAC secret")
 	}
 
@@ -187,15 +197,25 @@ func TestRouteByTokenMigratesPlaintextRow(t *testing.T) {
 	if err != nil || found == nil || found.RouteID != "r-plain" {
 		t.Fatalf("found=%+v err=%v", found, err)
 	}
-	hashed, herr := st.hashToken(context.Background(), token)
-	if herr != nil {
-		t.Fatal(herr)
-	}
 	var stored string
 	if err := st.DB.QueryRow(`SELECT token_secret FROM proxy_hub_routes WHERE route_id='r-plain'`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored != hashed {
+	if stored != token {
+		t.Fatal("read path must not migrate the plaintext row")
+	}
+	if err := st.MigrateRouteTokenContext(context.Background(), "r-plain", token); err != nil {
+		t.Fatal(err)
+	}
+	hashed, herr := st.hashToken(context.Background(), token)
+	if herr != nil {
+		t.Fatal(herr)
+	}
+	var migrated string
+	if err := st.DB.QueryRow(`SELECT token_secret FROM proxy_hub_routes WHERE route_id='r-plain'`).Scan(&migrated); err != nil {
+		t.Fatal(err)
+	}
+	if migrated != hashed {
 		t.Fatal("plaintext row was not migrated to HMAC secret")
 	}
 }
@@ -236,10 +256,10 @@ func TestRouteByTokenUnknownAndCorruptManifest(t *testing.T) {
 func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 	st := newHubStore(t)
 	token := proxy.MustNewToken()
-	if _, err := st.UpsertConfig(Config{Name: "d", Enabled: true}); err != nil {
+	if _, err := st.UpsertConfigContext(context.Background(), Config{Name: "d", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AttachRoute(Route{RouteID: "global/x", HubName: "d", ClientID: "codex", Token: token}); err != nil {
+	if err := st.AttachRouteContext(context.Background(), Route{RouteID: "global/x", HubName: "d", ClientID: "codex", Token: token}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +303,7 @@ func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 
 func TestServeRoutePinsSourceByModelIndex(t *testing.T) {
 	st := newHubStore(t)
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "pin", Enabled: true,
 		Sources: []Source{
 			{ProviderID: "glm", Account: "cn"},
@@ -294,7 +314,7 @@ func TestServeRoutePinsSourceByModelIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := proxy.MustNewToken()
-	if err := st.AttachRoute(Route{RouteID: "global/c", HubName: "pin", ClientID: "claude", Token: token,
+	if err := st.AttachRouteContext(context.Background(), Route{RouteID: "global/c", HubName: "pin", ClientID: "claude", Token: token,
 		Models: []ModelRoute{{Model: "deepseek-chat", SourceIndex: 1}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -331,11 +351,11 @@ func TestStopIdempotentWithoutStart(t *testing.T) {
 
 func TestUpsertConfigPreservesCreatedAt(t *testing.T) {
 	st := newHubStore(t)
-	first, err := st.UpsertConfig(Config{Name: "keep", Enabled: true})
+	first, err := st.UpsertConfigContext(context.Background(), Config{Name: "keep", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.UpsertConfig(Config{Name: "keep", Enabled: false,
+	second, err := st.UpsertConfigContext(context.Background(), Config{Name: "keep", Enabled: false,
 		Sources: []Source{{ProviderID: "p", Account: "a"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -362,5 +382,36 @@ func TestGetConfigCorruptJSONIsStateConflict(t *testing.T) {
 	if _, err := st.GetConfig("broken"); err == nil ||
 		!strings.Contains(err.Error(), "corrupt hub config") {
 		t.Fatalf("want corrupt config error, got %v", err)
+	}
+}
+
+func TestMigrateSkipsCurrentRowsAndRequiresRoot(t *testing.T) {
+	st := newHubStore(t)
+	token := proxy.MustNewToken()
+	seedLegacyRoute(t, st, "r-cur", legacySHA256(token))
+	if err := st.MigrateRouteTokenContext(context.Background(), "r-cur", token); err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	if err := st.DB.QueryRow(`SELECT updated_at FROM proxy_hub_routes WHERE route_id='r-cur'`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	// Second migration must be a read-only no-op: no UPDATE, timestamp kept.
+	if err := st.MigrateRouteTokenContext(context.Background(), "r-cur", token); err != nil {
+		t.Fatal(err)
+	}
+	var second string
+	if err := st.DB.QueryRow(`SELECT updated_at FROM proxy_hub_routes WHERE route_id='r-cur'`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("migration rewrote a current row")
+	}
+
+	// Without a data root the write fails closed instead of running
+	// uncoordinated (invariant #5).
+	rootless := &Store{DB: st.DB}
+	if err := rootless.MigrateRouteTokenContext(context.Background(), "r-cur", token); err == nil {
+		t.Fatal("rootless migration must fail closed")
 	}
 }

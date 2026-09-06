@@ -39,8 +39,10 @@ var TableOwners = map[string]TableOwner{
 		Package: "internal/config",
 		SharedWith: map[string]string{
 			// internal/hub reads the global config row to resolve quota-guard
-			// settings for its routes. It does not write config.
-			"internal/hub": "reads only; config writes stay in internal/config",
+			// settings for its routes, and provisions its own HMAC key row
+			// (INSERT ... ON CONFLICT DO NOTHING on its namespaced key).
+			// All other config writes stay in internal/config.
+			"internal/hub": "reads global config; writes only its own HMAC key row",
 		},
 	},
 	"global_bindings":     {Package: "internal/bindings"},

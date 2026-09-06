@@ -223,3 +223,74 @@ func TestStrictLogsAndInspectContracts(t *testing.T) {
 		t.Fatal("invoke with unknown field accepted")
 	}
 }
+
+func TestStrictBackupForgetContract(t *testing.T) {
+	valid := map[string]interface{}{
+		"version": 1, "requestId": "r", "operation": "account-backup-forget",
+		"inspectionId": "abc",
+	}
+	if _, err := DecodeLine("mutate\t" + b64(t, valid)); err != nil {
+		t.Fatalf("valid forget rejected: %v", err)
+	}
+	mutations := []struct {
+		name   string
+		mutate func(m map[string]interface{})
+	}{
+		{"path not allowed", func(m map[string]interface{}) { m["path"] = "/tmp/x" }},
+		{"missing inspectionId", func(m map[string]interface{}) { delete(m, "inspectionId") }},
+		{"oversized inspectionId", func(m map[string]interface{}) {
+			m["inspectionId"] = strings.Repeat("i", 129)
+		}},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]interface{}{}
+			for k, v := range valid {
+				m[k] = v
+			}
+			tc.mutate(m)
+			if _, err := DecodeLine("mutate\t" + b64(t, m)); err == nil {
+				t.Fatalf("%s: payload accepted", tc.name)
+			}
+		})
+	}
+}
+
+// The Tauri shell UI has no file picker: its backup button sends exactly
+// {version, requestId, operation, path:""} and reports the temp destination
+// from the result. This contract pins that shape so a UI/protocol drift fails
+// here instead of stranding the button on a silent rejection.
+func TestStrictBackupAllContract(t *testing.T) {
+	uiPayload := map[string]interface{}{
+		"version": 1, "requestId": "r", "operation": "account-backup-all", "path": "",
+	}
+	if _, err := DecodeLine("mutate\t" + b64(t, uiPayload)); err != nil {
+		t.Fatalf("shell UI backup payload rejected: %v", err)
+	}
+	explicit := map[string]interface{}{
+		"version": 1, "requestId": "r", "operation": "account-backup-all", "path": "/tmp/pkg",
+	}
+	if _, err := DecodeLine("mutate\t" + b64(t, explicit)); err != nil {
+		t.Fatalf("explicit-path backup-all rejected: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(m map[string]interface{})
+	}{
+		{"overwrite is not an allowed key", func(m map[string]interface{}) { m["overwrite"] = false }},
+		{"control bytes in path", func(m map[string]interface{}) { m["path"] = "/tmp/\npkg" }},
+		{"missing path key", func(m map[string]interface{}) { delete(m, "path") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := map[string]interface{}{}
+			for k, v := range uiPayload {
+				m[k] = v
+			}
+			tc.mutate(m)
+			if _, err := DecodeLine("mutate\t" + b64(t, m)); err == nil {
+				t.Fatalf("%s: payload accepted", tc.name)
+			}
+		})
+	}
+}

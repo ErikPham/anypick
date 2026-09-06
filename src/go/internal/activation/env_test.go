@@ -109,7 +109,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Runtime:   rt,
 		Proxy:     px,
 		Catalog:   NewCatalogIndex(map[string]CatalogEntry{}),
-		Hub:       &hub.Store{DB: database.DB},
+		Hub:       &hub.Store{DB: database.DB, Root: root},
 		// Unit tests have no detached child to spawn; hub activations fail at
 		// the spawn step, which is exactly the rollback seam they exercise.
 		SpawnHubChild: func(string) (int, error) { return 0, errors.New("no live hub child in unit tests") },

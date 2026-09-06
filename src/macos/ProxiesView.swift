@@ -73,18 +73,6 @@ struct ProxiesView: View {
         .accessibilityIdentifier("proxies.stop-all")
     }
     .accessibilityIdentifier("proxies.list")
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button("Restart Running") { model.restartRunningProxies() }
-          .disabled(model.isBusy || !hasRunningProxy)
-          .accessibilityIdentifier("proxies.toolbar.restart")
-      }
-      ToolbarItem {
-        Button("Stop All…") { confirmStopAll = true }
-          .disabled(model.isBusy || !hasRunningProxy)
-          .accessibilityIdentifier("proxies.toolbar.stop-all")
-      }
-    }
     .confirmationDialog(
       "Stop All Proxies?",
       isPresented: $confirmStopAll,

@@ -22,7 +22,7 @@ type RecoveryResult struct {
 // rollback from recorded backups, durable checkpoint restore, never forward
 // execution when the source cannot be re-resolved exactly (spec §23.4).
 func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResult, error) {
-	incomplete, err := deps.Journal.ListIncomplete()
+	incomplete, err := deps.Journal.ListIncompleteContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResu
 		// would re-enter with a context that does not carry the held scopes and
 		// block on our own lock (ADR 0009).
 		recoverOne := func(ctx context.Context) error {
-			entry, err := deps.Journal.Get(listed.ID)
+			entry, err := deps.Journal.GetContext(ctx, listed.ID)
 			if err != nil || entry == nil || !isIncompleteState(string(entry.State)) {
 				return err
 			}
@@ -113,6 +113,24 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 	}
 
 	restoredDurableState := false
+	// Reverse mutation order: client-config files first, then the native-auth
+	// checkpoint. Each compensation is independent: a failed client-config
+	// restore must not skip the native-auth restore (that would abandon the
+	// live login on the switched identity), and a failed item must not skip
+	// the independent items behind it. Aggregate and finalize once.
+	var restoreErrs []string
+
+	// markJournal records the terminal transition. A refused transition is
+	// itself a failure — the entry stays incomplete and will be retried next
+	// startup — so success is only counted when the journal accepts it.
+	markJournal := func(state journal.State) bool {
+		_, err := deps.Journal.UpdateContext(ctx, entry.ID, journal.Entry{State: state})
+		return err == nil
+	}
+	markFailed := func() {
+		markJournal(journal.StateFailed)
+		result.Failed = append(result.Failed, entry.ID)
+	}
 
 	// Exact file rollback from compensation records.
 	//
@@ -122,28 +140,27 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 	// live file over its own backup, destroying the only copy (ADR 0004).
 	// record_test.go fails the build if a second parser appears.
 	if len(entry.BackupPaths) > 0 {
-		allRestored := true
+		restored := false
 		for _, backup := range entry.BackupPaths {
 			rec, ok := compensation.Parse(backup)
 			if !ok {
 				// Not a record: a bare backup path, which must still be there.
+				// A missing one fails this item but not the items behind it.
 				if _, err := os.Stat(backup); err != nil {
-					allRestored = false
-					break
+					restoreErrs = append(restoreErrs, "client-config")
+				} else {
+					restored = true
 				}
 				continue
 			}
 			if err := rec.Apply(); err != nil {
-				allRestored = false
-				break
+				restoreErrs = append(restoreErrs, "client-config")
+				continue
 			}
+			restored = true
 		}
-		if allRestored {
+		if restored {
 			restoredDurableState = true
-		} else {
-			_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-			result.Failed = append(result.Failed, entry.ID)
-			return
 		}
 	}
 
@@ -155,49 +172,59 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 		directory, _ := cpMap["directory"].(string)
 		hadLiveAuth, _ := cpMap["hadLiveAuth"].(bool)
 		if !isObj || providerID == "" || directory == "" {
-			_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-			result.Failed = append(result.Failed, entry.ID)
-			return
+			restoreErrs = append(restoreErrs, "native-auth-checkpoint")
+		} else {
+			activeAccount, _ := cpMap["activeAccount"].(string)
+			cp := &checkpointLike{
+				ProviderID:    providerID,
+				Directory:     directory,
+				HadLiveAuth:   hadLiveAuth,
+				ActiveAccount: activeAccount,
+			}
+			if err := deps.Accounts.restoreCheckpoint(ctx, cp); err != nil {
+				restoreErrs = append(restoreErrs, "native-auth")
+			} else if derr := deps.Accounts.discardCheckpoint(cp); derr != nil {
+				restoreErrs = append(restoreErrs, "native-auth-discard")
+			} else {
+				restoredDurableState = true
+			}
 		}
-		activeAccount, _ := cpMap["activeAccount"].(string)
-		cp := &checkpointLike{
-			ProviderID:    providerID,
-			Directory:     directory,
-			HadLiveAuth:   hadLiveAuth,
-			ActiveAccount: activeAccount,
-		}
-		if err := deps.Accounts.restoreCheckpoint(ctx, cp); err != nil {
-			_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-			result.Failed = append(result.Failed, entry.ID)
-			return
-		}
-		_ = deps.Accounts.discardCheckpoint(cp)
-		restoredDurableState = true
+	}
+
+	if len(restoreErrs) > 0 {
+		markFailed()
+		return
 	}
 
 	if restoredDurableState {
-		_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateRolledBack})
-		result.Recovered++
+		if markJournal(journal.StateRolledBack) {
+			result.Recovered++
+		} else {
+			result.Failed = append(result.Failed, entry.ID)
+		}
 		return
 	}
 
 	if sourceRef != nil && !reResolvedOk {
-		_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-		result.Refused = append(result.Refused, entry.ID)
+		if markJournal(journal.StateFailed) {
+			result.Refused = append(result.Refused, entry.ID)
+		}
 		result.Failed = append(result.Failed, entry.ID)
 		return
 	}
 
 	if entry.State == journal.StatePlanned {
 		// Never started — no mutation to compensate.
-		_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-		result.Recovered++
+		if markJournal(journal.StateFailed) {
+			result.Recovered++
+		} else {
+			result.Failed = append(result.Failed, entry.ID)
+		}
 		return
 	}
 
 	// executing / verifying / rolling_back without backups cannot continue.
-	_, _ = deps.Journal.Update(entry.ID, journal.Entry{State: journal.StateFailed})
-	result.Failed = append(result.Failed, entry.ID)
+	markFailed()
 }
 
 // recoveryScopes ports recoveryScopes: journal refs map account/pool back onto

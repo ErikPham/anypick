@@ -70,7 +70,7 @@ desktop protocol.
 ## If this touches the desktop protocol or release
 
 - [ ] Protocol version bumped in all three places: `internal/buildinfo`,
-      `src/tauri/src-tauri/src/protocol.rs`,
+      `src/tauri/app/src/protocol.rs`,
       `src/macos/AppServiceClient.swift`
 - [ ] `make release-set` / `make release-bump` used for any version change
 

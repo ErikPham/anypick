@@ -57,7 +57,7 @@ Three facts are asserted in more than one language, and nothing links them:
 - where the repository root is, for every script that walks `../` to find it;
 - the `working-directory:` of every GitHub Actions step;
 - the desktop stdio protocol version, declared independently in Go
-  (`internal/buildinfo`), Rust (`src/tauri/src-tauri/src/protocol.rs`) and Swift
+  (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`) and Swift
   (`src/macos/AppServiceClient.swift`).
 
 `make gates` (`paths` + `protocol-sync` + `release-check`) verifies all of them
@@ -221,8 +221,8 @@ and `fix` / `perf` bumps patch.
 
 `VERSION` at the repository root is canonical. Three other places ship the same
 number and must agree with it: `MARKETING_VERSION` in the Xcode project,
-`version` in `src/tauri/src-tauri/Cargo.toml`, and `version` in
-`src/tauri/src-tauri/tauri.conf.json`. `make release-check` verifies all four;
+`version` in `src/tauri/app/Cargo.toml`, and `version` in
+`src/tauri/app/tauri.conf.json`. `make release-check` verifies all four;
 `make release-bump PART=patch` or `make release-set VERSION=1.2.3` updates them
 together.
 

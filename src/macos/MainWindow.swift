@@ -90,6 +90,9 @@ struct MainWindow: View {
 
   /// Sidebar footer service status — "2 proxies running".
   private var serviceStatusSummary: String {
+    // Visible in every phase (O6): hiding it while loading/error removes the
+    // status exactly when it is needed (and pops the layout when it returns).
+    if model.phase == .loading { return "Loading services…" }
     let running = model.proxies.filter { $0.status == .running }.count
       + (model.proxyHubEnabled ? 1 : 0)
     if running == 0 { return "No proxies running" }
@@ -98,23 +101,21 @@ struct MainWindow: View {
 
   @ViewBuilder
   private var sidebarServiceStatus: some View {
-    if model.phase == .ready || model.phase == .empty {
-      VStack(spacing: 0) {
-        Divider()
-        Label {
-          Text(serviceStatusSummary)
-        } icon: {
-          Image(systemName: DesignDestination.proxies.symbol)
-        }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+    VStack(spacing: 0) {
+      Divider()
+      Label {
+        Text(serviceStatusSummary)
+      } icon: {
+        Image(systemName: DesignDestination.proxies.symbol)
       }
-      .accessibilityElement(children: .combine)
-      .accessibilityIdentifier("sidebar.service-status")
+      .font(.footnote)
+      .foregroundStyle(.secondary)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 8)
     }
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("sidebar.service-status")
   }
 
   // kickSplitViewLayout() used to live here. It nudged the window frame by +1px

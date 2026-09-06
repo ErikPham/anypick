@@ -169,17 +169,25 @@ func TestNumberValueAndResetAtMs(t *testing.T) {
 	}
 
 	ms := 1717171717000.0
-	if got := resetAtMs(map[string]interface{}{"resets_at_ms": ms}); got == nil || *got != ms {
+	if got := resetAtMs(map[string]interface{}{"resets_at_ms": ms}, 0); got == nil || *got != ms {
 		t.Fatal("resets_at_ms not read")
 	}
-	if got := resetAtMs(map[string]interface{}{"reset_at_ms": ms}); got == nil || *got != ms {
+	if got := resetAtMs(map[string]interface{}{"reset_at_ms": ms}, 0); got == nil || *got != ms {
 		t.Fatal("reset_at_ms fallback not read")
 	}
-	if got := resetAtMs(map[string]interface{}{"resets_at_ms": "soon"}); got != nil {
+	if got := resetAtMs(map[string]interface{}{"resets_at_ms": "soon"}, 0); got != nil {
 		t.Fatal("non-numeric reset must be nil")
 	}
-	if got := resetAtMs(map[string]interface{}{}); got != nil {
+	if got := resetAtMs(map[string]interface{}{}, 0); got != nil {
 		t.Fatal("absent reset must be nil")
+	}
+	if got := resetAtMs(map[string]interface{}{"reset_at": 1717171717.0}, 0); got == nil ||
+		*got != 1717171717000.0 {
+		t.Fatal("reset_at seconds not converted")
+	}
+	if got := resetAtMs(map[string]interface{}{"reset_after_seconds": 60.0}, 1000); got == nil ||
+		*got != 61000.0 {
+		t.Fatal("reset_after_seconds not anchored")
 	}
 }
 

@@ -70,30 +70,32 @@ both exist.
 
 ## Saving a key instead of a login
 
-Kiro also accepts a key you already hold:
+Some providers accept a key you already hold. The generic form is:
 
 ```bash
-anypick add account kiro --api-key --name team      # prompts for the key
-anypick add account kiro --api-key ksk_… --region us-east-1 --name team
+anypick add account mimo --credential subscription-key --secret --name work \
+  --option profile=singapore
 ```
 
-Omit the value and AnyPick prompts for it, so the key never enters your shell
-history. `--region` is checked when the account is saved rather than when its
-proxy starts, because a region that looks plausible but is wrong produces an
-account that starts and then fails every request.
+Omit the `--secret` value and AnyPick prompts for it on a terminal, so the key
+never enters your shell history. Every `--option key=value` must be a qualifier
+declared by that provider (`profile` today). The CLI fails closed on anything
+else instead of silently dropping it.
+
+> **Kiro API keys are not implemented yet.** The Go engine has no writer for
+> Kiro API-key snapshots and no API-key mode for its external proxy, so
+> `add account kiro --api-key/--region` is refused with a clear error until
+> that path lands. Kiro logins via browser sign-in (`--new`) and snapshots of
+> the live login (`--current`) work as documented.
 
 In the [terminal UI](/docs/guides/terminal-ui) the same flow is
-**Use an API key instead** on the add-account screen. It is offered even when
-nothing is signed in. The key, the region and the name are one form: tab moves
-between them, the key is hidden as you type it, and the region keeps its known
-values under the arrow keys while staying editable for one this build has not
-heard of.
+**Use an API key instead** on the add-account screen, offered for providers
+that declare typed credential products. The key is hidden as you type it, and
+endpoint profiles render from the provider contract.
 
 A key is not a login on this machine: it is stored only in AnyPick, so
-it never shows as the live Kiro credential, activating it leaves any `kiro-cli`
-login on disk untouched, and `account refresh` will not overwrite it. Clients
-reach it exactly like any other Kiro account — through `kirolink`, which the
-account's proxy starts in API-key mode.
+activating it leaves any native login on disk untouched, and
+`account refresh` will not overwrite it.
 
 Providers installed by a plugin can declare other credential products without
 adding provider-specific CLI flags. The generic form is:

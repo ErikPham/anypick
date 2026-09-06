@@ -59,6 +59,15 @@
 		120000000000000000000004 /* DesignTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DesignTypes.swift */; };
 		120000000000000000000005 /* DesignDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DesignDisplay.swift */; };
 		120000000000000000000006 /* AppIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon.swift */; };
+		120000000000000000000007 /* HubRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* HubRouting.swift */; };
+		120000000000000000000008 /* BrandIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* BrandIcons.swift */; };
+		120000000000000000000009 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* Models.swift */; };
+		12000000000000000000000A /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* Store.swift */; };
+		12000000000000000000000B /* StoreTransfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* StoreTransfers.swift */; };
+		12000000000000000000000C /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* AppPreferences.swift */; };
+		12000000000000000000000D /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* Motion.swift */; };
+		12000000000000000000000E /* ProductionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProductionModel.swift */; };
+		12000000000000000000000F /* DesignFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* DesignFixture.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -454,6 +463,15 @@
 				120000000000000000000004 /* DesignTypes.swift in Sources */,
 				120000000000000000000005 /* DesignDisplay.swift in Sources */,
 				120000000000000000000006 /* AppIcon.swift in Sources */,
+				120000000000000000000007 /* HubRouting.swift in Sources */,
+				120000000000000000000008 /* BrandIcons.swift in Sources */,
+				120000000000000000000009 /* Models.swift in Sources */,
+				12000000000000000000000A /* Store.swift in Sources */,
+				12000000000000000000000B /* StoreTransfers.swift in Sources */,
+				12000000000000000000000C /* AppPreferences.swift in Sources */,
+				12000000000000000000000D /* Motion.swift in Sources */,
+				12000000000000000000000E /* ProductionModel.swift in Sources */,
+				12000000000000000000000F /* DesignFixture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

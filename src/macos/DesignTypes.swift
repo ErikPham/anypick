@@ -87,7 +87,7 @@ enum DesignLogState: String {
 }
 
 enum DesignBackupInspectionState: String {
-  case idle, reading, ready, damaged, newerVersion, permissionDenied, expired
+  case idle, reading, ready, damaged, newerVersion, permissionDenied, missing, expired
   case importing, success, atomicFailure
 }
 
@@ -146,9 +146,11 @@ enum DesignTrayScene: String {
 
 enum DesignSwitchPhase: Equatable {
   case idle
-  case inFlight(appID: String, from: String, to: String)
+  /// `to`/`requested`/`kept` are display names for toasts; `routeID` is the
+  /// identity switch marks match on — names collide across providers (T4).
+  case inFlight(appID: String, from: String, to: String, routeID: String)
   case success(appID: String, name: String)
-  case recovery(appID: String, requested: String, kept: String)
+  case recovery(appID: String, requested: String, kept: String, routeID: String)
 }
 
 struct DesignModelRole: Identifiable, Hashable {
@@ -289,6 +291,7 @@ struct DesignUsageWindow: Identifiable, Hashable {
   var label: String
   var remainingPercent: Int
   var resetsAtMs: Double? = nil
+  var limitWindowSeconds: Int? = nil
 
   var id: String { "\(label):\(resetsAtMs ?? -1)" }
 }
@@ -391,14 +394,4 @@ struct DesignFeedback: Identifiable, Equatable {
   let id = UUID()
   var message: String
   var kind: Kind
-  var offersUndo: Bool
-}
-
-enum DesignUndoAction {
-  case removedAccount(DesignAccount, Int)
-  case removedBackup(DesignBackup, Int)
-  case route(appID: String, routeID: String, status: DesignStatus)
-  case appConfiguration(DesignApp)
-  case proxy(id: String, enabled: Bool, status: DesignStatus)
-  case quickPanel(appID: String, shows: Bool)
 }

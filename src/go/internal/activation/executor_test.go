@@ -7,9 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/transport"
 )
 
 // Full persistent switch: plan → execute → verify native auth, active pointer,
@@ -209,7 +211,7 @@ func TestRecoveryRestoresCheckpointedAuth(t *testing.T) {
 	if _, err := env.Svc.Use(ctx, "codex", "moved", UseNoProxyOption()); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := env.Deps.Journal.Create("activate:persistent", journal.CreateOptions{
+	entry, err := env.Deps.Journal.CreateContext(ctx, "activate:persistent", journal.CreateOptions{
 		AffectedResources: []string{"client/codex", "account/codex/orig"},
 		Params: map[string]interface{}{
 			"nativeAuthCheckpoint": cp,
@@ -247,7 +249,7 @@ func TestRecoveryRefusesUnresolvableSource(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 
-	entry, err := env.Deps.Journal.Create("activate:persistent", journal.CreateOptions{
+	entry, err := env.Deps.Journal.CreateContext(ctx, "activate:persistent", journal.CreateOptions{
 		AffectedResources: []string{"client/claude", "gateway/nope-gateway"},
 		State:             journal.StateExecuting,
 	})
@@ -274,4 +276,39 @@ func mustParse(t *testing.T, raw string) map[string]interface{} {
 		t.Fatalf("parse live auth: %v", err)
 	}
 	return m
+}
+
+// StepValidateExternalDep is the single enforcement point for a missing
+// external proxy (invariant #3): the executor must not pre-derive the failure
+// from transport capability before running the plan's steps.
+func TestValidateExternalDepStepEnforcesMissingBinary(t *testing.T) {
+	missing := &Plan{
+		Client: "claude",
+		ResolvedSource: &ResolvedSource{
+			Display: "kiro/work",
+			Adapter: transport.KiroAccountAdapter("kiro", "work", func() string { return "" }),
+		},
+	}
+	if err := validateExternalDep(missing); err == nil {
+		t.Fatal("missing kirolink must fail the step")
+	} else {
+		var ae *anyerr.Error
+		if !errorsAsAny(err, &ae) {
+			t.Fatalf("error is not anyerr: %T", err)
+		}
+		if ae.Code != "MISSING_DEPENDENCY" {
+			t.Fatalf("code = %q, want MISSING_DEPENDENCY", ae.Code)
+		}
+	}
+
+	present := &Plan{
+		Client: "claude",
+		ResolvedSource: &ResolvedSource{
+			Display: "kiro/work",
+			Adapter: transport.KiroAccountAdapter("kiro", "work", func() string { return "/usr/local/bin/kirolink" }),
+		},
+	}
+	if err := validateExternalDep(present); err != nil {
+		t.Fatalf("present kirolink must pass the step: %v", err)
+	}
 }

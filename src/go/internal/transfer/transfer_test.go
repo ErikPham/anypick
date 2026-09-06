@@ -179,6 +179,51 @@ func asAnyPick(err error, target ...interface{}) *anyerr.Error {
 	return nil
 }
 
+func TestReadBackupPackageRejectsNewerVersionDistinctly(t *testing.T) {
+	st, _ := newTransferEnv(t)
+	saveFakeAccount(t, st, "claude", "alpha")
+	ctx := context.Background()
+	dest := filepath.Join(t.TempDir(), "pkg.anypick-backup")
+	if _, err := ExportSelectedBackup(st, ctx, []BackupEntry{{Provider: "claude", Name: "alpha"}}, dest, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite := func(t *testing.T, mutate func(map[string]any)) string {
+		t.Helper()
+		var pkg map[string]any
+		if err := json.Unmarshal(raw, &pkg); err != nil {
+			t.Fatal(err)
+		}
+		mutate(pkg)
+		out, err := json.Marshal(pkg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "pkg.anypick-backup")
+		if err := os.WriteFile(path, out, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// A newer writer is not damage: the UI offers an update (B4).
+	newer := rewrite(t, func(pkg map[string]any) { pkg["version"] = BackupVersion + 1 })
+	if _, err := readBackupPackage(newer); err == nil {
+		t.Fatal("newer version accepted")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_VERSION" {
+		t.Fatalf("newer version code = %v, want BACKUP_VERSION", err)
+	}
+	// Kind drift stays a format error.
+	foreign := rewrite(t, func(pkg map[string]any) { pkg["kind"] = "not-a-backup" })
+	if _, err := readBackupPackage(foreign); err == nil {
+		t.Fatal("foreign kind accepted")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_FORMAT" {
+		t.Fatalf("foreign kind code = %v, want BACKUP_FORMAT", err)
+	}
+}
+
 func TestValidateBackupSelectionAndLimits(t *testing.T) {
 	if _, err := ValidateBackupSelection(nil); err == nil {
 		t.Fatal("empty selection accepted")

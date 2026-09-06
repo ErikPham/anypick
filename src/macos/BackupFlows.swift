@@ -15,7 +15,6 @@ struct CreateBackupSheet: View {
     DesignSheetHost(
       title: "Export Accounts",
       width: 480,
-      height: 500,
       primaryTitle: "Export",
       primaryDisabled: selectedAccountIDs.isEmpty,
       primaryIdentifier: "backup-create.confirm",
@@ -26,6 +25,12 @@ struct CreateBackupSheet: View {
     ) {
       Form {
         Section {
+          // Deep-link entry with zero saved accounts (B9): a plain boxed row
+          // like the rest of the pane; Export stays disabled with no selection.
+          if savedAccounts.isEmpty {
+            Text("No saved accounts yet.")
+              .foregroundStyle(.secondary)
+          }
           ForEach(savedAccounts) { account in
             Toggle(
               isOn: Binding(
@@ -62,7 +67,11 @@ struct CreateBackupSheet: View {
         } header: {
           Text("Saved Accounts")
         } footer: {
-          Text("These files include credentials and aren’t encrypted.")
+          if savedAccounts.isEmpty {
+            Text("Add a login under Accounts & APIs, then choose accounts here.")
+          } else {
+            Text("These files include credentials and aren’t encrypted.")
+          }
         }
       }
       .onAppear {
@@ -92,7 +101,6 @@ struct RestoreBackupSheet: View {
     DesignSheetHost(
       title: importedPackage ? "Import Accounts" : "Restore Accounts",
       width: 480,
-      height: 460,
       primaryTitle: primaryTitle,
       primaryDisabled: selectedAccountIDs.isEmpty || model.backupInspectionState == .importing,
       primaryIdentifier: "backup-restore.confirm",
@@ -144,7 +152,9 @@ struct RestoreBackupSheet: View {
               .accessibilityIdentifier("backup-restore.account.\(account.id)")
             }
           } footer: {
-            Text("Turn off an account to leave it out.")
+            // Blocked entries are disabled above; `replace` rows are skipped
+            // unless the duplicate dialog chooses Replace (B6).
+            Text("Turn off an account to leave it out. Accounts already saved are skipped unless you choose Replace.")
           }
         }
       }
@@ -172,7 +182,7 @@ struct RestoreBackupSheet: View {
   }
 
   private func alreadySaved(_ account: DesignAccount) -> Bool {
-    model.accounts.contains { $0.provider == account.provider && $0.name == account.name }
+    model.alreadySavedAccount(account)
   }
 
   private func restore(overwrite: Bool) {

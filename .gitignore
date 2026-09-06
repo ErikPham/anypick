@@ -38,9 +38,9 @@ npm/*/bin/
 
 # Tauri desktop app (Linux/Windows) build output
 src/tauri/frontend/
-src/tauri/src-tauri/target/
-src/tauri/src-tauri/binaries/*.exe
-src/tauri/src-tauri/binaries/anypick-core-*
+src/tauri/app/target/
+src/tauri/app/binaries/*.exe
+src/tauri/app/binaries/anypick-core-*
 src/tauri/ui/node_modules/
 
 # Go build output. Every path here is anchored to the repository root.

@@ -29,7 +29,7 @@ fn prepare_core_sidecar() -> Result<(), String> {
         return Ok(());
     }
 
-    // manifest_dir is <repo>/src/tauri/src-tauri, so three levels up is the
+    // manifest_dir is <repo>/src/tauri/app, so three levels up is the
     // repository root. The engine lives under src/, not at the root: joining
     // "go" directly here would look for <repo>/go and fail.
     let repository = manifest_dir

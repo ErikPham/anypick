@@ -100,9 +100,11 @@ func refreshGeminiModelCatalog(ctx context.Context, up *Upstream) (*gemini.Gemin
 	if up.Gemini.APIKeyMode {
 		token := up.Auth
 		if up.AuthProvider != nil {
-			if got, perr := up.AuthProvider(ctx); perr == nil {
-				token = got
+			got, perr := up.AuthProvider(ctx)
+			if perr != nil {
+				return nil, fmt.Errorf("gemini credential refresh failed: %w", perr)
 			}
+			token = got
 		}
 		if token == "" {
 			return nil, fmt.Errorf("no Gemini API key for catalog fetch")

@@ -12,7 +12,7 @@ import (
 func hubTestEnv(t *testing.T) *trayEnv {
 	t.Helper()
 	env := newTrayEnv(t)
-	env.Deps.Hub = &hub.Store{DB: env.Deps.Store.DB.DB}
+	env.Deps.Hub = &hub.Store{DB: env.Deps.Store.DB.DB, Root: env.Root}
 	return env
 }
 

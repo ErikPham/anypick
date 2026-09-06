@@ -97,6 +97,10 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 			return fail(err)
 		}
 		_ = count
+	case "account-backup-forget":
+		// Discard a staged review copy before its TTL (B3). Idempotent:
+		// unknown ids succeed so a twice-forgotten review cannot error.
+		s.inspections.Forget(m.InspectionID)
 	}
 	return result
 }
@@ -248,6 +252,14 @@ func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 		return result
 	}
 	defer resp.Body.Close()
+	// An auth rejection answers the test's question directly (C7): the
+	// endpoint is reachable but the stored key is dead. Only the status
+	// crosses the boundary — never the key.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		result.Status, result.Message = "error", fmt.Sprintf(
+			"endpoint rejected the API key (HTTP %d)", resp.StatusCode)
+		return result
+	}
 	if resp.StatusCode >= 500 {
 		result.Status, result.Message = "error", fmt.Sprintf("gateway returned HTTP %d", resp.StatusCode)
 		return result

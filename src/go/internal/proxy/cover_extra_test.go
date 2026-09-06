@@ -176,14 +176,18 @@ func TestProxyServerHelpers(t *testing.T) {
 	s2 := &Server{Upstream: u, UpstreamAuth: "sk-test"}
 	req, _ := http.NewRequest("GET", "http://127.0.0.1/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer proxy-token")
-	s2.injectUpstreamAuth(req)
+	if err := s2.injectUpstreamAuth(req); err != nil {
+		t.Fatalf("inject default: %v", err)
+	}
 	if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
 		t.Errorf("inject default = %q", got)
 	}
 	// custom header
 	s3 := &Server{Upstream: u, UpstreamAuth: "k", UpstreamAuthHeader: "x-api-key", UpstreamAuthValuePrefix: ""}
 	req2, _ := http.NewRequest("GET", "http://127.0.0.1/v1/models", nil)
-	s3.injectUpstreamAuth(req2)
+	if err := s3.injectUpstreamAuth(req2); err != nil {
+		t.Fatalf("inject custom: %v", err)
+	}
 	if got := req2.Header.Get("x-api-key"); got != "k" {
 		t.Errorf("inject custom = %q", got)
 	}
@@ -207,8 +211,22 @@ func TestProxyServiceHelpers(t *testing.T) {
 	if got := portOf("http://127.0.0.1:4242"); got != 4242 {
 		t.Errorf("portOf = %d", got)
 	}
+	// Schemeless and non-loopback endpoints (PX6): a running proxy on a
+	// custom host used to read port 0 / "Not running".
+	if got := portOf("127.0.0.1:41401"); got != 41401 {
+		t.Errorf("portOf schemeless = %d", got)
+	}
+	if got := portOf("http://localhost:5150"); got != 5150 {
+		t.Errorf("portOf localhost = %d", got)
+	}
+	if got := portOf("[::1]:5150"); got != 5150 {
+		t.Errorf("portOf ipv6 = %d", got)
+	}
 	if got := portOf("not-a-url"); got != 0 {
 		t.Errorf("portOf bad = %d", got)
+	}
+	if got := portOf("http://localhost:notaport"); got != 0 {
+		t.Errorf("portOf non-numeric = %d", got)
 	}
 	// processAlive for current pid should be true, for impossible pid false
 	if !processAlive(ownPID()) {

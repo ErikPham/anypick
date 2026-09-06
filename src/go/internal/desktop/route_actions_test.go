@@ -43,7 +43,7 @@ func wireActivation(t *testing.T, env *trayEnv) {
 	for id, p := range catalog.Builtin() {
 		catalogEntries[id] = activation.CatalogEntry{Name: p.Name, APIStyle: string(p.APIStyle), Protocols: p.Protocols}
 	}
-	env.Deps.Hub = &hub.Store{DB: database}
+	env.Deps.Hub = &hub.Store{DB: database, Root: env.Root}
 	env.Deps.Activation = &activation.Deps{
 		Root:      env.Root,
 		Accounts:  activation.NewAccountsView(env.Svc),

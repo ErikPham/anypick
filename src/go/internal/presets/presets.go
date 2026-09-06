@@ -110,10 +110,6 @@ func (s *Store) ExistsContext(ctx context.Context, name string) (bool, error) {
 }
 
 // Upsert creates or bumps the revision of a named preset.
-func (s *Store) Upsert(name string, spec bindings.Spec) (Saved, error) {
-	return s.UpsertContext(context.Background(), name, spec)
-}
-
 func (s *Store) UpsertContext(ctx context.Context, name string, spec bindings.Spec) (Saved, error) {
 	now := nowISO()
 	existing, err := s.GetByNameContext(ctx, name)
@@ -151,19 +147,11 @@ func (s *Store) UpsertContext(ctx context.Context, name string, spec bindings.Sp
 }
 
 // MarkUsed records a successful activation of a preset.
-func (s *Store) MarkUsed(id string) error {
-	return s.MarkUsedContext(context.Background(), id)
-}
-
 func (s *Store) MarkUsedContext(ctx context.Context, id string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`UPDATE presets SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?`,
 		nowISO(), id)
 	return err
-}
-
-func (s *Store) DeleteByName(name string) error {
-	return s.DeleteByNameContext(context.Background(), name)
 }
 
 func (s *Store) DeleteByNameContext(ctx context.Context, name string) error {

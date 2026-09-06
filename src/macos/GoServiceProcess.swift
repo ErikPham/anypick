@@ -98,6 +98,22 @@ actor GoServiceProcess {
     await publish(.stopped)
   }
 
+  /// Try Again path from terminal-degraded: the restart budget is spent and
+  /// desiredRunning is off, so plain send() drops everything into the void.
+  /// Reset the budget and launch; a live process is left alone.
+  func restart() async {
+    restartTask?.cancel()
+    stabilityTask?.cancel()
+    restartTask = nil
+    stabilityTask = nil
+    restartCount = 0
+    terminalDegraded = false
+    pendingCommands.removeAll()
+    guard process == nil else { return }
+    desiredRunning = true
+    await launch()
+  }
+
   private func launch() async {
     await publish(.starting)
     await client.reset()

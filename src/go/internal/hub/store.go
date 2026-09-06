@@ -11,6 +11,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/lock"
 )
 
 // Source names one upstream account. A TS-authored row persists sources as
@@ -75,13 +77,17 @@ func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z0
 
 // Store owns the proxy_hubs / proxy_hub_routes tables. token_secret is
 // owner-only material and is never decoded into status types.
-type Store struct{ DB *sql.DB }
-
-// UpsertConfig inserts or updates the hub configuration row.
-func (s *Store) UpsertConfig(cfg Config) (Config, error) {
-	return s.UpsertConfigContext(context.Background(), cfg)
+//
+// Root is the AnyPick data directory: mutating methods take the coordinator
+// lock under it themselves (invariant #5), so callers must not depend on an
+// ambient lock. A Store without Root cannot take the lock and its mutating
+// methods fail closed instead of writing uncoordinated.
+type Store struct {
+	DB   *sql.DB
+	Root string
 }
 
+// UpsertConfig inserts or updates the hub configuration row.
 func (s *Store) UpsertConfigContext(ctx context.Context, cfg Config) (Config, error) {
 	now := nowISO()
 	existing, err := s.GetConfigContext(ctx, cfg.Name)
@@ -325,10 +331,6 @@ func marshalTSConfig(cfg Config, modelOwners json.RawMessage) ([]byte, error) {
 // not expose bearer tokens (P1). The key lives in config.hub_token_hmac_key
 // and is generated lazily on first use; deleting that row rotates the key
 // and invalidates all existing HMAC tokens (re-attach required).
-func (s *Store) AttachRoute(r Route) error {
-	return s.AttachRouteContext(context.Background(), r)
-}
-
 func (s *Store) AttachRouteContext(ctx context.Context, r Route) error {
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -579,10 +581,6 @@ type ManifestPreview struct {
 	Lines       []string `json:"lines"`
 }
 
-func (s *Store) DetachRoute(routeID string) error {
-	return s.DetachRouteContext(context.Background(), routeID)
-}
-
 func (s *Store) DetachRouteContext(ctx context.Context, routeID string) error {
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM proxy_hub_routes WHERE route_id = ?`, routeID)
 	return err
@@ -593,6 +591,10 @@ func (s *Store) DetachRouteContext(ctx context.Context, routeID string) error {
 // key); lookup tries HMAC, then SHA-256, then plaintext for legacy rows. The
 // returned Route echoes the presented token on match so callers can do
 // constant-time comparison without exposing the stored hash.
+//
+// This is a pure read: it never migrates rows and never provisions the HMAC
+// key. Legacy-row migration is an explicit write via MigrateRouteTokenContext,
+// invoked by the request path only after authentication has succeeded.
 func (s *Store) RouteByToken(token string) (*Route, error) {
 	return s.RouteByTokenContext(context.Background(), token)
 }
@@ -622,7 +624,8 @@ func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, 
 			return nil, err
 		}
 	}
-	// Legacy SHA-256 rows (pre-HMAC) — migrate to HMAC on hit.
+	// Legacy SHA-256 rows (pre-HMAC) — returned as-is; the caller migrates
+	// explicitly via MigrateRouteTokenContext after authenticating.
 	{
 		sha := legacySHA256(token)
 		var data, secret string
@@ -635,18 +638,13 @@ func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, 
 				return nil, anyerr.Newf("corrupt route manifest", "STATE_CONFLICT")
 			}
 			r.Token = token
-			if migrated, merr := s.hashToken(ctx, token); merr == nil {
-				_, _ = s.DB.ExecContext(ctx,
-					`UPDATE proxy_hub_routes SET token_secret = ?, updated_at = ? WHERE route_id = ?`,
-					migrated, nowISO(), r.RouteID)
-			}
 			return &r, nil
 		}
 		if err != sql.ErrNoRows {
 			return nil, err
 		}
 	}
-	// Earliest plaintext rows — migrate to HMAC on hit.
+	// Earliest plaintext rows — returned as-is; see above.
 	var data, secret string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT manifest_json, token_secret FROM proxy_hub_routes WHERE token_secret = ?`, token).
@@ -662,12 +660,54 @@ func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, 
 		return nil, anyerr.Newf("corrupt route manifest", "STATE_CONFLICT")
 	}
 	r.Token = token
-	if migrated, merr := s.hashToken(ctx, token); merr == nil {
-		_, _ = s.DB.ExecContext(ctx,
-			`UPDATE proxy_hub_routes SET token_secret = ?, updated_at = ? WHERE route_id = ?`,
-			migrated, nowISO(), r.RouteID)
-	}
 	return &r, nil
+}
+
+// MigrateRouteTokenContext moves one route's stored secret to the current HMAC
+// form. It is the only writer on the legacy-migration path: RouteByTokenContext
+// is a pure read, so the UPDATE cannot hide inside per-request authentication.
+// Call it after a successful authentication; the legacy row keeps
+// authenticating until a migration succeeds, so callers log (never swallow)
+// a failure. Already-migrated rows short-circuit on a read: the UPDATE runs
+// only when the stored secret differs, keeping the per-request cost to one
+// indexed SELECT plus an HMAC.
+//
+// The write takes the coordinator lock itself (invariant #5) under the hub
+// routes scope, re-entrant when the caller already holds it.
+func (s *Store) MigrateRouteTokenContext(ctx context.Context, routeID, token string) error {
+	if s.Root == "" {
+		return anyerr.Newf("hub store has no data root; refusing uncoordinated write", "STATE_CONFLICT")
+	}
+	// Fast path without the lock: an already-migrated row short-circuits on
+	// one indexed SELECT plus an HMAC, keeping the per-request cost off the
+	// coordinator. Only a differing row takes the lock and re-checks inside
+	// it, so two racing migrations converge on the same idempotent UPDATE.
+	var current string
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT token_secret FROM proxy_hub_routes WHERE route_id = ?`, routeID).Scan(&current); err != nil {
+		return err
+	}
+	migrated, merr := s.hashToken(ctx, token)
+	if merr != nil {
+		return merr
+	}
+	if subtle.ConstantTimeCompare([]byte(current), []byte(migrated)) == 1 {
+		return nil
+	}
+	return lock.WithMutationLock(ctx, s.Root, "hub/routes", func(c context.Context) error {
+		var rechecked string
+		if err := s.DB.QueryRowContext(c,
+			`SELECT token_secret FROM proxy_hub_routes WHERE route_id = ?`, routeID).Scan(&rechecked); err != nil {
+			return err
+		}
+		if subtle.ConstantTimeCompare([]byte(rechecked), []byte(migrated)) == 1 {
+			return nil
+		}
+		_, err := s.DB.ExecContext(c,
+			`UPDATE proxy_hub_routes SET token_secret = ?, updated_at = ? WHERE route_id = ?`,
+			migrated, nowISO(), routeID)
+		return err
+	})
 }
 
 // NewRouteToken generates a fresh per-route bearer secret (32 random bytes,

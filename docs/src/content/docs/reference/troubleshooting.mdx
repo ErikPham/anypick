@@ -114,10 +114,10 @@ Closing the source TUI also leaves existing compatibility processes unchanged.
 To stop that compatibility supervisor from this checkout:
 
 ```bash
-pnpm dev tray stop
+make run ARGS="tray stop"
 ```
 
-`pnpm dev proxy stop` stops running account proxies directly. The TUI starts its
+`make run ARGS="proxy stop"` stops running account proxies directly. The TUI starts its
 compatibility supervisor only when you explicitly press <kbd>Shift+D</kbd> or
 start it from the tray runtime screen; it does not control a separately launched
 `AnyPick.app`.

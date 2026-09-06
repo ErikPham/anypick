@@ -126,7 +126,7 @@ func TestUpdatePartialPatchPreservesUntouchedFields(t *testing.T) {
 	}
 
 	// Explicit fields replace.
-	replaced, err := j.Update("j-patch", Entry{
+	replaced, err := j.UpdateContext(context.Background(), "j-patch", Entry{
 		Params:      map[string]interface{}{"k2": "v2"},
 		BackupPaths: []string{"delete => /tmp/z"},
 	})

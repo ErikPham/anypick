@@ -43,7 +43,7 @@ func TestSmartEndpointStripsV1ForAnthropicClients(t *testing.T) {
 	s := testService(t)
 	ctx := context.Background()
 
-	if _, err := s.Profiles.Upsert(profile.Runtime{
+	if _, err := s.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{
 			Name: "or-work", Provider: "openrouter",
 			Endpoint: "https://openrouter.ai/api/v1",
@@ -71,7 +71,7 @@ func TestSmartEndpointStripsV1ForAnthropicClients(t *testing.T) {
 func TestSmartEndpointKeepsV1ForOpenAIClients(t *testing.T) {
 	s := testService(t)
 
-	if _, err := s.Profiles.Upsert(profile.Runtime{
+	if _, err := s.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{
 			Name: "or-codex", Provider: "openrouter",
 			Endpoint: "https://openrouter.ai/api/v1",

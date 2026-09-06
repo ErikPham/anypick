@@ -32,8 +32,9 @@ const versionFile = "VERSION"
 // the VERSION file. `make gates` runs this command, so a stale path here fails
 // CI instead of silently skipping the only cross-check on the macOS version.
 const xcodeProject = "src/macos/AnyPick.xcodeproj/project.pbxproj"
-const cargoToml = "src/tauri/src-tauri/Cargo.toml"
-const tauriConf = "src/tauri/src-tauri/tauri.conf.json"
+const cargoToml = "src/tauri/app/Cargo.toml"
+const cargoLock = "src/tauri/app/Cargo.lock"
+const tauriConf = "src/tauri/app/tauri.conf.json"
 
 var stableVersion = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$`)
 

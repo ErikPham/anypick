@@ -185,20 +185,6 @@ struct ProxyHubView: View {
       .help(startHelp)
       .accessibilityIdentifier("hub.enabled")
     }
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button(model.proxyHubEnabled ? "Stop Hub" : "Start Hub") {
-          if model.proxyHubEnabled {
-            confirmStop = true
-          } else {
-            model.setProxyHubEnabled(true)
-          }
-        }
-        .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
-        .help(startHelp)
-        .accessibilityIdentifier("hub.toolbar.toggle")
-      }
-    }
     .confirmationDialog(
       "Stop Proxy Hub?",
       isPresented: $confirmStop,
@@ -267,34 +253,57 @@ struct ProxyHubView: View {
 
   @ViewBuilder
   private func hubSourceRow(_ source: DesignHubSource) -> some View {
-    Toggle(
-      isOn: Binding(
-        get: { model.hubSourceIDs.contains(source.id) },
-        set: { model.setHubSource(source.id, enabled: $0) }
-      )
-    ) {
-      Label {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(source.name)
-          HStack(spacing: 4) {
-            if let warning = source.warning, !warning.isEmpty {
-              DesignWarningSymbol()
-              Text(warning)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            } else {
-              Text(hubSourceDetailText(source))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+    let serviceID = hubSourceServiceID(source.id)
+    VStack(alignment: .leading, spacing: 4) {
+      Toggle(
+        isOn: Binding(
+          get: { model.hubSourceIDs.contains(source.id) },
+          set: { model.setHubSource(source.id, enabled: $0) }
+        )
+      ) {
+        Label {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(source.name)
+            HStack(spacing: 4) {
+              if let warning = source.warning, !warning.isEmpty {
+                DesignWarningSymbol()
+                Text(warning)
+                  .foregroundStyle(.secondary)
+                  .lineLimit(1)
+              } else {
+                Text(hubSourceDetailText(source))
+                  .foregroundStyle(.secondary)
+                  .lineLimit(1)
+              }
             }
+            .font(.subheadline)
           }
-          .font(.subheadline)
+        } icon: {
+          DesignProviderIcon(provider: source.provider, fallbackSymbol: source.symbol)
         }
-      } icon: {
-        DesignProviderIcon(provider: source.provider, fallbackSymbol: source.symbol)
+      }
+      .disabled(model.isBusy || model.serviceOperations[serviceID] != nil)
+      if model.serviceOperations[serviceID] != nil {
+        HStack(spacing: 6) {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("Updating \(source.name)")
+          Text(model.serviceOperations[serviceID]?.label ?? "Working…")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+      } else if let failure = model.serviceFailures[serviceID] {
+        HStack(spacing: 4) {
+          DesignWarningSymbol()
+          Text(failure)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier("hub.account.\(source.id).error")
       }
     }
-    .disabled(model.isBusy)
     .accessibilityIdentifier("hub.account.\(source.id)")
   }
 
@@ -308,32 +317,48 @@ struct ProxyHubView: View {
 
   @ViewBuilder
   private func conflictPicker(_ conflict: DesignRoutingConflict) -> some View {
+    let serviceID = hubConflictServiceID(conflict.id)
+    let resolving = model.serviceOperations[serviceID] != nil
     LabeledContent {
-      Picker(
-        "Account",
-        selection: Binding(
-          get: { conflict.selectedCandidateID },
-          set: { candidateID in
-            guard let candidateID,
-                  let candidate = conflict.candidates.first(where: { $0.id == candidateID })
-            else { return }
-            model.selectRoutingCandidate(actionID: candidate.actionID)
-          }
-        )
-      ) {
-        Text("Choose").tag(String?.none)
-        ForEach(conflict.candidates) { candidate in
-          Text(conflictCandidateLabel(candidate))
-            .tag(Optional(candidate.id))
+      HStack(spacing: 6) {
+        if resolving {
+          ProgressView()
+            .controlSize(.small)
+            .accessibilityLabel("Applying choice for \(conflict.title)")
         }
+        Picker(
+          "Account",
+          selection: Binding(
+            get: { conflict.selectedCandidateID },
+            set: { candidateID in
+              guard let candidateID,
+                    let candidate = conflict.candidates.first(where: { $0.id == candidateID })
+              else { return }
+              model.selectRoutingCandidate(actionID: candidate.actionID)
+            }
+          )
+        ) {
+          Text("Choose").tag(String?.none)
+          ForEach(conflict.candidates) { candidate in
+            Text(conflictCandidateLabel(candidate))
+              .tag(Optional(candidate.id))
+          }
+        }
+        .labelsHidden()
+        .fixedSize()
+        .disabled(model.isBusy || conflict.candidates.isEmpty || resolving)
       }
-      .labelsHidden()
-      .fixedSize()
-      .disabled(model.isBusy || conflict.candidates.isEmpty)
     } label: {
       Text(conflict.title)
     }
     .accessibilityIdentifier("hub.conflict.\(conflict.id)")
+    if let failure = model.serviceFailures[serviceID] {
+      Text(failure)
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("hub.conflict.\(conflict.id).error")
+    }
   }
 
   private func conflictCandidateLabel(_ candidate: DesignRoutingCandidate) -> String {

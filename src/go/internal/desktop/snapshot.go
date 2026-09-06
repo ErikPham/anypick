@@ -750,13 +750,19 @@ func (s *Server) buildActivity(ctx context.Context) []map[string]any {
 		if createdAt == "" {
 			createdAt = e.UpdatedAt
 		}
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"id":        e.ID,
 			"createdAt": createdAt,
 			"message":   activityMessage(e),
 			"isError":   activityIsError(e),
 			"kind":      activityKind(e),
-		})
+		}
+		// Absent means unbranded: the client renders no provider mark rather
+		// than a fallback glyph for an empty identity.
+		if provider := activityProvider(e); provider != "" {
+			row["provider"] = provider
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -782,6 +788,26 @@ func activityKind(e journal.Entry) string {
 	default:
 		return "activation"
 	}
+}
+
+// activityProvider derives the brand identity for an event row from affected
+// resources (L9): account refs carry "account/<provider>/<name>". Gateway,
+// hub, and pool refs carry no provider, so those rows stay unbranded rather
+// than guessing.
+func activityProvider(e journal.Entry) string {
+	for _, r := range e.AffectedResources {
+		if rest, ok := strings.CutPrefix(r, "account/"); ok {
+			if provider, _, found := strings.Cut(rest, "/"); found && provider != "" {
+				return provider
+			}
+		}
+	}
+	for _, r := range e.AffectedResources {
+		if provider, ok := strings.CutPrefix(r, "provider/"); ok && provider != "" {
+			return provider
+		}
+	}
+	return ""
 }
 
 func activityIsError(e journal.Entry) bool {
@@ -946,6 +972,9 @@ func (s *Server) buildUsage(ctx context.Context) []UsageSnapshotRow {
 			}
 			if w.ResetsAtMs != nil {
 				entry["resetsAtMs"] = *w.ResetsAtMs
+			}
+			if w.LimitWindowSeconds != nil {
+				entry["limitWindowSeconds"] = *w.LimitWindowSeconds
 			}
 			windows = append(windows, entry)
 		}

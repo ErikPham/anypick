@@ -195,7 +195,9 @@ struct DesignGroupedPane<Content: View, Actions: View>: View {
           }
           .buttonStyle(.bordered)
           .controlSize(.regular)
-          .padding(.trailing, 20)
+          // Trailing matches the Form groups' own inset: the under-form row
+          // must end exactly where the boxes end, not past them.
+          .padding(.trailing, 40)
           .padding(.bottom, 20)
         }
       }
@@ -284,7 +286,6 @@ struct DesignSheetButton: NSViewRepresentable {
 struct DesignSheetHost<Content: View>: View {
   let title: String
   var width: CGFloat = 480
-  var height: CGFloat = 440
   var primaryTitle: String
   var primaryDisabled = false
   var primaryIdentifier: String?
@@ -296,6 +297,14 @@ struct DesignSheetHost<Content: View>: View {
 
   var body: some View {
     VStack(alignment: .trailing, spacing: 12) {
+      // Native sheets lead with a title; the prop existed but never rendered,
+      // so sheets jumped straight into form groups.
+      Text(title)
+        .font(.headline)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .accessibilityAddTraits(.isHeader)
       ScrollView {
         content()
           .formStyle(.grouped)
@@ -304,7 +313,9 @@ struct DesignSheetHost<Content: View>: View {
       }
       .scrollIndicators(.automatic)
       .frame(maxWidth: .infinity)
-      .frame(minHeight: 80, idealHeight: min(height, 480), maxHeight: 560)
+      // Hug content: a forced ideal height left a dead void under short
+      // forms (the Change sheet). Tall content still caps and scrolls.
+      .frame(minHeight: 80, maxHeight: 560)
 
       HStack(spacing: 12) {
         if showsCancel {

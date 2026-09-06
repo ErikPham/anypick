@@ -135,7 +135,7 @@ func (a *App) compose() error {
 	svc.Proxy = px
 
 	poolsStore := &pools.Store{DB: a.DB.DB}
-	hubStore := &hub.Store{DB: a.DB.DB}
+	hubStore := &hub.Store{DB: a.DB.DB, Root: a.Root}
 	jrnl := &journal.OperationJournal{DB: a.DB.DB}
 
 	cfgStore := config.NewStore(a.Root, a.DB)

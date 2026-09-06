@@ -225,6 +225,28 @@ func TestParseCodexUsage(t *testing.T) {
 		t.Fatalf("resets_at_ms missing")
 	}
 
+	// Vendor-native shapes: reset_at (unix seconds), reset_after_seconds
+	// (relative), limit_window_seconds (cadence).
+	body4 := []byte(`{"rate_limit":{"primary_window":{"used_percent":40,"label":"Primary","reset_at":1700000000,"limit_window_seconds":18000},"secondary_window":{"used_percent":10,"reset_after_seconds":3600,"limit_window_seconds":604800}}}`)
+	usage4, err := parseCodexUsage(body4)
+	if err != nil || len(usage4.Windows) != 2 {
+		t.Fatalf("native shapes failed: %+v %v", usage4, err)
+	}
+	if usage4.Windows[0].ResetsAtMs == nil || *usage4.Windows[0].ResetsAtMs != 1700000000*1000 {
+		t.Fatalf("reset_at seconds not converted: %+v", usage4.Windows[0])
+	}
+	if usage4.Windows[0].LimitWindowSeconds == nil || *usage4.Windows[0].LimitWindowSeconds != 18000 {
+		t.Fatalf("limit_window_seconds missing: %+v", usage4.Windows[0])
+	}
+	after := usage4.Windows[1].ResetsAtMs
+	nowMs := float64(nowUnixMilli())
+	if after == nil || *after < nowMs+3599*1000 || *after > nowMs+3601*1000 {
+		t.Fatalf("reset_after_seconds not anchored to now: %+v", usage4.Windows[1])
+	}
+	if usage4.Windows[1].LimitWindowSeconds == nil || *usage4.Windows[1].LimitWindowSeconds != 604800 {
+		t.Fatalf("weekly cadence missing: %+v", usage4.Windows[1])
+	}
+
 	// Alt shape: rate_limits key
 	body2 := []byte(`{"rate_limits":{"primary_window":{"used_percent":0}}}`)
 	usage2, err := parseCodexUsage(body2)

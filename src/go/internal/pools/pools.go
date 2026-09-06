@@ -69,10 +69,6 @@ func (s *Store) GetContext(ctx context.Context, providerID string) (*Pool, error
 }
 
 // SetMulti enables multi-account pooling for a provider.
-func (s *Store) SetMulti(providerID string, members []Member, host string, port int) error {
-	return s.SetMultiContext(context.Background(), providerID, members, host, port)
-}
-
 func (s *Store) SetMultiContext(ctx context.Context, providerID string, members []Member, host string, port int) error {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	if members == nil {
@@ -125,10 +121,6 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-func (s *Store) Disable(providerID string) error {
-	return s.DisableContext(context.Background(), providerID)
 }
 
 func (s *Store) DisableContext(ctx context.Context, providerID string) error {

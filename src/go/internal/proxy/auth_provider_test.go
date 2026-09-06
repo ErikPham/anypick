@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -70,4 +71,69 @@ func TestUpstreamAuthProviderOverridesStatic(t *testing.T) {
 	if providerCalls != 1 {
 		t.Errorf("AuthProvider should not be called when nil, got %d", providerCalls)
 	}
+}
+
+func TestUpstreamAuthProviderErrorFailsClosed(t *testing.T) {
+	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream must not be reached when refresh fails (auth=%q)", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upSrv.Close()
+	base, err := url.Parse(upSrv.URL + "/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Upstream{
+		BaseURL:      base,
+		Auth:         "static-stale",
+		AuthProvider: func(ctx context.Context) (string, error) { return "", context.DeadlineExceeded },
+	}
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+	}{
+		{"generic", mustReq(t, http.MethodGet, "http://127.0.0.1/v1/models")},
+		{"translated", mustReqWithBody(t, "/v1/messages", `{"model":"m","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			Serve(rec, tc.req, up)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("code = %d, want 502 fail-closed", rec.Code)
+			}
+			if got := rec.Body.String(); !containsAll(got, "proxy_error", "credential refresh failed") {
+				t.Fatalf("body = %s, want proxy_error/credential refresh failed", got)
+			}
+			if containsAll(rec.Body.String(), "static-stale") {
+				t.Fatalf("stale credential leaked into error body")
+			}
+		})
+	}
+}
+
+func mustReq(t *testing.T, method, target string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(method, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+func mustReqWithBody(t *testing.T, target, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1"+target, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return req
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

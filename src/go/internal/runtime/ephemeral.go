@@ -113,12 +113,13 @@ func (s *Service) CreateEphemeralRuntimeContext(
 		}
 		out.Environment["HOME"] = out.Home
 	case "dsh":
-		// dsh resolves its harness home from $DSH_HOME or ~/.dsh and reads
-		// DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL as environment layers; Apply
-		// below also writes them to the isolated ~/.dsh/.env. Pointing
-		// baseURL at the managed proxy lets dsh ride any upstream the
-		// account proxies to. The harness appends /chat/completions itself,
-		// so the base must already carry the OpenAI /v1 prefix.
+		// dsh resolves its harness home from $DSH_HOME or ~/.dsh. The base URL
+		// travels in the spawned process environment (the launching
+		// environment dsh requires) — never in ~/.dsh/.env, which newer dsh
+		// aborts on. Pointing baseURL at the managed proxy lets dsh ride any
+		// upstream the account proxies to. The harness appends
+		// /chat/completions itself, so the base must already carry the
+		// OpenAI /v1 prefix.
 		out.Environment["HOME"] = out.Home
 		out.Environment["DEEPSEEK_API_KEY"] = spec.APIKey
 		out.Environment["DEEPSEEK_BASE_URL"] = strings.TrimSuffix(spec.Endpoint, "/") + "/v1"

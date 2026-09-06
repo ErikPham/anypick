@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/db"
@@ -19,7 +20,7 @@ func openJournal(t *testing.T) *OperationJournal {
 func TestJournalLifecycle(t *testing.T) {
 	j := openJournal(t)
 
-	entry, err := j.Create("activation", CreateOptions{
+	entry, err := j.CreateContext(context.Background(), "activation", CreateOptions{
 		AffectedResources: []string{"account/grok/work"},
 	})
 	if err != nil {
@@ -37,11 +38,11 @@ func TestJournalLifecycle(t *testing.T) {
 		t.Fatalf("affected = %+v", got.AffectedResources)
 	}
 
-	next, err := j.Update(entry.ID, Entry{State: StateExecuting})
+	next, err := j.UpdateContext(context.Background(), entry.ID, Entry{State: StateExecuting})
 	if err != nil || next.State != StateExecuting {
 		t.Fatalf("update: %v %s", err, next.State)
 	}
-	next, err = j.Update(entry.ID, Entry{State: StateCommitted})
+	next, err = j.UpdateContext(context.Background(), entry.ID, Entry{State: StateCommitted})
 	if err != nil || next.State != StateCommitted {
 		t.Fatalf("commit update: %v %s", err, next.State)
 	}
@@ -60,11 +61,11 @@ func TestJournalLifecycle(t *testing.T) {
 func TestIncompleteStates(t *testing.T) {
 	j := openJournal(t)
 	for _, state := range []State{StatePlanned, StateExecuting, StateVerifying, StateRollingBack} {
-		if _, err := j.Create("op", CreateOptions{State: state}); err != nil {
+		if _, err := j.CreateContext(context.Background(), "op", CreateOptions{State: state}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := j.Create("op", CreateOptions{State: StateFailed}); err != nil {
+	if _, err := j.CreateContext(context.Background(), "op", CreateOptions{State: StateFailed}); err != nil {
 		t.Fatal(err)
 	}
 	incomplete, err := j.ListIncomplete()
@@ -78,7 +79,7 @@ func TestIncompleteStates(t *testing.T) {
 
 func TestUpdateMissingEntry(t *testing.T) {
 	j := openJournal(t)
-	if _, err := j.Update("nope", Entry{State: StateCommitted}); err == nil {
+	if _, err := j.UpdateContext(context.Background(), "nope", Entry{State: StateCommitted}); err == nil {
 		t.Fatal("expected error for missing entry")
 	}
 }

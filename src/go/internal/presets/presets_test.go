@@ -1,6 +1,7 @@
 package presets
 
 import (
+	"context"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/bindings"
@@ -32,7 +33,7 @@ func TestUpsertNewAndGet(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
 	spec := specFor("grok", "work")
-	saved, err := s.Upsert("my-preset", spec)
+	saved, err := s.UpsertContext(context.Background(), "my-preset", spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +62,9 @@ func TestUpsertBumpsRevision(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
 	spec1 := specFor("grok", "work")
-	saved1, _ := s.Upsert("p", spec1)
+	saved1, _ := s.UpsertContext(context.Background(), "p", spec1)
 	spec2 := specFor("grok", "personal")
-	saved2, err := s.Upsert("p", spec2)
+	saved2, err := s.UpsertContext(context.Background(), "p", spec2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,15 +85,15 @@ func TestUpsertBumpsRevision(t *testing.T) {
 func TestMarkUsed(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
-	saved, _ := s.Upsert("p", specFor("grok", "work"))
-	if err := s.MarkUsed(saved.ID); err != nil {
+	saved, _ := s.UpsertContext(context.Background(), "p", specFor("grok", "work"))
+	if err := s.MarkUsedContext(context.Background(), saved.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetByName("p")
 	if got.UseCount != 1 || got.LastUsedAt == "" {
 		t.Fatalf("after MarkUsed: useCount=%d lastUsedAt=%q", got.UseCount, got.LastUsedAt)
 	}
-	if err := s.MarkUsed(saved.ID); err != nil {
+	if err := s.MarkUsedContext(context.Background(), saved.ID); err != nil {
 		t.Fatal(err)
 	}
 	got2, _ := s.GetByName("p")
@@ -104,10 +105,10 @@ func TestMarkUsed(t *testing.T) {
 func TestDeleteByName(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
-	if _, err := s.Upsert("p", specFor("grok", "work")); err != nil {
+	if _, err := s.UpsertContext(context.Background(), "p", specFor("grok", "work")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteByName("p"); err != nil {
+	if err := s.DeleteByNameContext(context.Background(), "p"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.GetByName("p"); got != nil {

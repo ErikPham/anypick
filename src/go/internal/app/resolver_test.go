@@ -86,7 +86,7 @@ func TestSnapshotResolverResolvesGeminiGatewayProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	profiles := &profile.Store{DB: database.DB}
-	if _, err := profiles.Upsert(profile.Runtime{
+	if _, err := profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta:    profile.Meta{Name: "prod", Provider: "gemini"},
 		Secrets: profile.Secrets{APIKey: "AIza-gemini-gateway-key"},
 	}); err != nil {

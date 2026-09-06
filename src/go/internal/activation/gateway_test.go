@@ -16,7 +16,7 @@ import (
 
 func seedGateway(t *testing.T, env *testEnv, name string) {
 	t.Helper()
-	if _, err := env.Deps.Profiles.Upsert(profile.Runtime{
+	if _, err := env.Deps.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{
 			Name:         name,
 			Provider:     "openrouter",

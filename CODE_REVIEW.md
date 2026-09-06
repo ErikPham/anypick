@@ -243,7 +243,7 @@ Apply the universal list, plus the list for every area the diff touches.
 
 - [ ] A directory move under `src/` was preceded by `make paths`.
 - [ ] Desktop protocol version bumped in **all three**: `internal/buildinfo`,
-      `src/tauri/src-tauri/src/protocol.rs`, `src/macos/AppServiceClient.swift`.
+      `src/tauri/app/src/protocol.rs`, `src/macos/AppServiceClient.swift`.
 - [ ] A version change is applied through `make release-set` / `release-bump`;
       `VERSION` is canonical and three other files must agree.
 - [ ] No support is claimed for a platform the release matrix does not build.
@@ -449,6 +449,14 @@ Done:
       FAILED`, exit 1) and green on a clean tree. The stale pre-move `.gitignore`
       entries (`go/anypick`, `go/go/`, …) were removed and `/src/go/anypick` is
       now anchored, so the release artifact can never be committed again.
+      2026-09-05: the diff grew a false positive — the eight tracked AppIcon
+      assets (PNG/`.icns`, which Xcode requires tracked) failed as "binaries".
+      The check now excuses only `*.png`/`*.icns` whose magic bytes agree (PNG
+      signature / `icns`), verified red by staging a real binary *and* Mach-O
+      bytes in a `.png` name (both listed, both rejected — extension alone
+      smuggles nothing). Two bash-3.2 traps documented in the Makefile block:
+      no `case` inside `$(…)` (its parser ends the substitution at the
+      pattern's `)`), and explanatory comments stay above the target.
 
 Open:
 

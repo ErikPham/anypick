@@ -120,7 +120,8 @@ func keysSubset(fields map[string]json.RawMessage, allowed ...string) bool {
 var mutationOperations = map[string]bool{
 	"account-detect": true, "account-import": true, "account-export": true,
 	"account-backup-all": true, "account-backup-export": true, "account-backup-import": true,
-	"account-login": true, "account-save-current": true, "account-save": true,
+	"account-backup-forget": true,
+	"account-login":         true, "account-save-current": true, "account-save": true,
 	"account-save-input": true,
 	"account-edit":       true, "account-refresh": true, "account-remove": true,
 	"account-clear": true, "gateway-create": true, "gateway-test": true,
@@ -272,10 +273,29 @@ func validateMutate(fields map[string]json.RawMessage) error {
 			seen[id] = true
 		}
 	case "account-backup-all":
-		path := ""
-		_ = json.Unmarshal(fields["path"], &path)
-		if !safePath(path) || !keysSubset(fields, "version", "requestId", "operation", "path") {
+		rawPath, ok := fields["path"]
+		if !ok {
 			return fmt.Errorf("invalid account-backup-all payload")
+		}
+		path := ""
+		_ = json.Unmarshal(rawPath, &path)
+		// An empty path falls back to a timestamped temp file
+		// (backupDestination): the Tauri shell UI has no file picker, so it
+		// sends path:"" and reports the destination from the result. A
+		// present path must still be safe. `overwrite` is deliberately not
+		// an allowed key — the fallback path never exists.
+		if path != "" && !safePath(path) {
+			return fmt.Errorf("invalid account-backup-all payload")
+		}
+		if !keysSubset(fields, "version", "requestId", "operation", "path") {
+			return fmt.Errorf("invalid account-backup-all payload")
+		}
+	case "account-backup-forget":
+		inspectionID := ""
+		_ = json.Unmarshal(fields["inspectionId"], &inspectionID)
+		if !safeStr(inspectionID, 128) ||
+			!keysSubset(fields, "version", "requestId", "operation", "inspectionId") {
+			return fmt.Errorf("invalid account-backup-forget payload")
 		}
 	case "account-import", "account-export":
 		providerID, name, path := "", "", ""

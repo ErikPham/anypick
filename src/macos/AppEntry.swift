@@ -17,6 +17,8 @@ struct AnyPickMenuBarScene: Scene {
 struct AnyPickMenuBarLabel: View {
   @ObservedObject var model: MacOSDesignModel
 
+  // NOTE (tray reset): MenuBarChrome.swift is back at its pre-rework state,
+  // which has no dismissed-aware helper — the dot reads the raw list again.
   private var attentionCount: Int { trayAttentionItems(from: model).count }
 
   var body: some View {
@@ -53,11 +55,9 @@ struct AppCommands: Commands {
       Button("Add Account…") { open(.accounts) }
         .keyboardShortcut("n", modifiers: .command)
     }
-    CommandGroup(replacing: .undoRedo) {
-      Button("Undo") { model.performUndo() }
-        .keyboardShortcut("z", modifiers: .command)
-        .disabled(!model.canUndo)
-    }
+    // No Edit → Undo: mutations apply server-side with no compensation
+    // path, so a local undo would be reverted by the next snapshot.
+    CommandGroup(replacing: .undoRedo) {}
     CommandGroup(after: .toolbar) {
       Button("Refresh") { model.refresh() }
         .keyboardShortcut("r", modifiers: .command)

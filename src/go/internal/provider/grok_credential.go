@@ -197,6 +197,15 @@ func refreshGrokSession(authPath string, s grokSession) (grokSession, error) {
 	if err != nil {
 		return grokSession{}, err
 	}
+	// GROK_TOKEN_ENDPOINT overrides discovery for tests. Like the Gemini
+	// hook it honors loopback URLs only and fails closed otherwise, so a
+	// poisoned environment cannot redirect the refresh grant elsewhere.
+	// Production always goes through the pinned xAI issuer above.
+	if v := strings.TrimSpace(os.Getenv("GROK_TOKEN_ENDPOINT")); v != "" {
+		if tokenURL, err = oauthTokenEndpoint("GROK_TOKEN_ENDPOINT", tokenURL); err != nil {
+			return grokSession{}, err
+		}
+	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {s.refreshToken},
@@ -214,10 +223,12 @@ func refreshGrokSession(authPath string, s grokSession) (grokSession, error) {
 		return grokSession{}, anyerr.Newf("Grok OIDC refresh failed: "+err.Error(), "PROXY_START_FAILED")
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// Bound the OIDC body: the endpoint is outside our trust boundary and
+	// its payload must never flow verbatim into errors, logs, or clients.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return grokSession{}, anyerr.Newf(
-			fmt.Sprintf("Grok OIDC refresh failed (%d): %s", resp.StatusCode, string(body)),
+			fmt.Sprintf("Grok OIDC refresh failed (HTTP %d)", resp.StatusCode),
 			"PROXY_START_FAILED")
 	}
 	var tok struct {
@@ -268,7 +279,7 @@ func resolveGrokTokenEndpoint(issuer string) (string, error) {
 				var conf struct {
 					TokenEndpoint string `json:"token_endpoint"`
 				}
-				if b, _ := io.ReadAll(resp.Body); json.Unmarshal(b, &conf) == nil && conf.TokenEndpoint != "" {
+				if b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10)); json.Unmarshal(b, &conf) == nil && conf.TokenEndpoint != "" {
 					if ep, ok := validateGrokTokenEndpoint(conf.TokenEndpoint); ok {
 						return ep, nil
 					}

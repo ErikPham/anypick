@@ -7,6 +7,10 @@ type UsageWindow struct {
 	Label            string   `json:"label"`
 	RemainingPercent int      `json:"remainingPercent"`
 	ResetsAtMs       *float64 `json:"resetsAtMs,omitempty"`
+	// LimitWindowSeconds is the vendor's window cadence (e.g. 18000 for a
+	// 5-hour Codex window). It answers "which limit" without inferring
+	// anything the payload does not state.
+	LimitWindowSeconds *int `json:"limitWindowSeconds,omitempty"`
 }
 
 // LiveUsage mirrors LiveUsage.

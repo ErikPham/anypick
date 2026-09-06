@@ -45,6 +45,12 @@ func (p *codex) LiveUsage(ctx context.Context) (*LiveUsage, error) {
 	return parseCodexUsage(body)
 }
 
+// nowUnixMilli anchors relative vendor countdowns (reset_after_seconds) to
+// this machine's clock next to the absolute reset_at instants.
+func nowUnixMilli() int64 {
+	return time.Now().UnixMilli()
+}
+
 // parseCodexUsage mirrors parseCodexUsage in src/providers/codex-usage.ts:
 // reads primary_window/secondary_window used_percent → remaining percent.
 func parseCodexUsage(body []byte) (*LiveUsage, error) {
@@ -62,8 +68,8 @@ func parseCodexUsage(body []byte) (*LiveUsage, error) {
 
 	var windows []UsageWindow
 	for _, pair := range [][2]string{
-		{"primary_window", "primary"},
-		{"secondary_window", "secondary"},
+		{"primary_window", "Primary"},
+		{"secondary_window", "Secondary"},
 	} {
 		window := objectMap(rateLimit[pair[0]])
 		if window == nil {
@@ -77,7 +83,11 @@ func parseCodexUsage(body []byte) (*LiveUsage, error) {
 			Label:            usageLabel(pair[1], window),
 			RemainingPercent: clampPercent(100 - used),
 		}
-		if ms := resetAtMs(window); ms != nil {
+		if v, ok := window["limit_window_seconds"].(float64); ok && v > 0 {
+			secs := int(v)
+			w.LimitWindowSeconds = &secs
+		}
+		if ms := resetAtMs(window, nowUnixMilli()); ms != nil {
 			w.ResetsAtMs = ms
 		}
 		windows = append(windows, w)
@@ -107,11 +117,22 @@ func numberValue(v interface{}) float64 {
 	}
 }
 
-func resetAtMs(window map[string]interface{}) *float64 {
+func resetAtMs(window map[string]interface{}, nowUnixMilli int64) *float64 {
+	// Absolute instants first (most precise), relative countdown last.
 	for _, key := range []string{"resets_at_ms", "reset_at_ms"} {
 		if v, ok := window[key].(float64); ok && !math.IsNaN(v) {
 			return &v
 		}
+	}
+	// The vendor's own clock: reset_at is unix SECONDS (limit_window_seconds
+	// and reset_after_seconds share the shape).
+	if v, ok := window["reset_at"].(float64); ok && !math.IsNaN(v) && v > 0 {
+		ms := v * 1000
+		return &ms
+	}
+	if v, ok := window["reset_after_seconds"].(float64); ok && !math.IsNaN(v) && v >= 0 {
+		ms := float64(nowUnixMilli) + v*1000
+		return &ms
 	}
 	return nil
 }

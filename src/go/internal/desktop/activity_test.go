@@ -190,3 +190,64 @@ func TestProxyRowsIncludeDisabledAccounts(t *testing.T) {
 		}
 	}
 }
+
+// Event rows carry the provider derived from affected resources (L9), so the
+// native client can brand them. Refs without a provider stay unbranded.
+func TestBuildActivityDerivesProvider(t *testing.T) {
+	env := newTrayEnv(t)
+	ctx := context.Background()
+
+	jrnl := &journal.OperationJournal{DB: env.Deps.Store.DB.DB}
+	if _, err := jrnl.CreateContext(ctx, "activate:persistent", journal.CreateOptions{
+		AffectedResources: []string{"client/codex", "account/grok/a"},
+		State:             journal.StateCommitted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jrnl.CreateContext(ctx, "activate:persistent", journal.CreateOptions{
+		AffectedResources: []string{"client/claude"},
+		State:             journal.StateFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jrnl.CreateContext(ctx, "gateway-create", journal.CreateOptions{
+		AffectedResources: []string{"gateway/gw1"},
+		State:             journal.StateCommitted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.Deps.Journal = jrnl
+
+	snap, err := New(env.Deps, strings.NewReader(""), &strings.Builder{}).buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byMessage := map[string]map[string]any{}
+	for _, row := range snap.Activity {
+		byMessage[row["message"].(string)] = row
+	}
+	var grokRow map[string]any
+	for msg, row := range byMessage {
+		if strings.Contains(msg, "grok/a") {
+			grokRow = row
+		}
+	}
+	if grokRow == nil {
+		t.Fatalf("no row for grok account: %+v", snap.Activity)
+	}
+	if grokRow["provider"] != "grok" {
+		t.Fatalf("provider = %v, want grok", grokRow["provider"])
+	}
+	for msg, row := range byMessage {
+		if strings.Contains(msg, "Claude") && !strings.Contains(msg, "grok") {
+			if _, ok := row["provider"]; ok {
+				t.Fatalf("client-only row branded: %+v", row)
+			}
+		}
+		if row["kind"] == "gateway" {
+			if _, ok := row["provider"]; ok {
+				t.Fatalf("gateway row branded without a provider ref: %+v", row)
+			}
+		}
+	}
+}

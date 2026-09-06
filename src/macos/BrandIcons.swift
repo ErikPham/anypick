@@ -116,8 +116,8 @@ struct DesignProviderPicker: NSViewRepresentable {
         systemSymbolName: DesignBrandAsset.fallbackSymbol(for: option.id),
         accessibilityDescription: option.label
       ) {
-        // Vendors without a bundled mark (compatible API providers, ZCode,
-        // WorkBuddy) get the same monochrome glyph the SwiftUI rows use.
+        // Vendors without a bundled mark (compatible API providers and custom
+        // gateways) get the same monochrome glyph the SwiftUI rows use.
         // A template symbol follows the menu label color, so disabled rows
         // dim correctly instead of rendering a dark tile.
         symbol.size = NSSize(width: iconSize, height: iconSize)
@@ -150,7 +150,9 @@ extension DesignBrandAsset {
   private static func candidateFiles(for provider: String, dark: Bool) -> [String] {
     switch normalize(provider) {
     case "claude", "anthropic", "claudecode":
-      return ["claude-mark.png", "claude.svg"]
+      // Orange burst first (brand color, both appearances); the white mark
+      // stays as fallback.
+      return ["claude-mark-orange.svg", "claude-mark.png", "claude.svg"]
     case "codex", "codexcli":
       return dark
         ? ["codex-app-dark.png", "codex-app-light.png", "openai.svg"]
@@ -160,7 +162,9 @@ extension DesignBrandAsset {
         ? ["openai-mark-dark.png", "openai-mark-light.png", "openai.svg"]
         : ["openai-mark-light.png", "openai-mark-dark.png", "openai.svg"]
     case "gemini", "google", "geminicli", "antigravity", "googleaipro":
-      return ["gemini-mark-v2.png", "gemini-mark.png", "googlegemini.svg"]
+      // Official 2025 icon (blue→lavender gradient) first; the white
+      // single-fill mark stays as fallback.
+      return ["gemini-icon-2025.svg", "gemini-mark-v2.png", "gemini-mark.png", "googlegemini.svg"]
     case "kiro", "personalbuilder":
       return ["kiro-app.png", "kiro.svg"]
     case "workbuddy", "codebuddy":
@@ -214,6 +218,9 @@ extension DesignBrandAsset {
       // "zai" — that is Z.ai's API-key provider, and the ZCode app icon is not
       // the Z.ai logo, so an account row would be wearing the wrong brand.
       return ["zcode-app.png"]
+    case "dsh":
+      // DeepSeek's harness CLI: no mark of its own, wears the DeepSeek brand.
+      return ["deepseek.svg"]
     default:
       return []
     }
@@ -255,12 +262,10 @@ enum DesignBrandAsset {
     case "openrouter": "network"
     case "grok", "xai": "sparkles"
     case "opencode": "chevron.left.forwardslash.chevron.right"
-    // Matches ProductionModel.providerSymbol so an unbundled build and one
-    // with the asset present degrade to the same glyph.
+    // Full-color app icons ship in Resources/icons; anything else here is a
+    // monochrome mark, so an unbundled row degrades to the same glyph.
     case "zcode": "curlybraces"
-    // WorkBuddy ships a full-color app icon, but every other row here is a
-    // monochrome mark, so the row uses a briefcase glyph that reads as
-    // "Work" at list size in both appearances.
+    // Briefcase only when the bundled workbuddy-mark.png is absent.
     case "workbuddy", "codebuddy": "briefcase.fill"
     default: "server.rack"
     }
@@ -280,12 +285,35 @@ enum DesignBrandAsset {
   }
 
   /// Monochrome glyphs follow the label color. Full-color product marks stay original.
-  private static func isTemplateMark(_ name: String) -> Bool {
-    let lower = name.lowercased()
-    if lower.hasSuffix(".svg") { return true }
-    return lower.hasPrefix("grok-mark")
+  /// Only the files listed render original: the rest of the SVGs are white or
+  /// black single-fill marks that must template-tint per appearance instead
+  /// of showing their raw fill (white-on-light is invisible, black-on-dark
+  /// is mud). Keep this set in sync with Resources/icons: a new chromatic
+  /// mark renders black in Light Mode until it is listed here.
+  private static let fullColorMarks: Set<String> = [
+    "claude-mark-orange.svg", "deepseek.svg", "doubao.svg",
+    "gemini-icon-2025.svg", "hunyuan.svg", "mimo.svg", "minimax.svg",
+    "mistral.svg", "modelscope.svg", "nvidia.svg", "qwen.svg",
+  ]
+
+  /// Render policy for a brand file, pinned by tests: full-color marks stay
+  /// original in both appearances; monochrome single-fill marks template-tint
+  /// per appearance.
+  static func rendersOriginal(_ file: String) -> Bool {
+    let lower = file.lowercased()
+    if fullColorMarks.contains(lower) { return true }
+    if lower.hasSuffix(".svg") { return false }
+    if lower.hasPrefix("grok-mark")
       || lower.hasPrefix("openai-mark")
       || lower.hasPrefix("opencode-mark")
+    {
+      return false
+    }
+    return true
+  }
+
+  private static func isTemplateMark(_ name: String) -> Bool {
+    !rendersOriginal(name)
   }
 
   static func normalize(_ value: String) -> String {

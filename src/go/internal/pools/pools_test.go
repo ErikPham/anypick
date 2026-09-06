@@ -1,6 +1,7 @@
 package pools
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestSetMultiAndGet(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
 	members := []Member{{Account: "a", Enabled: true}, {Account: "b", Enabled: false}}
-	if err := s.SetMulti("claude", members, "127.0.0.1", 4000); err != nil {
+	if err := s.SetMultiContext(context.Background(), "claude", members, "127.0.0.1", 4000); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Get("claude")
@@ -43,10 +44,10 @@ func TestSetMultiAndGet(t *testing.T) {
 func TestDisable(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
-	if err := s.SetMulti("claude", []Member{{Account: "a"}}, "", 0); err != nil {
+	if err := s.SetMultiContext(context.Background(), "claude", []Member{{Account: "a"}}, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Disable("claude"); err != nil {
+	if err := s.DisableContext(context.Background(), "claude"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.Get("claude")

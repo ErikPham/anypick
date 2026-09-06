@@ -66,7 +66,7 @@ func TestApplyGatewayProfileErrors(t *testing.T) {
 		t.Fatal("want error for missing gateway")
 	}
 	// Profile without endpoint.
-	if _, err := s.Profiles.Upsert(profile.Runtime{
+	if _, err := s.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{Name: "empty", Provider: "openrouter"},
 	}); err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestSmartEndpointCatalogAuthoritative(t *testing.T) {
 	// OpenRouter entry from catalog carries AnthropicEndpoint that wins over heuristic.
 	s := testService(t)
 	ctx := context.Background()
-	if _, err := s.Profiles.Upsert(profile.Runtime{
+	if _, err := s.Profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta:    profile.Meta{Name: "or-work2", Provider: "openrouter", Endpoint: "https://openrouter.ai/api/v1"},
 		Secrets: profile.Secrets{APIKey: "sk-or"},
 	}); err != nil {

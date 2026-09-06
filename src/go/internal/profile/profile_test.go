@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"context"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/db"
@@ -24,7 +25,7 @@ func TestUpsertAndGet(t *testing.T) {
 		Meta:    Meta{Name: "openrouter-main", Provider: "openrouter", Endpoint: "https://api.example.com"},
 		Secrets: Secrets{APIKey: "sk-test"},
 	}
-	saved, err := s.Upsert(rt)
+	saved, err := s.UpsertContext(context.Background(), rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +45,7 @@ func TestUpsertAndGet(t *testing.T) {
 	created := saved.Meta.CreatedAt
 	// Second upsert must preserve CreatedAt, bump UpdatedAt.
 	saved.Meta.Endpoint = "https://api2.example.com"
-	saved2, err := s.Upsert(saved)
+	saved2, err := s.UpsertContext(context.Background(), saved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +67,7 @@ func TestListAndDelete(t *testing.T) {
 	database := testDB(t)
 	s := &Store{DB: database.DB}
 	for _, name := range []string{"b", "a", "c"} {
-		if _, err := s.Upsert(Runtime{Meta: Meta{Name: name, Provider: "openrouter"}}); err != nil {
+		if _, err := s.UpsertContext(context.Background(), Runtime{Meta: Meta{Name: name, Provider: "openrouter"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -77,7 +78,7 @@ func TestListAndDelete(t *testing.T) {
 	if len(names) != 3 || names[0] != "a" || names[1] != "b" || names[2] != "c" {
 		t.Fatalf("List=%v want [a b c]", names)
 	}
-	if err := s.Delete("b"); err != nil {
+	if err := s.DeleteContext(context.Background(), "b"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.Get("b"); got != nil {

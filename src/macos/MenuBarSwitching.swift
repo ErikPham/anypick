@@ -1,11 +1,8 @@
 import SwiftUI
 
-enum TrayInlineSwitchState {
-  case available
-  case current
-  case switching
-  case retry
-}
+// NOTE (tray reset): enum lives in DesignDisplay.swift now; the old file's
+// copy was removed to avoid a duplicate. Patterns below are widened to the
+// current 4-tuple phase purely to compile — old name-matching behavior kept.
 
 @MainActor
 func trayInlineSwitchState(
@@ -17,9 +14,9 @@ func trayInlineSwitchState(
   if route.id == app.selectedRouteID { return .current }
 
   switch model.switchPhase {
-  case let .inFlight(appID, _, target) where appID == app.id && route.name == target:
+  case let .inFlight(appID, _, target, _) where appID == app.id && route.name == target:
     return .switching
-  case let .recovery(appID, requested, _) where appID == app.id && route.name == requested:
+  case let .recovery(appID, requested, _, _) where appID == app.id && route.name == requested:
     return .retry
   default:
     return .available
@@ -34,12 +31,12 @@ struct TrayInlineRouteMark: View {
       switch state {
       case .current:
         Image(systemName: "checkmark.circle.fill")
-          .foregroundStyle(Color.accentColor)
+          .foregroundStyle(TrayPaint.accent)
       case .switching:
         ProgressView().controlSize(.small)
       case .retry:
         Image(systemName: "exclamationmark.triangle.fill")
-          .foregroundStyle(.orange)
+          .foregroundStyle(TrayPaint.attention)
       case .available:
         Image(systemName: "circle")
           .foregroundStyle(.secondary)

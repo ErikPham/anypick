@@ -215,9 +215,9 @@ type Server struct {
 }
 
 // injectUpstreamAuth applies the configured scheme, never forwarding the
-// proxy token.
-func (s *Server) injectUpstreamAuth(out *http.Request) {
-	injectUpstreamAuthFields(out.Context(), out, &Upstream{
+// proxy token. Provider errors fail closed to the caller.
+func (s *Server) injectUpstreamAuth(out *http.Request) error {
+	return injectUpstreamAuthFields(out.Context(), out, &Upstream{
 		BaseURL:         s.Upstream,
 		Auth:            s.UpstreamAuth,
 		AuthHeader:      s.UpstreamAuthHeader,

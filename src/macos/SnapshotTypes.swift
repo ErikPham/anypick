@@ -215,6 +215,9 @@ struct ActivityEvent: Decodable, Identifiable, Equatable {
   let message: String
   let isError: Bool
   let kind: String
+  /// Brand identity derived from affected resources (L9); nil when the row
+  /// carries no provider ref — the row renders unbranded, never guessed.
+  let provider: String?
 
   var date: Date {
     let formatter = ISO8601DateFormatter()
@@ -227,6 +230,9 @@ struct UsageWindow: Decodable {
   let label: String
   let remainingPercent: Int
   let resetsAtMs: Double?
+  /// Vendor window cadence in seconds (e.g. 18000 for a 5-hour Codex
+  /// window). Answers "which limit" from data, never inferred.
+  let limitWindowSeconds: Int?
 }
 
 struct UsageSnapshot: Decodable, Identifiable {
@@ -360,6 +366,13 @@ struct BackupImportMutation: Encodable {
   let inspectionId: String
   let entryIds: [String]
   let overwriteConfirmed: Bool
+}
+
+struct BackupForgetMutation: Encodable {
+  let version = 1
+  let requestId: String
+  let operation = "account-backup-forget"
+  let inspectionId: String
 }
 
 struct BackupPreviewEntry: Decodable, Identifiable {

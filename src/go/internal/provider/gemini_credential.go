@@ -30,14 +30,17 @@ const (
 // OAuth client profiles. Mirrors oauthProfile (server.ts) — constants with
 // ANTIGRAVITY_* / GEMINI_OAUTH_* env overrides.
 const (
-	geminiOAuthClientID       = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
-	geminiOAuthClientSecret   = "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"
-	antigravityOAuthClientID  = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-	antigravityOAuthSecret    = "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"
-	geminiTokenEndpoint       = "https://oauth2.googleapis.com/token"
-	geminiCodeAssistUpstream  = "https://cloudcode-pa.googleapis.com"
-	antigravityCodeAssistBase = "https://daily-cloudcode-pa.googleapis.com"
-	geminiAPIKeyUpstream      = "https://generativelanguage.googleapis.com"
+	geminiOAuthClientID      = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	geminiOAuthClientSecret  = "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"
+	antigravityOAuthClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	antigravityOAuthSecret   = "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"
+	// geminiTokenEndpointDefault is the production OAuth token URL. Tests
+	// point GEMINI_TOKEN_ENDPOINT at a loopback httptest server instead; see
+	// oauthTokenEndpoint, which refuses non-loopback overrides.
+	geminiTokenEndpointDefault = "https://oauth2.googleapis.com/token"
+	geminiCodeAssistUpstream   = "https://cloudcode-pa.googleapis.com"
+	antigravityCodeAssistBase  = "https://daily-cloudcode-pa.googleapis.com"
+	geminiAPIKeyUpstream       = "https://generativelanguage.googleapis.com"
 )
 
 const geminiOAuthRefreshSkew = 60 * time.Second
@@ -65,6 +68,8 @@ func geminiOAuthProfileFor(source string) geminiOAuthProfile {
 	}
 }
 
+// geminiTokenEndpoint returns the OAuth token URL. GEMINI_TOKEN_ENDPOINT
+// overrides it for tests and debugging; production uses Google's endpoint.
 func envOr(env, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(env)); v != "" {
 		return v
@@ -165,7 +170,11 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, geminiTokenEndpoint,
+	endpoint, err := oauthTokenEndpoint("GEMINI_TOKEN_ENDPOINT", geminiTokenEndpointDefault)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", anyerr.Wrapf(err, "build Gemini refresh request", "GEMINI_OAUTH")
@@ -176,10 +185,12 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 		return "", anyerr.Wrapf(err, "Gemini OAuth refresh failed", "GEMINI_OAUTH")
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// Bound the OAuth body: the endpoint is outside our trust boundary and
+	// its payload must never flow verbatim into errors, logs, or clients.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", anyerr.Newf(
-			fmt.Sprintf("Gemini OAuth refresh failed (%d): %s", resp.StatusCode, string(body)),
+			fmt.Sprintf("Gemini OAuth refresh failed (HTTP %d)", resp.StatusCode),
 			"GEMINI_OAUTH")
 	}
 	var tok struct {

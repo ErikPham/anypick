@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -108,6 +109,14 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","message":"invalid hub credentials"}}`))
 		return
+	}
+	// Opportunistic legacy-secret migration. Authentication has already
+	// succeeded; this write converges pre-HMAC rows and is skipped for rows
+	// that already match. It stays out of RouteByToken so the auth read path
+	// is pure. A failure is logged, never swallowed: the legacy row keeps
+	// authenticating, but silence would hide a broken store.
+	if merr := s.Store.MigrateRouteTokenContext(r.Context(), route.RouteID, token); merr != nil {
+		log.Printf("hub: route token migration failed for %s: %v", route.RouteID, merr)
 	}
 	if !s.Config.Enabled {
 		writeErr(w, http.StatusConflict, "PROXY_DISABLED", "hub "+s.Config.Name+" is disabled")

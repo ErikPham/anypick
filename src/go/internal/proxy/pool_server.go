@@ -265,6 +265,19 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 			}
 		}
 	}
+	// Fail closed on credential refresh: a stale/empty token would only
+	// surface as an upstream 401 and hide the real cause. Pre-resolve here
+	// because Rewrite cannot return an error.
+	var authHeader, authPrefix, authToken string
+	if up != nil {
+		var aerr error
+		authHeader, authPrefix, authToken, aerr = resolveUpstreamAuth(r.Context(), up)
+		if aerr != nil {
+			w.capture(http.StatusBadGateway, http.Header{"Content-Type": []string{"application/json"}},
+				[]byte(jsonErrorBody("proxy_error", "credential refresh failed")))
+			return
+		}
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
@@ -280,7 +293,11 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 					return io.NopCloser(bytes.NewReader(sanitized)), nil
 				}
 			}
-			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("x-api-key")
+			pr.Out.Header.Del("api-key")
+			pr.Out.Header.Set(authHeader, authPrefix+authToken)
+			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(flush http.ResponseWriter, _ *http.Request, _ error) {
@@ -337,7 +354,10 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	injectUpstreamAuthFields(r.Context(), req, up)
+	if err := injectUpstreamAuthFields(r.Context(), req, up); err != nil {
+		w.commitJSON(http.StatusBadGateway, jsonErrorBody("proxy_error", "credential refresh failed"))
+		return
+	}
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)

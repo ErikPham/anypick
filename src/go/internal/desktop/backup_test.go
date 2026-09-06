@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/store"
 	"github.com/outof0/anypick/go/internal/transfer"
 )
@@ -142,9 +143,139 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 	}
 }
 
+// Bulk stop/restart names per-proxy failures instead of reporting success
+// (PX4): the old loop swallowed every error. Per-row progress would need
+// protocol work; an honest aggregate is what fits the current result frame.
+func TestBulkProxyOpsReportPerProxyFailures(t *testing.T) {
+	env := newTrayEnv(t)
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+	ctx := context.Background()
+	env.writeCodexLive("bulk@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "bulk-acc", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Deps.Store.SetProxyConfigContext(ctx, "codex", "bulk-acc",
+		store.ProxyConfig{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	run := func(ctx context.Context, m Mutate) Result {
+		t.Helper()
+		out.Reset()
+		raw, _ := json.Marshal(m)
+		if err := srv.handleMutate(ctx, raw); err != nil {
+			t.Fatal(err)
+		}
+		decoded := decodeFramePayload(t, firstFrameLine(out.String()))
+		var res Result
+		if err := json.Unmarshal(decoded, &res); err != nil {
+			t.Fatalf("decode %s: %v", decoded, err)
+		}
+		return res
+	}
+	// A cancelled command context fails the stop: the failure must name the
+	// proxy instead of vanishing into a success.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := run(cancelled, Mutate{Version: 1, RequestID: "bulk-fail", Operation: "proxy-stop-all"})
+	if res.Status != "error" || !strings.Contains(res.Message, "codex/bulk-acc") ||
+		!strings.Contains(res.Message, "1 of 1") {
+		t.Fatalf("bulk failure: %+v", res)
+	}
+	// Nothing enabled succeeds with a message (the old code wrote none).
+	fresh := newTrayEnv(t)
+	var freshOut bytes.Buffer
+	freshSrv := New(fresh.Deps, strings.NewReader(""), &freshOut)
+	raw, _ := json.Marshal(Mutate{Version: 1, RequestID: "bulk-empty", Operation: "proxy-stop-all"})
+	if err := freshSrv.handleMutate(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodeFramePayload(t, firstFrameLine(freshOut.String()))
+	var emptyRes Result
+	if err := json.Unmarshal(decoded, &emptyRes); err != nil {
+		t.Fatalf("decode %s: %v", decoded, err)
+	}
+	if emptyRes.Status != "success" || !strings.Contains(emptyRes.Message, "no enabled proxies") {
+		t.Fatalf("bulk empty: %+v", emptyRes)
+	}
+}
+
 func accountMetaForTest(providerID, name string) store.Meta {
 	return store.Meta{
 		Name: name, Provider: providerID,
 		CreatedAt: "2026-01-01T00:00:00.000Z", UpdatedAt: "2026-01-01T00:00:00.000Z",
 	}
+}
+
+// A missing file is not a permission problem and a permission problem is
+// not damage (B5): each maps to its own reason.
+func TestInspectionFailureReasonDistinguishesAccessErrors(t *testing.T) {
+	cases := map[string]string{
+		"BACKUP_VERSION": "newer-version",
+		"BACKUP_DENIED":  "permission-denied",
+		"BACKUP_MISSING": "missing",
+		"BACKUP_FORMAT":  "damaged",
+	}
+	for code, want := range cases {
+		if got := inspectionFailureReason(anyerr.Newf("x", code)); got != want {
+			t.Errorf("code %s: reason %q, want %q", code, got, want)
+		}
+	}
+	if got := inspectionFailureReason(os.ErrNotExist); got != "damaged" {
+		t.Errorf("plain error reason = %q, want damaged", got)
+	}
+	if msg := inspectionFailureMessage("missing"); !strings.Contains(msg, "moved or deleted") {
+		t.Errorf("missing message = %q", msg)
+	}
+}
+
+func TestStageBackupReportsMissingFile(t *testing.T) {
+	_, _, _, err := stageBackup(filepath.Join(t.TempDir(), "nope.anypick-backup"))
+	ae, ok := err.(*anyerr.Error)
+	if !ok || ae.Code != "BACKUP_MISSING" {
+		t.Fatalf("missing file err = %v, want BACKUP_MISSING", err)
+	}
+	if got := inspectionFailureReason(err); got != "missing" {
+		t.Fatalf("missing file reason = %q, want missing", got)
+	}
+}
+
+// Forgetting a review drops the staged copy before its TTL (B3): a later
+// restore with the same id must fail, and forgetting twice still succeeds.
+func TestInspectionForgetDropsStagedCopy(t *testing.T) {
+	env := newTrayEnv(t)
+	writeTestAccount(t, env, "codex", "alpha")
+	pkgPath := filepath.Join(t.TempDir(), "pkg.anypick-backup")
+	if _, err := transfer.ExportSelectedBackup(env.Deps.Store, context.Background(),
+		[]transfer.BackupEntry{{Provider: "codex", Name: "alpha"}}, pkgPath, false); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewInspectionManager()
+	preview, err := mgr.Inspect(env.Deps.Store, env.Deps.Providers, "req1", pkgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := preview.InspectionID
+	mgr.mu.Lock()
+	rec, ok := mgr.records[id]
+	mgr.mu.Unlock()
+	if !ok || rec.stagedRoot == "" {
+		t.Fatalf("no staged record for %q", id)
+	}
+	if _, serr := os.Stat(rec.stagedRoot); serr != nil {
+		t.Fatalf("staged copy missing before forget: %v", serr)
+	}
+	mgr.Forget(id)
+	if _, serr := os.Stat(rec.stagedRoot); !os.IsNotExist(serr) {
+		t.Fatalf("staged copy survives forget: %v", serr)
+	}
+	entryIDs := []string{preview.Entries[0].ID}
+	if _, rerr := mgr.Restore(context.Background(), env.Deps.Store, env.Deps.Providers,
+		id, entryIDs, true); rerr == nil {
+		t.Fatal("restore after forget succeeded")
+	} else if !strings.Contains(rerr.Error(), "unknown or expired") {
+		t.Fatalf("restore after forget err = %v, want unknown-or-expired", rerr)
+	}
+	mgr.Forget(id)
+	mgr.Forget("")
 }

@@ -8,6 +8,7 @@ package hub
 // these tests force an explicit corresponding Go decision.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -123,7 +124,7 @@ func TestHubConfigCorruptRowFailsClosed(t *testing.T) {
 func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 	st := newHubStore(t)
 	off := false
-	if _, err := st.UpsertConfig(Config{
+	if _, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "default", Enabled: true, Port: 4919,
 		Sources: []Source{
 			{ProviderID: "glm", Account: "cn"},
@@ -196,7 +197,7 @@ func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 // deviation from the TS decoder contract — see tsHubConfig in store.go.
 func TestHubKernelAssignedPortStaysAbsentNotInvented(t *testing.T) {
 	st := newHubStore(t)
-	if _, err := st.UpsertConfig(Config{Name: "auto", Enabled: true}); err != nil {
+	if _, err := st.UpsertConfigContext(context.Background(), Config{Name: "auto", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	var raw string

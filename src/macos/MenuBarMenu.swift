@@ -32,18 +32,15 @@ struct MenuBarMenu: View {
     switch model.trayScene {
     case .auto:
       if model.apps.isEmpty && model.accounts.isEmpty { return .firstRun }
-      return trayAttentionItems(from: model).isEmpty ? .ready : .attention
+      // Count what the tray shows: dismissed notices must not hold the
+      // scene in attention behind the tray's back.
+      return visibleAttentionItems.isEmpty ? .ready : .attention
     default:
       return model.trayScene
     }
   }
 
-  private var needsAttention: Bool { scene == .attention || hasUnconfiguredApp }
-
-  private var hasUnconfiguredApp: Bool {
-    model.quickPanelApps.contains { !isAppRouteConfigured($0) }
-      || model.apps.contains { !isAppRouteConfigured($0) }
-  }
+  private var needsAttention: Bool { scene == .attention }
 
   private var reviewCount: Int {
     visibleAttentionItems.count
@@ -91,7 +88,7 @@ struct MenuBarMenu: View {
         detail: [account.provider, account.detail].filter { !$0.isEmpty }.joined(separator: " · "),
         symbol: account.symbol,
         provider: account.provider,
-        target: .account(account.id)
+        target: .destination(.accounts)
       )
     }
 
@@ -200,22 +197,26 @@ struct MenuBarMenu: View {
     }
   }
 
-  @ViewBuilder
   private var searchField: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: 7) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(.secondary)
-        .accessibilityHidden(true)
+        .font(.system(size: 12, weight: .medium))
       TextField(searchPrompt, text: $jump)
         .textFieldStyle(.plain)
-        .font(.callout)
+        .font(TrayFont.detail)
         .focused($jumpFocused)
         .onSubmit(performJump)
       if jump.isEmpty {
         Text("⌘K")
-          .font(.caption)
-          .fontWeight(.semibold)
+          .font(TrayFont.detailStrong)
           .foregroundStyle(.secondary)
+          .padding(.horizontal, 5)
+          .frame(height: 18)
+          .background(
+            Color.primary.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+          )
       } else {
         Button {
           jump = ""
@@ -229,8 +230,16 @@ struct MenuBarMenu: View {
         .accessibilityLabel("Clear Search")
       }
     }
-    .padding(.horizontal, 8)
-    .frame(height: 30)
+    .padding(.horizontal, 9)
+    .frame(height: 32)
+    .background(
+      Color(nsColor: .controlBackgroundColor).opacity(0.92),
+      in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+    )
     .background {
       Button("Focus Search") { jumpFocused = true }
         .keyboardShortcut("k", modifiers: .command)
@@ -240,7 +249,6 @@ struct MenuBarMenu: View {
         .accessibilityHidden(true)
     }
     .accessibilityIdentifier("tray.jump")
-    Divider()
   }
 
   private var searchPrompt: String {
@@ -251,15 +259,13 @@ struct MenuBarMenu: View {
   private var statusRow: some View {
     HStack(spacing: 6) {
       Circle()
-        .fill(statusColor)
+        .fill(needsAttention ? TrayPaint.attention : TrayPaint.ready)
         .frame(width: 7, height: 7)
-        .accessibilityHidden(true)
-      Text(statusTitle)
-        .font(.callout)
-        .fontWeight(.semibold)
-        .foregroundStyle(statusColor)
+      Text(needsAttention ? "Needs attention" : "Ready")
+        .font(TrayFont.detailStrong)
+        .foregroundStyle(needsAttention ? TrayPaint.attention : TrayPaint.ready)
       Text(statusDetail)
-        .font(.caption)
+        .font(TrayFont.detail)
         .foregroundStyle(.secondary)
         .lineLimit(1)
       Spacer(minLength: 6)
@@ -272,27 +278,11 @@ struct MenuBarMenu: View {
       .accessibilityLabel("Refresh")
     }
     .frame(height: needsAttention ? 28 : 24)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Status: \(statusTitle), \(statusDetail)")
-  }
-
-  private var statusColor: Color {
-    scene == .attention ? .orange : (hasUnconfiguredApp ? .orange : .green)
-  }
-
-  private var statusTitle: String {
-    if scene == .attention { return "Needs attention" }
-    if hasUnconfiguredApp { return "Not Configured" }
-    return "Ready"
   }
 
   private var statusDetail: String {
-    if scene == .attention {
+    if needsAttention {
       return "\(reviewCount) \(reviewCount == 1 ? "issue" : "issues")"
-    }
-    if hasUnconfiguredApp {
-      let missing = model.apps.filter { !isAppRouteConfigured($0) }.count
-      return "Choose a login for \(missing) \(missing == 1 ? "app" : "apps")"
     }
     let appCount = model.quickPanelApps.count
     if model.proxyHubEnabled {
@@ -338,7 +328,7 @@ struct MenuBarMenu: View {
   }
 
   private func dismissAttentionNotice(_ item: TrayAttentionItem) {
-    dismissedAttentionKeys.insert(attentionDismissKey(item))
+    dismissedAttentionKeys.formUnion(visibleAttentionItems.map(attentionDismissKey))
     AppPreferences.dismissedAttentionKeys = dismissedAttentionKeys
   }
 
@@ -374,11 +364,6 @@ struct MenuBarMenu: View {
     switch result.target {
     case .app(let appID):
       openUseWith(appID)
-    case .account(let accountID):
-      // The main window owns the NavigationStack; hand it the account id
-      // and let it push the detail once the Accounts pane is visible.
-      model.pendingAccountDetailID = accountID
-      open(.accounts)
     case .destination(let destination):
       open(destination)
     }
@@ -388,7 +373,6 @@ struct MenuBarMenu: View {
     if let destination { model.destination = destination }
     if let openMainWindow { openMainWindow() }
     else { openWindow(id: "main") }
-    NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
   }
 
@@ -398,7 +382,7 @@ struct MenuBarMenu: View {
 
   private func quit() {
     guard model.proxyHubEnabled || model.proxies.contains(where: \.enabled) else {
-      AnyPickAppDelegate.requestQuit()
+      NSApp.terminate(nil)
       return
     }
     let alert = NSAlert()
@@ -408,7 +392,7 @@ struct MenuBarMenu: View {
     alert.addButton(withTitle: "Quit")
     alert.addButton(withTitle: "Cancel")
     if alert.runModal() == .alertFirstButtonReturn {
-      AnyPickAppDelegate.requestQuit()
+      NSApp.terminate(nil)
     }
   }
 }

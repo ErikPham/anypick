@@ -67,6 +67,36 @@ func writeCargoVersion(root, version string) error {
 	return writeFile(root, cargoToml, updated)
 }
 
+// cargoLockVersionPattern matches the root package version only: the
+// [[package]] stanza whose name is anypick-desktop. Dependency stanzas are
+// never touched.
+var cargoLockVersionPattern = regexp.MustCompile("(?m)^\\[\\[package\\]\\]\\nname = \"anypick-desktop\"\\nversion = \"([^\"]*)\"")
+
+func readCargoLockVersion(root string) (string, error) {
+	content, err := readFile(root, cargoLock)
+	if err != nil {
+		return "", err
+	}
+	m := cargoLockVersionPattern.FindStringSubmatch(string(content))
+	if m == nil {
+		return "", fmt.Errorf("%s has no anypick-desktop package stanza", cargoLock)
+	}
+	return strings.TrimSpace(m[1]), nil
+}
+
+func writeCargoLockVersion(root, version string) error {
+	content, err := readFile(root, cargoLock)
+	if err != nil {
+		return err
+	}
+	if !cargoLockVersionPattern.Match(content) {
+		return fmt.Errorf("%s has no anypick-desktop package stanza", cargoLock)
+	}
+	updated := cargoLockVersionPattern.ReplaceAllString(string(content),
+		"[[package]]\nname = \"anypick-desktop\"\nversion = \""+version+"\"")
+	return writeFile(root, cargoLock, updated)
+}
+
 func readTauriVersion(root string) (string, error) {
 	content, err := readFile(root, tauriConf)
 	if err != nil {
@@ -93,6 +123,7 @@ func writeTauriVersion(root, version string) error {
 var secondarySources = []versionSource{
 	{label: "Xcode MARKETING_VERSION", rel: xcodeProject, read: readXcodeMarketingVersion, write: writeXcodeMarketingVersion},
 	{label: "Cargo.toml", rel: cargoToml, read: readCargoVersion, write: writeCargoVersion},
+	{label: "Cargo.lock", rel: cargoLock, read: readCargoLockVersion, write: writeCargoLockVersion},
 	{label: "tauri.conf.json", rel: tauriConf, read: readTauriVersion, write: writeTauriVersion},
 }
 

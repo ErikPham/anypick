@@ -29,6 +29,10 @@ struct AddSavedAccountSheet: View {
   @State private var credentialProfile = ""
   @State private var apiSecret = ""
   @State private var revealSecret = false
+  /// Production save waits for the engine result (C4) instead of dismissing
+  /// on accept: failures keep field context instead of arriving after close.
+  @State private var awaitingSaveResult = false
+  @State private var saveError: String?
   @State private var detectionTask: Task<Void, Never>?
   @State private var loginTask: Task<Void, Never>?
   @FocusState private var nameFocused: Bool
@@ -58,6 +62,25 @@ struct AddSavedAccountSheet: View {
         FileManager.default.fileExists(
           atPath: home + "/" + $0, isDirectory: &isDir) && isDir.boolValue
     }
+  }
+  private var isZaiProvider: Bool { provider.lowercased() == "zai" }
+  /// The ZCode desktop app keeps its login in its Electron store — verified:
+  /// no plaintext credential, no auth cookies, no plan token outside it —
+  /// so AnyPick can only take a dashboard key, never import the app login.
+  private var zcodeAppInstalled: Bool {
+    guard isZaiProvider else { return false }
+    var isDir: ObjCBool = false
+    return FileManager.default.fileExists(
+      atPath: FileManager.default.homeDirectoryForCurrentUser.path + "/.zcode",
+      isDirectory: &isDir) && isDir.boolValue
+  }
+  private var zcodePlanWarning: String? {
+    guard zcodeAppInstalled else { return nil }
+    let url = URL(
+      fileURLWithPath: FileManager.default.homeDirectoryForCurrentUser.path
+        + "/.zcode/v2/coding-plan-cache.json")
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    return zcodeCodingPlanWarning(data)
   }
   private var supportsNewAccountLogin: Bool { !loginMethods.isEmpty }
   /// Typed credential input for compatible vendors (API keys / plan keys).
@@ -89,16 +112,45 @@ struct AddSavedAccountSheet: View {
   }
 
   private var canSubmit: Bool {
-    let named = !accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    if isVerifying || isDetecting { return false }
+    let blocked = isVerifying || isDetecting
     if isKeyInputMode {
-      let keyed = !apiSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      return named && keyed && selectedProvider?.enabled == true
+      return addCredentialInputCanSubmit(
+        name: accountName,
+        secret: apiSecret,
+        providerEnabled: selectedProvider?.enabled == true,
+        isBlocked: blocked
+      )
     }
     if sourceMode == .newAccount, !hasIdentity {
-      return named && selectedLoginMethod?.available == true && selectedProvider?.enabled == true
+      return addSavedAccountCanSubmit(
+        name: accountName,
+        isNewAccountMode: true,
+        hasIdentity: false,
+        hasLiveLogin: false,
+        methodAvailable: selectedLoginMethod?.available == true,
+        providerEnabled: selectedProvider?.enabled == true,
+        isBlocked: blocked
+      )
     }
-    return named && hasIdentity && selectedProvider?.enabled == true
+    return addSavedAccountCanSubmit(
+      name: accountName,
+      isNewAccountMode: sourceMode == .newAccount,
+      hasIdentity: hasIdentity,
+      hasLiveLogin: currentLogin != nil,
+      methodAvailable: selectedLoginMethod?.available == true,
+      providerEnabled: selectedProvider?.enabled == true,
+      isBlocked: blocked
+    )
+  }
+
+  /// Engine-provided reason shown inline when the primary action is disabled
+  /// (C6), or when the sheet stranded with no usable provider (C10).
+  private var signInBlockerMessage: String? {
+    addAccountBlockerMessage(
+      provider: selectedProvider,
+      method: selectedLoginMethod,
+      isNewAccountMode: sourceMode == .newAccount
+    )
   }
 
   private var primaryTitle: String {
@@ -115,9 +167,8 @@ struct AddSavedAccountSheet: View {
     DesignSheetHost(
       title: "Add Account",
       width: 440,
-      height: isKeyInputMode ? 390 : 310,
       primaryTitle: primaryTitle,
-      primaryDisabled: !canSubmit || model.isBusy,
+      primaryDisabled: !canSubmit || model.isBusy || awaitingSaveResult,
       primaryIdentifier: "account-flow.save",
       onCancel: cancelAndDismiss,
       onPrimary: submit
@@ -154,10 +205,24 @@ struct AddSavedAccountSheet: View {
               .accessibilityIdentifier("account-flow.method")
               .help(selectedLoginMethod?.detail ?? "")
             }
+            if let blocker = signInBlockerMessage {
+              Text(blocker)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("account-flow.blocker")
+            }
           }
           TextField("Account Name", text: $accountName, prompt: Text("Personal"))
             .focused($nameFocused)
             .accessibilityIdentifier("account-flow.name")
+          if let saveError {
+            Text(saveError)
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("account-flow.error")
+          }
         } header: {
           Text("Add Account")
         } footer: {
@@ -210,7 +275,26 @@ struct AddSavedAccountSheet: View {
           if result?.succeeded == true { dismiss() }
         } else if result?.operation == "account-save-input" {
           isVerifying = false
-          if result?.succeeded == true { dismiss() }
+          if result?.succeeded == true {
+            dismiss()
+          } else if isKeyInputMode {
+            // Key saves used to fail silently (C4 hole): duplicate names and
+            // rejected secrets now read inline instead of stranding the form.
+            if let message = result?.message, !message.isEmpty {
+              saveError = message
+            } else {
+              saveError = "Couldn’t save that key. Try again."
+            }
+          }
+        } else if result?.operation == "account-save", awaitingSaveResult {
+          awaitingSaveResult = false
+          if result?.succeeded == true {
+            dismiss()
+          } else if let message = result?.message, !message.isEmpty {
+            saveError = message
+          } else {
+            saveError = "Couldn’t save that account. Try again."
+          }
         } else if result?.operation == "account-detect" {
           isDetecting = false
           if result?.succeeded == true {
@@ -370,6 +454,18 @@ struct AddSavedAccountSheet: View {
           .accessibilityLabel(revealSecret ? "Hide API Key" : "Show API Key")
         }
       }
+      if isZaiProvider {
+        // Z.ai has no browser flow and the ZCode app login can't be
+        // imported: say where the key comes from instead of a bare field.
+        Text(
+          zcodePlanWarning
+            ?? "Paste the GLM Coding Plan key from the Z.ai dashboard (API Keys)."
+        )
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("account-flow.zcode-hint")
+      }
     }
   }
 
@@ -419,17 +515,8 @@ struct AddSavedAccountSheet: View {
       detectedSource = login.appName
       return
     }
-    detectedIdentity = identity(fromDetectionMessage: detectionMessage) ?? ""
+    detectedIdentity = accountIdentity(fromDetectionMessage: detectionMessage) ?? ""
     detectedSource = detectedIdentity.isEmpty ? "" : sourceAppName
-  }
-
-  private func identity(fromDetectionMessage message: String?) -> String? {
-    guard let message, message.hasPrefix("Detected "),
-      let range = message.range(of: " in ")
-    else { return nil }
-    let identity = String(
-      message[message.index(message.startIndex, offsetBy: 9)..<range.lowerBound])
-    return identity == "the current login" ? "Current login" : identity
   }
 
   private func liveLogin(for option: DesignProviderOption?) -> DesignLiveLogin? {
@@ -530,6 +617,7 @@ struct AddSavedAccountSheet: View {
 
   private func saveKey() {
     guard let kind = selectedCredentialKind else { return }
+    saveError = nil
     isVerifying = true
     if model.isProduction {
       if !model.saveCredentialInput(
@@ -606,6 +694,20 @@ struct AddSavedAccountSheet: View {
       detectedIdentity.isEmpty
       ? "Current \(providerLabel) login"
       : detectedIdentity
+    saveError = nil
+    if model.isProduction {
+      // Dismissal waits for the engine result (C4); the fixture answers
+      // synchronously and dismisses at once below.
+      if model.addSavedAccount(
+        provider: provider,
+        name: accountName,
+        label: "",
+        identity: identity
+      ) {
+        awaitingSaveResult = true
+      }
+      return
+    }
     if model.addSavedAccount(
       provider: provider,
       name: accountName,
@@ -684,7 +786,6 @@ struct AddGatewaySheet: View {
     DesignSheetHost(
       title: "Add API Gateway",
       width: 456,
-      height: 450,
       primaryTitle: "Add Gateway",
       primaryDisabled: !canSave || model.isBusy,
       primaryIdentifier: "gateway-flow.save",
@@ -866,7 +967,8 @@ struct AddGatewaySheet: View {
     case .untested:
       Button("Test Connection", action: testConnection)
         .disabled(
-          apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isBusy
+          !gatewayConnectionTestEnabled(
+            requiresApiKey: requiresApiKey, apiKey: apiKey, isBusy: model.isBusy)
         )
         .accessibilityIdentifier("gateway-flow.test")
     }
@@ -981,7 +1083,6 @@ struct AccountInspectSheet: View {
     DesignSheetHost(
       title: account?.name ?? "Account",
       width: 440,
-      height: usageWindows.isEmpty ? 280 : 400,
       primaryTitle: "Done",
       primaryIdentifier: "account-inspect.done",
       showsCancel: false,
@@ -1057,6 +1158,9 @@ struct EditAccountSheet: View {
   let accountID: String
   @Environment(\.dismiss) private var dismiss
   @State private var name = ""
+  /// Production edit waits for the engine result (C4) like the add sheet.
+  @State private var awaitingSaveResult = false
+  @State private var saveError: String?
   @FocusState private var nameFocused: Bool
 
   private var account: DesignAccount? { model.accounts.first { $0.id == accountID } }
@@ -1070,9 +1174,8 @@ struct EditAccountSheet: View {
     DesignSheetHost(
       title: account.map { "Edit \($0.name)" } ?? "Edit Account",
       width: 440,
-      height: 280,
       primaryTitle: "Save",
-      primaryDisabled: !canSave || model.isBusy,
+      primaryDisabled: !canSave || model.isBusy || awaitingSaveResult,
       primaryIdentifier: "account-edit.save",
       onCancel: { dismiss() },
       onPrimary: save
@@ -1086,6 +1189,13 @@ struct EditAccountSheet: View {
             LabeledContent("Provider", value: account.provider)
             LabeledContent("Type", value: account.kind.rawValue)
           }
+          if let saveError {
+            Text(saveError)
+              .font(.footnote)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("account-edit.error")
+          }
         } footer: {
           Text("The name is shown in AnyPick. The provider login is unchanged.")
         }
@@ -1094,10 +1204,45 @@ struct EditAccountSheet: View {
         name = account?.name ?? ""
         nameFocused = true
       }
+      .onChange(of: model.operationResult) { _, result in
+        guard awaitingSaveResult,
+          result?.operation == "account-edit" || result?.operation == "gateway-edit"
+        else { return }
+        awaitingSaveResult = false
+        if result?.succeeded == true {
+          dismiss()
+        } else if let message = result?.message, !message.isEmpty {
+          saveError = message
+        } else {
+          saveError = "Couldn’t save that name. Try again."
+        }
+      }
     }
   }
 
   private func save() {
+    saveError = nil
+    if model.isProduction {
+      // No mutation fires for a vanished account — never strand the sheet
+      // waiting for a result that cannot arrive.
+      guard model.accounts.contains(where: { $0.id == accountID }) else {
+        saveError = "That account is no longer available."
+        return
+      }
+      // The store refuses while another mutation is in flight: only arm the
+      // wait when the request was accepted, or the sheet hangs in a saving
+      // state with no result ever arriving (A1). Matches AppModelsSheet.
+      guard !model.isBusy else {
+        saveError = "Another change is in progress. Try again in a moment."
+        return
+      }
+      if model.updateAccount(id: accountID, label: name) {
+        awaitingSaveResult = true
+      } else {
+        saveError = "Another change is in progress. Try again in a moment."
+      }
+      return
+    }
     model.updateAccount(id: accountID, label: name)
     dismiss()
   }
@@ -1122,7 +1267,6 @@ struct ConnectGatewaySheet: View {
     DesignSheetHost(
       title: gateway.map { "Connect \($0.name)" } ?? "Connect API Gateway",
       width: 440,
-      height: 360,
       primaryTitle: "Connect",
       primaryDisabled: model.isBusy || compatibleApps.isEmpty,
       primaryIdentifier: "gateway-connect.save",

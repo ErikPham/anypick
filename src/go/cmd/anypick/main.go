@@ -233,7 +233,9 @@ func usage() {
 	fmt.Print(`anypick-go — point AI coding clients at accounts you already have
 
 Usage:
-  anypick add <provider> --name <name> [--force]
+  anypick add account <provider> --name <name> [--current|--new] [--force]
+  anypick add gateway <name> --provider <id> [--endpoint url]
+  anypick add <provider> --name <name> [--force]   (deprecated alias for add account --current)
   anypick use <client> --with <source> [--model <id>] [--transport auto|direct|proxy]
   anypick run <client> --with <source> -- <args…>   ephemeral isolated launch
   anypick current <provider>
@@ -259,6 +261,223 @@ func fsFor(_ []string) *flag.FlagSet { return cli.FsFor() }
 func reorder(args []string) []string { return cli.Reorder(args) }
 
 func cmdAdd(ctx context.Context, a *app.App, args []string) int {
+	// Canonical documented grammar (README, getting-started):
+	//   anypick add account <provider> --name <name> [--current|--new] [--force]
+	//   anypick add gateway <name> --provider <id> [--endpoint url]
+	// The bare `add <provider>` form predates the docs and stays as a
+	// deprecated alias for `add account --current`.
+	if len(args) > 0 && args[0] == "account" {
+		return cmdAddAccount(ctx, a, args[1:])
+	}
+	if len(args) > 0 && args[0] == "gateway" {
+		return cmdGatewayAdd(ctx, a, args[1:])
+	}
+	return cmdAddAccountCurrent(ctx, a, args, true)
+}
+
+func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
+	// A bare `--secret` / `--api-key` (no =value, next token is a flag or
+	// absent) means "prompt on the TTY". The flag package would otherwise
+	// swallow the following token as the value, so detect it first.
+	args, promptSecretFlag, promptAPIKey := splitBareSecretFlags(args)
+	usage := "usage: anypick add account <provider> --name <name> [--current|--new] [--force]\n" +
+		"       anypick add account <provider> --new --name <name> [--auth-method <id>] [--source <id>]\n" +
+		"       anypick add account <provider> --name <name> --credential <kind> --secret [--option profile=<id>]"
+	fs := fsFor(args)
+	name := fs.String("name", "", "account name")
+	force := fs.Bool("force", false, "overwrite an existing account")
+	current := fs.Bool("current", false, "snapshot the current live login (default)")
+	newLogin := fs.Bool("new", false, "start a fresh provider login, then save it")
+	kind := fs.String("kind", "", "credential kind for compatible vendors (e.g. api-key)")
+	credential := fs.String("credential", "", "credential kind for compatible vendors (e.g. api-key, subscription-key)")
+	secret := fs.String("secret", "", "credential secret; prefer ANYPICK_SECRET (value via --secret is visible in process listing)")
+	apiKey := fs.String("api-key", "", "API key value; bare flag prompts on the TTY (implies --credential api-key)")
+	profileID := fs.String("profile", "", "endpoint profile id (default: first)")
+	authMethod := fs.String("auth-method", "", "browser sign-in method id (with --new)")
+	source := fs.String("source", "", "sign-in source (with --new; gemini-cli|antigravity also selects which sign-in --current reads)")
+	region := fs.String("region", "", "cloud region (kiro API-key accounts)")
+	var options optionFlags
+	fs.Var(&options, "option", "provider qualifier as key=value (repeatable; e.g. --option profile=singapore)")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return int(anyerr.InvalidUsage)
+	}
+	if fs.NArg() != 1 || *name == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		return int(anyerr.InvalidUsage)
+	}
+	if *current && *newLogin {
+		fmt.Fprintln(os.Stderr, "usage: anypick add account <provider> --name <name> [--current|--new]: --current and --new are mutually exclusive")
+		return int(anyerr.InvalidUsage)
+	}
+	providerID := fs.Arg(0)
+
+	if *newLogin {
+		// Browser sign-in: credential-input flags belong to the typed-input
+		// flow, not to a fresh login.
+		if *kind != "" || *credential != "" || *secret != "" || *apiKey != "" ||
+			promptSecretFlag || promptAPIKey || *profileID != "" || len(options) > 0 || *region != "" {
+			fmt.Fprintln(os.Stderr, "usage: --new runs a fresh browser sign-in and takes no credential flags (--credential/--secret/--api-key/--option/--region)")
+			return int(anyerr.InvalidUsage)
+		}
+		res, err := a.Accounts.Login(ctx, providerID, accounts.LoginOptions{
+			Name: *name, MethodID: *authMethod, Source: *source,
+		})
+		if err != nil {
+			return reportErr(err)
+		}
+		if !globals.Quiet {
+			if res.Account.Identity != "" {
+				fmt.Printf("saved %s/%s (%s)\n", res.Account.Provider, res.Account.Name, res.Account.Identity)
+			} else {
+				fmt.Printf("saved %s/%s\n", res.Account.Provider, res.Account.Name)
+			}
+		}
+		return int(anyerr.Success)
+	}
+
+	// Snapshot flows below: --auth-method only selects a browser sign-in
+	// method, which --current never runs.
+	if *authMethod != "" {
+		fmt.Fprintln(os.Stderr, "usage: --auth-method selects a browser sign-in method and requires --new")
+		return int(anyerr.InvalidUsage)
+	}
+	// Gemini is the only provider whose snapshot read is source-scoped:
+	// --source picks which sign-in --current reads when both exist.
+	if *source != "" {
+		if providerID != "gemini" || (*source != "gemini-cli" && *source != "antigravity") {
+			fmt.Fprintln(os.Stderr, "usage: --source gemini-cli|antigravity is only supported for gemini (with --current), or use --new --source <id>")
+			return int(anyerr.InvalidUsage)
+		}
+		if err := os.Setenv("GEMINI_OAUTH_SOURCE", *source); err != nil {
+			return reportErr(err)
+		}
+	}
+	// --region today only exists for kiro API-key accounts, whose save path
+	// is not implemented yet (see the kiro note in the typed-input branch).
+	if *region != "" {
+		fmt.Fprintln(os.Stderr, "usage: --region is only supported for kiro API-key accounts, which are not implemented yet")
+		return int(anyerr.InvalidUsage)
+	}
+
+	resolvedKind := *kind
+	if *credential != "" {
+		if resolvedKind != "" && resolvedKind != *credential {
+			fmt.Fprintln(os.Stderr, "usage: --kind and --credential disagree; pass one credential kind")
+			return int(anyerr.InvalidUsage)
+		}
+		resolvedKind = *credential
+	}
+	if *apiKey != "" || promptAPIKey {
+		if resolvedKind != "" && resolvedKind != "api-key" {
+			fmt.Fprintln(os.Stderr, "usage: --api-key implies credential kind api-key and disagrees with --credential/--kind")
+			return int(anyerr.InvalidUsage)
+		}
+		resolvedKind = "api-key"
+	}
+	profile := *profileID
+	if len(options) > 0 {
+		prof, err := options.profile()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "usage:", err)
+			return int(anyerr.InvalidUsage)
+		}
+		if prof != "" {
+			if profile != "" && profile != prof {
+				fmt.Fprintln(os.Stderr, "usage: --profile and --option profile= disagree; pass one endpoint profile")
+				return int(anyerr.InvalidUsage)
+			}
+			profile = prof
+		}
+	}
+
+	rest := []string{"--name", *name}
+	if *force {
+		rest = append(rest, "--force")
+	}
+	if resolvedKind != "" {
+		rest = append(rest, "--kind", resolvedKind)
+		secretVal := *secret
+		if secretVal == "" {
+			secretVal = *apiKey
+		}
+		if secretVal == "" {
+			secretVal = os.Getenv("ANYPICK_SECRET")
+		}
+		if secretVal == "" && (promptSecretFlag || promptAPIKey) {
+			var perr error
+			secretVal, perr = promptSecret("credential secret")
+			if perr != nil {
+				return reportErr(perr)
+			}
+		}
+		if secretVal != "" {
+			rest = append(rest, "--secret", secretVal)
+		}
+		if profile != "" {
+			rest = append(rest, "--profile", profile)
+		}
+	}
+	rest = append(rest, providerID)
+	_ = current
+	return cmdAddAccountCurrent(ctx, a, rest, false)
+}
+
+// splitBareSecretFlags pulls a valueless --secret / --api-key out of argv
+// before flag parsing: bare means "prompt on the TTY". A following token that
+// does not look like a flag is the value, not a prompt request.
+func splitBareSecretFlags(args []string) (rest []string, promptSecret, promptAPIKey bool) {
+	rest = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		name := ""
+		if tok == "--secret" || tok == "--api-key" {
+			name = tok
+		}
+		if name == "" {
+			rest = append(rest, tok)
+			continue
+		}
+		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+			if name == "--secret" {
+				promptSecret = true
+			} else {
+				promptAPIKey = true
+			}
+			continue
+		}
+		rest = append(rest, tok)
+	}
+	return rest, promptSecret, promptAPIKey
+}
+
+// optionFlags collects repeatable --option key=value qualifiers. Only the
+// `profile` qualifier exists in the Go credential-input contract; anything
+// else fails closed with the supported set instead of being silently dropped.
+type optionFlags []string
+
+func (o *optionFlags) String() string { return strings.Join(*o, ",") }
+
+func (o *optionFlags) Set(v string) error {
+	*o = append(*o, v)
+	return nil
+}
+
+func (o optionFlags) profile() (string, error) {
+	profile := ""
+	for _, item := range o {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || key == "" || value == "" {
+			return "", fmt.Errorf("--option must be key=value, got %q (supported: profile=<id>)", item)
+		}
+		if key != "profile" {
+			return "", fmt.Errorf("--option %q is not a qualifier this provider contract supports (supported: profile=<id>)", key)
+		}
+		profile = value
+	}
+	return profile, nil
+}
+
+func cmdAddAccountCurrent(ctx context.Context, a *app.App, args []string, deprecated bool) int {
 	fs := fsFor(args)
 	name := fs.String("name", "", "account name")
 	force := fs.Bool("force", false, "overwrite an existing account")
@@ -269,7 +488,11 @@ func cmdAdd(ctx context.Context, a *app.App, args []string) int {
 		return int(anyerr.InvalidUsage)
 	}
 	if fs.NArg() != 1 || *name == "" {
-		fmt.Fprintln(os.Stderr, "usage: anypick add <provider> --name <name> [--kind <k> --profile <p>] [--force]")
+		if deprecated {
+			fmt.Fprintln(os.Stderr, "usage: anypick add <provider> --name <name> [--kind <k> --profile <p>] [--force]")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: anypick add account <provider> --name <name> [--current|--new] [--force]")
+		}
 		fmt.Fprintln(os.Stderr, "  compatible vendors take --kind/--secret (env ANYPICK_SECRET recommended)")
 		return int(anyerr.InvalidUsage)
 	}
@@ -553,15 +776,23 @@ func cmdGateway(ctx context.Context, a *app.App, args []string) int {
 }
 
 func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
+	// A bare --api-key (no =value, next token is a flag or absent) means
+	// "prompt on the TTY" — see splitBareSecretFlags.
+	args, _, promptAPIKey := splitBareSecretFlags(args)
 	fs := fsFor(args)
 	providerID := fs.String("provider", "", "catalog provider id (e.g. openrouter)")
 	endpoint := fs.String("endpoint", "", "OpenAI-style base URL (defaults to the vendor's)")
 	secret := fs.String("secret", "", "API key; prefer ANYPICK_SECRET (value via --secret is visible in process listing)")
+	apiKey := fs.String("api-key", "", "API key value; bare flag prompts on the TTY")
+	apiKeyEnv := fs.String("api-key-env", "", "read the API key from this environment variable")
+	model := fs.String("model", "", "default model id")
+	var models roleModelFlags
+	fs.Var(&models, "models", "model role override as role=id (repeatable)")
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
 	}
 	if fs.NArg() != 1 || *providerID == "" {
-		fmt.Fprintln(os.Stderr, "usage: anypick gateway add <name> --provider <id> [--endpoint url]")
+		fmt.Fprintln(os.Stderr, "usage: anypick gateway add <name> --provider <id> [--endpoint url] [--api-key [key]|--api-key-env <var>|--secret <key>] [--model <id>] [--models <role=id>]")
 		return int(anyerr.InvalidUsage)
 	}
 	cat := catalog.NewIndex(catalog.Builtin())
@@ -571,11 +802,37 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage),
 			anyerr.WithSuggestions("Known: "+strings.Join(catalog.IDs(), ", "))))
 	}
-	if envSecret := os.Getenv("ANYPICK_SECRET"); *secret == "" && envSecret != "" {
+	if envSecret := os.Getenv("ANYPICK_SECRET"); *secret == "" && *apiKey == "" && *apiKeyEnv == "" && envSecret != "" {
 		*secret = envSecret
 	}
+	if *apiKeyEnv != "" {
+		if *secret != "" || *apiKey != "" {
+			fmt.Fprintln(os.Stderr, "usage: pass one API key source (--secret, --api-key or --api-key-env)")
+			return int(anyerr.InvalidUsage)
+		}
+		envVal, ok := os.LookupEnv(*apiKeyEnv)
+		if !ok || envVal == "" {
+			fmt.Fprintf(os.Stderr, "error: environment variable %s is not set or empty\n", *apiKeyEnv)
+			return int(anyerr.InvalidUsage)
+		}
+		*secret = envVal
+	}
+	if *apiKey != "" {
+		if *secret != "" {
+			fmt.Fprintln(os.Stderr, "usage: pass one API key source (--secret, --api-key or --api-key-env)")
+			return int(anyerr.InvalidUsage)
+		}
+		*secret = *apiKey
+	}
+	if *secret == "" && promptAPIKey {
+		var perr error
+		*secret, perr = promptSecret("API key")
+		if perr != nil {
+			return reportErr(perr)
+		}
+	}
 	if *secret == "" {
-		fmt.Fprintln(os.Stderr, "error: an API key is required (--secret or ANYPICK_SECRET)")
+		fmt.Fprintln(os.Stderr, "error: an API key is required (--secret, --api-key, --api-key-env or ANYPICK_SECRET)")
 		return int(anyerr.InvalidUsage)
 	}
 	resolvedEndpoint := *endpoint
@@ -591,6 +848,7 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 		_, err := a.Runtime.Profiles.UpsertContext(c, profile.Runtime{
 			Meta: profile.Meta{
 				Name: gatewayName, Provider: *providerID, Endpoint: resolvedEndpoint,
+				DefaultModel: *model, Models: map[string]string(models),
 			},
 			Secrets: profile.Secrets{APIKey: *secret},
 		})
@@ -620,6 +878,31 @@ func cmdGatewayList(ctx context.Context, a *app.App) int {
 		fmt.Printf("%s\t%s\t%s\n", pr.Meta.Name, pr.Meta.Provider, pr.Meta.Endpoint)
 	}
 	return int(anyerr.Success)
+}
+
+// roleModelFlags collects repeatable --models role=id overrides for gateway
+// model roles. The profile stores roles as a role→model-id map, so anything
+// else fails closed at parse time instead of being silently dropped.
+type roleModelFlags map[string]string
+
+func (r *roleModelFlags) String() string {
+	parts := make([]string, 0, len(*r))
+	for role, id := range *r {
+		parts = append(parts, role+"="+id)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (r *roleModelFlags) Set(v string) error {
+	role, id, ok := strings.Cut(v, "=")
+	if !ok || role == "" || id == "" {
+		return fmt.Errorf("--models must be role=model-id, got %q", v)
+	}
+	if *r == nil {
+		*r = roleModelFlags{}
+	}
+	(*r)[role] = id
+	return nil
 }
 
 // cmdProxy manages per-account builtin proxies across invocations.

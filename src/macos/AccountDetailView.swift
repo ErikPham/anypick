@@ -72,7 +72,13 @@ struct AccountDetailView: View {
             .accessibilityIdentifier("accounts.inspector.make-current")
         }
         Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
-          model.refreshAccount(id: account.id)
+          // Gateways re-probe the stored credential (C7); saved logins
+          // refresh. The key never leaves the engine either way.
+          if account.kind == .gateway {
+            model.testSavedGateway(id: account.id)
+          } else {
+            model.refreshAccount(id: account.id)
+          }
         }
         .disabled(model.isBusy)
         .accessibilityIdentifier("accounts.inspector.test")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +16,36 @@ import (
 	"github.com/outof0/anypick/go/internal/store"
 )
 
+// syncBuffer is a mutex-guarded output buffer for tests. Mutation handlers run
+// off the server's select loop (server.go) and emit their terminal result and
+// refresh asynchronously, so a plain strings.Builder shared with the polling
+// test goroutine is a data race. Every method is safe for concurrent use.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func (s *syncBuffer) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.b.Reset()
+}
+
 // invokeAndAwait runs one snapshot action and waits for its terminal result
 // line, the way the app reads the tray's stdout stream.
-func invokeAndAwait(t *testing.T, srv *Server, out *strings.Builder, rev int, actionID, reqID string) Result {
+func invokeAndAwait(t *testing.T, srv *Server, out *syncBuffer, rev int, actionID, reqID string) Result {
 	t.Helper()
 	out.Reset()
 	raw, _ := json.Marshal(invokePayload{Version: 1, RequestID: reqID, Revision: rev, ActionID: actionID})
@@ -33,6 +61,10 @@ func invokeAndAwait(t *testing.T, srv *Server, out *strings.Builder, rev int, ac
 			payload, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(line, "result\t"))
 			var res Result
 			if json.Unmarshal(payload, &res) == nil && res.RequestID == reqID {
+				// Drain the handler's trailing refresh before returning:
+				// without this the goroutine keeps touching the store after
+				// the test closes the database (sql: database is closed).
+				srv.Wait()
 				return res
 			}
 		}
@@ -105,7 +137,7 @@ func TestToggleStartStopRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var out strings.Builder
+	var out syncBuffer
 	srv := New(env.Deps, strings.NewReader(""), &out)
 	snap, err := srv.buildSnapshot(ctx)
 	if err != nil {
@@ -249,7 +281,7 @@ func TestToggleReusesFreshLivenessNotSnapshotTime(t *testing.T) {
 	ctx := context.Background()
 	seedTrayProxy(t, ctx, env)
 
-	var out strings.Builder
+	var out syncBuffer
 	srv := New(env.Deps, strings.NewReader(""), &out)
 	snap, err := srv.buildSnapshot(ctx)
 	if err != nil {

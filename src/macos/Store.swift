@@ -71,6 +71,11 @@ final class TrayStore: ObservableObject {
     commandSink = sink
   }
 
+  /// Relaunch hook for terminal-degraded recovery (the error screen's Try
+  /// Again). Wired by AppDelegate next to the command sink; nil in fixture
+  /// and tests, where there is no service to relaunch.
+  var restartService: (() -> Void)?
+
   func updateServiceState(_ state: AppServiceConnectionState) {
     serviceState = state
     if case .degraded(let reason) = state {
@@ -540,8 +545,14 @@ final class TrayStore: ObservableObject {
     withAnimation(TrayMotion.message) { message = nil }
   }
 
+  /// Termination hook. Production wires the delegate path (menu-bar Quit
+  /// semantics: Dock/⌘Q hides instead of killing); unset falls back to a
+  /// plain terminate. The hook keeps TrayStore free of the app delegate so
+  /// the unit-test target can compile the store without the app scene.
+  var quitHandler: (() -> Void)?
+
   func quitAnyPick() {
-    AnyPickAppDelegate.requestQuit()
+    if let quitHandler { quitHandler() } else { NSApp.terminate(nil) }
   }
 
   private func consume(_ line: String) {

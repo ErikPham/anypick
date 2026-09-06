@@ -41,6 +41,15 @@ const DESTINATION_ICON: Record<Destination, string> = {
   backups: '⛁',
 };
 
+// btoa throws on non-ASCII (Unicode paths/labels); encode UTF-8 bytes.
+// Mirrors decodeB64Utf8 below, which decodes the same way.
+function encodeB64Utf8(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let bin = '';
+  for (const byte of bytes) bin += String.fromCharCode(byte);
+  return btoa(bin);
+}
+
 export function App() {
   const [destination, setDestination] = useState<Destination>('overview');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -51,16 +60,58 @@ export function App() {
     let cancelled = false;
     const unlisten: Array<() => void> = [];
 
-    // Each line is one bounded frame from the Go service, already validated
-    // for size and shape by the Rust layer before it reaches here.
+    // Engine frames are `kind\tbase64(json)` (see go/internal/desktop/protocol.go
+    // frame() and rust protocol.rs canonical_payload). The Rust layer forwards
+    // the raw line on `service-line`; decode here instead of JSON.parse on the
+    // whole payload, which can never succeed on a framed line.
+    // Base64 may carry non-ASCII JSON, so decode bytes as UTF-8 rather than
+    // treating atob output as a JS string directly.
+    const decodeB64Utf8 = (encoded: string): string => {
+      const bin = atob(encoded);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new TextDecoder().decode(bytes);
+    };
+    // btoa throws on non-ASCII (Unicode paths/labels); the module-scope
+    // encodeB64Utf8 handles the send direction.
+    const decodeFrame = (line: string): EngineFrame | null => {
+      const tab = line.indexOf('\t');
+      if (tab < 0) return null;
+      const kind = line.slice(0, tab);
+      const encoded = line.slice(tab + 1);
+      if (kind !== 'snapshot' && kind !== 'snapshot-event' && kind !== 'result' &&
+          kind !== 'logs' && kind !== 'backup-preview' && kind !== 'usage-event' &&
+          kind !== 'protocol-error') {
+        return null;
+      }
+      try {
+        const json = decodeB64Utf8(encoded);
+        const payload = JSON.parse(json) as Record<string, unknown>;
+        if (kind === 'snapshot' || kind === 'snapshot-event') {
+          // snapshot frames carry the Snapshot inline; snapshot-event wraps
+          // it under `snapshot`.
+          const snap = (payload.snapshot ?? payload) as Snapshot;
+          if (typeof snap.revision === 'number') {
+            return { type: kind, snapshot: snap };
+          }
+          return null;
+        }
+        if (kind === 'result' || kind === 'protocol-error') {
+          const message = typeof payload.message === 'string' ? payload.message : undefined;
+          const status = typeof payload.status === 'string' ? payload.status : undefined;
+          return { type: kind, message, status };
+        }
+        return { type: kind };
+      } catch {
+        return null;
+      }
+    };
+
     void bridge.listen('service-line', (event) => {
       if (cancelled) return;
-      let frame: EngineFrame;
-      try {
-        frame = JSON.parse(event.payload) as EngineFrame;
-      } catch {
-        return; // Not JSON: a diagnostic line. Ignore rather than crash the UI.
-      }
+      const line = String((event.payload as unknown) ?? '');
+      const frame = decodeFrame(line);
+      if (!frame) return; // Diagnostic line or undecodable: ignore, don't crash.
       if (frame.snapshot) {
         setSnapshot(frame.snapshot);
         setState('connected');
@@ -93,6 +144,16 @@ export function App() {
 
   async function send(command: string) {
     await bridge.invoke('send_command', { command });
+  }
+
+  async function sendMutate(operation: string, extra: Record<string, unknown> = {}) {
+    const payload = {
+      version: 1,
+      requestId: `${operation}-${Date.now()}`,
+      operation,
+      ...extra,
+    };
+    await send(`mutate\t${encodeB64Utf8(JSON.stringify(payload))}`);
   }
 
   return (
@@ -129,6 +190,7 @@ export function App() {
             destination={destination}
             snapshot={snapshot}
             onSend={(command) => void send(command)}
+            onMutate={(operation, extra) => void sendMutate(operation, extra)}
           />
           {notice ? (
             <p className="mt-4 rounded-md bg-amber-100 px-3 py-2 text-sm text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
@@ -149,10 +211,12 @@ function DestinationView({
   destination,
   snapshot,
   onSend,
+  onMutate,
 }: {
   destination: Destination;
   snapshot: Snapshot | null;
   onSend: (command: string) => void;
+  onMutate: (operation: string, extra?: Record<string, unknown>) => void;
 }) {
   if (!snapshot) {
     return <p className="text-sm text-neutral-500">Waiting for the first snapshot…</p>;
@@ -197,7 +261,7 @@ function DestinationView({
           <button
             type="button"
             className="mt-4 rounded-md border px-3 py-1.5 text-sm"
-            onClick={() => onSend('proxy refresh')}
+            onClick={() => onSend('refresh')}
           >
             Refresh proxy state
           </button>
@@ -225,7 +289,10 @@ function DestinationView({
         <button
           type="button"
           className="rounded-md border px-3 py-1.5 text-sm"
-          onClick={() => onSend('backup create')}
+          // Exact shape pinned by TestStrictBackupAllContract: path:"" falls
+          // back to a timestamped temp file (no file picker in this shell UI;
+          // `overwrite` is not an allowed key).
+          onClick={() => onMutate('account-backup-all', { path: '' })}
         >
           Create backup
         </button>

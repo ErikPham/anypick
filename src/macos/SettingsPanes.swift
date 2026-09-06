@@ -9,6 +9,7 @@ struct SettingsGeneralPane: View {
     Form {
       Section {
         Toggle("Open at Login", isOn: $model.openAtLogin)
+          .disabled(model.isBusy)
       } header: {
         Text("Startup")
       }
@@ -59,6 +60,7 @@ struct SettingsUsagePane: View {
     Form {
       Section {
         Toggle("Show Usage Remaining", isOn: $model.showUsage)
+          .disabled(model.isBusy)
       } header: {
         Text("Display")
       } footer: {

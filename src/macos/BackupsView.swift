@@ -10,10 +10,15 @@ struct BackupsView: View {
   @State private var showingCreate = false
   @State private var backupPresentation: BackupPresentation?
   @State private var pendingForgetBackup: DesignBackup?
+  /// Deep-link flow captured at entry (B1/B2): consumed once on appear so
+  /// re-entering the pane never re-opens sheets or wedges the flag.
+  @State private var initialFlow: String?
+  @State private var consumedInitialFlow = false
 
   init(model: MacOSDesignModel) {
     self.model = model
     _showingCreate = State(initialValue: model.pendingStartupFlow == "create-backup")
+    _initialFlow = State(initialValue: model.pendingStartupFlow)
     if model.pendingStartupFlow == "import-backup" {
       let id = model.backups.first(where: { $0.id == "backup-import" })?.id
         ?? model.backups.last?.id
@@ -116,7 +121,17 @@ struct BackupsView: View {
         } header: {
           Text("Reviewed Backups")
         } footer: {
-          Text("For imported files, AnyPick keeps only a protected staging copy until you forget the review.")
+          // Forgetting now discards the staged server copy too (B3); TTL
+          // remains the backstop if the forget frame is ever lost.
+          Text("For imported files, AnyPick stages a protected copy that is discarded when you forget the review.")
+        }
+      } else {
+        // Empty state (B9): a plain boxed row like the rest of the pane.
+        Section {
+          Text("No reviewed backups. Choose a backup file to review it before importing.")
+            .foregroundStyle(.secondary)
+        } header: {
+          Text("Reviewed Backups")
         }
       }
     }
@@ -148,7 +163,18 @@ struct BackupsView: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("This discards AnyPick’s protected review copy. The original backup file is not deleted.")
+      Text("AnyPick discards this review and its staged copy. The original backup file is not deleted.")
+    }
+    .onAppear {
+      guard !consumedInitialFlow else { return }
+      consumedInitialFlow = true
+      let flow = initialFlow
+      model.pendingStartupFlow = nil
+      // Cold-start import-backup with nothing to present (B2): honor the
+      // flow by opening the file picker instead of wedging the flag.
+      if flow == "import-backup", backupPresentation == nil {
+        chooseBackup()
+      }
     }
   }
 
@@ -195,6 +221,13 @@ struct BackupsView: View {
       backupIssue(
         title: "Can’t Read This File",
         message: model.backupInspectionMessage ?? "AnyPick does not have permission to open it.",
+        actionTitle: "Choose Another File…",
+        action: chooseBackup
+      )
+    case .missing:
+      backupIssue(
+        title: "Can’t Find This File",
+        message: model.backupInspectionMessage ?? "It may have been moved or deleted.",
         actionTitle: "Choose Another File…",
         action: chooseBackup
       )

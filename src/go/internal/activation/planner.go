@@ -497,10 +497,13 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	}
 
 	// Persistent activation is the only mode allowed to change native auth.
-	// TS parity (activation-executor.ts WriteNativeAuth): the step runs for
-	// every account source that requires a native auth write, regardless of
-	// transport capability — `use claude --with grok/x` must restore grok's
-	// saved login as its live one so quota/usage and direct CLI use agree.
+	// Deliberate divergence from TS (activation-planner.ts gated this on
+	// capability == direct): the step runs for every persistent account
+	// source whose adapter requires a native auth write, regardless of
+	// transport, so quota/usage and direct CLI use agree with the binding.
+	// Adapters whose proxy serves purely from the snapshot (e.g. grok, whose
+	// proxy refreshes per request from saved auth) declare
+	// RequiresNativeAuthWrite=false and stay excluded here.
 	if req.Mode == ModePersistent && resolved.Kind == "account" &&
 		resolved.Adapter.Capabilities.RequiresNativeAuthWrite {
 		steps = append(steps, PlanStep{

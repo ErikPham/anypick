@@ -231,6 +231,19 @@ func (m *InspectionManager) deleteLocked(id string) {
 	}
 }
 
+// Forget drops a staged inspection before its TTL (B3): the client calls it
+// when the user discards a review, so staged credentials do not linger until
+// restore, TTL, or eviction. Unknown ids succeed — forget is idempotent
+// cleanup, not a lookup.
+func (m *InspectionManager) Forget(id string) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteLocked(id)
+}
+
 // inspectionError mirrors inspectionError in TS (stable user-facing message).
 func inspectionError(msg string) error {
 	return anyerr.Newf(msg, "BACKUP_INSPECT_FAILED")
@@ -240,7 +253,10 @@ func inspectionError(msg string) error {
 // (file, root, digest).
 func stageBackup(path string) (string, string, string, error) {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	if err != nil {
+		return "", "", "", backupAccessError(err)
+	}
+	if info.IsDir() {
 		return "", "", "", anyerr.Newf("Backup package could not be read.", "BACKUP_MISSING")
 	}
 	root, mkErr := os.MkdirTemp("", "anypick-tray-inspect-")
@@ -251,7 +267,7 @@ func stageBackup(path string) (string, string, string, error) {
 	src, oerr := os.Open(path)
 	if oerr != nil {
 		os.RemoveAll(root)
-		return "", "", "", anyerr.Newf("Backup package could not be read.", "BACKUP_MISSING")
+		return "", "", "", backupAccessError(oerr)
 	}
 	defer src.Close()
 	hash := sha256.New()
@@ -267,6 +283,19 @@ func stageBackup(path string) (string, string, string, error) {
 	}
 	out.Close()
 	return dest, root, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// backupAccessError reports a missing file and a permission problem
+// distinctly (B5): conflating them sent missing files to the permission
+// copy and permission failures to "damaged".
+func backupAccessError(err error) error {
+	if os.IsNotExist(err) {
+		return anyerr.Newf("Backup package could not be found.", "BACKUP_MISSING")
+	}
+	if os.IsPermission(err) {
+		return anyerr.Newf("Backup package could not be read.", "BACKUP_DENIED")
+	}
+	return anyerr.Newf("Backup package could not be read.", "BACKUP_MISSING")
 }
 
 func newUUID() (string, error) {
@@ -285,8 +314,10 @@ func inspectionFailureReason(err error) string {
 		switch ae.Code {
 		case "BACKUP_VERSION":
 			return "newer-version"
-		case "BACKUP_MISSING":
+		case "BACKUP_DENIED":
 			return "permission-denied"
+		case "BACKUP_MISSING":
+			return "missing"
 		}
 	}
 	return "damaged"
@@ -298,6 +329,8 @@ func inspectionFailureMessage(reason string) string {
 		return "This backup was created by a newer AnyPick version. Update AnyPick, then review it again."
 	case "permission-denied":
 		return "AnyPick does not have permission to read that backup. Choose another file or update its permissions."
+	case "missing":
+		return "That backup file is gone. It may have been moved or deleted."
 	default:
 		return "AnyPick could not inspect that backup. Choose a valid AnyPick backup file and try again."
 	}

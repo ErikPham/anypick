@@ -66,4 +66,17 @@ extension TrayStore {
     )
     return sendMutationCommand(mutation, requestId: requestId, activityLabel: activityLabel)
   }
+
+  /// Discard a staged review copy server-side (B3). Returns the request id on
+  /// accept, nil while another mutation is in flight: callers must clear
+  /// local preview state only after the engine confirms (see deleteBackup).
+  @discardableResult
+  func forgetBackup(inspectionId: String) -> String? {
+    let mutation = BackupForgetMutation(
+      requestId: UUID().uuidString,
+      inspectionId: inspectionId
+    )
+    return sendMutationCommand(
+      mutation, requestId: mutation.requestId, activityLabel: "forgetting backup review")
+  }
 }

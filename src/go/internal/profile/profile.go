@@ -75,10 +75,6 @@ func (s *Store) GetContext(ctx context.Context, name string) (*Runtime, error) {
 	return r, nil
 }
 
-func (s *Store) Upsert(r Runtime) (Runtime, error) {
-	return s.UpsertContext(context.Background(), r)
-}
-
 func (s *Store) UpsertContext(ctx context.Context, r Runtime) (Runtime, error) {
 	now := nowISO()
 	existing, err := s.GetContext(ctx, r.Meta.Name)
@@ -111,10 +107,6 @@ func (s *Store) UpsertContext(ctx context.Context, r Runtime) (Runtime, error) {
 		return Runtime{}, err
 	}
 	return r, nil
-}
-
-func (s *Store) Delete(name string) error {
-	return s.DeleteContext(context.Background(), name)
 }
 
 func (s *Store) DeleteContext(ctx context.Context, name string) error {

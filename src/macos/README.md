@@ -210,9 +210,12 @@ Rules:
   button). Pane-level commands sit **under the last group**, outside
   the Form (`DesignGroupedPane`).
 - Service lifecycle (Start/Stop/Restart) also lives **in the Service row**
-  as a trailing button, and collection-create actions (Add Account, Start
-  Hub) are duplicated in the toolbar — with 20+ rows the under-form actions
-  fall below the fold and must stay reachable without scrolling to the end.
+  as a trailing button. Panes carry **no titlebar buttons**: collection
+  actions (Add Account, Start Hub, Stop All…) live once, under the last
+  group — with 20+ rows prefer navigation (sidebar, search, row drill-in)
+  over duplicating actions where they fall below the fold.
+  The log-source filter is the exception that proves it: with no toolbar,
+  it sits beside the Events/Live Logs picker inside the Activity pane.
 - Quick Panel uses native rows, `Menu`, `Toggle`, `Picker` only. No custom
   cards, chip strips, palette files, manual fonts, or `RoundedRectangle`
   chrome. Account names wrap; the expanded proxy list scrolls in a bounded
@@ -282,8 +285,10 @@ Settings scene (⌘, — **not** a sidebar row):
 Do not duplicate a toggle across General and a specialized pane.
 Do not put appearance, scrolling, or other **system** preferences here.
 
-Usage rows preserve every provider-reported window and label. Never rename the
-first window to “5-hour” or infer a reset period. Idle proxies are neutral; they
+Usage rows preserve every provider-reported window and label. Cadence
+(`limit_window_seconds`) and reset instants render when the vendor reports
+them; anything else is left unsaid rather than inferred — never rename a
+window to “5-hour” from its position alone. Idle proxies are neutral; they
 only become global attention when an active app route or running Hub depends on
 them and the service is unavailable.
 
@@ -294,8 +299,8 @@ These still apply; chrome must not fight them:
 - Instant-apply for pane toggles and pickers.
 - Single-flight mutations in production (`TrayStore`). Disable controls
   when `isBusy`.
-- Errors: `NSAlert` / `.alert` only. Success is silent or VoiceOver +
-  Edit → Undo — not a toast stack.
+- Errors: `NSAlert` / `.alert` only. Success is silent (VoiceOver
+  announcement) — not a toast stack.
 - Backups: `NSSavePanel` / `NSOpenPanel`. Files contain credentials;
   say so before create / import.
 - Proxy addresses are loopback; never show the auth token.

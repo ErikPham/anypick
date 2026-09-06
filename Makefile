@@ -14,7 +14,7 @@ SHELL := /bin/bash
 GO_DIR := src/go
 MACOS_DIR := src/macos
 TAURI_DIR := src/tauri
-TAURI_CORE := $(TAURI_DIR)/src-tauri
+TAURI_CORE := $(TAURI_DIR)/app
 
 # The module cache must be writable and must not be shared with another
 # project. When it is shared, tests that shell out to `go build`
@@ -149,7 +149,12 @@ sandbox: build ## Same, against a throwaway HOME and ANYPICK_HOME
 #     written before commit 44e5046 moved everything under src/, and once a
 #     file is tracked .gitignore no longer applies to it. So detect the
 #     artifact (`grep -I` treats a binary as non-matching) instead of listing
-#     names.
+#     names. Non-text files are only excused as Xcode image assets (*.png /
+#     *.icns, which must stay tracked) and only when their magic bytes agree
+#     (PNG 8-byte signature / "icns"), so a renamed binary cannot smuggle
+#     through on extension alone. The exemption check avoids `case` inside
+#     $(…): /bin/bash is still 3.2 on macOS, whose parser ends the
+#     substitution at a case pattern's `)`.
 #   - authority documents: AGENTS.md points at documents a clean checkout must
 #     have, and an untracked doc breaks review for every agent starting fresh.
 paths: ## Verify every script still resolves the repository root
@@ -211,17 +216,15 @@ paths: ## Verify every script still resolves the repository root
 	  echo "  OK   every .go file under $(GO_DIR) is visible to git"; \
 	fi; \
 	echo "checking no build artifact is tracked"; \
-	total="$$(git ls-files src/ | wc -l | tr -d ' ')"; \
-	text="$$(git grep -Il . -- src/ 2>/dev/null | wc -l | tr -d ' ')"; \
-	empty="$$(git ls-files src/ | while read -r f; do [ -s "$$f" ] || echo "$$f"; done | wc -l | tr -d ' ')"; \
-	not_artifact="$$((text + empty))"; \
-	if [ "$$total" != "$$not_artifact" ]; then \
-	  echo "  FAIL $$((total - not_artifact)) tracked binary(ies) under src/ (total $$total, text $$text, empty $$empty)"; \
-	  echo "       list them:  git ls-files src/ | grep -vFxf <(git grep -Il . -- src/)"; \
+	nontext="$$(git ls-files src/ | grep -vFxf <(git grep -Il . -- src/ 2>/dev/null) || true)"; \
+	bad="$$(printf '%s\n' "$$nontext" | while IFS= read -r f; do if [ -z "$$f" ] || [ "$$(git cat-file -s ":$$f" 2>/dev/null || echo 0)" -eq 0 ]; then continue; elif [[ "$$f" == *.png ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 8 | od -An -tx1 | tr -d ' \n')"; if [ "$$magic" != "89504e470d0a1a0a" ]; then printf '%s\n' "$$f"; fi; elif [[ "$$f" == *.icns ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 4)"; if [ "$$magic" != "icns" ]; then printf '%s\n' "$$f"; fi; else printf '%s\n' "$$f"; fi; done)"; \
+	if [ -n "$$bad" ]; then \
+	  echo "  FAIL tracked non-text file(s) under src/ (add an icon exemption with magic, or untrack):"; \
+	  printf '%s\n' "$$bad" | sed 's/^/       /'; \
 	  echo "       untrack it: git rm --cached <path> (the file stays on disk)"; \
 	  fail=1; \
 	else \
-	  echo "  OK   every tracked file under src/ is text (no binary committed)"; \
+	  echo "  OK   every tracked file under src/ is text, empty, or a magic-verified image asset"; \
 	fi; \
 	echo "checking the authority documents are tracked"; \
 	for doc in AGENTS.md CODE_REVIEW.md CONTRIBUTING.md src/macos/README.md; do \
@@ -294,8 +297,14 @@ app-test: ## Build and unit-test the app and the bundled helper contract
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
 
 app-verify: app-build go-toolchain ## Build, then assert ADR 0020 on the built bundle
-	cd $(GO_DIR) && $(GO) run ./cmd/anypick-artifact node-free \
-	  "$$DERIVED_DATA_DIR/Build/Products/Debug/AnyPick.app"
+	@derived="$${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData}"; \
+	app="$$(find "$$derived" -path '*/Build/Products/Debug/AnyPick.app' -print -quit)"; \
+	test -n "$$app" || { echo "no AnyPick.app under $$derived"; exit 1; }; \
+	cd $(GO_DIR) && $(GO) run ./cmd/anypick-artifact node-free "$$app"
+
+smoke-artifact: ## Smoke-test an installed artifact: make smoke-artifact APP=<AnyPick.app|anypick-core>
+	@test -n "$(APP)" || { echo "usage: make smoke-artifact APP=<AnyPick.app|anypick-core>"; exit 1; }
+	src/macos/scripts/smoke-installed-artifact.sh "$(APP)"
 
 # ── Tauri app (Linux / Windows) ───────────────────────────────────────
 

@@ -158,9 +158,11 @@ func callGemini(ctx context.Context, up *Upstream, model string, geminiReq *gemi
 func callGeminiAPIKey(ctx context.Context, up *Upstream, model, routeKey string, geminiReq *gemini.GeminiGenerateRequest) (*gemini.GeminiGenerateResponse, error) {
 	token := up.Auth
 	if up.AuthProvider != nil {
-		if got, perr := up.AuthProvider(ctx); perr == nil {
-			token = got
+		got, perr := up.AuthProvider(ctx)
+		if perr != nil {
+			return nil, anyerr.Wrapf(perr, "Gemini credential refresh failed", "GEMINI_OAUTH")
 		}
+		token = got
 	}
 	if token == "" {
 		return nil, anyerr.Newf("no Gemini API key available", "GEMINI_NO_KEY")
@@ -442,11 +444,14 @@ func extractGeminiErrorMessage(body string, status int) string {
 	}
 	if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error != nil {
 		if parsed.Error.Message != "" {
-			return parsed.Error.Message
+			msg := strings.TrimSpace(parsed.Error.Message)
+			// Vendor-authored message only, bounded so a compromised
+			// upstream cannot smuggle secrets through the error path.
+			if len(msg) > 300 {
+				msg = msg[:300]
+			}
+			return msg
 		}
-	}
-	if strings.TrimSpace(body) != "" {
-		return strings.TrimSpace(body)
 	}
 	return fmt.Sprintf("Gemini upstream error (HTTP %d)", status)
 }

@@ -31,13 +31,14 @@ func newHubStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	// Hub tables come from migrations; they exist in a fresh database.
-	return &Store{DB: database.DB}
+	// Root points at an isolated dir so coordinator-locked writes work.
+	return &Store{DB: database.DB, Root: t.TempDir()}
 }
 
 func TestHubRoutesByModelAcrossSources(t *testing.T) {
 	st := newHubStore(t)
 
-	cfg, err := st.UpsertConfig(Config{
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "default", Enabled: true,
 		Sources: []Source{
 			{ProviderID: "glm", Account: "cn"},
@@ -57,7 +58,7 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 			// index 0 is the implicit default.
 		},
 	}
-	if err := st.AttachRoute(route); err != nil {
+	if err := st.AttachRouteContext(context.Background(), route); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,7 +126,7 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 
 func TestStoreRoundTripAndDetach(t *testing.T) {
 	st := newHubStore(t)
-	cfg, err := st.UpsertConfig(Config{Name: "h1", Enabled: true,
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{Name: "h1", Enabled: true,
 		Sources: []Source{{ProviderID: "p", Account: "a"}}})
 	if err != nil || cfg.Name != "h1" {
 		t.Fatalf("cfg %+v err=%v", cfg, err)
@@ -136,14 +137,14 @@ func TestStoreRoundTripAndDetach(t *testing.T) {
 	}
 
 	token := proxy.MustNewToken()
-	if err := st.AttachRoute(Route{RouteID: "r1", HubName: "h1", Token: token}); err != nil {
+	if err := st.AttachRouteContext(context.Background(), Route{RouteID: "r1", HubName: "h1", Token: token}); err != nil {
 		t.Fatal(err)
 	}
 	found, err := st.RouteByToken(token)
 	if err != nil || found == nil || found.RouteID != "r1" || found.Token != token {
 		t.Fatalf("route by token = %+v err=%v", found, err)
 	}
-	if err := st.DetachRoute("r1"); err != nil {
+	if err := st.DetachRouteContext(context.Background(), "r1"); err != nil {
 		t.Fatal(err)
 	}
 	gone, _ := st.RouteByToken(token)

@@ -4,8 +4,8 @@ description: Every AnyPick command, global flag, exit code, and environment vari
 ---
 
 The command name is `anypick`. During the current development preview, run the
-same command tree from a checkout as `pnpm dev <arguments>`; for example,
-`pnpm dev list accounts`. No supported CLI or native-app installer is currently
+same command tree from a checkout with `make run ARGS="…"`; for example,
+`make run ARGS="list accounts"`. No supported CLI or native-app installer is currently
 published.
 
 The native macOS application is a separate app-owned target. It launches its
@@ -78,7 +78,7 @@ anypick add account [provider] [--current] [--new]
     [--option <key=value...>]
 anypick add gateway [name] --provider <id> --endpoint <url>
     [--api-key <key> | --api-key-env <var>]
-    [--model <id>] [--models <id...>]
+    [--model <id>] [--models <role=id...>]
 ```
 
 `--current` snapshots the login that is live now. `--new` uses an available
@@ -86,10 +86,12 @@ provider-owned browser sign-in and saves its resulting native credential;
 otherwise it stashes the current login and prints the manual continuation.
 Official methods are preferred, while `--auth-method <id>` can select any method
 the provider declares, including a community method. `--source <id>` picks an
-explicit native store for a multi-source provider. `--api-key` is the backwards-compatible Kiro
-shortcut and prompts for the value when it is omitted; `--region` pins its API
-region. Plugin providers use `--credential <kind>`, `--secret`, and one or more
-provider-declared `key=value` qualifiers after `--option`. Omit the `--secret`
+explicit native store for a multi-source provider. `--api-key` is the
+backwards-compatible shortcut for `--credential api-key` and prompts for the
+value when it is omitted; `--region` is reserved for Kiro API-key accounts
+(not implemented yet — refused with a clear error). Plugin providers use
+`--credential <kind>`, `--secret`, and one or more provider-declared
+`key=value` qualifiers after `--option`. Omit the `--secret`
 value to use a masked prompt.
 
 ## Accounts

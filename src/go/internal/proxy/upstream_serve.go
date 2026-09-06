@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -51,11 +49,21 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		return
 	}
 	target := *up.BaseURL
+	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
+	if aerr != nil {
+		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
+		return
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
 			pr.Out.Host = target.Host
-			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("x-api-key")
+			pr.Out.Header.Del("api-key")
+			pr.Out.Header.Set(header, prefix+token)
+			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -93,6 +101,12 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		sanitized = up.SanitizeOpenAIBody(raw)
 		sanitizing = true
 	}
+	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
+	if aerr != nil {
+		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
+		return
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
@@ -107,7 +121,11 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 					return io.NopCloser(bytes.NewReader(sanitized)), nil
 				}
 			}
-			injectUpstreamAuthFields(pr.Out.Context(), pr.Out, up)
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("x-api-key")
+			pr.Out.Header.Del("api-key")
+			pr.Out.Header.Set(header, prefix+token)
+			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -126,7 +144,12 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 // /v1/messages lands on …/anthropic/v1/messages.
 func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	t := up.Anthropic
-	header, prefix, token := resolveTargetAuth(r.Context(), t, up)
+	header, prefix, token, aerr := resolveTargetAuth(r.Context(), t, up)
+	if aerr != nil {
+		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
+		return
+	}
 	target := *t.BaseURL
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -176,7 +199,11 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	injectUpstreamAuthFields(r.Context(), req, up)
+	if err := injectUpstreamAuthFields(r.Context(), req, up); err != nil {
+		proxyLogf("credential refresh failed: %s", redactAuthError(err))
+		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
+		return
+	}
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(req)
@@ -193,11 +220,10 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 			// Log the vendor envelope on 4xx: it names the real rejection
 			// (channel/quota/model variants) that the client would otherwise
 			// see only opaquely. Vendor-authored text only, safe to log.
-			proxyLogf("upstream %d; vendor says: %s", resp.StatusCode, describeVendorError(raw))
+			proxyLogf("upstream %d; vendor says: %s", resp.StatusCode, describeVendorError(raw, resp.StatusCode))
 			proxyLogf("upstream %d; failed shape: %s", resp.StatusCode, describeAnthropicShape(body))
 			if strings.Contains(raw, "11128") {
 				proxyLogf("upstream 11128; sanitized: %s", describeSanitizedOpenAI(translated))
-				dump11128(body, translated)
 			}
 		}
 		if IsContextWindowError(raw) {
@@ -233,10 +259,10 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 }
 
 // resolveUpstreamAuth returns the header/prefix/token to forward for an
-// OpenAI-surface request. A configured AuthProvider wins over static Auth and
-// may refresh a short-lived token; on provider error the token is left empty
-// so the upstream rejects with 401 instead of the proxy inventing one.
-func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, token string) {
+// OpenAI-surface request. A configured AuthProvider wins over static Auth.
+// On provider error it fails closed with an error: forwarding an empty or
+// stale token would surface only as an upstream 401 and hide the real cause.
+func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, token string, err error) {
 	header, prefix = up.AuthHeader, up.AuthValuePrefix
 	if header == "" {
 		header = "Authorization"
@@ -244,17 +270,19 @@ func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, tok
 	}
 	token = up.Auth
 	if up.AuthProvider != nil {
-		if got, err := up.AuthProvider(ctx); err == nil {
-			token = got
+		got, perr := up.AuthProvider(ctx)
+		if perr != nil {
+			return header, prefix, "", perr
 		}
+		token = got
 	}
-	return header, prefix, token
+	return header, prefix, token, nil
 }
 
 // resolveTargetAuth resolves the credential for a native Anthropic target,
 // falling back to the parent Upstream's provider/header when the target leaves
-// them empty.
-func resolveTargetAuth(ctx context.Context, t *UpstreamTarget, up *Upstream) (header, prefix, token string) {
+// them empty. Provider errors fail closed (see resolveUpstreamAuth).
+func resolveTargetAuth(ctx context.Context, t *UpstreamTarget, up *Upstream) (header, prefix, token string, err error) {
 	header, prefix = t.AuthHeader, t.AuthValuePrefix
 	if header == "" {
 		header, prefix = up.AuthHeader, up.AuthValuePrefix
@@ -272,11 +300,13 @@ func resolveTargetAuth(ctx context.Context, t *UpstreamTarget, up *Upstream) (he
 		provider = up.AuthProvider
 	}
 	if provider != nil {
-		if got, err := provider(ctx); err == nil {
-			token = got
+		got, perr := provider(ctx)
+		if perr != nil {
+			return header, prefix, "", perr
 		}
+		token = got
 	}
-	return header, prefix, token
+	return header, prefix, token, nil
 }
 
 func applyExtraHeaders(out *http.Request, headers []ExtraHeader) {
@@ -287,13 +317,34 @@ func applyExtraHeaders(out *http.Request, headers []ExtraHeader) {
 	}
 }
 
-func injectUpstreamAuthFields(ctx context.Context, out *http.Request, up *Upstream) {
-	header, prefix, token := resolveUpstreamAuth(ctx, up)
+func injectUpstreamAuthFields(ctx context.Context, out *http.Request, up *Upstream) error {
+	header, prefix, token, err := resolveUpstreamAuth(ctx, up)
+	if err != nil {
+		return err
+	}
 	out.Header.Del("Authorization")
 	out.Header.Del("x-api-key")
 	out.Header.Del("api-key")
 	out.Header.Set(header, prefix+token)
 	applyExtraHeaders(out, up.ExtraHeaders)
+	return nil
+}
+
+// redactAuthError keeps credential-refresh failures diagnosable without
+// letting vendor/OIDC payloads cross the output boundary. Callers log this
+// and return a generic "credential refresh failed" to the client.
+func redactAuthError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	// anyerr messages are already safe (no raw bodies after the OAuth
+	// redaction); still bound the length so a compromised endpoint cannot
+	// smuggle bulk data through logs.
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg
 }
 
 func extractRequestID(body []byte) string {
@@ -438,16 +489,8 @@ func describeAnthropicShape(body []byte) string {
 		sb.WriteString("]")
 	}
 	if tools, ok := v["tools"].([]any); ok {
-		names := make([]string, 0, len(tools))
-		for _, t := range tools {
-			if tm, ok := t.(map[string]any); ok {
-				if name, ok := tm["name"].(string); ok {
-					names = append(names, name)
-				}
-			}
-		}
-		sb.WriteString(" toolnames=" + strings.Join(names, ","))
-		sb.WriteString(" tools=" + strconv.Itoa(len(tools)))
+		// Counts only: tool names are user-defined and must not reach logs.
+		sb.WriteString("tools=" + strconv.Itoa(len(tools)))
 	}
 	return sb.String()
 }
@@ -458,26 +501,11 @@ func stringOrEmpty(v any) string {
 }
 
 // describeSanitizedOpenAI summarizes the body we actually sent upstream
-// after translation/sanitizer. Fingerprints only — no prompt text.
-func dump11128(inbound, sanitized []byte) {
-	root := os.Getenv("ANYPICK_HOME")
-	if root == "" {
-		home, _ := os.UserHomeDir()
-		root = filepath.Join(home, ".anypick")
-	}
-	path := filepath.Join(root, "last-11128.json")
-	var in map[string]any
-	_ = json.Unmarshal(inbound, &in)
-	payload := map[string]any{
-		"sanitized": string(sanitized),
-		"inbound":   in,
-	}
-	raw, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, raw, 0o600)
-}
+// after translation/sanitizer. Fingerprints only — no prompt text, no raw
+// dump. A previous revision wrote inbound+sanitized bodies to
+// last-11128.json; that file could hold prompts, history, file contents and
+// pasted secrets, so raw dumps are removed (P0). Diagnostics stay in the
+// redacted log line above.
 
 func describeSanitizedOpenAI(body []byte) string {
 	var v map[string]any
@@ -511,21 +539,24 @@ func describeSanitizedOpenAI(body []byte) string {
 	return sb.String()
 }
 
-// describeVendorError extracts the vendor envelope code/message/requestId.
-// Vendor-authored text only — no user content flows through here.
-func describeVendorError(raw string) string {
+// describeVendorError extracts an allowlisted fingerprint from the vendor
+// envelope: numeric code and request id only. Vendor message text and raw
+// bytes never reach logs: a compromised or chatty upstream can echo prompts,
+// tool arguments or secrets into its error message, and proxy.log gets
+// attached to bug reports.
+func describeVendorError(raw string, status int) string {
 	var env struct {
 		Code      int    `json:"code"`
-		Msg       string `json:"msg"`
 		RequestID string `json:"requestId"`
 	}
-	if json.Unmarshal([]byte(raw), &env) != nil || env.Msg == "" {
-		if len(raw) > 160 {
-			raw = raw[:160]
-		}
-		return "unparseable: " + raw
+	if json.Unmarshal([]byte(raw), &env) != nil || (env.Code == 0 && env.RequestID == "") {
+		return "unparseable status=" + strconv.Itoa(status) + " len=" + strconv.Itoa(len(raw))
 	}
-	return "code=" + strconv.Itoa(env.Code) + " msg=" + env.Msg + " req=" + env.RequestID
+	out := "code=" + strconv.Itoa(env.Code)
+	if env.RequestID != "" {
+		out += " req=" + env.RequestID
+	}
+	return out
 }
 
 func translateRequestBody(body []byte) ([]byte, error) { return protocol.TranslateRequest(body) }

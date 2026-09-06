@@ -76,10 +76,6 @@ type CreateOptions struct {
 	State             State
 }
 
-func (j *OperationJournal) Create(entryType string, opts CreateOptions) (Entry, error) {
-	return j.CreateContext(context.Background(), entryType, opts)
-}
-
 func (j *OperationJournal) CreateContext(ctx context.Context, entryType string, opts CreateOptions) (Entry, error) {
 	ts := nowISO()
 	state := opts.State
@@ -172,10 +168,6 @@ func scanEntry(row rowScanner) (*Entry, error) {
 }
 
 // Patch mirrors update(): zero-value fields keep the stored value.
-func (j *OperationJournal) Update(id string, patch Entry) (Entry, error) {
-	return j.UpdateContext(context.Background(), id, patch)
-}
-
 func (j *OperationJournal) UpdateContext(ctx context.Context, id string, patch Entry) (Entry, error) {
 	existing, err := j.GetContext(ctx, id)
 	if err != nil {

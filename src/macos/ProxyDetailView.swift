@@ -68,7 +68,7 @@ struct ProxyDetailView: View {
             } else {
               Text("Not running")
                 .foregroundStyle(.secondary)
-                .accessibilityIdentifier("proxies.inspector.copy")
+                .accessibilityIdentifier("proxies.inspector.address")
             }
           }
           LabeledContent("Logs") {
@@ -83,7 +83,11 @@ struct ProxyDetailView: View {
 
         } actions: {
           Button("Restart Proxy") { model.restartProxy(id: proxy.id) }
-            .disabled(model.isBusy || !proxy.enabled || model.serviceOperations[proxy.id] != nil)
+            .disabled(
+              model.isBusy
+                || !canRestartProxy(enabled: proxy.enabled, status: proxy.status)
+                || model.serviceOperations[proxy.id] != nil
+            )
             .accessibilityIdentifier("proxies.inspector.restart")
           Button(
             proxy.enabled ? "Stop Proxy" : "Start Proxy",

@@ -25,7 +25,7 @@ window is closed.
 For the terminal workflow from a source checkout:
 
 ```bash
-pnpm dev tui
+make run ARGS="tui"
 ```
 
 You land on **Apps**:
@@ -54,7 +54,8 @@ Three habits that make the UI safe for non-experts:
 
 The command examples below show AnyPick's CLI grammar. Until a supported CLI
 package is published, run the same arguments from this checkout with
-`pnpm dev …`; for example, `pnpm dev list accounts`.
+`make run ARGS="…"`; for example, `make run ARGS="list accounts"` (or build
+once with `make build` and run `./src/go/bin/anypick-dev …` directly).
 
 Full walkthrough of source → models → preview:
 [Terminal UI · Apps](/docs/guides/terminal-ui#build-a-route-the-main-flow).

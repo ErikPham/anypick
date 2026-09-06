@@ -287,6 +287,13 @@ func TestRecoverRestoresExactFileBackups(t *testing.T) {
 	if err := os.WriteFile(src, []byte("post-activation"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The journal transition is part of the recovery contract: success is
+	// only counted when the entry exists and the state lands.
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-file", State: journal.StateExecuting,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	result := &RecoveryResult{}
 	entry := &journal.Entry{
 		ID:          "j-file",
@@ -345,6 +352,11 @@ func TestRecoverUsesRealProducerRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "journal-abc", State: journal.StateExecuting,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	result := &RecoveryResult{}
 	entry := &journal.Entry{
 		ID:          "journal-abc",
@@ -371,6 +383,11 @@ func TestRecoverDeleteMarkerRemovesCreatedFiles(t *testing.T) {
 
 	created := filepath.Join(t.TempDir(), "created.json")
 	if err := os.WriteFile(created, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Journal.CreateContext(context.Background(), "activation", journal.CreateOptions{
+		ID: "j-del", State: journal.StateExecuting,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	result := &RecoveryResult{}
@@ -403,7 +420,7 @@ func TestRecoverFailedBackupsMarkEntryFailed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entryID := "j-" + strings.ReplaceAll(tc.name, " ", "-")
-			if _, err := deps.Journal.Create("activation", journal.CreateOptions{
+			if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
 				ID: entryID, State: journal.StateExecuting,
 			}); err != nil {
 				t.Fatal(err)
@@ -432,6 +449,11 @@ func TestRecoverPlannedRefusedAndUnknownSources(t *testing.T) {
 
 	// Planned entries never started: nothing to compensate.
 	planned := &RecoveryResult{}
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-planned", State: journal.StatePlanned,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recover(ctx, deps, &journal.Entry{ID: "j-planned", State: journal.StatePlanned}, planned)
 	if planned.Recovered != 1 || len(planned.Refused) != 0 {
 		t.Fatalf("planned: %+v", planned)
@@ -439,6 +461,11 @@ func TestRecoverPlannedRefusedAndUnknownSources(t *testing.T) {
 
 	// Preset sources are never forward-executed from journals → refused.
 	refused := &RecoveryResult{}
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-preset", State: journal.StateVerifying,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recover(ctx, deps, &journal.Entry{
 		ID: "j-preset", State: journal.StateVerifying,
 		Params: map[string]interface{}{"source": "preset/demo"},
@@ -449,6 +476,11 @@ func TestRecoverPlannedRefusedAndUnknownSources(t *testing.T) {
 
 	// Account sources that no longer re-resolve exactly → refused.
 	unknown := &RecoveryResult{}
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-unknown", State: journal.StateRollingBack,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recover(ctx, deps, &journal.Entry{
 		ID: "j-unknown", State: journal.StateRollingBack,
 		Params: map[string]interface{}{"source": refs.SerializeRef(refs.AccountRef("codex", "ghost"))},
@@ -459,6 +491,11 @@ func TestRecoverPlannedRefusedAndUnknownSources(t *testing.T) {
 
 	// Executing state with neither backups nor a source ref cannot continue.
 	stuck := &RecoveryResult{}
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-stuck", State: journal.StateExecuting,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recover(ctx, deps, &journal.Entry{
 		ID: "j-stuck", State: journal.StateExecuting,
 		Params: map[string]interface{}{},
@@ -513,5 +550,65 @@ func TestValidateCredentialKinds(t *testing.T) {
 	// Other kinds are accepted without checks.
 	if err := validateCredential(ctx, planFor(refs.Ref{Kind: refs.KindPreset}), deps); err != nil {
 		t.Fatalf("other kind: %v", err)
+	}
+}
+
+// A failed compensation must not skip the independent compensations behind
+// it: every item is attempted, failures aggregate, and the entry is Failed
+// even though one item restored fine.
+func TestRecoverAttemptsCompensationsAfterAFailure(t *testing.T) {
+	env := newTestEnv(t)
+	deps := env.Deps
+	ctx := context.Background()
+
+	goodSrc := filepath.Join(t.TempDir(), "config.toml")
+	goodDst := filepath.Join(t.TempDir(), "nested", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(goodDst), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goodDst, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goodSrc, []byte("post-activation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(t.TempDir(), "gone") + " => " + filepath.Join(t.TempDir(), "x")
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: "j-partial", State: journal.StateExecuting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := &RecoveryResult{}
+	recover(ctx, deps, &journal.Entry{
+		ID: "j-partial", State: journal.StateExecuting,
+		Params:      map[string]interface{}{},
+		BackupPaths: []string{bad, goodSrc + " => " + goodDst},
+	}, result)
+
+	// The good item behind the failure was still attempted and applied.
+	if data, err := os.ReadFile(goodSrc); err != nil || string(data) != "original" {
+		t.Fatalf("compensation behind the failure was skipped: %q %v", data, err)
+	}
+	if len(result.Failed) != 1 || result.Recovered != 0 {
+		t.Fatalf("partial recovery must report failure, got %+v", result)
+	}
+	updated, err := deps.Journal.Get("j-partial")
+	if err != nil || updated == nil || updated.State != journal.StateFailed {
+		t.Fatalf("journal not marked failed: %+v %v", updated, err)
+	}
+}
+
+// An entry the journal does not know must never count as recovered: the
+// terminal transition is part of the recovery contract, not a formality.
+func TestRecoverMissingJournalEntryNeverCountsRecovered(t *testing.T) {
+	env := newTestEnv(t)
+	result := &RecoveryResult{}
+	recover(context.Background(), env.Deps, &journal.Entry{
+		ID: "j-ghost", State: journal.StateExecuting,
+		Params:      map[string]interface{}{},
+		BackupPaths: []string{},
+	}, result)
+	if result.Recovered != 0 || len(result.Failed) != 1 {
+		t.Fatalf("ghost entry must fail, got %+v", result)
 	}
 }

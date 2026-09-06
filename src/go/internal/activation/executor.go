@@ -183,15 +183,13 @@ func executeLocked(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOpti
 		return fail(err)
 	}
 
-	// Transport gates before any mutation — the planner does not emit these.
-	switch plan.Transport.Capability {
-	case transport.ExternalManualProxy:
-		return fail(anyerr.Newf(
-			"Required external proxy for "+plan.ResolvedSource.Display+" is not installed.\n\nInstall the provider proxy and retry.",
-			"MISSING_DEPENDENCY",
-			anyerr.WithExitCode(anyerr.MissingDependency),
-			anyerr.WithSuggestions("anypick doctor "+plan.Client)))
-	case transport.Unsupported:
+	// Defense in depth for hand-built plans: the planner rejects Unsupported
+	// at plan time, but Execute must still refuse it rather than mutate.
+	// ExternalManualProxy is NOT gated here — StepValidateExternalDep in
+	// plan.Steps is the single enforcement point (invariant #3: the plan is
+	// the source of truth; the executor must not re-derive behavior from
+	// transport capability, or planner and executor can diverge silently).
+	if plan.Transport.Capability == transport.Unsupported {
 		return fail(anyerr.Newf(
 			"Unsupported transport for "+plan.Client+" × "+plan.ResolvedSource.Display,
 			"UNSUPPORTED_TRANSPORT", anyerr.WithExitCode(anyerr.CapabilityConflict)))
@@ -252,6 +250,9 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 	case StepValidateCredential:
 		return validateCredential(ctx, plan, deps)
 
+	case StepValidateExternalDep:
+		return validateExternalDep(plan)
+
 	case StepWaitForHealth:
 		return waitForProxyHealth(plan, opts)
 
@@ -269,7 +270,7 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 
 	// Planner-time markers: resolved while building the plan, no execution work.
 	case StepResolveSource, StepExpandPreset, StepValidateCompatibility,
-		StepResolveTransport, StepValidateExternalDep, StepAllocateProxyLease,
+		StepResolveTransport, StepAllocateProxyLease,
 		StepInspectClientState, StepReleaseLease, StepRestoreTemporaryState,
 		StepSpawnChild:
 		return nil
@@ -277,6 +278,22 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 	default:
 		return fmt.Errorf("no handler for plan step %q", step.Kind)
 	}
+}
+
+// validateExternalDep is the execution half of StepValidateExternalDep: the
+// planner emits the step when the resolved capability is ExternalManualProxy
+// (external binary missing at plan time). Re-resolve at execution time so a
+// binary installed between plan and execute is honoured, and a still-missing
+// binary fails here — in the step — rather than in a pre-loop gate.
+func validateExternalDep(plan *Plan) error {
+	if plan.ResolvedSource.Adapter.TransportFor(plan.Client) == transport.ExternalManualProxy {
+		return anyerr.Newf(
+			"Required external proxy for "+plan.ResolvedSource.Display+" is not installed.\n\nInstall the provider proxy and retry.",
+			"MISSING_DEPENDENCY",
+			anyerr.WithExitCode(anyerr.MissingDependency),
+			anyerr.WithSuggestions("anypick doctor "+plan.Client))
+	}
+	return nil
 }
 
 // validateCredential asserts the credential behind the source is usable before

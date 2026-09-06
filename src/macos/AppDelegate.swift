@@ -28,6 +28,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       let created = TrayStore(
         initialCount: CommandLine.arguments.count > 1 ? Int(CommandLine.arguments[1]) ?? 0 : 0
       )
+      created.quitHandler = { AnyPickAppDelegate.requestQuit() }
       store = created
       designModel = ProductionDesignModel(store: created)
     }
@@ -71,7 +72,17 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
 
     if isFixture {
       if ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_PATH"] != nil {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+        // Settle delay for layout-accurate captures (slow first paint would
+        // otherwise freeze a half-laid-out window into the PNG).
+        let delayMs: UInt64
+        if let raw = ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_DELAY_MS"],
+          let parsed = UInt64(raw)
+        {
+          delayMs = parsed
+        } else {
+          delayMs = 2_200
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(delayMs))) {
           self.captureIfRequested(attemptsRemaining: 60)
         }
       }
@@ -168,6 +179,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       guard let service else { return }
       Task { await service.send(command) }
     }
+    store.restartService = { [weak service] in
+      guard let service else { return }
+      Task { await service.restart() }
+    }
     Task { await service.start() }
 #if DEBUG
     runServiceSmokeIfRequested(store: store)
@@ -233,6 +248,12 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     window.displayIfNeeded()
     // CGWindowListCreateImage is obsoleted on macOS 15+ SDKs; render the view
     // hierarchy off-screen instead (own window only, no capture permission).
+    // SwiftUI paints asynchronously: an early attempt freezes a half-painted
+    // window, so only the last attempt writes.
+    guard attemptsRemaining <= 1 else {
+      retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)
+      return
+    }
     let bounds = contentView.bounds
     guard let representation = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
       retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)

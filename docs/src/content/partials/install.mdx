@@ -13,10 +13,10 @@ open src/macos/AnyPick.xcodeproj
 Select the shared **AnyPick** scheme and Run. The build bundles the Go service
 inside the app; it does not compile Swift or Go when the app launches.
 
-For the current CLI and terminal UI source workflow (Node.js 22.5+ and pnpm):
+For the current CLI and terminal UI source workflow (Go 1.26+ required):
 
 ```bash
-pnpm install
-pnpm dev --help
-pnpm dev tui
+make build
+./src/go/bin/anypick-dev --help
+./src/go/bin/anypick-dev tui
 ```

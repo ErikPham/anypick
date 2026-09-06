@@ -85,6 +85,18 @@ serde = { version = "1.0", features = ["derive"] }
   }
 }
 `)
+	mk(t, root, cargoLock, `[[package]]
+name = "anypick-desktop"
+version = "1.0.0"
+dependencies = [
+ "serde 1.0.0",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+`)
 
 	for _, src := range secondarySources {
 		if src.label == "Xcode MARKETING_VERSION" {
@@ -120,6 +132,13 @@ serde = { version = "1.0", features = ["derive"] }
 	conf := read(t, root, tauriConf)
 	if !contains(conf, `"version": "9.9.9"`) {
 		t.Errorf("nested bundle version was rewritten:\n%s", conf)
+	}
+	lock := read(t, root, cargoLock)
+	if !contains(lock, "name = \"anypick-desktop\"\nversion = \"2.3.4\"") {
+		t.Errorf("lock root version was not bumped:\n%s", lock)
+	}
+	if !contains(lock, "name = \"serde\"\nversion = \"1.0.0\"") {
+		t.Errorf("lock dependency version was rewritten:\n%s", lock)
 	}
 }
 

@@ -47,9 +47,9 @@ cutover decision and [the macOS source contract](src/macos/README.md) for the UI
 and lifecycle implementation.
 
 AnyPick is one Go engine. The macOS app is Swift, the CLI and the terminal UI
-are Go, and npm is only a distribution adapter that resolves the platform
-binary. There is no second runtime: the repository ships no TypeScript engine
-(ADR 0020).
+are Go. There is no second runtime and no npm package: the repository ships no
+TypeScript engine and no installable npm launcher (ADR 0020) — run from source
+or take the GitHub Release assets.
 
 ## Run from source
 
@@ -175,13 +175,15 @@ isolated `ANYPICK_HOME` when experimenting.
 ## Current platform status
 
 - The macOS 14+ SwiftUI target and bundled universal Go-helper build exist in
-  source and are under active cutover testing.
-- The CLI and the terminal UI are Go. There is no TypeScript engine; npm
-  installs a launcher plus the platform binary and ships no `dist/`.
+  source and are under active cutover testing. The first release is macOS-only.
+- The CLI and the terminal UI are Go. There is no TypeScript engine and no npm
+  package: distribution is source checkouts plus GitHub Release assets.
 - CI exercises the Go core on Ubuntu and the Xcode app/helper contract on
-  macOS. These source gates do not make an installer a released product.
-- Native Windows/Linux applications and all signed installer channels remain
-  planned work. Do not treat their ADR target entries as available downloads.
+  macOS. The Tauri Linux/Windows apps build from source and in CI, but their
+  artifacts are staged, not published, until target-OS smoke testing lands.
+  These source gates do not make an installer a released product.
+- Signed installer channels beyond the macOS Release asset remain planned work.
+  Do not treat their ADR target entries as available downloads.
 
 ## Documentation
 

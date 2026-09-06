@@ -1,8 +1,11 @@
 # AnyPick desktop app (Linux and Windows)
 
 This is one of two native front ends. The other is the macOS app in
-`src/macos/` (SwiftUI); this one is Tauri 2 + React and ships on Linux and
-Windows (ADR 0020).
+`src/macos/` (SwiftUI); this one is Tauri 2 + React and targets Linux and
+Windows (ADR 0020). Release scope starts macOS-only: these apps build and
+verify in CI, but their artifacts stay staged, not published, until
+target-OS smoke testing lands (see the `release-scope` input in
+`.github/workflows/release.yml`).
 
 **This app owns no AnyPick state and never reads credentials.** It launches,
 handshakes with, supervises and shuts down the bundled Go service, then renders
@@ -19,8 +22,8 @@ socket, and no gRPC — any of those needs a new accepted ADR.
 ## What is bundled
 
 - **The Go service**, as a Tauri `externalBin` sidecar:
-  `binaries/anypick-core` in `src-tauri/tauri.conf.json`, resolved per target by
-  `src-tauri/build.rs`. If you move a directory under `src/`, run `make paths`
+  `binaries/anypick-core` in `app/tauri.conf.json`, resolved per target by
+  `app/build.rs`. If you move a directory under `src/`, run `make paths`
   first: that build script is one of the paths it checks.
 - **No Node runtime.** npm and Vite build the UI bundle at build time; the
   shipped artifact contains no Node, npm, pnpm or ESM shim (ADR 0020 §8). Two
@@ -53,7 +56,7 @@ prerequisites (on Linux: `libwebkit2gtk-4.1-dev`,
 
 ## The desktop protocol version is declared three times
 
-Go (`internal/buildinfo`), Rust (`src-tauri/src/protocol.rs`) and Swift
+Go (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`) and Swift
 (`src/macos/AppServiceClient.swift`) each declare it independently, and nothing
 links them. `make protocol-sync` asserts all three agree — run it whenever you
 bump the protocol, because bumping it on one platform only produces a failure

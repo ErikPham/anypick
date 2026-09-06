@@ -383,7 +383,16 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 	if json.Unmarshal(raw, &pkg) != nil {
 		return nil, backupError("BACKUP_FORMAT", "Backup package is not valid JSON.")
 	}
-	if pkg.Kind != BackupKind || pkg.Version != BackupVersion {
+	if pkg.Kind != BackupKind {
+		return nil, backupError("BACKUP_FORMAT", "Unrecognized backup package format.")
+	}
+	// A newer writer is not a damaged file (B4): report it so the UI can
+	// offer an update instead of "damaged".
+	if pkg.Version > BackupVersion {
+		return nil, backupError(
+			"BACKUP_VERSION", "Backup package was created by a newer AnyPick version.")
+	}
+	if pkg.Version != BackupVersion {
 		return nil, backupError("BACKUP_FORMAT", "Unrecognized backup package format.")
 	}
 	if len(pkg.Accounts) == 0 {

@@ -5,9 +5,10 @@ other tools' credential and config files and spawns local proxies, so a careless
 change corrupts a developer's real logins. Bias toward verifying over assuming.
 
 The engine is **Go** (`src/go/`): CLI, terminal UI and desktop service all run from
-one bundled binary (ADR 0020). The macOS app is Swift (`src/macos/`). npm is a
-distribution adapter — `bin/anypick.js` resolves the platform Go binary and
-spawns it; it ships no TypeScript and needs no Node runtime to do real work.
+one bundled binary (ADR 0020). The macOS app is Swift (`src/macos/`). There is
+no npm package and no `bin/` launcher in the tree: distribution is source
+checkouts plus GitHub Release assets (macOS first), and an npm adapter remains
+planned work, not a channel you can install from today.
 
 `CLAUDE.md` and `GEMINI.md` are symlinks to this file — edit this one.
 `docs/AGENTS.md` (symlinked the same way) covers the docs site, which has

@@ -49,10 +49,10 @@ body:
       required: true
 
   - type: input
-    id: node
+    id: go
     attributes:
-      label: Node version
-      description: Output of `node --version` (AnyPick requires >=22.5)
+      label: Go version
+      description: Output of `go version` (AnyPick requires the toolchain in AGENTS.md)
     validations:
       required: true
 
@@ -63,6 +63,7 @@ body:
       options:
         - macOS
         - Linux
+        - Windows
         - Other
     validations:
       required: true

@@ -4,6 +4,7 @@ import SwiftUI
 struct ActivityView: View {
   @ObservedObject var model: MacOSDesignModel
   @State private var confirmClear = false
+  @State private var confirmClearEvents = false
   @State private var searchQuery = ""
 
   var body: some View {
@@ -13,13 +14,6 @@ struct ActivityView: View {
       placement: .toolbar,
       prompt: model.activityShowsLogs ? "Search logs" : "Search events"
     )
-    .toolbar {
-      if model.activityShowsLogs {
-        ToolbarItem(placement: .primaryAction) {
-          logSourceMenu
-        }
-      }
-    }
     .onChange(of: model.activityShowsLogs) { _, enabled in
       searchQuery = ""
       model.setActivityShowsLogs(enabled)
@@ -37,6 +31,16 @@ struct ActivityView: View {
     .confirmationDialog(
       "Clear Visible Logs?",
       isPresented: $confirmClear,
+      titleVisibility: .visible
+    ) {
+      Button("Clear", role: .destructive) { model.clearActivity() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Accounts, apps, and proxies are unchanged.")
+    }
+    .confirmationDialog(
+      "Clear Visible Events?",
+      isPresented: $confirmClearEvents,
       titleVisibility: .visible
     ) {
       Button("Clear", role: .destructive) { model.clearActivity() }
@@ -84,6 +88,12 @@ struct ActivityView: View {
             }
           }
         }
+      } actions: {
+        // Events had no Clear path (L1): the dialog existed for logs only
+        // while the model already supported both branches.
+        Button("Clear Events…", role: .destructive) { confirmClearEvents = true }
+          .disabled(filteredActivity.isEmpty)
+          .accessibilityIdentifier("activity.clear-events")
       }
     }
   }
@@ -113,6 +123,11 @@ struct ActivityView: View {
       .frame(maxWidth: 240)
       .accessibilityIdentifier("activity.mode.picker")
       Spacer(minLength: 12)
+      // No toolbar buttons: the log filter lives beside the mode picker so
+      // it survives without titlebar chrome.
+      if model.activityShowsLogs {
+        logSourceMenu
+      }
       if model.activityShowsLogs, model.logState == .ready {
         Label {
           Text("Live")
@@ -331,21 +346,31 @@ struct ActivityView: View {
     .listRowInsets(rowInsets)
   }
 
-  /// The stopped notice offers the Start right here: sending the user to
+  /// The stopped notice offers Start right here (L6): sending the user to
   /// the Proxies pane for the one action this screen is about is a dead end.
+  /// Hub sources resolve to the hub toggle — the hub has no proxy row.
   private var stoppedProxyID: String? {
     let id = model.selectedLogSourceID
-    guard !id.isEmpty, model.proxies.contains(where: { $0.id == id }) else { return nil }
+    guard !id.isEmpty else { return nil }
+    if model.logSources.first(where: { $0.id == id })?.provider == "proxy-hub" {
+      return model.proxyHubEnabled ? nil : "hub"
+    }
+    guard model.proxies.contains(where: { $0.id == id }) else { return nil }
     return id
   }
 
   private var stoppedActionTitle: String? {
-    stoppedProxyID == nil ? nil : "Start Proxy"
+    guard let id = stoppedProxyID else { return nil }
+    return id == "hub" ? "Start Hub" : "Start Proxy"
   }
 
   private func startStoppedSource() {
     guard let id = stoppedProxyID else { return }
-    model.setProxyEnabled(id: id, enabled: true)
+    if id == "hub" {
+      model.setProxyHubEnabled(true)
+    } else {
+      model.setProxyEnabled(id: id, enabled: true)
+    }
   }
 
   private var filteredActivity: [DesignActivity] {
@@ -434,6 +459,10 @@ private struct ActivityLogViewer: NSViewRepresentable {
         ])
       if !textView.attributedString().isEqual(to: styled) {
         textView.textStorage?.setAttributedString(styled)
+        // Entering placeholder mode (e.g. right after Clear) keeps the old
+        // scroll offset, stranding the frame on empty space (L8) — pin top.
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
       }
       return
     }
