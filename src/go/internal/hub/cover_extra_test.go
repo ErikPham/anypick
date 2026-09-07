@@ -44,7 +44,7 @@ func TestRewriteModel(t *testing.T) {
 		{Model: "alias", SourceIndex: 1, UpstreamModel: "real-model"},
 	}}
 
-	got := rewriteModel([]byte(`{"model":"alias","messages":[]}`), route, "alias")
+	got := string(rewriteModel([]byte(`{"model":"alias","messages":[]}`), route, "alias"))
 	var doc map[string]interface{}
 	if err := json.Unmarshal([]byte(got), &doc); err != nil {
 		t.Fatalf("rewritten body not json: %v", got)
@@ -54,28 +54,44 @@ func TestRewriteModel(t *testing.T) {
 	}
 
 	// No manifest hit → unchanged.
-	if same := rewriteModel([]byte(`{"model":"other"}`), route, "other"); same != `{"model":"other"}` {
+	if same := string(rewriteModel([]byte(`{"model":"other"}`), route, "other")); same != `{"model":"other"}` {
 		t.Fatalf("unmatched model changed body: %s", same)
 	}
 	// Identity mapping → unchanged.
 	identity := &Route{Models: []ModelRoute{{Model: "m", SourceIndex: 0, UpstreamModel: "m"}}}
-	if same := rewriteModel([]byte(`{"model":"m"}`), identity, "m"); same != `{"model":"m"}` {
+	if same := string(rewriteModel([]byte(`{"model":"m"}`), identity, "m")); same != `{"model":"m"}` {
 		t.Fatalf("identity mapping changed body: %s", same)
 	}
 	// Corrupt body with a mapping → original bytes returned.
 	corrupt := `{"model":"alias"`
-	if same := rewriteModel([]byte(corrupt), route, "alias"); same != corrupt {
+	if same := string(rewriteModel([]byte(corrupt), route, "alias")); same != corrupt {
 		t.Fatalf("corrupt body rewritten: %s", same)
 	}
 }
 
-func TestRouteSourceIndex(t *testing.T) {
-	route := &Route{Models: []ModelRoute{{Model: "deepseek-chat", SourceIndex: 1}}}
-	if idx, ok := routeSourceIndex(route, "deepseek-chat"); !ok || idx != 1 {
-		t.Fatalf("idx=%d ok=%v want 1 true", idx, ok)
+func TestRouteModelEntry(t *testing.T) {
+	route := &Route{Models: []ModelRoute{
+		{Model: "deepseek-chat", SourceIndex: 1},
+		{Model: "alias", SourceIndex: 0, UpstreamModel: "real-model"},
+	}}
+	entry, ok := routeModelEntry(route, "deepseek-chat")
+	if !ok || entry.SourceIndex != 1 {
+		t.Fatalf("entry=%+v ok=%v want SourceIndex 1", entry, ok)
 	}
-	if _, ok := routeSourceIndex(route, "missing"); ok {
+	if entry, ok := routeModelEntry(route, "alias"); !ok || entry.UpstreamModel != "real-model" {
+		t.Fatalf("entry=%+v ok=%v want UpstreamModel real-model", entry, ok)
+	}
+	if _, ok := routeModelEntry(route, "missing"); ok {
 		t.Fatal("want miss")
+	}
+	// Duplicate pins are a data error, but they must resolve the same way for
+	// every caller: first match, both halves.
+	dupes := &Route{Models: []ModelRoute{
+		{Model: "m", SourceIndex: 0},
+		{Model: "m", SourceIndex: 1, UpstreamModel: "other"},
+	}}
+	if entry, ok := routeModelEntry(dupes, "m"); !ok || entry.SourceIndex != 0 || entry.UpstreamModel != "" {
+		t.Fatalf("duplicate pins resolved to %+v, want the first entry", entry)
 	}
 }
 

@@ -194,8 +194,15 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(body, &probe)
 		requestedModel = probe.Model
-		if idx, ok := routeSourceIndex(route, probe.Model); ok {
-			sourceIdx = idx
+		// One lookup, used for both halves of the decision. Resolving the
+		// source and the model remap from two passes over the same table
+		// lets the halves pick different entries: with duplicate pins, the
+		// source came from the first match while the remap came from the
+		// first match that had an UpstreamModel — so a request could be sent
+		// to one source under another source's model id.
+		entry, pinned := routeModelEntry(route, requestedModel)
+		if pinned {
+			sourceIdx = entry.SourceIndex
 		} else if strings.HasPrefix(requestedModel, "#") {
 			// "#N" pins a source index explicitly.
 			if n := parseIndex(requestedModel); n >= 0 && n < len(cfg.Sources) {
@@ -209,10 +216,20 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 		// "no first-source-wins" rule is about collisions — when two sources
 		// claim the same model id, the id stays out of the catalog until the
 		// user records an owner. It does not make an unlisted model an error.
-		// Rebody for the upstream with any route-model mapping applied.
-		rewritten := rewriteModel(body, route, requestedModel)
-		r.Body = io.NopCloser(strings.NewReader(rewritten))
-		r.ContentLength = int64(len(rewritten))
+		// Rebody for the upstream, re-encoding only when the pin actually
+		// remaps the model. A body the hub was not asked to change must reach
+		// the egress core as the bytes the client sent: every byte it
+		// re-encodes is a byte it had to hold in memory first, and a
+		// round trip through map[string]interface{} is a chance to change
+		// something the client depended on.
+		out := body
+		if pinned && entry.UpstreamModel != "" && entry.UpstreamModel != requestedModel {
+			if rewritten, ok := rewriteModelField(body, entry.UpstreamModel); ok {
+				out = rewritten
+			}
+		}
+		r.Body = io.NopCloser(bytes.NewReader(out))
+		r.ContentLength = int64(len(out))
 	}
 	if sourceIdx < 0 || sourceIdx >= len(cfg.Sources) {
 		if len(cfg.Sources) == 0 {
@@ -264,37 +281,56 @@ func poolSourceProvider(src Source) (string, bool) {
 	return strings.TrimPrefix(src.Account, prefix), true
 }
 
-func routeSourceIndex(route *Route, model string) (int, bool) {
+// routeModelEntry resolves a requested model against the route's pinning
+// table. It is the only lookup: source selection and model remapping must
+// agree, or a route can send a request to one source under another source's
+// model id. Duplicate pins for the same model are a data error; they resolve
+// to the first entry for both halves of the decision rather than letting each
+// half pick its own.
+func routeModelEntry(route *Route, model string) (ModelRoute, bool) {
 	for _, m := range route.Models {
 		if m.Model == model {
-			return m.SourceIndex, true
+			return m, true
 		}
 	}
-	return 0, false
+	return ModelRoute{}, false
 }
 
-func rewriteModel(body []byte, route *Route, model string) string {
-	for _, m := range route.Models {
-		if m.Model == model && m.UpstreamModel != "" && m.UpstreamModel != model {
-			// Decode with UseNumber. Unmarshalling into interface{} turns every
-			// JSON number into a float64, so re-marshalling rewrites large
-			// integers that cannot survive the round trip — a proxy has no
-			// business changing numbers it was only asked to relabel.
-			dec := json.NewDecoder(bytes.NewReader(body))
-			dec.UseNumber()
-			var doc map[string]interface{}
-			if dec.Decode(&doc) != nil {
-				return string(body)
-			}
-			doc["model"] = m.UpstreamModel
-			out, err := json.Marshal(doc)
-			if err != nil {
-				return string(body)
-			}
-			return string(out)
-		}
+// rewriteModel applies the route's model remap to a request body. It
+// re-encodes only when the pin actually remaps the model, and returns the
+// original bytes unchanged otherwise or when the body will not survive the
+// round trip.
+func rewriteModel(body []byte, route *Route, model string) []byte {
+	entry, ok := routeModelEntry(route, model)
+	if !ok || entry.UpstreamModel == "" || entry.UpstreamModel == model {
+		return body
 	}
-	return string(body)
+	out, ok := rewriteModelField(body, entry.UpstreamModel)
+	if !ok {
+		return body
+	}
+	return out
+}
+
+// rewriteModelField relabels the top-level "model" field.
+//
+// It decodes with UseNumber. Unmarshalling into interface{} turns every JSON
+// number into a float64, so re-marshalling rewrites large integers that cannot
+// survive the round trip — a proxy has no business changing numbers it was
+// only asked to relabel.
+func rewriteModelField(body []byte, upstreamModel string) ([]byte, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var doc map[string]interface{}
+	if dec.Decode(&doc) != nil {
+		return nil, false
+	}
+	doc["model"] = upstreamModel
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func parseIndex(model string) int {

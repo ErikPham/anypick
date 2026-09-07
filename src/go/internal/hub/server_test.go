@@ -21,7 +21,7 @@ func TestRewriteModelPreservesLargeIntegers(t *testing.T) {
 	route := &Route{Models: []ModelRoute{{Model: "alias", SourceIndex: 0, UpstreamModel: "real"}}}
 	body := []byte(`{"model":"alias","seed":9007199254740993,"max_tokens":4096}`)
 
-	got := rewriteModel(body, route, "alias")
+	got := string(rewriteModel(body, route, "alias"))
 	if !strings.Contains(got, `"model":"real"`) {
 		t.Fatalf("model was not rewritten: %s", got)
 	}
@@ -36,7 +36,7 @@ func TestRewriteModelPreservesLargeIntegers(t *testing.T) {
 func TestRewriteModelLeavesUnmappedBodyAlone(t *testing.T) {
 	route := &Route{Models: []ModelRoute{{Model: "alias", SourceIndex: 0, UpstreamModel: "real"}}}
 	body := []byte(`{"model":"other","seed":9007199254740993}`)
-	if got := rewriteModel(body, route, "other"); got != string(body) {
+	if got := string(rewriteModel(body, route, "other")); got != string(body) {
 		t.Fatalf("body for an unmapped model was rewritten: %s", got)
 	}
 }
