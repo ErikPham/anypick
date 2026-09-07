@@ -9,15 +9,15 @@ import (
 	"testing"
 )
 
-// The access-log statusRecorder must preserve http.Flusher: without it the
+// The access-log StatusRecorder must preserve http.Flusher: without it the
 // streaming translator bails before writing a byte and every streamed
 // translation comes back `200` with an empty body (regression that broke
 // all streaming clients, e.g. Claude Code).
 func TestStatusRecorderImplementsFlusher(t *testing.T) {
 	rec := httptest.NewRecorder()
-	sr := &statusRecorder{ResponseWriter: rec, status: http.StatusOK}
+	sr := NewStatusRecorder(rec)
 	if _, ok := interface{}(sr).(http.Flusher); !ok {
-		t.Fatal("statusRecorder must implement http.Flusher")
+		t.Fatal("StatusRecorder must implement http.Flusher")
 	}
 }
 

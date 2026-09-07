@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/observe"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
 
@@ -72,11 +73,22 @@ func (s *Server) Start() error {
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"instanceId":%q,"hub":%q}`, s.Instance, s.Config.Name)
+		fmt.Fprintf(w, `{"ok":true,"instanceId":%q,"hub":%q,"counters":%s}`,
+			s.Instance, s.Config.Name, observe.HealthCounters())
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.serveRoute(w, r)
-	})
+	mux.Handle("/", observe.DefaultLimiter.Handler(observe.RouteHub,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := proxy.NewStatusRecorder(w)
+			req := observe.Default.Begin(observe.RouteHub)
+			// A closure, not `defer req.End(rec.Status(), ...)`: defer
+			// evaluates its arguments now, which would file every request
+			// under the recorder's initial 200 regardless of what the route
+			// answered.
+			defer func() {
+				req.End(rec.Status(), observe.Classify(rec.Status(), false))
+			}()
+			s.serveRoute(rec, r)
+		})))
 
 	ln, err := listenLoopback(host, port)
 	if err != nil {
@@ -86,7 +98,7 @@ func (s *Server) Start() error {
 	// from other goroutines, and the accept loop publishes its failure through
 	// errCh instead of discarding it. A hub whose listener died used to stay
 	// "running" forever with no observable error.
-	hs := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	hs := proxy.ApplyServingLimits(&http.Server{Handler: mux})
 	done := make(chan error, 1)
 	go func() { done <- hs.Serve(ln) }()
 

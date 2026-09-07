@@ -99,11 +99,11 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 	}
 	defer removeServeRecord(a, instanceID)
 
-	srv := &http.Server{
+	srv := proxy.ApplyServingLimits(&http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       30 * time.Second,
-	}
+	})
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()

@@ -28,6 +28,7 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/egress"
+	"github.com/outof0/anypick/go/internal/observe"
 	"github.com/outof0/anypick/go/internal/protocol"
 	"github.com/outof0/anypick/go/internal/upstream"
 )
@@ -86,46 +87,65 @@ func (s *PoolServer) Handler() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"instanceId":"` + s.InstanceID +
-			`","pid":` + strconv.Itoa(ownPID()) + `,"provider":"` + s.ProviderID + `","account":""}`))
+			`","pid":` + strconv.Itoa(ownPID()) + `,"provider":"` + s.ProviderID +
+			`","account":"","counters":` + string(observe.HealthCounters()) + `}`))
 	})
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Pool requests used to be the only path with no access log at all:
-		// three of the four egress paths recorded a line and this one did not,
-		// so a failing pool was invisible in proxy.log.
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		if unauthenticatedLiveness(r) {
-			writeLiveness(rec, r)
-			logProxyLine(r, rec.status, time.Since(start))
-			return
-		}
-		if !requireProxyAuth(rec, r, s.Token) {
-			logProxyLine(r, rec.status, time.Since(start))
-			return
-		}
-		s.servePoolRequest(rec, r)
-		logProxyLine(r, rec.status, time.Since(start))
-	}))
+	mux.Handle("/", observe.DefaultLimiter.Handler(observe.RoutePool,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Pool requests used to be the only path with no access log at all:
+			// three of the four egress paths recorded a line and this one did not,
+			// so a failing pool was invisible in proxy.log.
+			start := time.Now()
+			rec := NewStatusRecorder(w)
+			req := observe.Default.Begin(observe.RoutePool)
+			defer func() {
+				req.End(rec.status, observe.Classify(rec.status, false))
+				logProxyLine(r, rec.status, time.Since(start))
+			}()
+			if unauthenticatedLiveness(r) {
+				writeLiveness(rec, r)
+				return
+			}
+			if !requireProxyAuth(rec, r, s.Token) {
+				return
+			}
+			s.servePoolRequest(rec, r, req)
+		})))
 	return mux
 }
 
 // ServeAuthorized handles one request whose authentication an outer listener
 // already performed — the Proxy Hub verifies its own route token before
 // delegating a pool-backed source here, so the pool token check is skipped.
+//
+// It counts on its own route: a ring reached through the hub is a different
+// client population from a ring reached directly, and mixing them makes the
+// failover counter unreadable for both.
 func (s *PoolServer) ServeAuthorized(w http.ResponseWriter, r *http.Request) {
-	s.servePoolRequest(w, r)
+	start := time.Now()
+	rec := NewStatusRecorder(w)
+	req := observe.Default.Begin(observe.RoutePoolHub)
+	defer func() {
+		req.End(rec.status, observe.Classify(rec.status, false))
+		logProxyLine(r, rec.status, time.Since(start))
+	}()
+	s.servePoolRequest(rec, r, req)
 }
 
 // servePoolRequest walks the guard-ordered member ring. Statuses pass through
 // verbatim unless the failure is quota-class AND a next candidate exists AND
 // the guard is enabled — exactly backend.ts fetch().
-func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
+//
+// obs may be nil when a caller has its own accounting; every method on it is
+// nil-safe, so the ring never needs to care whether it is being watched.
+func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request, obs *observe.Request) {
+	start := time.Now()
 	// The aggregate deadline applies only until one member commits. Each
 	// attempt receives a cancellable context with the same absolute deadline;
 	// commit stops that timer so a valid stream can outlive ring selection.
 	var ringDeadline time.Time
 	if budget := s.ringDeadline(); budget > 0 {
-		ringDeadline = time.Now().Add(budget)
+		ringDeadline = start.Add(budget)
 	}
 
 	// TS reuses a buffered body for every ring attempt; ReverseProxy drains
@@ -199,6 +219,10 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if cw.committed {
 			_ = s.Guard.Activate(account)
+			// A committed response is a stream, not a selection: its duration
+			// says nothing about how fast the ring picks a member, so it is
+			// kept out of the latency average.
+			obs.Stream(time.Since(start))
 			return
 		}
 		// The attempt died with the budget rather than with an upstream
@@ -217,6 +241,10 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 			cw.flushCaptured()
 			return
 		}
+		// Counted before the swap, not after: if the guard write fails the
+		// ring still moved on, and a failover counter that only counts the
+		// successful ones under-reports the thing it exists to measure.
+		obs.Failover()
 		next := ordered[i+1].GetAccountName()
 		retryAfter := upstream.ParseRetryAfter(cw.headerValue("Retry-After"), time.Now())
 		if gerr := s.Guard.Exhausted(account, next, retryAfter); gerr != nil {
@@ -710,7 +738,7 @@ func (s *PoolServer) Listen(host string, port int) error {
 		return anyerr.Wrapf(err, "listen "+addr, "PROXY_START_FAILED")
 	}
 	s.endpoint = "http://" + normalizedLoopback(host) + ":" + strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	s.srv = ApplyServingLimits(&http.Server{Handler: s.Handler()})
 	s.errCh = make(chan error, 1)
 	go func() { s.errCh <- s.srv.Serve(ln) }()
 	return nil

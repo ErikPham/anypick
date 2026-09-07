@@ -327,11 +327,42 @@ thay vì giả làm lỗi upstream.
 4 mutation bị giết: bỏ escape lúc commit; bỏ ngân sách; bỏ cancel per-attempt
 (bị bắt nhờ assertion thời gian phản hồi); bỏ kiểm tra ngân sách giữa các attempt.
 
-### 8.7 Còn lại, chưa làm
+### 8.7 Observer + semaphore (G0, bước 5)
+
+Package mới `internal/observe`: registry counter in-process (in-flight, started,
+completed, failovers, latency, stream time, `byClass`, `byStatus`) và `Limiter`
+— semaphore **không có hàng đợi**, trần 256 concurrent/process; vượt trần trả
+503 + `Retry-After: 1` ngay lập tức thay vì xếp hàng (hàng đợi không giới hạn
+chỉ là bản chậm hơn của cú crash mà nó định tránh).
+
+Cả bốn đường đều được đo, trên bốn hàng riêng: `proxy.single`, `proxy.pool`,
+`proxy.pool.hub` (ring do hub uỷ quyền) và `hub`. Ring qua hub tách riêng vì
+gộp vào `proxy.pool` sẽ làm con số phụ thuộc vào cách client tình cờ tới — và
+failover là số duy nhất báo trước một member đang cháy.
+
+`Begin(route string)` **không nhận `*http.Request`**: token không thể chạm tới
+counter theo cấu trúc, không phải theo review (ADR 0006). Snapshot được render
+thẳng lên `/health` không cần auth — chỉ chấp nhận được vì endpoint đó chỉ bind
+loopback và chỉ mang số đếm với milli-giây. Hai gate giữ invariant này:
+`TestNoRequestTypeReachesThisPackage` (AST: không exported func nào nhận
+`*http.Request`, không struct nào chứa field kiểu đó) và
+`TestObserverNeverRecordsToken` (gửi token qua header/query/path/body rồi tìm
+lại trong snapshot).
+
+Mọi listener giờ đi qua `proxy.ApplyServingLimits`: `ReadHeaderTimeout` 10s,
+`IdleTimeout` 5m, `MaxHeaderBytes` 64 KiB. Cố ý **không** đặt `WriteTimeout` —
+server này tồn tại để stream, và write deadline sẽ cắt một stream đang chạy
+đúng nghĩa.
+
+22 mutation bị giết (9 ở `observe`, 13 ở wiring). Đáng ghi nhớ: mutation
+`defer req.End(rec.status, ...)` — `defer` đánh giá đối số ngay tại chỗ — từng
+là **bug thật** ở hub, khiến mọi request bị ghi thành 200 bất kể route trả gì;
+bắt được nhờ assertion phân loại class, không phải nhờ đọc code.
+
+### 8.8 Còn lại, chưa làm
 
 - Gom bốn pipeline request ở tầng serving (bước 2–3 của
   `BACKEND_ARCHITECTURE_2026-09-07.md`) — việc nhiều ngày, chưa đụng vào.
-- Observer + semaphore (bước 5 cùng tài liệu).
 - `.github/CODEOWNERS`.
 - Ba quyết định chỉ Erik chốt được (§6 mục 1–3): signing credentials,
   publication approval, giữ tên npm. Hai cái đầu chặn toàn bộ G2.

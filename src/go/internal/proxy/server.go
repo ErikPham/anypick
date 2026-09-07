@@ -29,7 +29,48 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/egress"
+	"github.com/outof0/anypick/go/internal/observe"
 )
+
+// Listener hardening shared by every loopback server in this program
+// (single-account proxy, pool ring, hub, and the serve daemon). Before this
+// existed each site set ReadHeaderTimeout by hand and nothing else, so a
+// client could park a connection open forever or send a megabyte of headers
+// and neither would ever be refused.
+const (
+	// DefaultReadHeaderTimeout bounds request headers only. It must stay
+	// short; the streaming responses this proxy exists to serve are bounded
+	// by the request context, not by a write deadline, so no WriteTimeout is
+	// set here on purpose.
+	DefaultReadHeaderTimeout = 10 * time.Second
+	// DefaultIdleTimeout bounds a keep-alive connection between requests. It
+	// does not apply while a response is being written, so a long stream is
+	// unaffected.
+	DefaultIdleTimeout = 5 * time.Minute
+	// DefaultMaxHeaderBytes is 64 KiB: enough for any vendor header set,
+	// far below the 1 MiB Go default, which exists for servers that are not
+	// talking to a fixed set of local clients.
+	DefaultMaxHeaderBytes = 1 << 16
+)
+
+// ApplyServingLimits installs the loopback hardening defaults on a server that
+// has not chosen its own. Every listener in this program goes through it, so
+// "which limits does this one have" has one answer instead of four.
+func ApplyServingLimits(srv *http.Server) *http.Server {
+	if srv == nil {
+		return nil
+	}
+	if srv.ReadHeaderTimeout <= 0 {
+		srv.ReadHeaderTimeout = DefaultReadHeaderTimeout
+	}
+	if srv.IdleTimeout <= 0 {
+		srv.IdleTimeout = DefaultIdleTimeout
+	}
+	if srv.MaxHeaderBytes <= 0 {
+		srv.MaxHeaderBytes = DefaultMaxHeaderBytes
+	}
+	return srv
+}
 
 // LoopbackHosts mirrors assertLoopbackHost's accepted set.
 var loopbackHosts = map[string]bool{
@@ -236,46 +277,64 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fmt.Sprintf(
-			`{"ok":true,"instanceId":%q,"pid":%d,"provider":%q,"account":%q}`,
-			s.InstanceID, ownPID(), s.ProviderID, s.AccountName)))
+			`{"ok":true,"instanceId":%q,"pid":%d,"provider":%q,"account":%q,"counters":%s}`,
+			s.InstanceID, ownPID(), s.ProviderID, s.AccountName, observe.HealthCounters())))
 	})
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		if unauthenticatedLiveness(r) {
-			writeLiveness(rec, r)
-			logProxyLine(r, rec.status, time.Since(start))
-			return
-		}
-		if !requireProxyAuth(rec, r, s.Token) {
-			logProxyLine(r, rec.status, time.Since(start))
-			return
-		}
-		Serve(rec, r, s.upstreamValue())
-		logProxyLine(r, rec.status, time.Since(start))
-	}))
+	mux.Handle("/", observe.DefaultLimiter.Handler(observe.RouteSingle,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := NewStatusRecorder(w)
+			req := observe.Default.Begin(observe.RouteSingle)
+			// One deferred close for every exit path. The previous shape
+			// repeated logProxyLine at each return, and the one path that
+			// mattered most — a panic in Serve — recorded nothing at all.
+			defer func() {
+				req.End(rec.status, observe.Classify(rec.status, false))
+				logProxyLine(r, rec.status, time.Since(start))
+			}()
+			if unauthenticatedLiveness(r) {
+				writeLiveness(rec, r)
+				return
+			}
+			if !requireProxyAuth(rec, r, s.Token) {
+				return
+			}
+			Serve(rec, r, s.upstreamValue())
+		})))
 	return mux
 }
 
-// statusRecorder captures the status Serve commits so the access log can
+// StatusRecorder captures the status Serve commits so the access log can
 // report it. The proxy never logs headers, query strings, or bodies:
 // only method, path, status, and latency cross into proxy.log.
-type statusRecorder struct {
+//
+// It is exported because the hub needs the same thing and a second copy is
+// how the two end up disagreeing about what a "status" is.
+type StatusRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
-func (rec *statusRecorder) WriteHeader(status int) {
+// NewStatusRecorder wraps w, defaulting the recorded status to 200 — the
+// status a handler that writes a body without calling WriteHeader commits.
+func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
+	return &StatusRecorder{ResponseWriter: w, status: http.StatusOK}
+}
+
+// Status reports the status the handler committed.
+func (rec *StatusRecorder) Status() int { return rec.status }
+
+func (rec *StatusRecorder) WriteHeader(status int) {
 	rec.status = status
 	rec.ResponseWriter.WriteHeader(status)
 }
 
 // Flush delegates when the underlying writer supports it. Without this
-// method *statusRecorder does NOT implement http.Flusher (the embedded
+// method *StatusRecorder does NOT implement http.Flusher (the embedded
 // http.ResponseWriter interface only carries Header/Write/WriteHeader),
 // so TranslateStreamingResponse bailed before writing a byte and every
 // streamed translation came back `200` with an empty body.
-func (rec *statusRecorder) Flush() {
+func (rec *StatusRecorder) Flush() {
 	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -365,7 +424,7 @@ func (s *Server) Listen(host string, port int) error {
 		return anyerr.Wrapf(err, "listen "+addr, "PROXY_START_FAILED")
 	}
 	s.Endpoint = fmt.Sprintf("http://%s:%d", normalizedLoopback(host), ln.Addr().(*net.TCPAddr).Port)
-	s.srv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	s.srv = ApplyServingLimits(&http.Server{Handler: s.Handler()})
 	s.errCh = make(chan error, 1)
 	go func() { s.errCh <- s.srv.Serve(ln) }()
 	return nil
