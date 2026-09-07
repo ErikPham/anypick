@@ -130,7 +130,7 @@ func (s *Service) startForwardedLocked(
 	// Health-verified idempotent start (PROC-01): adopt the recorded instance
 	// only when /health still echoes its id — never because a record or a pid
 	// file happens to exist. The persisted token stays valid for this instance.
-	state, err := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -224,15 +224,17 @@ func (s *Service) startForwardedLocked(
 	if err != nil {
 		leaseID = started.InstanceID
 	}
+	ownerPID := ownerPidFor(started.PID)
 	if err := s.Jobs.CreateContext(ctx, Lease{
 		LeaseID: leaseID, Provider: providerID, Account: accountName,
 		Port: portOf(started.Endpoint), Host: hostOf(started.Endpoint),
-		Endpoint: started.Endpoint, OwnerPID: ownerPidFor(started.PID),
+		Endpoint: started.Endpoint, OwnerPID: ownerPID,
 		InstanceID: started.InstanceID,
 	}); err != nil {
 		return nil, s.failForwardedStart(ctx, req, started, err, token, originalCfg,
 			servingID, outcome)
 	}
+	s.startLeaseHeartbeat(leaseID, started.InstanceID, ownerPID)
 
 	return &StartResult{
 		Endpoint: started.Endpoint, Token: token,
@@ -353,7 +355,7 @@ func (s *Service) reconcileForwardedOnHostLoss(
 	excludeProviderID, excludeAccountName string,
 	terminated PluginRuntimeIdentity,
 ) error {
-	rows, err := s.Store.ListProxyStatesContext(ctx)
+	rows, err := s.Store.ListProxyStates(ctx)
 	if err != nil {
 		return err
 	}
@@ -389,7 +391,7 @@ func (s *Service) reconcileAccountAfterHostLoss(
 	observed store.ProxyRuntimeState,
 	terminated PluginRuntimeIdentity,
 ) error {
-	state, err := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(ctx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -1062,7 +1064,7 @@ func redactErr(err error, secrets []string) error {
 // provider/account's output: the persisted runtime token plus in-flight ones.
 func (s *Service) accountSecrets(providerID, accountName string, extra ...string) []string {
 	secrets := append([]string(nil), extra...)
-	if state, err := s.Store.ReadProxyStateContext(context.Background(), providerID, accountName); err == nil &&
+	if state, err := s.Store.ReadProxyState(context.Background(), providerID, accountName); err == nil &&
 		state != nil && state.Token != "" {
 		secrets = append(secrets, state.Token)
 	}
@@ -1077,7 +1079,7 @@ func (s *Service) stopForwardedLocked(ctx context.Context, providerID, accountNa
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*lifecycleVerifyTimeout)
 	defer cancel()
 
-	cfg, err := s.Store.GetProxyConfigContext(cleanupCtx, providerID, accountName)
+	cfg, err := s.Store.GetProxyConfig(cleanupCtx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -1085,7 +1087,7 @@ func (s *Service) stopForwardedLocked(ctx context.Context, providerID, accountNa
 	// back across the boundary on a stop.
 	req := s.pluginRequest(providerID, accountName, cfg, "")
 
-	state, err := s.Store.ReadProxyStateContext(cleanupCtx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(cleanupCtx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -1158,7 +1160,7 @@ func (s *Service) statusForwarded(
 	case errors.Is(err, ErrPluginMethodAbsent):
 		// TS falls back to pid-file heuristics; the Go equivalent proves
 		// liveness through the persisted instance echo instead.
-		state, serr := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+		state, serr := s.Store.ReadProxyState(ctx, providerID, accountName)
 		if serr != nil {
 			return nil, serr
 		}
@@ -1184,7 +1186,7 @@ func (s *Service) statusForwarded(
 		out.Port = cfg.Port
 	}
 	if out.Running && out.PID > 0 {
-		if state, serr := s.Store.ReadProxyStateContext(ctx, providerID, accountName); serr == nil &&
+		if state, serr := s.Store.ReadProxyState(ctx, providerID, accountName); serr == nil &&
 			state != nil && state.Endpoint != "" && state.PID == out.PID {
 			out.Endpoint = state.Endpoint
 			if p := portOf(state.Endpoint); p > 0 {
@@ -1213,7 +1215,7 @@ func (s *Service) statusForwarded(
 // text is untrusted: the exact persisted runtime token plus generic
 // credential patterns are redacted before anything crosses an output boundary.
 func (s *Service) ProxyLogs(ctx context.Context, providerID, accountName string, lines int) (string, error) {
-	cfg, err := s.Store.GetProxyConfigContext(ctx, providerID, accountName)
+	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
 	if err != nil {
 		return "", err
 	}

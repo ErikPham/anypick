@@ -182,7 +182,7 @@ func TestToggleStartStopRoundTrip(t *testing.T) {
 	if st.Running {
 		t.Fatal("proxy still running after stop via app invoke path")
 	}
-	cfg, _ := env.Deps.Store.GetProxyConfig("workbuddy", "main")
+	cfg, _ := env.Deps.Store.GetProxyConfig(context.Background(), "workbuddy", "main")
 	t.Logf("config after stop: %+v", cfg)
 }
 
@@ -241,7 +241,7 @@ func TestStartReappliesBoundClaudeToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state, err := env.Deps.Store.ReadProxyStateContext(ctx, "workbuddy", "main")
+	state, err := env.Deps.Store.ReadProxyState(ctx, "workbuddy", "main")
 	if err != nil || state == nil || state.Token == "" {
 		t.Fatalf("proxy state: %+v %v", state, err)
 	}

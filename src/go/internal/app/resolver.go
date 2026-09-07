@@ -33,7 +33,7 @@ func (r *snapshotUpstreamResolver) ResolveUpstream(ctx context.Context, provider
 	if err != nil {
 		return nil, err
 	}
-	acct, err := r.store.GetContext(context.Background(), providerID, accountName)
+	acct, err := r.store.Get(context.Background(), providerID, accountName)
 	if err != nil {
 		return nil, err
 	}

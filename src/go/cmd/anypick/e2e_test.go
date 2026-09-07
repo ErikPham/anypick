@@ -290,7 +290,7 @@ func openPoolForTest(t *testing.T) (*pools.Pool, error) {
 		return nil, err
 	}
 	defer closeFn()
-	return a.Pools.Get("deepseek")
+	return a.Pools.GetContext(context.Background(), "deepseek")
 }
 
 func TestHubActivationEndToEnd(t *testing.T) {
@@ -370,7 +370,7 @@ func TestPoolActivationEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, serr := a.Store.ReadProxyState("deepseek", "dsa")
+	state, serr := a.Store.ReadProxyState(context.Background(), "deepseek", "dsa")
 	closeFn()
 	if serr != nil || state == nil || state.Endpoint == "" || state.Token == "" {
 		t.Fatalf("primary pool state missing: %+v err=%v", state, serr)

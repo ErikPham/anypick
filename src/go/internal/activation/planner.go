@@ -319,6 +319,10 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	var resolved *ResolvedSource
 	var model bindings.ModelSelection
 	var bindingSpec *bindings.Spec
+	projectRoot := opts.ProjectRoot
+	if projectRoot == "" {
+		projectRoot = req.ProjectRoot
+	}
 	provenance := &bindings.Provenance{Kind: "direct"}
 
 	switch {
@@ -530,13 +534,9 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 				"UNSUPPORTED_TRANSPORT", anyerr.WithExitCode(anyerr.CapabilityConflict))
 		}
 	case ModeProject:
-		root := opts.ProjectRoot
-		if root == "" {
-			root = req.ProjectRoot
-		}
 		steps = append(steps, PlanStep{
 			Kind:   StepCommitProjectBinding,
-			Params: map[string]interface{}{"projectRoot": root},
+			Params: map[string]interface{}{"projectRoot": projectRoot},
 		})
 	default: // persistent
 		steps = append(steps,
@@ -559,6 +559,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	return &Plan{
 		Mode:           req.Mode,
 		Client:         clientID,
+		ProjectRoot:    projectRoot,
 		ResolvedSource: resolved,
 		Transport:      tr,
 		Model:          model,

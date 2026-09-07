@@ -192,7 +192,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 	}
 
 	if checkpoint.HadLiveAuth {
-		stashName, stashErr := s.stashBackupTarget(pv)
+		stashName, stashErr := s.stashBackupTarget(ctx, pv)
 		if stashErr == nil {
 			_, stashErr = s.saveLocked(ctx, pv, stashName, nil)
 		}
@@ -231,7 +231,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		return rollback(cerr)
 	}
 
-	accountName, err := s.resolveCurrentSaveName(pv, opts.Name, live)
+	accountName, err := s.resolveCurrentSaveName(ctx, pv, opts.Name, live)
 	if err != nil {
 		return rollback(err)
 	}
@@ -253,22 +253,22 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 // stashBackupTarget ports resolveStashBackupTarget for the no-explicit-name
 // path used by login: identity match first, then active reuse, then an
 // identity-derived name, then "stash".
-func (s *Service) stashBackupTarget(pv provider.Provider) (string, error) {
+func (s *Service) stashBackupTarget(ctx context.Context, pv provider.Provider) (string, error) {
 	live, err := pv.DetectLive()
 	if err != nil {
 		return "", err
 	}
 	if live.Identity != "" {
-		if byIdentity := s.findAccountNameByIdentity(pv.ID(), live.Identity); byIdentity != "" {
+		if byIdentity := s.findAccountNameByIdentity(ctx, pv.ID(), live.Identity); byIdentity != "" {
 			return byIdentity, nil
 		}
 	}
-	active, err := s.Store.GetActive(pv.ID())
+	active, err := s.Store.GetActive(ctx, pv.ID())
 	if err != nil {
 		return "", err
 	}
 	if active != "" {
-		activeAccount, gerr := s.Store.Get(pv.ID(), active)
+		activeAccount, gerr := s.Store.Get(ctx, pv.ID(), active)
 		if gerr == nil && activeAccount != nil &&
 			(live.Identity == "" || activeAccount.Meta.Identity == "" ||
 				identitiesEqual(activeAccount.Meta.Identity, live.Identity)) {
@@ -283,7 +283,7 @@ func (s *Service) stashBackupTarget(pv provider.Provider) (string, error) {
 
 // resolveCurrentSaveName ports resolveCurrentSaveName: existing identities win
 // so a refreshed token overwrites its snapshot instead of aliasing.
-func (s *Service) resolveCurrentSaveName(pv provider.Provider, requestedName string, live provider.LiveAuthStatus) (string, error) {
+func (s *Service) resolveCurrentSaveName(ctx context.Context, pv provider.Provider, requestedName string, live provider.LiveAuthStatus) (string, error) {
 	if !live.Present {
 		return "", anyerr.Newf(
 			"No live "+pv.Name()+" login to save.",
@@ -291,19 +291,19 @@ func (s *Service) resolveCurrentSaveName(pv provider.Provider, requestedName str
 			anyerr.WithSuggestions("Sign in with the official tool first, then try again."))
 	}
 	if live.Identity != "" {
-		if existing := s.findAccountNameByIdentity(pv.ID(), live.Identity); existing != "" {
+		if existing := s.findAccountNameByIdentity(ctx, pv.ID(), live.Identity); existing != "" {
 			return existing, nil
 		}
 	}
 	if strings.TrimSpace(requestedName) != "" {
 		return slug.AccountName(requestedName)
 	}
-	active, err := s.Store.GetActive(pv.ID())
+	active, err := s.Store.GetActive(ctx, pv.ID())
 	if err != nil {
 		return "", err
 	}
 	if active != "" {
-		activeAccount, gerr := s.Store.Get(pv.ID(), active)
+		activeAccount, gerr := s.Store.Get(ctx, pv.ID(), active)
 		if gerr == nil && activeAccount != nil &&
 			(live.Identity == "" || activeAccount.Meta.Identity == "" ||
 				identitiesEqual(activeAccount.Meta.Identity, live.Identity)) {
@@ -319,8 +319,8 @@ func (s *Service) resolveCurrentSaveName(pv provider.Provider, requestedName str
 		anyerr.WithSuggestions("anypick add account "+pv.ID()+" --current --name <name>"))
 }
 
-func (s *Service) findAccountNameByIdentity(providerID, identity string) string {
-	accounts, err := s.Store.ListAccounts(providerID)
+func (s *Service) findAccountNameByIdentity(ctx context.Context, providerID, identity string) string {
+	accounts, err := s.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return ""
 	}

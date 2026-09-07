@@ -29,7 +29,7 @@ func TestSaveLiveIntoExistingAccount(t *testing.T) {
 	if name != "acc-a" {
 		t.Fatalf("name=%q want acc-a", name)
 	}
-	got, _ := st.Get("grok", "acc-a")
+	got, _ := st.Get(context.Background(), "grok", "acc-a")
 	if got.Meta.Identity != "refreshed@grok.xai" {
 		t.Fatalf("Identity=%q want refreshed@grok.xai", got.Meta.Identity)
 	}
@@ -96,7 +96,7 @@ func TestUseRefreshesPreviousWhenLivePresent(t *testing.T) {
 	if !res.RefreshedPrevious || res.RefreshedAccount != "acc-a" {
 		t.Fatalf("want RefreshedPrevious=true acc-a, got %#v", res)
 	}
-	got, _ := st.Get("grok", "acc-a")
+	got, _ := st.Get(context.Background(), "grok", "acc-a")
 	if got.Meta.Identity != "a-refreshed@grok.xai" {
 		t.Fatalf("acc-a not refreshed: %q", got.Meta.Identity)
 	}

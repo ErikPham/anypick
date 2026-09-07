@@ -260,7 +260,7 @@ func TestExecutePoolActivationFillsManagedProxy(t *testing.T) {
 	}
 
 	// Proxy state persists under the PRIMARY member with the same token.
-	state, serr := env.Px.Store.ReadProxyState("vendorx", "a")
+	state, serr := env.Px.Store.ReadProxyState(context.Background(), "vendorx", "a")
 	if serr != nil || state == nil {
 		t.Fatalf("primary proxy_state missing: %+v err=%v", state, serr)
 	}
@@ -350,7 +350,7 @@ func TestExecutePoolRollbackStopsPool(t *testing.T) {
 	if remaining, _ := env.Px.Jobs.ListPoolLeases("vendorx"); len(remaining) != 0 {
 		t.Errorf("pool leases survived rollback: %+v", remaining)
 	}
-	if state, _ := env.Px.Store.ReadProxyState("vendorx", "a"); state != nil {
+	if state, _ := env.Px.Store.ReadProxyState(context.Background(), "vendorx", "a"); state != nil {
 		t.Errorf("primary proxy_state survived rollback: %+v", state)
 	}
 }

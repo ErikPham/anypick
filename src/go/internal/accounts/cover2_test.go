@@ -215,7 +215,7 @@ func TestCheckpointRestoreRoundTripWithActivePointer(t *testing.T) {
 	if err != nil || !status.Present || status.Identity != "cp@grok.xai" {
 		t.Fatalf("restored live: %+v %v", status, err)
 	}
-	active, err := st.GetActive("grok")
+	active, err := st.GetActive(context.Background(), "grok")
 	if err != nil || active != "acc-a" {
 		t.Fatalf("restored active: %q %v", active, err)
 	}
@@ -302,7 +302,7 @@ func TestSaveForceKeepsCreatedAt(t *testing.T) {
 	if second.Identity != "updated@grok.xai" {
 		t.Fatalf("snapshot not refreshed: %+v", second)
 	}
-	got, _ := st.Get("grok", "keep")
+	got, _ := st.Get(context.Background(), "grok", "keep")
 	if got.Meta.CreatedAt != first.CreatedAt {
 		t.Fatalf("stored meta drift: %+v", got.Meta)
 	}

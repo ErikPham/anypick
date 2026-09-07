@@ -20,7 +20,7 @@ import (
 // cleans its own records. The instance echo on /health is what lets the
 // parent — or any later invocation — prove this process is theirs (PROC-01).
 func (s *Service) ServeExisting(ctx context.Context, providerID, accountName string) error {
-	state, err := s.Store.ReadProxyState(providerID, accountName)
+	state, err := s.Store.ReadProxyState(ctx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -37,6 +37,11 @@ func (s *Service) ServeExisting(ctx context.Context, providerID, accountName str
 	if err := server.Listen("127.0.0.1", port); err != nil {
 		return err
 	}
+
+	// The lease outlives the parent that created it, so the child — not the
+	// parent — is what keeps it fresh from here on.
+	s.startInstanceHeartbeat(state.InstanceID, ownPID())
+	defer s.stopInstanceHeartbeat(state.InstanceID)
 
 	proxyLogf("%s/%s listening on %s", providerID, accountName,
 		strings.TrimPrefix(state.Endpoint, "http://"))
@@ -62,7 +67,7 @@ func (s *Service) cleanupStoppedInstance(ctx context.Context, providerID, accoun
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
 		leaseErr := s.cleanupLeasesContext(c, providerID, accountName, instanceID)
-		state, stateErr := s.Store.ReadProxyStateContext(c, providerID, accountName)
+		state, stateErr := s.Store.ReadProxyState(c, providerID, accountName)
 		if stateErr != nil {
 			return errors.Join(leaseErr, stateErr)
 		}

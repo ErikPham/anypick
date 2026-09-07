@@ -101,7 +101,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Accounts:  &accountsView{Svc: svc},
 		Providers: provReg,
 		Clients:   clientReg,
-		Bindings:  &bindings.Store{DB: database.DB},
+		Bindings:  &bindings.Store{Root: root, DB: database.DB},
 		Presets:   &presetsView{Store: &presets.Store{DB: database.DB}},
 		Profiles:  &profile.Store{DB: database.DB},
 		Pools:     &poolsView{Store: &pools.Store{DB: database.DB}},

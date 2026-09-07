@@ -59,6 +59,10 @@ type Deps struct {
 	Hub        *hub.Store
 	// Config owns global-config mutations; nil in legacy compositions only.
 	Config *config.ConfigService
+	// Discovery owns model-cache reads and writes for snapshot/catalog paths.
+	// Keeping it injected prevents the desktop protocol from reaching through
+	// the account store's database handle.
+	Discovery *discovery.Service
 	// HostState is the native host's report channel for platform truth such
 	// as login-item registration (ADR 0020 §7); optional until handshake.
 	HostState HostStateProvider
@@ -392,12 +396,12 @@ func (s *Server) shutdown(_ context.Context) error {
 		return nil
 	}
 	for _, providerID := range s.Deps.Providers.IDs() {
-		list, err := s.Deps.Store.ListAccounts(providerID)
+		list, err := s.Deps.Store.ListAccounts(ctx, providerID)
 		if err != nil {
 			continue
 		}
 		for _, acc := range list {
-			cfg, _ := s.Deps.Store.GetProxyConfig(providerID, acc.Meta.Name)
+			cfg, _ := s.Deps.Store.GetProxyConfig(ctx, providerID, acc.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}
@@ -820,13 +824,18 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 		// protocol work; naming the failures in the result is what fits.
 		var failed []string
 		attempted := 0
+		// Discovery is read-only and must still identify the concrete proxies
+		// when the command context was cancelled. The stop/restart operation
+		// itself keeps ctx, so cancellation is reported per proxy instead of
+		// being mistaken for "nothing to do".
+		enumerateCtx := context.WithoutCancel(ctx)
 		for _, providerID := range s.Deps.Providers.IDs() {
-			list, lerr := s.Deps.Store.ListAccounts(providerID)
+			list, lerr := s.Deps.Store.ListAccounts(enumerateCtx, providerID)
 			if lerr != nil {
 				continue
 			}
 			for _, acc := range list {
-				cfg, _ := s.Deps.Store.GetProxyConfig(providerID, acc.Meta.Name)
+				cfg, _ := s.Deps.Store.GetProxyConfig(enumerateCtx, providerID, acc.Meta.Name)
 				if !cfg.Enabled {
 					continue
 				}
@@ -1133,7 +1142,7 @@ func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result 
 // an identity-derived stable slug. The active pointer alone is never identity.
 func (s *Server) currentSaveName(ctx context.Context, providerID, requested string,
 	live provider.LiveAuthStatus) (string, error) {
-	list, err := s.Deps.Store.ListAccountsContext(ctx, providerID)
+	list, err := s.Deps.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -1147,7 +1156,7 @@ func (s *Server) currentSaveName(ctx context.Context, providerID, requested stri
 	if requested != "" {
 		return slug.AccountName(requested)
 	}
-	active, err := s.Deps.Store.GetActiveContext(ctx, providerID)
+	active, err := s.Deps.Store.GetActive(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -1173,7 +1182,7 @@ func (s *Server) handleAccountEdit(ctx context.Context, raw json.RawMessage, m M
 	var edited store.Meta
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.ProviderScope(m.ProviderID),
 		func(c context.Context) error {
-			account, err := s.Deps.Store.GetContext(c, m.ProviderID, m.Name)
+			account, err := s.Deps.Store.Get(c, m.ProviderID, m.Name)
 			if err != nil {
 				return err
 			}
@@ -1272,7 +1281,7 @@ func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 
 func (s *Server) stashSaveName(ctx context.Context, providerID string,
 	live provider.LiveAuthStatus) (string, bool, error) {
-	list, err := s.Deps.Store.ListAccountsContext(ctx, providerID)
+	list, err := s.Deps.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return "", false, err
 	}
@@ -1283,7 +1292,7 @@ func (s *Server) stashSaveName(ctx context.Context, providerID string,
 			}
 		}
 	}
-	active, err := s.Deps.Store.GetActiveContext(ctx, providerID)
+	active, err := s.Deps.Store.GetActive(ctx, providerID)
 	if err != nil {
 		return "", false, err
 	}

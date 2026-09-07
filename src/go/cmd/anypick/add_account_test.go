@@ -93,14 +93,14 @@ func TestAddAccountNewPerformsFreshLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeFn()
-	acct, gerr := a.Store.GetContext(context.Background(), "grok", "work")
+	acct, gerr := a.Store.Get(context.Background(), "grok", "work")
 	if gerr != nil || acct == nil {
 		t.Fatalf("saved grok/work missing: %+v %v", acct, gerr)
 	}
 	if acct.Meta.Identity != "fresh@example.com" {
 		t.Fatalf("saved identity = %q, want the fresh login identity", acct.Meta.Identity)
 	}
-	active, _ := a.Store.GetActiveContext(context.Background(), "grok")
+	active, _ := a.Store.GetActive(context.Background(), "grok")
 	if active != "work" {
 		t.Fatalf("active pointer = %q, want work", active)
 	}

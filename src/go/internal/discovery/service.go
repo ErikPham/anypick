@@ -43,6 +43,11 @@ type Request struct {
 	Endpoint   string
 	APIKey     string
 	Refresh    bool
+	// NoLive skips the vendor fetch: fresh cache → stale cache → static.
+	// Snapshot ticks set it — a cold cache must never trigger per-tick
+	// egress. Live warming is an explicit user action (hub start, model
+	// refresh), never a background read.
+	NoLive bool
 }
 
 // Service resolves model lists. The cache write is the one persisted mutation
@@ -69,6 +74,14 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 	now := s.now()
 	if !req.Refresh && cached != nil && isFresh(cached.FetchedAt, now) {
 		return Result{Models: cached.Models, Source: SourceCache, FetchedAt: cached.FetchedAt}
+	}
+	if req.NoLive {
+		if cached != nil {
+			return Result{Models: cached.Models, Source: SourceStale,
+				FetchedAt: cached.FetchedAt, Note: "snapshot tick never fetches live"}
+		}
+		return Result{Models: fallback, Source: SourceCatalog,
+			Note: "snapshot tick never fetches live"}
 	}
 
 	u, err := url.Parse(endpoint)
@@ -101,16 +114,26 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 		return Result{Models: fallback, Source: SourceCatalog, Note: note}
 	}
 
-	fetchedAt := now.UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	lockErr := lock.WithMutationLock(ctx, s.Root, "model-cache", func(c context.Context) error {
-		return s.Cache.Write(c, &modelcache.Entry{
-			Provider: req.ProviderID, Endpoint: endpoint, Models: models, FetchedAt: fetchedAt,
-		})
-	})
-	if lockErr != nil {
+	fetchedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if err := s.StoreLive(ctx, req.ProviderID, endpoint, models); err != nil {
 		return Result{Models: models, Source: SourceLive, FetchedAt: fetchedAt}
 	}
 	return Result{Models: models, Source: SourceLive, FetchedAt: fetchedAt}
+}
+
+// StoreLive persists a successful live model response. Fetching and persisting
+// are separate so explicit warmers can own the network call while this
+// service still owns the model-cache mutation and coordinator lock.
+func (s *Service) StoreLive(ctx context.Context, providerID, endpoint string, models []string) error {
+	if s.Cache == nil {
+		return nil
+	}
+	fetchedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	return lock.WithMutationLock(ctx, s.Root, "model-cache", func(c context.Context) error {
+		return s.Cache.Write(c, &modelcache.Entry{
+			Provider: providerID, Endpoint: normalizeEndpoint(endpoint), Models: models, FetchedAt: fetchedAt,
+		})
+	})
 }
 
 // ClearCache drops cached lists so the next List asks the vendor.
@@ -160,6 +183,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// StaticModels returns the offline model list for a catalog provider id:
+// friendly ids, alias targets, then the static fallback. Empty when the
+// provider declares no policy — never an error.
+func StaticModels(providerID string) []string {
+	return staticModels(catalog.Policy(providerID))
 }
 
 // staticModels mirrors staticModels in TS: friendly ids, then alias targets.

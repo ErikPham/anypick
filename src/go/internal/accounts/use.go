@@ -44,12 +44,12 @@ func useLocked(s *Service, ctx context.Context, providerID, name string, opts Us
 }
 
 func (s *Service) useUnlocked(ctx context.Context, pv provider.Provider, accountName string, opts UseOptions) (SwitchResult, error) {
-	target, err := s.Store.Require(pv.ID(), accountName)
+	target, err := s.Store.Require(ctx, pv.ID(), accountName)
 	if err != nil {
 		return SwitchResult{}, err
 	}
 
-	previous, err := s.Store.GetActive(pv.ID())
+	previous, err := s.Store.GetActive(ctx, pv.ID())
 	if err != nil {
 		return SwitchResult{}, err
 	}
@@ -71,7 +71,7 @@ func (s *Service) useUnlocked(ctx context.Context, pv provider.Provider, account
 	if !opts.NoRefresh && previous != "" && previous != accountName {
 		live, err := pv.DetectLive()
 		if err == nil && live.Present {
-			previousMeta, getErr := s.Store.Get(pv.ID(), previous)
+			previousMeta, getErr := s.Store.Get(ctx, pv.ID(), previous)
 			// Activating a proxy-only account never displaced the native
 			// login; writing the live login into its snapshot would overwrite
 			// the credential the user typed in.
@@ -121,7 +121,7 @@ func (s *Service) restoreCheckpointQuiet(ctx context.Context, cp *Checkpoint) er
 // saveLiveIntoExistingAccount persists the current live login into an already
 // saved account snapshot (refresh before switching away from it).
 func (s *Service) saveLiveIntoExistingAccount(ctx context.Context, pv provider.Provider, name string) (string, error) {
-	existing, err := s.Store.Get(pv.ID(), name)
+	existing, err := s.Store.Get(ctx, pv.ID(), name)
 	if err != nil || existing == nil {
 		if err != nil {
 			return "", err

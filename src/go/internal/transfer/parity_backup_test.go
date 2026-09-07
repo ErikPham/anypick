@@ -148,7 +148,7 @@ func TestParityExternalExchange(t *testing.T) {
 			t.Fatalf("restore of current TS export failed: metas=%d err=%v", len(metas), err)
 		}
 		for _, v := range []string{"work", "personal"} {
-			acct, gerr := st.GetContext(ctx, "codex", v)
+			acct, gerr := st.Get(ctx, "codex", v)
 			if gerr != nil || acct == nil {
 				t.Fatalf("account %s missing after restore", v)
 			}
@@ -233,7 +233,7 @@ func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 	if err != nil || len(metas) != 1 {
 		t.Fatalf("single-entry restore: metas=%d err=%v", len(metas), err)
 	}
-	if acct, gerr := st.GetContext(ctx, "codex", "personal"); gerr != nil {
+	if acct, gerr := st.Get(ctx, "codex", "personal"); gerr != nil {
 		t.Fatalf("lookup failed: %v", gerr)
 	} else if acct != nil {
 		t.Fatal("selection silently expanded to all credential-bearing accounts")
@@ -250,7 +250,7 @@ func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 		t.Fatalf("full restore: metas=%d err=%v", len(metas), err2)
 	}
 	for _, v := range []string{"work", "personal"} {
-		acct, gerr := st2.GetContext(ctx, "codex", v)
+		acct, gerr := st2.Get(ctx, "codex", v)
 		if gerr != nil {
 			t.Fatalf("account %s missing after restore: %v", v, gerr)
 		}

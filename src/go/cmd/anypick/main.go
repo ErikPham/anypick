@@ -29,7 +29,9 @@ import (
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/desktop"
+	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/runtime"
@@ -683,11 +685,11 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 			providerIDs = a.Providers.IDs()
 		}
 		for _, providerID := range providerIDs {
-			all, err := a.Store.ListAccountsContext(ctx, providerID)
+			all, err := a.Store.ListAccounts(ctx, providerID)
 			if err != nil {
 				return reportErr(err)
 			}
-			active, _ := a.Store.GetActiveContext(ctx, providerID)
+			active, _ := a.Store.GetActive(ctx, providerID)
 			for _, acct := range all {
 				marker := ""
 				if active == acct.Meta.Name {
@@ -1098,6 +1100,7 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Root:              a.Root,
 		Store:             a.Store,
 		Accounts:          a.Accounts,
+		Discovery:         &discovery.Service{Root: a.Root, Cache: &modelcache.Store{DB: a.DB}},
 		Proxy:             a.Proxy,
 		Providers:         a.Providers,
 		Clients:           a.Clients,

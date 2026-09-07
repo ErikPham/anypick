@@ -12,7 +12,7 @@ import (
 func TestProxyConfigRoundTrip(t *testing.T) {
 	s := testStore(t)
 	// Missing row -> default (disabled)
-	cfg, err := s.GetProxyConfig("grok", "nope")
+	cfg, err := s.GetProxyConfig(context.Background(), "grok", "nope")
 	if err != nil {
 		t.Fatalf("GetProxyConfig missing: %v", err)
 	}
@@ -29,12 +29,12 @@ func TestProxyConfigRoundTrip(t *testing.T) {
 	if err := s.SetProxyConfigContext(context.Background(), "grok", "p1", want); err != nil {
 		t.Fatalf("SetProxyConfig: %v", err)
 	}
-	got, err := s.GetProxyConfig("grok", "p1")
+	got, err := s.GetProxyConfig(context.Background(), "grok", "p1")
 	if err != nil || !got.Enabled || got.Port != 4100 {
 		t.Fatalf("GetProxyConfig = %+v %v", got, err)
 	}
 	// Context variants
-	if _, err := s.GetProxyConfigContext(context.Background(), "grok", "p1"); err != nil {
+	if _, err := s.GetProxyConfig(context.Background(), "grok", "p1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetProxyConfigContext(context.Background(), "grok", "p1", want); err != nil {
@@ -66,7 +66,7 @@ func TestGetProxyConfigCorruptJSON(t *testing.T) {
 	if _, err := database.DB.Exec(`UPDATE accounts SET proxy_json='not-json' WHERE provider='grok' AND name='c1'`); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := s.GetProxyConfig("grok", "c1")
+	cfg, err := s.GetProxyConfig(context.Background(), "grok", "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +169,13 @@ func TestHasPathPrefixAndDiscard(t *testing.T) {
 func TestStoreListAndActiveHelpers(t *testing.T) {
 	s := testStore(t)
 	// List empty
-	list, err := s.ListAccounts("grok")
+	list, err := s.ListAccounts(context.Background(), "grok")
 	if err != nil || len(list) != 0 {
 		t.Fatalf("ListAccounts empty = %v %v", list, err)
 	}
-	list2, err := s.ListAccountsContext(context.Background(), "grok")
+	list2, err := s.ListAccounts(context.Background(), "grok")
 	if err != nil || len(list2) != 0 {
-		t.Fatalf("ListAccountsContext empty = %v %v", list2, err)
+		t.Fatalf("ListAccounts empty with context = %v %v", list2, err)
 	}
 	// Create two accounts
 	for _, name := range []string{"a", "b"} {
@@ -185,7 +185,7 @@ func TestStoreListAndActiveHelpers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	list, _ = s.ListAccounts("grok")
+	list, _ = s.ListAccounts(context.Background(), "grok")
 	if len(list) != 2 {
 		t.Fatalf("ListAccounts = %d want 2", len(list))
 	}
@@ -193,13 +193,13 @@ func TestStoreListAndActiveHelpers(t *testing.T) {
 	if err := s.SetActiveContext(context.Background(), "grok", "a"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetActive("grok"); got != "a" {
+	if got, _ := s.GetActive(context.Background(), "grok"); got != "a" {
 		t.Fatalf("GetActive = %q", got)
 	}
 	if err := s.ClearActiveContext(context.Background(), "grok"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.GetActiveContext(context.Background(), "grok"); got != "" {
+	if got, _ := s.GetActive(context.Background(), "grok"); got != "" {
 		t.Fatalf("after ClearActive = %q", got)
 	}
 	if err := s.ClearActiveContext(context.Background(), "grok"); err != nil {

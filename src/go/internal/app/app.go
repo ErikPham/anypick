@@ -161,7 +161,7 @@ func (a *App) compose() error {
 		Accounts:  activation.NewAccountsView(svc),
 		Providers: provReg,
 		Clients:   clientReg,
-		Bindings:  &bindings.Store{DB: a.DB.DB},
+		Bindings:  &bindings.Store{Root: a.Root, DB: a.DB.DB},
 		Presets:   activation.NewPresetsView(&presets.Store{DB: a.DB.DB}),
 		Profiles:  rt.Profiles,
 		Pools:     activation.NewPoolsView(poolsStore),
@@ -254,7 +254,7 @@ func (a *App) compose() error {
 	a.Journal = jrnl
 	a.Leases = leases
 	a.Presets = &presets.Store{DB: a.DB.DB}
-	a.Bindings = &bindings.Store{DB: a.DB.DB}
+	a.Bindings = &bindings.Store{Root: a.Root, DB: a.DB.DB}
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,
 		Profiles: rt.Profiles, Catalog: catalogRegistry,

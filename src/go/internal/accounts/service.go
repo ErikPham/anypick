@@ -146,12 +146,18 @@ func (s *Service) SaveInput(ctx context.Context, providerID, name string, in Cre
 	return result, nil
 }
 
-func (s *Service) Get(_ context.Context, providerID, name string) (*store.Account, error) {
+// List returns saved accounts for one provider. The service owns this read
+// surface so outer layers do not reach through to the table-owning store.
+func (s *Service) List(ctx context.Context, providerID string) ([]store.Account, error) {
+	return s.Store.ListAccounts(ctx, providerID)
+}
+
+func (s *Service) Get(ctx context.Context, providerID, name string) (*store.Account, error) {
 	normalized, err := slug.AccountName(name)
 	if err != nil {
 		return nil, err
 	}
-	return s.Store.Get(providerID, normalized)
+	return s.Store.Get(ctx, providerID, normalized)
 }
 
 // Save backs up live auth into a named account. writeMeta stays the atomic
@@ -207,7 +213,7 @@ func (s *Service) RefreshSnapshot(ctx context.Context, providerID, name string) 
 	}
 	var result store.Meta
 	err = lock.WithMutationLock(ctx, s.Store.Root, refs.ProviderScope(providerID), func(c context.Context) error {
-		existing, getErr := s.Store.GetContext(c, providerID, accountName)
+		existing, getErr := s.Store.Get(c, providerID, accountName)
 		if getErr != nil {
 			return getErr
 		}
@@ -241,7 +247,7 @@ func (s *Service) Delete(ctx context.Context, providerID, name string) error {
 			anyerr.WithExitCode(anyerr.InvalidUsage))
 	}
 	return lock.WithMutationLock(ctx, s.Store.Root, refs.ProviderScope(providerID), func(c context.Context) error {
-		existing, err := s.Store.GetContext(c, providerID, accountName)
+		existing, err := s.Store.Get(c, providerID, accountName)
 		if err != nil {
 			return err
 		}
@@ -323,7 +329,7 @@ func (s *Service) CheckpointLiveAuth(ctx context.Context, providerID string, dur
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.Store.GetActive(providerID)
+	active, err := s.Store.GetActive(ctx, providerID)
 	if err != nil {
 		_ = os.RemoveAll(directory)
 		return nil, err
@@ -387,7 +393,7 @@ func (s *Service) ResolveIdentityTarget(ctx context.Context, providerID string, 
 	if identity == "" || strings.TrimSpace(identity) == "" {
 		return accountName, nil
 	}
-	accounts, err := s.Store.ListAccounts(providerID)
+	accounts, err := s.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -417,7 +423,7 @@ func (s *Service) Current(ctx context.Context, providerID string) (*CurrentResul
 	if err != nil {
 		return nil, err
 	}
-	active, err := s.Store.GetActive(providerID)
+	active, err := s.Store.GetActive(ctx, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +435,7 @@ func (s *Service) Current(ctx context.Context, providerID string) (*CurrentResul
 	if active == "" {
 		return out, nil
 	}
-	account, err := s.Store.Get(providerID, active)
+	account, err := s.Store.Get(ctx, providerID, active)
 	if err != nil || account == nil {
 		return out, err
 	}

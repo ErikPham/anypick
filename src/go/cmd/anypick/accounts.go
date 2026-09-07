@@ -85,7 +85,7 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 			kv{Key: "provider", Value: providerID}, kv{Key: "name", Value: name})
 		return int(anyerr.Success)
 	}
-	acct, err := a.Store.GetContext(ctx, providerID, name)
+	acct, err := a.Store.Get(ctx, providerID, name)
 	if err != nil {
 		return reportErr(err)
 	}
@@ -145,7 +145,7 @@ func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 		results = append(results, refreshOne(fs.Arg(0), fs.Arg(1)))
 	default:
 		for _, providerID := range a.Providers.IDs() {
-			list, lerr := a.Store.ListAccountsContext(ctx, providerID)
+			list, lerr := a.Store.ListAccounts(ctx, providerID)
 			if lerr != nil {
 				continue
 			}

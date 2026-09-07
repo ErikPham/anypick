@@ -148,7 +148,7 @@ func sourceExists(ctx context.Context, deps Deps, ref refs.Ref) (bool, string) {
 		}
 		return true, ""
 	case refs.KindAccount, refs.KindAccountPool:
-		if _, err := deps.Store.GetContext(ctx, ref.Provider, ref.Name); err != nil {
+		if _, err := deps.Store.Get(ctx, ref.Provider, ref.Name); err != nil {
 			return false, ref.Provider + "/" + ref.Name
 		}
 		return true, ""

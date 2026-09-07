@@ -86,11 +86,11 @@ func TestDesktopAccountLoginEndToEnd(t *testing.T) {
 	if res.Status != "success" || !strings.Contains(res.Message, "Signed in with Grok subscription") {
 		t.Fatalf("result = %+v", res)
 	}
-	acct, gerr := env.Deps.Store.Get("grok", "from-tray")
+	acct, gerr := env.Deps.Store.Get(context.Background(), "grok", "from-tray")
 	if gerr != nil || acct == nil {
 		t.Fatalf("account not saved by desktop login: %v", gerr)
 	}
-	active, aerr := env.Deps.Store.GetActive("grok")
+	active, aerr := env.Deps.Store.GetActive(context.Background(), "grok")
 	if aerr != nil || active != "from-tray" {
 		t.Fatalf("active = %q (%v)", active, aerr)
 	}

@@ -180,8 +180,8 @@ func TestCliTreePathsResolveInGoDispatch(t *testing.T) {
 			continue
 		}
 		if path == "update" {
-			// cmdUpdate hits the npm registry before any flag gate; probe it
-			// structurally instead of over the network.
+			// cmdUpdate hits the GitHub releases API before any flag gate;
+			// probe it structurally instead of over the network.
 			if !dispatch["update"] {
 				t.Errorf("fixture command %q missing from Go dispatch tree", path)
 			}

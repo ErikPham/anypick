@@ -57,7 +57,7 @@ func TestWriteMetaAtomicCommit(t *testing.T) {
 		t.Fatal("expected ingest failure to abort commit")
 	}
 
-	got, err := s.Get("grok", "work")
+	got, err := s.Get(context.Background(), "grok", "work")
 	if err != nil || got == nil {
 		t.Fatalf("account vanished after failed write: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestWriteMetaReplacesSnapshotAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := s.Require("codex", "personal")
+	got, err := s.Require(context.Background(), "codex", "personal")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,11 +131,11 @@ func TestDeleteClearsActivePointer(t *testing.T) {
 	if err := s.DeleteContext(context.Background(), "gemini", "a"); err != nil {
 		t.Fatal(err)
 	}
-	active, err := s.GetActive("gemini")
+	active, err := s.GetActive(context.Background(), "gemini")
 	if err != nil || active != "" {
 		t.Fatalf("active pointer survived delete: %q %v", active, err)
 	}
-	if _, err := s.Require("gemini", "a"); err == nil {
+	if _, err := s.Require(context.Background(), "gemini", "a"); err == nil {
 		t.Fatal("account still present after delete")
 	}
 }
@@ -154,7 +154,7 @@ func TestPatchMeta(t *testing.T) {
 	if next.Label != "Work" {
 		t.Fatalf("label = %q", next.Label)
 	}
-	got, _ := s.Require("grok", "w")
+	got, _ := s.Require(context.Background(), "grok", "w")
 	if got.Meta.Label != "Work" {
 		t.Fatalf("stored label = %q", got.Meta.Label)
 	}

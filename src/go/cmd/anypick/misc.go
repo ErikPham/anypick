@@ -92,11 +92,11 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 
 	// Active pointers must reference existing accounts.
 	for _, providerID := range a.Providers.IDs() {
-		active, _ := a.Store.GetActiveContext(ctx, providerID)
+		active, _ := a.Store.GetActive(ctx, providerID)
 		if active == "" {
 			continue
 		}
-		acct, gerr := a.Store.GetContext(ctx, providerID, active)
+		acct, gerr := a.Store.Get(ctx, providerID, active)
 		switch {
 		case gerr != nil || acct == nil:
 			findings = append(findings, finding{Check: "active-binding", Status: "warn",
@@ -109,12 +109,12 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 
 	// Enabled proxies should have persisted state or be restartable.
 	for _, providerID := range a.Providers.IDs() {
-		list, lerr := a.Store.ListAccountsContext(ctx, providerID)
+		list, lerr := a.Store.ListAccounts(ctx, providerID)
 		if lerr != nil {
 			continue
 		}
 		for _, acct := range list {
-			cfg, _ := a.Store.GetProxyConfig(providerID, acct.Meta.Name)
+			cfg, _ := a.Store.GetProxyConfig(ctx, providerID, acct.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}
@@ -179,38 +179,66 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// cmdUpdate checks npm for a newer released version (advisory only).
+// cmdUpdate checks GitHub Releases for a newer published version (advisory
+// only). There is no npm package: the real channels are GitHub Release assets
+// and source checkouts (ADR-0020), so the check queries the releases API and
+// the guidance points at those two channels.
 func cmdUpdate(_ context.Context, a *appView, args []string) int {
-	client := &http.Client{Timeout: 6 * time.Second}
-	resp, err := client.Get("https://registry.npmjs.org/anypick/latest")
+	const releasesAPI = "https://api.github.com/repos/outof0/anypick/releases/latest"
+	const releasesPage = "https://github.com/outof0/anypick/releases/latest"
 	current := packageVersion()
-	if err != nil || resp.StatusCode != http.StatusOK {
+	req, err := http.NewRequest(http.MethodGet, releasesAPI, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "update check failed (current version %s)\n", current)
+		return int(anyerr.HealthFailure)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "anypick/"+current)
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "update check failed (current version %s)\n", current)
 		return int(anyerr.HealthFailure)
 	}
 	defer resp.Body.Close()
-	var body struct {
-		Version string `json:"version"`
+	if resp.StatusCode == http.StatusNotFound {
+		// No release has been published yet; the source workflow is the only
+		// channel that exists today, so say that instead of failing.
+		if wantJSON(args) {
+			jsonOut(map[string]any{"current": current, "latest": nil, "detail": "no published release yet"})
+			return int(anyerr.Success)
+		}
+		fmt.Printf("anypick %s: no published release yet\n", current)
+		fmt.Println("update a source checkout with: git pull && make build")
+		return int(anyerr.Success)
 	}
-	if json.NewDecoder(resp.Body).Decode(&body) != nil || body.Version == "" {
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "update check failed (current version %s)\n", current)
+		return int(anyerr.HealthFailure)
+	}
+	var body struct {
+		TagName string `json:"tag_name"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&body) != nil || body.TagName == "" {
 		fmt.Fprintf(os.Stderr, "update check returned an unreadable response\n")
 		return int(anyerr.HealthFailure)
 	}
+	latest := strings.TrimPrefix(body.TagName, "v")
 	if wantJSON(args) {
-		jsonOut(map[string]string{"current": current, "latest": body.Version})
+		jsonOut(map[string]string{"current": current, "latest": latest})
 		return int(anyerr.Success)
 	}
-	if body.Version == current {
+	if latest == strings.TrimPrefix(current, "v") {
 		fmt.Printf("anypick %s is up to date\n", current)
 		return int(anyerr.Success)
 	}
 	if globals.DryRun {
-		printDryRun("update", "Would upgrade anypick "+current+" → "+body.Version,
-			map[string]any{"latest": body.Version})
+		printDryRun("update", "Would upgrade anypick "+current+" → "+latest,
+			map[string]any{"latest": latest})
 		return int(anyerr.Success)
 	}
-	fmt.Printf("anypick %s → %s available\n", current, body.Version)
-	fmt.Println("upgrade with: pnpm install -g anypick@latest")
+	fmt.Printf("anypick %s → %s available\n", current, latest)
+	fmt.Println("upgrade: download " + releasesPage + " or update a source checkout with: git pull && make build")
 	return int(anyerr.Success)
 }
 
@@ -362,7 +390,7 @@ func cmdComplete(ctx context.Context, a *appView, args []string) int {
 			providers = a.Providers.IDs()
 		}
 		for _, providerID := range providers {
-			list, err := a.Store.ListAccountsContext(ctx, providerID)
+			list, err := a.Store.ListAccounts(ctx, providerID)
 			if err != nil {
 				continue
 			}

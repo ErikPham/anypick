@@ -224,25 +224,28 @@ touch.
 ## Update command during the preview
 
 ```bash
-anypick update           # legacy npm-channel behavior
-anypick update --check   # query only; install nothing
+anypick update
 ```
 
-The command still implements the existing npm-channel compatibility behavior:
-it compares the running version with the registry's `latest` tag and can invoke
-npm for that exact version. It does **not** update `AnyPick.app`, install a
-bundled Go helper, or establish that a supported release currently exists.
-
-For this development preview, update the source checkout through its version
-control workflow and rerun `pnpm install`. `--check` remains non-mutating and
-supports `--json`:
+The command is advisory only: it queries the GitHub releases API for the
+newest published tag and compares it with the running version. There is no npm
+package and no self-updater, so the printed guidance points at the two real
+channels — download the asset from the releases page, or update a source
+checkout and rebuild:
 
 ```bash
-anypick update --check --json
+git pull && make build
+```
+
+Until the first release is published, the check reports `no published release
+yet` and points at the source workflow. JSON output is supported:
+
+```bash
+anypick update --json
 ```
 
 ```json
-{ "current": "1.0.0", "latest": "1.1.0", "updateAvailable": true, "updated": false }
+{ "current": "1.0.0", "latest": "1.1.0" }
 ```
 
 <Aside type="caution" title="Not a native app updater">

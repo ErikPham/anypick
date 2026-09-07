@@ -78,7 +78,9 @@ func (v *presetsView) GetContext(ctx context.Context, name string) (*presets.Sav
 
 type poolsView struct{ Store *pools.Store }
 
-func (v *poolsView) Get(providerID string) (*pools.Pool, error) { return v.Store.Get(providerID) }
+func (v *poolsView) Get(providerID string) (*pools.Pool, error) {
+	return v.Store.Get(providerID)
+}
 
 func (v *poolsView) GetContext(ctx context.Context, providerID string) (*pools.Pool, error) {
 	return v.Store.GetContext(ctx, providerID)

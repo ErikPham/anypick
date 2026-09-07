@@ -10,11 +10,7 @@ import (
 
 // GetProxyConfig mirrors AccountStore.getProxyConfig: missing rows decode to
 // DEFAULT_PROXY_CONFIG.
-func (s *AccountStore) GetProxyConfig(providerID, name string) (ProxyConfig, error) {
-	return s.GetProxyConfigContext(context.Background(), providerID, name)
-}
-
-func (s *AccountStore) GetProxyConfigContext(ctx context.Context, providerID, name string) (ProxyConfig, error) {
+func (s *AccountStore) GetProxyConfig(ctx context.Context, providerID, name string) (ProxyConfig, error) {
 	var raw sql.NullString
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT proxy_json FROM accounts WHERE provider = ? AND name = ?`,
@@ -44,7 +40,7 @@ func (s *AccountStore) SetProxyConfigContext(ctx context.Context, providerID, na
 }
 
 func (s *AccountStore) setProxyConfigContext(ctx context.Context, providerID, name string, cfg ProxyConfig) error {
-	account, err := s.GetContext(ctx, providerID, name)
+	account, err := s.Get(ctx, providerID, name)
 	if err != nil {
 		return err
 	}

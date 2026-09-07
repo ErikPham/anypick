@@ -21,14 +21,12 @@ import (
 // number is how many times it is used today. Adding one fails the build;
 // removing one does not, and when a count reaches zero the entry should be
 // deleted so the budget cannot creep back up.
-// "s.Deps.Store" went 30 → 32 with the Proxy Hub: desktop/hub_snapshot.go
-// adds two direct reads, ListAccountsContext and GetContext. Both are
-// read-only and belong behind the accounts service, so this is recorded debt,
-// not a new allowance — those two call sites are what to route when that
-// service gains readers.
+// The Proxy Hub's two account reads now go through accounts.Service. The
+// remaining store access budget is legacy transfer/activation wiring; it is a
+// ratchet and must shrink, never grow.
 var facadeBudget = map[string]int{
 	"a.Store":            20,
-	"s.Deps.Store":       32,
+	"s.Deps.Store":       30,
 	"a.Hub":              15,
 	"a.Bindings":         11,
 	"a.Runtime.Profiles": 9,

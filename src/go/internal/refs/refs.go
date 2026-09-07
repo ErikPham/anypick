@@ -73,6 +73,8 @@ func SerializeRef(ref Ref) string {
 // MutationScopeForRef returns the lock scope an activation must hold. Account
 // and pool sources both reach the provider's single live auth file, so they
 // collapse onto ProviderScope; everything else locks its exact identity.
+// Bindings use the same project/provider scopes as activation so a store-level
+// self-lock remains re-entrant rather than relying on callers to remember it.
 func MutationScopeForRef(ref Ref) string {
 	switch ref.Kind {
 	case KindAccount, KindAccountPool:

@@ -87,11 +87,7 @@ const getAccountSQL = `SELECT name, meta_json, proxy_json FROM accounts
        AND account_snapshot_files.account = accounts.name
    )`
 
-func (s *AccountStore) ListAccounts(providerID string) ([]Account, error) {
-	return s.ListAccountsContext(context.Background(), providerID)
-}
-
-func (s *AccountStore) ListAccountsContext(ctx context.Context, providerID string) ([]Account, error) {
+func (s *AccountStore) ListAccounts(ctx context.Context, providerID string) ([]Account, error) {
 	rows, err := s.DB.QueryContext(ctx, listAccountsSQL+` ORDER BY name`, providerID)
 	if err != nil {
 		return nil, err
@@ -110,11 +106,7 @@ func (s *AccountStore) ListAccountsContext(ctx context.Context, providerID strin
 
 // Get returns the account and materializes its snapshot cache for
 // provider.Restore / export. Returns nil when absent.
-func (s *AccountStore) Get(providerID, name string) (*Account, error) {
-	return s.GetContext(context.Background(), providerID, name)
-}
-
-func (s *AccountStore) GetContext(ctx context.Context, providerID, name string) (*Account, error) {
+func (s *AccountStore) Get(ctx context.Context, providerID, name string) (*Account, error) {
 	var metaJSON, proxyJSON string
 	err := s.DB.QueryRowContext(ctx, getAccountSQL, providerID, name).Scan(&name, &metaJSON, &proxyJSON)
 	if err == sql.ErrNoRows {
@@ -130,8 +122,8 @@ func (s *AccountStore) GetContext(ctx context.Context, providerID, name string) 
 	return &account, nil
 }
 
-func (s *AccountStore) Require(providerID, name string) (Account, error) {
-	account, err := s.Get(providerID, name)
+func (s *AccountStore) Require(ctx context.Context, providerID, name string) (Account, error) {
+	account, err := s.Get(ctx, providerID, name)
 	if err != nil {
 		return Account{}, err
 	}
@@ -155,7 +147,7 @@ func (s *AccountStore) PatchMetaContext(ctx context.Context, providerID, name st
 }
 
 func (s *AccountStore) patchMetaContext(ctx context.Context, providerID, name string, patch MetaPatch) (Meta, error) {
-	account, err := s.GetContext(ctx, providerID, name)
+	account, err := s.Get(ctx, providerID, name)
 	if err != nil {
 		return Meta{}, err
 	}
@@ -435,11 +427,7 @@ func (s *AccountStore) writeProxyStateContext(ctx context.Context, providerID, n
 	return err
 }
 
-func (s *AccountStore) ReadProxyState(providerID, name string) (*ProxyRuntimeState, error) {
-	return s.ReadProxyStateContext(context.Background(), providerID, name)
-}
-
-func (s *AccountStore) ReadProxyStateContext(ctx context.Context, providerID, name string) (*ProxyRuntimeState, error) {
+func (s *AccountStore) ReadProxyState(ctx context.Context, providerID, name string) (*ProxyRuntimeState, error) {
 	var raw string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT state_json FROM proxy_state WHERE provider = ? AND account = ?`,
@@ -469,11 +457,7 @@ type ProxyStateRef struct {
 // every in-host or non-detached forwarded proxy it served is gone, so their
 // state rows and leases must be reconciled. Corrupt rows are skipped rather
 // than failing the whole sweep.
-func (s *AccountStore) ListProxyStates() ([]ProxyStateRef, error) {
-	return s.ListProxyStatesContext(context.Background())
-}
-
-func (s *AccountStore) ListProxyStatesContext(ctx context.Context) ([]ProxyStateRef, error) {
+func (s *AccountStore) ListProxyStates(ctx context.Context) ([]ProxyStateRef, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT provider, account, state_json FROM proxy_state`)
 	if err != nil {
@@ -639,11 +623,7 @@ func (s *AccountStore) deleteAccount(ctx context.Context, providerID, name strin
 	return nil
 }
 
-func (s *AccountStore) GetActive(providerID string) (string, error) {
-	return s.GetActiveContext(context.Background(), providerID)
-}
-
-func (s *AccountStore) GetActiveContext(ctx context.Context, providerID string) (string, error) {
+func (s *AccountStore) GetActive(ctx context.Context, providerID string) (string, error) {
 	var name string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT account_name FROM provider_active WHERE provider = ?`,

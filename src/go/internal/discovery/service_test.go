@@ -109,3 +109,43 @@ func TestFreshnessWindowHonoursTTL(t *testing.T) {
 }
 
 var _ = filepath.Join
+
+func TestListNoLiveNeverFetches(t *testing.T) {
+	models := []string{"m-live"}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]string{{"id": models[0]}},
+		})
+	}))
+	defer srv.Close()
+
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Cold cache: static fallback, zero egress.
+	res := svc.List(ctx, Request{ProviderID: "openai", Endpoint: srv.URL, NoLive: true})
+	if hits != 0 || res.Source != SourceCatalog || len(res.Models) == 0 {
+		t.Fatalf("NoLive cold cache wrong: hits=%d res=%+v", hits, res)
+	}
+
+	// Warm the cache through the live path, then prove NoLive reads it
+	// without touching the network — fresh or stale.
+	live := svc.List(ctx, Request{ProviderID: "openai", Endpoint: srv.URL, APIKey: "k"})
+	if live.Source != SourceLive || hits != 1 {
+		t.Fatalf("warmup wrong: hits=%d res=%+v", hits, live)
+	}
+	res = svc.List(ctx, Request{ProviderID: "openai", Endpoint: srv.URL, NoLive: true})
+	if hits != 1 || res.Source != SourceCache || len(res.Models) != 1 || res.Models[0] != "m-live" {
+		t.Fatalf("NoLive fresh cache wrong: hits=%d res=%+v", hits, res)
+	}
+
+	// Expire the row: NoLive serves it stale, still without egress.
+	svc.Now = func() time.Time { return time.Now().Add(2 * TTL) }
+	res = svc.List(ctx, Request{ProviderID: "openai", Endpoint: srv.URL, NoLive: true})
+	if hits != 1 || res.Source != SourceStale {
+		t.Fatalf("NoLive stale cache wrong: hits=%d res=%+v", hits, res)
+	}
+}

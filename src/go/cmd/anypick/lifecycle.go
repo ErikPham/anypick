@@ -140,12 +140,12 @@ func runSuperviseChild(ctx context.Context, a *appView) int {
 	dir := supervisorRuntimeDir(a.Root)
 	started := [][2]string{} // provider/account pairs we own
 	for _, providerID := range a.Providers.IDs() {
-		list, lerr := a.Store.ListAccountsContext(ctx, providerID)
+		list, lerr := a.Store.ListAccounts(ctx, providerID)
 		if lerr != nil {
 			continue
 		}
 		for _, acct := range list {
-			cfg, _ := a.Store.GetProxyConfig(providerID, acct.Meta.Name)
+			cfg, _ := a.Store.GetProxyConfig(ctx, providerID, acct.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}

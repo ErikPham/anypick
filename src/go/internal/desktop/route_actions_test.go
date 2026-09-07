@@ -230,7 +230,7 @@ func TestInvokeCrossProviderAppRouteBindsClientNotSourceProvider(t *testing.T) {
 	if !strings.Contains(string(live), "grok-a@example.com") {
 		t.Fatalf("grok live auth was mutated by a claude route switch: %s", live)
 	}
-	if active, _ := env.Deps.Store.GetActive("grok"); active != "" {
+	if active, _ := env.Deps.Store.GetActive(context.Background(), "grok"); active != "" {
 		t.Fatalf("grok active pointer = %q, want \"\" (route switch must not switch the source provider)", active)
 	}
 }

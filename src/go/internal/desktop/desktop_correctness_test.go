@@ -84,7 +84,7 @@ func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("first save = %+v", res)
 	}
-	account, err := env.Deps.Store.Get("codex", "work")
+	account, err := env.Deps.Store.Get(context.Background(), "codex", "work")
 	if err != nil || account == nil || account.Meta.Label != "Desktop Work" {
 		t.Fatalf("saved account = %+v, %v", account, err)
 	}
@@ -95,7 +95,7 @@ func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	if res.Status != "error" {
 		t.Fatalf("save over existing account without overwrite = %+v", res)
 	}
-	account, err = env.Deps.Store.Get("codex", "work")
+	account, err = env.Deps.Store.Get(context.Background(), "codex", "work")
 	if err != nil || account == nil || account.Meta.Identity != "desktop@example.com" {
 		t.Fatalf("failed overwrite changed the snapshot: %+v, %v", account, err)
 	}
@@ -106,7 +106,7 @@ func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("confirmed overwrite = %+v", res)
 	}
-	account, err = env.Deps.Store.Get("codex", "work")
+	account, err = env.Deps.Store.Get(context.Background(), "codex", "work")
 	if err != nil || account == nil || account.Meta.Identity != "replacement@example.com" {
 		t.Fatalf("confirmed overwrite did not update snapshot: %+v, %v", account, err)
 	}
@@ -118,7 +118,7 @@ func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("account edit = %+v", res)
 	}
-	account, err = env.Deps.Store.Get("codex", "work")
+	account, err = env.Deps.Store.Get(context.Background(), "codex", "work")
 	if err != nil || account == nil || account.Meta.Label != "Renamed" {
 		t.Fatalf("edited account = %+v, %v", account, err)
 	}
@@ -159,7 +159,7 @@ func TestDesktopAccountSaveUsesExplicitCredentialAndOverwrite(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("credential save = %+v", res)
 	}
-	account, err := env.Deps.Store.Get("openrouter", "router")
+	account, err := env.Deps.Store.Get(context.Background(), "openrouter", "router")
 	if err != nil || account == nil {
 		t.Fatalf("credential account = %+v, %v", account, err)
 	}

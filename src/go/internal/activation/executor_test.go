@@ -63,7 +63,7 @@ func TestExecutePersistentSwitch(t *testing.T) {
 		t.Errorf("live auth = %v, want b@example.com", identityOf(live))
 	}
 
-	active, _ := env.Deps.Accounts.Svc.Store.GetActive("codex")
+	active, _ := env.Deps.Accounts.Svc.Store.GetActive(context.Background(), "codex")
 	if active != "b" {
 		t.Errorf("active pointer = %q, want b", active)
 	}
@@ -155,7 +155,7 @@ func TestExecuteRollbackRestoresPreviousAuth(t *testing.T) {
 	if identityOf(live) != "other@example.com" {
 		t.Errorf("post-rollback live = %v, want other@example.com", identityOf(live))
 	}
-	active, _ := env.Deps.Accounts.Svc.Store.GetActive("codex")
+	active, _ := env.Deps.Accounts.Svc.Store.GetActive(context.Background(), "codex")
 	if active != "other" {
 		t.Errorf("post-rollback active = %q, want other", active)
 	}
@@ -238,7 +238,7 @@ func TestRecoveryRestoresCheckpointedAuth(t *testing.T) {
 	if identityOf(live) != "orig@example.com" {
 		t.Errorf("recovered live = %v, want orig@example.com", identityOf(live))
 	}
-	active, _ := env.Deps.Accounts.Svc.Store.GetActive("codex")
+	active, _ := env.Deps.Accounts.Svc.Store.GetActive(context.Background(), "codex")
 	if active != "orig" {
 		t.Errorf("recovered active pointer = %q, want orig", active)
 	}

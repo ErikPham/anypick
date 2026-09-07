@@ -314,7 +314,7 @@ func restoreSelectedLocked(ctx context.Context, st *store.AccountStore, reg *pro
 		if werr := WriteSnapshotFiles(snapshotDir, entry.acct.Envelope.Files); werr != nil {
 			return nil, werr
 		}
-		existing, _ := st.GetContext(ctx, entry.acct.Provider, entry.acct.Name)
+		existing, _ := st.Get(ctx, entry.acct.Provider, entry.acct.Name)
 		createdAt := firstNonEmpty(metaCreatedAt(existing), entry.acct.Envelope.Meta.CreatedAt, now)
 		meta := store.Meta{
 			Name:            entry.acct.Name,
@@ -484,7 +484,7 @@ func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) 
 			entries = append(entries, e)
 			continue
 		}
-		local, lerr := st.ListAccounts(item.acct.Provider)
+		local, lerr := st.ListAccounts(context.Background(), item.acct.Provider)
 		if lerr != nil {
 			return nil, lerr
 		}

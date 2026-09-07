@@ -281,7 +281,7 @@ func TestServeExistingServesUntilTerminated(t *testing.T) {
 	// Cleanup: liveness and the matching lease are gone. The bearer token
 	// must survive — rotating it here is how every configured client 401s
 	// until the next activation rewrites settings.
-	state, _ := ts.Service.Store.ReadProxyStateContext(ctx, "codex", "serve-child")
+	state, _ := ts.Service.Store.ReadProxyState(ctx, "codex", "serve-child")
 	if state == nil || state.Token != "tok-child" {
 		t.Fatalf("stable token did not survive child shutdown: %+v", state)
 	}
@@ -319,7 +319,7 @@ func TestStopDropsStaleCrossProcessRecords(t *testing.T) {
 	if err := ts.Service.Stop(ctx, "codex", "stale-stop"); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	state, _ := ts.Service.Store.ReadProxyStateContext(ctx, "codex", "stale-stop")
+	state, _ := ts.Service.Store.ReadProxyState(ctx, "codex", "stale-stop")
 	if state == nil || state.Endpoint != "" || state.InstanceID != "" {
 		t.Fatalf("stale liveness survived: %+v", state)
 	}

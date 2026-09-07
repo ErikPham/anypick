@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -69,9 +70,16 @@ type Project struct {
 
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
-// Store owns all SQL for global/project bindings (stores own SQL; services
-// never embed it).
-type Store struct{ DB *sql.DB }
+// Store owns all SQL for global/project bindings and coordinates every
+// persisted mutation. Root is required for the scoped coordinator lock.
+type Store struct {
+	Root string
+	DB   *sql.DB
+}
+
+func (s *Store) mutate(ctx context.Context, scope string, fn func(context.Context) error) error {
+	return lock.WithMutationLock(ctx, s.Root, scope, fn)
+}
 
 const globalColumns = `client_id, spec_json, provenance_json, managed_config_revision, created_at, updated_at`
 
@@ -112,6 +120,16 @@ func (s *Store) GetGlobalContext(ctx context.Context, clientID string) (*Global,
 // ctx-less reads too, so no method on this Store can be reached through a fresh
 // context. internal/bindings/locking_test.go fails the build if one comes back.
 func (s *Store) UpsertGlobalContext(ctx context.Context, g Global) (Global, error) {
+	var out Global
+	err := s.mutate(ctx, "client/"+g.Client, func(c context.Context) error {
+		var err error
+		out, err = s.upsertGlobalContext(c, g)
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) upsertGlobalContext(ctx context.Context, g Global) (Global, error) {
 	now := nowISO()
 	existing, err := s.GetGlobalContext(ctx, g.Client)
 	if err != nil {
@@ -149,8 +167,10 @@ func (s *Store) UpsertGlobalContext(ctx context.Context, g Global) (Global, erro
 // DeleteGlobal removes the global binding for a client. No ctx-less form — see
 // the note on UpsertGlobalContext.
 func (s *Store) DeleteGlobalContext(ctx context.Context, clientID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM global_bindings WHERE client_id = ?`, clientID)
-	return err
+	return s.mutate(ctx, "client/"+clientID, func(c context.Context) error {
+		_, err := s.DB.ExecContext(c, `DELETE FROM global_bindings WHERE client_id = ?`, clientID)
+		return err
+	})
 }
 
 const projectColumns = `project_root, client_id, spec_json, provenance_json, created_at, updated_at`
@@ -184,6 +204,16 @@ func (s *Store) GetProjectContext(ctx context.Context, root, clientID string) (*
 // UpsertProject inserts or replaces one project binding. No ctx-less form —
 // see the note on UpsertGlobalContext.
 func (s *Store) UpsertProjectContext(ctx context.Context, p Project) (Project, error) {
+	var out Project
+	err := s.mutate(ctx, "project/"+p.ProjectRoot, func(c context.Context) error {
+		var err error
+		out, err = s.upsertProjectContext(c, p)
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) upsertProjectContext(ctx context.Context, p Project) (Project, error) {
 	now := nowISO()
 	existing, err := s.GetProjectContext(ctx, p.ProjectRoot, p.Client)
 	if err != nil {
@@ -220,9 +250,11 @@ func (s *Store) UpsertProjectContext(ctx context.Context, p Project) (Project, e
 // DeleteProject removes one project binding. No ctx-less form — see the note on
 // UpsertGlobalContext.
 func (s *Store) DeleteProjectContext(ctx context.Context, root, clientID string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`DELETE FROM project_bindings WHERE project_root = ? AND client_id = ?`, root, clientID)
-	return err
+	return s.mutate(ctx, "project/"+root, func(c context.Context) error {
+		_, err := s.DB.ExecContext(c,
+			`DELETE FROM project_bindings WHERE project_root = ? AND client_id = ?`, root, clientID)
+		return err
+	})
 }
 
 // CountProjects reports how many project bindings exist under a root without
@@ -240,13 +272,17 @@ func (s *Store) CountProjectsContext(ctx context.Context, root string) (int64, e
 // and reports how many were removed (TS deleteProject(root)). No ctx-less form
 // — see the note on UpsertGlobalContext.
 func (s *Store) DeleteAllProjectsContext(ctx context.Context, root string) (int64, error) {
-	res, err := s.DB.ExecContext(ctx,
-		`DELETE FROM project_bindings WHERE project_root = ?`, root)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+	var removed int64
+	err := s.mutate(ctx, "project/"+root, func(c context.Context) error {
+		res, err := s.DB.ExecContext(c,
+			`DELETE FROM project_bindings WHERE project_root = ?`, root)
+		if err != nil {
+			return err
+		}
+		removed, _ = res.RowsAffected()
+		return nil
+	})
+	return removed, err
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -273,14 +309,16 @@ func (s *Store) RecordSourceResumeContext(ctx context.Context, spec Spec) error 
 	if err != nil {
 		return err
 	}
-	_, werr := s.DB.ExecContext(ctx,
-		`INSERT INTO source_resumes (source_ref, client_id, spec_json, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(source_ref, client_id) DO UPDATE SET
-		   spec_json = excluded.spec_json,
-		   updated_at = excluded.updated_at`,
-		sourceRef, spec.Client, string(specJSON), nowISO())
-	return werr
+	return s.mutate(ctx, refs.MutationScopeForRef(spec.Source), func(c context.Context) error {
+		_, werr := s.DB.ExecContext(c,
+			`INSERT INTO source_resumes (source_ref, client_id, spec_json, updated_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(source_ref, client_id) DO UPDATE SET
+			   spec_json = excluded.spec_json,
+			   updated_at = excluded.updated_at`,
+			sourceRef, spec.Client, string(specJSON), nowISO())
+		return werr
+	})
 }
 
 // ListSourceResumesContext returns the most recently successful compatible

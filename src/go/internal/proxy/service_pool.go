@@ -191,7 +191,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 		return nil, err
 	}
 
-	originalCfg, err := s.Store.GetProxyConfigContext(ctx, providerID, primary)
+	originalCfg, err := s.Store.GetProxyConfig(ctx, providerID, primary)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 	// token; reuse happens only when a stop was a no-op/failure that left the
 	// record — mirroring TS observable semantics (proxy-service.ts reads
 	// priorState after both stops).
-	priorState, err := s.Store.ReadProxyStateContext(ctx, providerID, primary)
+	priorState, err := s.Store.ReadProxyState(ctx, providerID, primary)
 	if err != nil {
 		return nil, errors.Join(err, stopErrs)
 	}
@@ -299,6 +299,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 		return nil, errors.Join(lErr, stopErrs,
 			s.abortPoolStarted(ctx, providerID, primary, instanceID, endpoint, pid, leaseID, originalCfg))
 	}
+	s.startLeaseHeartbeat(leaseID, instanceID, pid)
 
 	return &StartResult{
 		Endpoint: endpoint, Token: poolToken,
@@ -366,6 +367,7 @@ func (s *Service) abortPoolStarted(
 	}
 	if stopped {
 		if leaseID != "" {
+			s.stopLeaseHeartbeat(leaseID)
 			errs = append(errs, s.Jobs.DeleteContext(cleanupCtx, leaseID))
 		}
 		errs = append(errs, s.Store.ClearProxyStateContext(cleanupCtx, providerID, primary))
@@ -418,7 +420,7 @@ func (s *Service) stopPoolLocked(ctx context.Context, providerID, primary string
 		return errors.Join(closeErr, leaseErr, stateErr)
 	}
 
-	state, err := s.Store.ReadProxyStateContext(cleanupCtx, providerID, primary)
+	state, err := s.Store.ReadProxyState(cleanupCtx, providerID, primary)
 	if err != nil {
 		return err
 	}
@@ -462,6 +464,7 @@ func (s *Service) cleanupPoolLeases(ctx context.Context, providerID, instanceID 
 	var errs []error
 	for _, l := range leases {
 		if l.InstanceID == instanceID {
+			s.stopLeaseHeartbeat(l.LeaseID)
 			errs = append(errs, s.Jobs.DeleteContext(ctx, l.LeaseID))
 		}
 	}
@@ -509,7 +512,7 @@ func (s *Service) HubPoolRing(ctx context.Context, providerID string) (*PoolServ
 // proven by echoing the recorded instance id on /health — the same veto the
 // hub uses, so stop never trusts a numeric PID alone (ADR 0003 §3).
 func (s *Service) ServePoolExisting(ctx context.Context, providerID string) error {
-	pool, err := s.Pools.Get(providerID)
+	pool, err := s.Pools.GetContext(ctx, providerID)
 	if err != nil {
 		return err
 	}
@@ -529,7 +532,7 @@ func (s *Service) ServePoolExisting(ctx context.Context, providerID string) erro
 	if primary == "" {
 		return fmt.Errorf("no enabled accounts in %s pool", providerID)
 	}
-	state, err := s.Store.ReadProxyState(providerID, primary)
+	state, err := s.Store.ReadProxyState(ctx, providerID, primary)
 	if err != nil {
 		return err
 	}
@@ -546,6 +549,11 @@ func (s *Service) ServePoolExisting(ctx context.Context, providerID string) erro
 	if err := server.Listen(hostOf(state.Endpoint), portOf(state.Endpoint)); err != nil {
 		return err
 	}
+
+	// Same reasoning as the single-account child: the pool lease outlives the
+	// parent, so the child keeps it fresh.
+	s.startInstanceHeartbeat(state.InstanceID, ownPID())
+	defer s.stopInstanceHeartbeat(state.InstanceID)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

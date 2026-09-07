@@ -113,6 +113,7 @@ type Request struct {
 type Plan struct {
 	Mode           Mode                    `json:"mode"`
 	Client         string                  `json:"client"`
+	ProjectRoot    string                  `json:"-"`
 	ResolvedSource *ResolvedSource         `json:"-"`
 	SourceRefJSON  map[string]interface{}  `json:"source,omitempty"`
 	Transport      ResolvedTransport       `json:"transport"`

@@ -120,11 +120,11 @@ func TestLoginEndToEndCreatesAccountAndActivates(t *testing.T) {
 	if res.BackedUpTo != nil {
 		t.Fatalf("no stash expected without prior live login: %v", *res.BackedUpTo)
 	}
-	acct, gerr := st.Get("grok", res.Account.Name)
+	acct, gerr := st.Get(context.Background(), "grok", res.Account.Name)
 	if gerr != nil || acct == nil {
 		t.Fatalf("account not persisted: %v", gerr)
 	}
-	active, aerr := st.GetActive("grok")
+	active, aerr := st.GetActive(context.Background(), "grok")
 	if aerr != nil || active != res.Account.Name {
 		t.Fatalf("active = %q, want %q", active, res.Account.Name)
 	}
@@ -149,7 +149,7 @@ func TestLoginReusesIdentitySnapshotName(t *testing.T) {
 	if second.Account.Name != first.Account.Name {
 		t.Fatalf("identity reuse failed: %q vs %q", first.Account.Name, second.Account.Name)
 	}
-	list, _ := st.ListAccounts("grok")
+	list, _ := st.ListAccounts(context.Background(), "grok")
 	if len(list) != 1 {
 		t.Fatalf("expected one account, got %d", len(list))
 	}
@@ -199,7 +199,7 @@ func TestLoginFailureRollsBackLiveAuth(t *testing.T) {
 	failing := loginLauncher(t, "exit 7")
 	t.Setenv("GROK_BINARY", failing)
 
-	before, _ := svc.Store.ListAccounts("grok")
+	before, _ := svc.Store.ListAccounts(context.Background(), "grok")
 	_, err := svc.Login(context.Background(), "grok", LoginOptions{})
 	if err == nil || wantCode(t, err) != "PROVIDER_LOGIN_FAILED" {
 		t.Fatalf("want PROVIDER_LOGIN_FAILED, got %v", err)
@@ -208,7 +208,7 @@ func TestLoginFailureRollsBackLiveAuth(t *testing.T) {
 	if rerr != nil || string(data) != old {
 		t.Fatalf("live auth not restored: %v %q", rerr, data)
 	}
-	after, _ := svc.Store.ListAccounts("grok")
+	after, _ := svc.Store.ListAccounts(context.Background(), "grok")
 	if len(after) < len(before) {
 		t.Fatal("stash snapshot was deleted on rollback")
 	}
@@ -286,7 +286,7 @@ func TestLoginCancelInCommitWindowRollsBack(t *testing.T) {
 		t.Fatalf("want PROVIDER_LOGIN_CANCELLED, got %v", err)
 	}
 	// No account may be committed by the abandoned request.
-	list, lerr := st.ListAccounts("grok")
+	list, lerr := st.ListAccounts(context.Background(), "grok")
 	if lerr != nil {
 		t.Fatal(lerr)
 	}
@@ -295,7 +295,7 @@ func TestLoginCancelInCommitWindowRollsBack(t *testing.T) {
 			t.Fatalf("cancelled login committed state: %+v", acct.Meta)
 		}
 	}
-	if active, _ := st.GetActive("grok"); active != "" {
+	if active, _ := st.GetActive(context.Background(), "grok"); active != "" {
 		t.Fatalf("active pointer set despite cancellation: %q", active)
 	}
 }

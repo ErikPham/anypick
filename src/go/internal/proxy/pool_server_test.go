@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ type stubUpstream struct {
 	status atomic.Int32 // status returned per request; 200 default
 	hits   atomic.Int32
 	body   string
+	// delayMs is applied before the status is written, so a test can make one
+	// member slower than the aggregate ring budget.
+	delayMs atomic.Int64
 }
 
 func newStubUpstream(t *testing.T, defaultStatus int) *stubUpstream {
@@ -45,6 +49,9 @@ func newStubUpstream(t *testing.T, defaultStatus int) *stubUpstream {
 	s := &stubUpstream{body: `{"ok":true}`}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
+		if d := s.delayMs.Load(); d > 0 {
+			time.Sleep(time.Duration(d) * time.Millisecond)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		code := int(s.status.Load())
 		if code == 0 {
@@ -205,6 +212,99 @@ func TestPoolFailoverOnQuotaClassFailures(t *testing.T) {
 }
 
 func (s *stubUpstream) hitCount() int { return int(s.hits.Load()) }
+
+// TestPoolRingDeadlineStopsWalkingTheRing pins the aggregate pre-commit
+// budget: an uncommitted ring must not keep billing member after member
+// forever. Without it a pool of N slow members costs N × upstream timeout per
+// client request, which is how a small pool becomes an amplifier.
+func TestPoolRingDeadlineStopsWalkingTheRing(t *testing.T) {
+	upA := newStubUpstream(t, 200)
+	upB := newStubUpstream(t, 200)
+	upA.status.Store(429)
+	upA.body = `{"error":{"message":"Your account has run out of quota"}}`
+	// The first member alone burns more than the whole budget.
+	upA.delayMs.Store(400)
+
+	server, token := newTestPool(t, MustNewInstanceID(), []string{"a", "b"},
+		mapResolver{
+			"a": {BaseURL: upA.url, Auth: "upstream-secret-a"},
+			"b": {BaseURL: upB.url, Auth: "upstream-secret-b"},
+		}, filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
+	server.RingDeadline = 100 * time.Millisecond
+
+	// The budget bounds each attempt too, not just the loop: a member that is
+	// still thinking when the budget expires is abandoned, so one slow
+	// upstream cannot hold the client for its own full timeout.
+	started := time.Now()
+	resp := poolGet(t, server.Endpoint(), token, "/v1/chat/completions")
+	elapsed := time.Since(started)
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 once the ring budget is spent", resp.StatusCode)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("elapsed = %s, want the abandoned member cut near the %s budget",
+			elapsed, server.RingDeadline)
+	}
+	if upA.hitCount() != 1 {
+		t.Errorf("first member hits = %d, want 1", upA.hitCount())
+	}
+	if upB.hitCount() != 0 {
+		t.Error("the ring must stop before contacting another member")
+	}
+}
+
+// TestPoolRingDeadlineNeverCutsACommittedStream is the other half of the
+// invariant: the budget bounds *selection*, not delivery. A slow upstream that
+// already committed its headers must be allowed to finish, or long streams
+// would be truncated exactly when they are working.
+func TestPoolRingDeadlineNeverCutsACommittedStream(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte(`{"chunk":"one"}`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+		_, _ = w.Write([]byte(`{"chunk":"two"}`))
+	}))
+	defer srv.Close()
+	defer releaseAll()
+
+	url := mustParseURLHelper(t, srv.URL)
+	server, token := newTestPool(t, MustNewInstanceID(), []string{"a"},
+		mapResolver{"a": {BaseURL: url, Auth: "upstream-secret-a"}},
+		filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
+	// Far shorter than the response takes: only the commit may save it.
+	server.RingDeadline = 150 * time.Millisecond
+
+	done := make(chan struct{})
+	var body string
+	var statusCode int
+	go func() {
+		defer close(done)
+		resp := poolGet(t, server.Endpoint(), token, "/v1/chat/completions")
+		statusCode = resp.StatusCode
+		raw, _ := io.ReadAll(resp.Body)
+		body = string(raw)
+	}()
+	time.Sleep(400 * time.Millisecond) // deadline is long gone
+	releaseAll()
+	<-done
+
+	if statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want the committed 200", statusCode)
+	}
+	if !strings.Contains(body, `"chunk":"one"`) || !strings.Contains(body, `"chunk":"two"`) {
+		t.Errorf("stream was truncated: %q", body)
+	}
+}
 
 func TestPoolPassesThroughNonQuotaStatusesVerbatim(t *testing.T) {
 	upA := newStubUpstream(t, 500)

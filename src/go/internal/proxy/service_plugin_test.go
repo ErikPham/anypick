@@ -178,7 +178,7 @@ func TestForwardedStartPersistsEngineOwnedLifecycle(t *testing.T) {
 	if _, err := hex.DecodeString(res.Token); err != nil {
 		t.Fatalf("token is not hex: %v", err)
 	}
-	state, err := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "work")
+	state, err := svc.Store.ReadProxyState(context.Background(), "pluginprov", "work")
 	if err != nil || state == nil {
 		t.Fatalf("proxy_state = %+v, %v", state, err)
 	}
@@ -192,7 +192,7 @@ func TestForwardedStartPersistsEngineOwnedLifecycle(t *testing.T) {
 	if lease.Account != "work" || lease.InstanceID != "inst-forward-1" {
 		t.Fatalf("lease = %+v", lease)
 	}
-	cfg, err := svc.Store.GetProxyConfigContext(context.Background(), "pluginprov", "work")
+	cfg, err := svc.Store.GetProxyConfig(context.Background(), "pluginprov", "work")
 	if err != nil || !cfg.Enabled || cfg.Port == 0 {
 		t.Fatalf("config after start = %+v, %v", cfg, err)
 	}
@@ -225,11 +225,11 @@ func TestForwardedStartRejectsUnsafeEndpointAndCompensates(t *testing.T) {
 		t.Fatalf("unsafe endpoint error = %v (%T), want PROXY_UNSAFE_HOST", err, err)
 	}
 	ctx := context.Background()
-	cfg, cerr := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "unsafe")
+	cfg, cerr := svc.Store.GetProxyConfig(ctx, "pluginprov", "unsafe")
 	if cerr != nil || cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("failed start left mutated config: %+v, %v", cfg, cerr)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "unsafe"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "unsafe"); state != nil {
 		t.Fatalf("failed start left runtime state: %+v", state)
 	}
 	leases, lerr := svc.Jobs.ListByAccountContext(ctx, "pluginprov", "unsafe")
@@ -268,11 +268,11 @@ func TestForwardedFailedOwnershipGateCompensatesAndStopsListener(t *testing.T) {
 		t.Fatal("compensation never asked the plugin to stop its listener")
 	}
 	ctx := context.Background()
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "hijack")
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", "hijack")
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("failed gate left mutated config: %+v", cfg)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "hijack"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "hijack"); state != nil {
 		t.Fatalf("failed gate left runtime state: %+v", state)
 	}
 }
@@ -308,7 +308,7 @@ func TestForwardedStopVerifiesTerminationAndFailsClosed(t *testing.T) {
 		t.Fatalf("unverified stop error = %v (%T), want PROXY_STOP_UNVERIFIED", err, err)
 	}
 	// Fail closed: records survive so the orphan stays diagnosable.
-	state, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "work")
+	state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "work")
 	if state == nil || state.Token != res.Token {
 		t.Fatalf("unverified stop erased runtime state: %+v", state)
 	}
@@ -320,7 +320,7 @@ func TestForwardedStopVerifiesTerminationAndFailsClosed(t *testing.T) {
 	if err := svc.Stop(context.Background(), "pluginprov", "work"); err != nil {
 		t.Fatalf("verified stop = %v", err)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "work"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "work"); state != nil {
 		t.Fatalf("verified stop left runtime state: %+v", state)
 	}
 	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
@@ -363,7 +363,7 @@ func TestForwardedStopWithoutStopMethodFailsClosedThenDropsStale(t *testing.T) {
 	if !errors.As(err, &stopErr) || stopErr.Code != "PROXY_STOP_UNVERIFIED" {
 		t.Fatalf("absent-stop error = %v (%T), want PROXY_STOP_UNVERIFIED", err, err)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "nostop"); state == nil {
+	if state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "nostop"); state == nil {
 		t.Fatal("fail-closed stop dropped the runtime state")
 	}
 
@@ -372,7 +372,7 @@ func TestForwardedStopWithoutStopMethodFailsClosedThenDropsStale(t *testing.T) {
 	if err := svc.Stop(context.Background(), "pluginprov", "nostop"); err != nil {
 		t.Fatalf("stale-record stop = %v", err)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "nostop"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "nostop"); state != nil {
 		t.Fatal("stale runtime state survived")
 	}
 	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
@@ -446,10 +446,10 @@ func TestForwardedBindThenThrowIsCompensated(t *testing.T) {
 		t.Fatal("bound listener survived failed-start compensation")
 	}
 	ctx := context.Background()
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "bind-throw"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "bind-throw"); state != nil {
 		t.Fatalf("compensated start left runtime state: %+v", state)
 	}
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "bind-throw")
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", "bind-throw")
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("compensated start left mutated config: %+v", cfg)
 	}
@@ -507,10 +507,10 @@ func TestForwardedCancelledStartStopsLateBindingListener(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	ctx := context.Background()
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "cancel-late"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "cancel-late"); state != nil {
 		t.Fatalf("cancelled start left runtime state: %+v", state)
 	}
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "cancel-late")
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", "cancel-late")
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("cancelled start left mutated config: %+v", cfg)
 	}
@@ -543,7 +543,7 @@ func TestForwardedUnverifiableOrphanKeepsDiagnosticRecord(t *testing.T) {
 	// The orphan stays diagnosable: a proxy_state row names the planned
 	// endpoint (no handle ever came back, so there is no instance id) and the
 	// engine token for later adoption or teardown.
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "orphan")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "orphan")
 	if serr != nil || state == nil || state.InstanceID != "" ||
 		state.Endpoint != fmt.Sprintf("http://127.0.0.1:%d", plannedPort) || state.Token == "" {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
@@ -551,7 +551,7 @@ func TestForwardedUnverifiableOrphanKeepsDiagnosticRecord(t *testing.T) {
 	if !plannedInUse(t, "", plannedPort) {
 		t.Fatal("orphaned listener unexpectedly gone")
 	}
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "orphan")
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", "orphan")
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("config was not restored alongside the diagnostic record: %+v", cfg)
 	}
@@ -565,7 +565,7 @@ func TestForwardedUnverifiableOrphanKeepsDiagnosticRecord(t *testing.T) {
 	if err := svc.Stop(context.Background(), "pluginprov", "orphan"); err != nil {
 		t.Fatalf("stale-record stop = %v", err)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "orphan"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "orphan"); state != nil {
 		t.Fatal("diagnostic record survived a verified-dead orphan")
 	}
 }
@@ -680,7 +680,7 @@ func TestForwardedUnsettledWithoutScopedRecordFailsClosed(t *testing.T) {
 
 	// Fail closed: without a scoped record the diagnostic row survives.
 	ctx := context.Background()
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "unsettled")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "unsettled")
 	if serr != nil || state == nil || state.Token == "" || state.InstanceID != "" ||
 		state.Endpoint != fmt.Sprintf("http://127.0.0.1:%d", plannedPort) {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
@@ -689,7 +689,7 @@ func TestForwardedUnsettledWithoutScopedRecordFailsClosed(t *testing.T) {
 	if !errors.As(err, &stopErr) || stopErr.Code != "PROXY_STOP_UNVERIFIED" {
 		t.Fatalf("unprovable teardown error = %v (%T), want PROXY_STOP_UNVERIFIED", err, err)
 	}
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", "unsettled")
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", "unsettled")
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("config not restored alongside the diagnostic record: %+v", cfg)
 	}
@@ -740,7 +740,7 @@ func TestForwardedUnsettledKillsRecordedChildKeepsDiagnostic(t *testing.T) {
 	if !errors.As(startErr, &stopErr) || stopErr.Code != "PROXY_STOP_UNVERIFIED" {
 		t.Fatalf("unproven-tree teardown error = %v (%T), want PROXY_STOP_UNVERIFIED", startErr, startErr)
 	}
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "provable")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "provable")
 	if serr != nil || state == nil || state.Token == "" || state.InstanceID != "" ||
 		state.Endpoint != fmt.Sprintf("http://127.0.0.1:%d", planned) {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
@@ -795,7 +795,7 @@ func TestForwardedUnsettledNoHandleCatchesLateDetachedChild(t *testing.T) {
 	if !errors.As(startErr, &stopErr) || stopErr.Code != "PROXY_STOP_UNVERIFIED" {
 		t.Fatalf("unproven-tree teardown error = %v (%T), want PROXY_STOP_UNVERIFIED", startErr, startErr)
 	}
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "latechild")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "latechild")
 	if serr != nil || state == nil || state.Token == "" ||
 		state.Endpoint != fmt.Sprintf("http://127.0.0.1:%d", planned) {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
@@ -854,7 +854,7 @@ func TestForwardedUnsettledAdoptsAndStopsDoubleDetachedGrandchild(t *testing.T) 
 	if !errors.As(startErr, &stopErr) || stopErr.Code != "PROXY_STOP_UNVERIFIED" {
 		t.Fatalf("unproven-tree teardown error = %v (%T), want PROXY_STOP_UNVERIFIED", startErr, startErr)
 	}
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "grandchild")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "grandchild")
 	if serr != nil || state == nil || state.Token == "" {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
 	}
@@ -905,7 +905,7 @@ func TestReconcileAccountAfterHostLossKeepsProxyOnTransientHealthMiss(t *testing
 	if err := <-done; err != nil {
 		t.Fatalf("transient-miss reconcile = %v", err)
 	}
-	got, serr := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "b")
+	got, serr := svc.Store.ReadProxyState(context.Background(), "pluginprov", "b")
 	if serr != nil || got == nil || got.Token != "tok-b" {
 		t.Fatalf("live detached proxy forgotten after one missed probe: %+v, %v", got, serr)
 	}
@@ -947,7 +947,7 @@ func TestReconcileAccountAfterHostLossClearsVerifiedDead(t *testing.T) {
 		t.Fatalf("verified-dead reconcile = %v", err)
 	}
 	ctx := context.Background()
-	if got, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "dead"); got != nil {
+	if got, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "dead"); got != nil {
 		t.Fatalf("verified-dead row survived reconciliation: %+v", got)
 	}
 	leases, lerr := svc.Jobs.ListByAccountContext(ctx, "pluginprov", "dead")
@@ -1000,7 +1000,7 @@ func TestReconcileClearIsAtomicWhenLeaseDeleteFails(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	got, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "atomic")
+	got, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "atomic")
 	if serr != nil || got == nil || got.Token != "tok-atomic" {
 		t.Fatalf("proxy_state lost to a half-failed cleanup: %+v, %v", got, serr)
 	}
@@ -1017,7 +1017,7 @@ func TestReconcileClearIsAtomicWhenLeaseDeleteFails(t *testing.T) {
 		ctx, "pluginprov", "atomic", state, terminated); err != nil {
 		t.Fatalf("retry reconcile after injected failure = %v", err)
 	}
-	if got, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "atomic"); got != nil {
+	if got, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "atomic"); got != nil {
 		t.Fatalf("verified-dead row survived reconciliation: %+v", got)
 	}
 	if remaining, _ := svc.Jobs.ListByAccountContext(ctx, "pluginprov", "atomic"); len(remaining) != 0 {
@@ -1069,7 +1069,7 @@ func TestStopForwardedClearsAtomicallyWhenLeaseDeleteFails(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	state, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "work")
+	state, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "work")
 	if serr != nil || state == nil || state.Token != res.Token {
 		t.Fatalf("stop-path half-failure lost the proxy_state row: %+v, %v", state, serr)
 	}
@@ -1084,7 +1084,7 @@ func TestStopForwardedClearsAtomicallyWhenLeaseDeleteFails(t *testing.T) {
 	if err := svc.Stop(context.Background(), "pluginprov", "work"); err != nil {
 		t.Fatalf("retry stop after injected failure = %v", err)
 	}
-	if state, _ := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "work"); state != nil {
+	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "work"); state != nil {
 		t.Fatalf("verified stop left runtime state: %+v", state)
 	}
 	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
@@ -1128,7 +1128,7 @@ func TestReconcileKeepsPausedDetachedProxyAcrossWholeWindow(t *testing.T) {
 		t.Fatalf("paused-proxy reconcile = %v", err)
 	}
 	ctx := context.Background()
-	got, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "paused")
+	got, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "paused")
 	if serr != nil || got == nil || got.Token != "tok-paused" || got.InstanceID != instanceID {
 		t.Fatalf("SIGSTOPed detached proxy forgotten across the whole window: %+v, %v", got, serr)
 	}
@@ -1189,7 +1189,7 @@ func TestReconcileKeepsLateBindingGrandchildAfterRecordedOwnerDies(t *testing.T)
 		t.Fatalf("dead-detached-owner reconcile = %v", err)
 	}
 	ctx := context.Background()
-	got, serr := svc.Store.ReadProxyStateContext(ctx, "pluginprov", "lategrand")
+	got, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "lategrand")
 	if serr != nil || got == nil || got.Token != "tok-lategrand" || got.InstanceID != instanceID {
 		t.Fatalf("detached row dropped although tree containment is unprovable: %+v, %v", got, serr)
 	}
@@ -1247,7 +1247,7 @@ func TestReconcileRequiresEngineRuntimeGeneration(t *testing.T) {
 		writeStateAndLease("reca", true), terminated); err != nil {
 		t.Fatalf("engine-generation reconcile = %v", err)
 	}
-	if got, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "reca"); got != nil {
+	if got, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "reca"); got != nil {
 		t.Fatalf("engine-stamped dead generation survived reconciliation: %+v", got)
 	}
 
@@ -1257,7 +1257,7 @@ func TestReconcileRequiresEngineRuntimeGeneration(t *testing.T) {
 		writeStateAndLease("recb", false), terminated); err != nil {
 		t.Fatalf("ambiguous-record reconcile = %v", err)
 	}
-	got, serr := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "recb")
+	got, serr := svc.Store.ReadProxyState(context.Background(), "pluginprov", "recb")
 	if serr != nil || got == nil || got.Token != "tok-recb" {
 		t.Fatalf("plugin-shaped record bypassed engine generation proof: %+v, %v", got, serr)
 	}
@@ -1273,7 +1273,7 @@ func TestReconcileRequiresEngineRuntimeGeneration(t *testing.T) {
 		context.Background(), "pluginprov", "recc", stale, terminated); err != nil {
 		t.Fatalf("stale-generation reconcile = %v", err)
 	}
-	if got, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "recc"); got == nil {
+	if got, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "recc"); got == nil {
 		t.Fatal("stale runtime generation was cleared by a later host termination")
 	}
 }
@@ -1384,7 +1384,7 @@ func TestReconcileOnHostLossRunsUnderEachAccountsScopes(t *testing.T) {
 	if err := <-reconcileDone; err != nil {
 		t.Fatalf("reconcile after scope release = %v", err)
 	}
-	if got, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "b"); got != nil {
+	if got, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "b"); got != nil {
 		t.Fatalf("verified-dead row not reconciled under B's own scopes: %+v", got)
 	}
 }
@@ -1408,7 +1408,7 @@ func TestReconcileSkipsSupersededInstance(t *testing.T) {
 		context.Background(), "pluginprov", "b", stale, PluginRuntimeIdentity{}); err != nil {
 		t.Fatalf("superseded-instance reconcile = %v", err)
 	}
-	got, _ := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "b")
+	got, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "b")
 	if got == nil || got.InstanceID != "inst-current" {
 		t.Fatalf("superseded row was touched: %+v", got)
 	}
@@ -1489,7 +1489,7 @@ func assertNoLeasesAndConfigRestored(t *testing.T, svc *Service, name string, wa
 	if err != nil || len(leases) != 0 {
 		t.Fatalf("failed start left leases: %+v, %v", leases, err)
 	}
-	cfg, _ := svc.Store.GetProxyConfigContext(ctx, "pluginprov", name)
+	cfg, _ := svc.Store.GetProxyConfig(ctx, "pluginprov", name)
 	if cfg.Enabled != want.Enabled || cfg.Port != want.Port {
 		t.Fatalf("config not restored: %+v, want %+v", cfg, want)
 	}
@@ -1518,7 +1518,7 @@ func TestForwardedUnsettledWithFailedTerminationKeepsRecord(t *testing.T) {
 	}
 
 	// Fail closed: the diagnostic record names the live orphan.
-	state, serr := svc.Store.ReadProxyStateContext(context.Background(), "pluginprov", "stuck")
+	state, serr := svc.Store.ReadProxyState(context.Background(), "pluginprov", "stuck")
 	if serr != nil || state == nil || !strings.HasPrefix(state.Endpoint, "http://127.0.0.1:") ||
 		state.Token == "" {
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)

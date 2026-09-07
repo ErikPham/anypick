@@ -168,7 +168,7 @@ func TestEphemeralProxyRunKeepsNativeAuthUntouched(t *testing.T) {
 	if got := env.readCodexLive(t); got != before {
 		t.Error("ephemeral run mutated live native auth")
 	}
-	active, _ := env.Deps.Accounts.Svc.Store.GetActive("codex")
+	active, _ := env.Deps.Accounts.Svc.Store.GetActive(context.Background(), "codex")
 	if active == "acct" {
 		t.Error("ephemeral run must not move the active pointer")
 	}

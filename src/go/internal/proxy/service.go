@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -282,16 +283,28 @@ type Service struct {
 
 	servers     *registry
 	poolServers *poolServerRegistry
+
+	heartbeatMu sync.Mutex
+	heartbeats  map[string]context.CancelFunc
 }
 
 func New(st *store.AccountStore, leases *LeaseStore) *Service {
-	return &Service{Store: st, Jobs: leases, servers: newRegistry(), poolServers: newPoolServerRegistry()}
+	return &Service{
+		Store: st, Jobs: leases, servers: newRegistry(), poolServers: newPoolServerRegistry(),
+		heartbeats: map[string]context.CancelFunc{},
+	}
 }
 
 // Close shuts down every in-process server this Service owns. Detached
 // children are intentionally left running: their leases keep them recoverable.
 // Idempotent — safe to call from app.Close on every exit path.
 func (s *Service) Close() {
+	s.heartbeatMu.Lock()
+	for leaseID, cancel := range s.heartbeats {
+		cancel()
+		delete(s.heartbeats, leaseID)
+	}
+	s.heartbeatMu.Unlock()
 	for _, srv := range s.servers.removeAll() {
 		_ = srv.Close()
 	}
@@ -322,7 +335,7 @@ func (s *Service) Configure(
 	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
-		cfg, err := s.Store.GetProxyConfigContext(c, providerID, accountName)
+		cfg, err := s.Store.GetProxyConfig(c, providerID, accountName)
 		if err != nil {
 			return err
 		}
@@ -382,7 +395,7 @@ func (s *Service) StartProxy(ctx context.Context, providerID, accountName string
 }
 
 func (s *Service) startLocked(ctx context.Context, providerID, accountName string, outcome *forwardedCompensation) (*StartResult, error) {
-	account, err := s.Store.GetContext(ctx, providerID, accountName)
+	account, err := s.Store.Get(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +414,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 
 	// Same-process reuse.
 	if existing, ok := s.servers.get(providerID, accountName); ok {
-		state, stateErr := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+		state, stateErr := s.Store.ReadProxyState(ctx, providerID, accountName)
 		if stateErr != nil {
 			return nil, stateErr
 		}
@@ -420,7 +433,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 	// Cross-process reuse: a detached child from an earlier invocation may
 	// still be healthy. Adopt only when /health echoes OUR recorded instance
 	// id — never trust the pid alone (PROC-01).
-	state, err := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -549,6 +562,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, pid, leaseID, originalCfg, mintedFresh)
 		return nil, errors.Join(lErr, cleanupErr)
 	}
+	s.startLeaseHeartbeat(leaseID, instanceID, pid)
 
 	return &StartResult{
 		Endpoint: endpoint, Token: token,
@@ -603,6 +617,7 @@ func (s *Service) abortStart(
 
 	if stopped {
 		if leaseID != "" {
+			s.stopLeaseHeartbeat(leaseID)
 			cleanupErrs = append(cleanupErrs, s.Jobs.DeleteContext(cleanupCtx, leaseID))
 		}
 		if mintedFresh {
@@ -679,7 +694,7 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 			s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 	}
 
-	state, err := s.Store.ReadProxyStateContext(cleanupCtx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(cleanupCtx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -725,7 +740,7 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 // stopped proxy stays stopped across proxy auto-start (PX1). No-op when
 // already disabled, so stopping a never-configured account writes nothing.
 func (s *Service) disableProxyConfigIfSet(ctx context.Context, providerID, accountName string) error {
-	cfg, err := s.Store.GetProxyConfigContext(ctx, providerID, accountName)
+	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -747,7 +762,10 @@ func (s *Service) cleanupLeasesContext(ctx context.Context, providerID, accountN
 	}
 	for _, l := range leases {
 		if l.InstanceID == instanceID {
-			if err := s.Jobs.DeleteContext(ctx, l.LeaseID); err != nil {
+			if err := func() error {
+				s.stopLeaseHeartbeat(l.LeaseID)
+				return s.Jobs.DeleteContext(ctx, l.LeaseID)
+			}(); err != nil {
 				return err
 			}
 		}
@@ -768,7 +786,7 @@ func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName,
 			return s.stopLocked(c, providerID, accountName)
 		}
 		// Detached child: stop only when the recorded instance matches.
-		state, err := s.Store.ReadProxyStateContext(c, providerID, accountName)
+		state, err := s.Store.ReadProxyState(c, providerID, accountName)
 		if err != nil {
 			return err
 		}
@@ -776,6 +794,7 @@ func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName,
 			return s.stopLocked(c, providerID, accountName)
 		}
 		if leaseID != "" {
+			s.stopLeaseHeartbeat(leaseID)
 			return s.Jobs.DeleteContext(c, leaseID)
 		}
 		return nil
@@ -789,7 +808,7 @@ func (s *Service) Status(providerID, accountName string) (*Status, error) {
 }
 
 func (s *Service) StatusContext(ctx context.Context, providerID, accountName string) (*Status, error) {
-	cfg, err := s.Store.GetProxyConfigContext(ctx, providerID, accountName)
+	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +823,7 @@ func (s *Service) StatusContext(ctx context.Context, providerID, accountName str
 		out.PID = ownPID()
 		return out, nil
 	}
-	state, err := s.Store.ReadProxyStateContext(ctx, providerID, accountName)
+	state, err := s.Store.ReadProxyState(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}

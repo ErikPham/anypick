@@ -134,6 +134,9 @@ func bindingEqual(a, b bindings.Spec) bool {
 // concurrent mutation interleave with compensation (invariant #5).
 func mutationScopes(plan *Plan) []string {
 	scopes := []string{"client/" + plan.Client}
+	if plan.Mode == ModeProject && plan.ProjectRoot != "" {
+		scopes = append(scopes, "project/"+plan.ProjectRoot)
+	}
 	if plan.ResolvedSource.Ref.Kind == refs.KindProxyHub {
 		scopes = append(scopes, "hub/"+plan.ResolvedSource.Ref.Name)
 	} else {
@@ -361,7 +364,7 @@ func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activati
 	if ref.Kind != refs.KindAccount {
 		return nil
 	}
-	target, err := deps.Accounts.Svc.Store.GetContext(ctx, ref.Provider, ref.Name)
+	target, err := deps.Accounts.Svc.Store.Get(ctx, ref.Provider, ref.Name)
 	if err != nil {
 		return err
 	}

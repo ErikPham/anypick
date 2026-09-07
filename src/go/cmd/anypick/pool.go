@@ -380,12 +380,12 @@ func poolProxyIsRunning(ctx context.Context, a *appView, providerID string) (boo
 	if len(leases) == 0 {
 		return false, nil
 	}
-	accounts, err := a.Store.ListAccountsContext(ctx, providerID)
+	accounts, err := a.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return false, err
 	}
 	for _, account := range accounts {
-		state, serr := a.Store.ReadProxyStateContext(ctx, providerID, account.Meta.Name)
+		state, serr := a.Store.ReadProxyState(ctx, providerID, account.Meta.Name)
 		if serr != nil {
 			return false, serr
 		}

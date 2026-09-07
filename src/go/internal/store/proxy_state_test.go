@@ -17,7 +17,7 @@ func TestProxyStateRoundTrip(t *testing.T) {
 	if err := s.WriteProxyStateContext(context.Background(), "grok", "work", state); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ReadProxyState("grok", "work")
+	got, err := s.ReadProxyState(context.Background(), "grok", "work")
 	if err != nil || got == nil {
 		t.Fatalf("ReadProxyState: %v %v", got, err)
 	}
@@ -29,21 +29,21 @@ func TestProxyStateRoundTrip(t *testing.T) {
 	if err := s.WriteProxyStateContext(context.Background(), "grok", "work", state); err != nil {
 		t.Fatal(err)
 	}
-	got2, _ := s.ReadProxyState("grok", "work")
+	got2, _ := s.ReadProxyState(context.Background(), "grok", "work")
 	if got2.Endpoint != "http://127.0.0.1:4001" {
 		t.Fatalf("overwrite failed: %#v", got2)
 	}
 	if err := s.ClearProxyStateContext(context.Background(), "grok", "work"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.ReadProxyState("grok", "work"); got != nil {
+	if got, _ := s.ReadProxyState(context.Background(), "grok", "work"); got != nil {
 		t.Fatalf("want nil after clear, got %#v", got)
 	}
 }
 
 func TestProxyStateMissingReturnsNil(t *testing.T) {
 	s := testStore(t)
-	got, err := s.ReadProxyState("grok", "nope")
+	got, err := s.ReadProxyState(context.Background(), "grok", "nope")
 	if err != nil || got != nil {
 		t.Fatalf("missing = %#v %v want nil,nil", got, err)
 	}
@@ -56,7 +56,7 @@ func TestProxyStateCorruptReturnsNil(t *testing.T) {
 	if _, err := s.DB.Exec(`UPDATE proxy_state SET state_json='not json' WHERE provider='grok' AND account='work'`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ReadProxyState("grok", "work")
+	got, err := s.ReadProxyState(context.Background(), "grok", "work")
 	if err != nil || got != nil {
 		t.Fatalf("corrupt should return nil,nil, got %#v %v", got, err)
 	}
@@ -81,7 +81,7 @@ func TestReleaseProxyRuntimeKeepsToken(t *testing.T) {
 	if err := s.ReleaseProxyRuntimeContext(ctx, "workbuddy", "work"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ReadProxyState("workbuddy", "work")
+	got, err := s.ReadProxyState(context.Background(), "workbuddy", "work")
 	if err != nil || got == nil {
 		t.Fatalf("ReadProxyState after release: %v %v", got, err)
 	}

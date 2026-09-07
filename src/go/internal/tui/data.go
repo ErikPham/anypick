@@ -222,7 +222,7 @@ func LoadProviders(ctx context.Context, a *app.App) []ProviderRow {
 			continue
 		}
 
-		accounts, listErr := a.Store.ListAccountsContext(ctx, id)
+		accounts, listErr := a.Store.ListAccounts(ctx, id)
 		if listErr != nil {
 			accounts = nil
 		}
@@ -268,11 +268,11 @@ func LoadProviders(ctx context.Context, a *app.App) []ProviderRow {
 
 // LoadAccounts reads one provider's saved accounts.
 func LoadAccounts(ctx context.Context, a *app.App, providerID string) ([]AccountRow, error) {
-	accounts, err := a.Store.ListAccountsContext(ctx, providerID)
+	accounts, err := a.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return nil, err
 	}
-	active, _ := a.Store.GetActiveContext(ctx, providerID)
+	active, _ := a.Store.GetActive(ctx, providerID)
 
 	cur, curErr := a.Accounts.Current(ctx, providerID)
 	liveIdentity := ""
@@ -501,7 +501,7 @@ func sourceExists(ctx context.Context, a *app.App, ref refs.Ref) bool {
 		}
 		return false
 	case refs.KindAccount, refs.KindAccountPool:
-		accounts, err := a.Store.ListAccountsContext(ctx, ref.Provider)
+		accounts, err := a.Store.ListAccounts(ctx, ref.Provider)
 		if err != nil {
 			return false
 		}
@@ -589,7 +589,7 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 	var opts []SourceOption
 
 	if native != "" {
-		if accounts, err := a.Store.ListAccountsContext(ctx, native); err == nil {
+		if accounts, err := a.Store.ListAccounts(ctx, native); err == nil {
 			for _, acct := range accounts {
 				label := fmt.Sprintf("%s · %s", providerShortName(a, native), identityDisplayText(acct.Meta.Identity, acct.Meta.Name))
 				sub := "saved login"
@@ -626,7 +626,7 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 		if perr != nil || !p.CanProxy() {
 			continue
 		}
-		accounts, aerr := a.Store.ListAccountsContext(ctx, pid)
+		accounts, aerr := a.Store.ListAccounts(ctx, pid)
 		if aerr != nil {
 			continue
 		}
@@ -711,7 +711,7 @@ func LoadProxies(ctx context.Context, a *app.App) []ProxyRow {
 		if perr != nil || !p.CanProxy() {
 			continue
 		}
-		accounts, aerr := a.Store.ListAccountsContext(ctx, pid)
+		accounts, aerr := a.Store.ListAccounts(ctx, pid)
 		if aerr != nil {
 			continue
 		}

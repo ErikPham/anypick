@@ -13,8 +13,8 @@ import (
 )
 
 func TestRecordAndListSourceResume(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	ctx := context.Background()
 
 	spec := spec() // grok/work via AccountRef
@@ -41,8 +41,8 @@ func TestRecordAndListSourceResume(t *testing.T) {
 }
 
 func TestSourceResumeSkipsPresetPointers(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	ctx := context.Background()
 
 	preset := Spec{
@@ -67,8 +67,8 @@ func TestSourceResumeSkipsPresetPointers(t *testing.T) {
 }
 
 func TestSourceResumeListingOrderAndCorruptRows(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	ctx := context.Background()
 
 	for _, client := range []string{"claude", "codex"} {
@@ -104,8 +104,8 @@ func TestSourceResumeListingOrderAndCorruptRows(t *testing.T) {
 }
 
 func TestSourceResumeJSONRoundTripsAgainstTS(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	sp := spec()
 	if err := s.RecordSourceResumeContext(context.Background(), sp); err != nil {
 		t.Fatal(err)

@@ -120,10 +120,10 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 
 	for _, providerID := range s.Deps.Providers.IDs() {
 		_, err := s.Deps.Providers.Get(providerID)
-		if err != nil {
+		if err != nil || s.Deps.Accounts == nil {
 			continue
 		}
-		list, err := s.Deps.Store.ListAccountsContext(ctx, providerID)
+		list, err := s.Deps.Accounts.List(ctx, providerID)
 		if err != nil {
 			continue
 		}
@@ -229,7 +229,7 @@ func (s *Server) appendHubPublished(ctx context.Context, snap *Snapshot, hubName
 			ownerProvider = src.ProviderID
 			ownerRef = src.ProviderID + "/" + src.Account
 			ownerLabel = src.Account
-			if acc, aerr := s.Deps.Store.GetContext(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
+			if acc, aerr := s.Deps.Accounts.Get(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
 				ownerLabel = acc.Meta.Label
 			}
 		}

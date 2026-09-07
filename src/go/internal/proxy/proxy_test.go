@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -466,6 +467,196 @@ func TestReapStaleOnlyRemovesDeadOwnerPIDs(t *testing.T) {
 	}
 }
 
+// spawnLiveProcess starts a process that stays alive for the test and returns
+// its pid, so a lease can point at a pid that is genuinely running — the
+// situation a reused pid creates and the pid check cannot tell apart.
+func spawnLiveProcess(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn probe process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return pid
+}
+
+// backdate rewrites a lease's heartbeat so it is older than LeaseExpiry.
+func backdate(t *testing.T, ls *LeaseStore, leaseID string) {
+	t.Helper()
+	stale := time.Now().Add(-(LeaseExpiry + time.Minute)).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	if _, err := ls.DB.Exec(`UPDATE proxy_leases SET updated_at = ? WHERE lease_id = ?`, stale, leaseID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHeartbeatIntervalFitsInsideTheExpiryWindow(t *testing.T) {
+	// A missed tick must never make a healthy lease look stale on its own.
+	if HeartbeatInterval >= LeaseExpiry {
+		t.Fatalf("HeartbeatInterval %s must be shorter than LeaseExpiry %s",
+			HeartbeatInterval, LeaseExpiry)
+	}
+}
+
+func TestLeaseHeartbeatOnlyRefreshesTheOwningInstance(t *testing.T) {
+	ls := testLeaseStore(t)
+	for _, id := range []string{"a", "b"} {
+		if err := ls.Create(Lease{LeaseID: id, Provider: "p", Port: 1,
+			OwnerPID: 4242, InstanceID: "inst-" + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Millisecond timestamps collide inside one test; separate them first.
+	backdate(t, ls, "a")
+	backdate(t, ls, "b")
+	before, err := ls.Get("a")
+	if err != nil || before == nil {
+		t.Fatalf("seed lease a: %v", err)
+	}
+
+	if err := ls.HeartbeatContext(context.Background(), "a", "inst-b", 4242); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("foreign instance heartbeat: err = %v, want sql.ErrNoRows", err)
+	}
+	if err := ls.HeartbeatContext(context.Background(), "a", "inst-a", 9999); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("foreign pid heartbeat: err = %v, want sql.ErrNoRows", err)
+	}
+	if err := ls.HeartbeatContext(context.Background(), "a", "inst-a", 4242); err != nil {
+		t.Fatalf("own heartbeat: %v", err)
+	}
+
+	after, err := ls.Get("a")
+	if err != nil || after == nil {
+		t.Fatalf("reload lease a: %v", err)
+	}
+	if after.UpdatedAt == before.UpdatedAt {
+		t.Error("heartbeat did not refresh updated_at")
+	}
+	if untouched, _ := ls.Get("b"); untouched == nil || untouched.UpdatedAt >= after.UpdatedAt {
+		t.Error("heartbeat leaked into another instance's lease")
+	}
+}
+
+func TestLeaseHeartbeatByInstanceRefreshesEveryOwnedRow(t *testing.T) {
+	ls := testLeaseStore(t)
+	for _, id := range []string{"x", "y"} {
+		if err := ls.Create(Lease{LeaseID: id, Provider: "p", Port: 1,
+			OwnerPID: 77, InstanceID: "inst-shared"}); err != nil {
+			t.Fatal(err)
+		}
+		backdate(t, ls, id)
+	}
+	// Rows the caller does not own must not be swept along: one from another
+	// instance, one from another process reusing the same instance id.
+	if err := ls.Create(Lease{LeaseID: "z", Provider: "p", Port: 1,
+		OwnerPID: 77, InstanceID: "inst-other"}); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, ls, "z")
+	if err := ls.Create(Lease{LeaseID: "w", Provider: "p", Port: 1,
+		OwnerPID: 88, InstanceID: "inst-shared"}); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, ls, "w")
+
+	if err := ls.HeartbeatInstanceContext(context.Background(), "inst-shared", 77); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := ls.Get("x")
+	if err != nil || fresh == nil {
+		t.Fatalf("reload lease x: %v", err)
+	}
+	other, err := ls.Get("z")
+	if err != nil || other == nil {
+		t.Fatalf("reload lease z: %v", err)
+	}
+	if fresh.UpdatedAt <= other.UpdatedAt {
+		t.Errorf("instance heartbeat did not refresh owned rows: %s <= %s",
+			fresh.UpdatedAt, other.UpdatedAt)
+	}
+	if foreign, _ := ls.Get("w"); foreign == nil || foreign.UpdatedAt >= fresh.UpdatedAt {
+		t.Error("instance heartbeat refreshed a lease owned by another pid")
+	}
+}
+
+func TestReapStaleReapsExpiredLeaseUnderAReusedPID(t *testing.T) {
+	ls := testLeaseStore(t)
+	alivePID := spawnLiveProcess(t)
+
+	// Nothing listens on the endpoint, so the instance cannot prove itself.
+	// The old PID-only rule would have kept this lease forever.
+	if err := ls.Create(Lease{LeaseID: "reused", Provider: "p", Port: 1,
+		OwnerPID: alivePID, InstanceID: "inst-gone",
+		Endpoint: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, ls, "reused")
+
+	reaped, err := ls.ReapStale()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reaped != 1 {
+		t.Fatalf("reaped = %d, want 1", reaped)
+	}
+	if l, _ := ls.Get("reused"); l != nil {
+		t.Error("expired lease under a live-but-unrelated pid must be reaped")
+	}
+}
+
+func TestReapStaleKeepsExpiredLeaseWhoseInstanceStillEchoes(t *testing.T) {
+	ls := testLeaseStore(t)
+	alivePID := spawnLiveProcess(t)
+
+	// A healthy proxy that merely lost the ability to write its heartbeat.
+	var echoed string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"instanceId":"` + echoed + `"}`))
+	}))
+	defer srv.Close()
+	echoed = "inst-live"
+
+	if err := ls.Create(Lease{LeaseID: "live", Provider: "p", Port: 1,
+		OwnerPID: alivePID, InstanceID: "inst-live", Endpoint: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, ls, "live")
+
+	if _, err := ls.ReapStale(); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := ls.Get("live"); l == nil {
+		t.Error("a lease whose instance still echoes must never be reaped")
+	}
+}
+
+func TestReapStaleKeepsFreshLeaseWhoseRecordedPIDIsGone(t *testing.T) {
+	ls := testLeaseStore(t)
+	cmd := exec.Command("/usr/bin/true")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn probe process: %v", err)
+	}
+	deadPID := cmd.Process.Pid
+	_ = cmd.Wait()
+
+	// The heartbeat — not the pid — is what proves the owner is still there.
+	// A pid is only ever a veto, never a condemnation.
+	if err := ls.Create(Lease{LeaseID: "beating", Provider: "p", Port: 1,
+		OwnerPID: deadPID, InstanceID: "inst-beating"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ls.ReapStale(); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := ls.Get("beating"); l == nil {
+		t.Error("a freshly heartbeated lease must survive a stale recorded pid")
+	}
+}
+
 // ---- Service ----
 
 type fixedResolver struct {
@@ -555,14 +746,14 @@ func TestStopClearsEnabledSoItStaysStopped(t *testing.T) {
 	if _, err := ts.Service.StartProxy(ctx, "codex", "work"); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "work")
+	before, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "work")
 	if err != nil || !before.Enabled || before.Port == 0 {
 		t.Fatalf("config after start = %+v, %v", before, err)
 	}
 	if err := ts.Service.Stop(ctx, "codex", "work"); err != nil {
 		t.Fatal(err)
 	}
-	after, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "work")
+	after, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "work")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,14 +813,14 @@ func TestFailedStartRestoresConfigAndRuntimeState(t *testing.T) {
 	if _, err := ts.Service.StartProxy(ctx, "codex", "failed-start"); err == nil {
 		t.Fatal("want start failure")
 	}
-	cfg, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "failed-start")
+	cfg, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "failed-start")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Enabled || cfg.Port != 0 {
 		t.Fatalf("failed start left mutated config: %+v", cfg)
 	}
-	state, err := ts.Service.Store.ReadProxyStateContext(ctx, "codex", "failed-start")
+	state, err := ts.Service.Store.ReadProxyState(ctx, "codex", "failed-start")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +922,7 @@ func TestStatusNeverExposesToken(t *testing.T) {
 	}
 	status, _ := ts.Service.Status("codex", "work")
 	data, _ := json.Marshal(status)
-	state, _ := ts.Service.Store.ReadProxyState("codex", "work")
+	state, _ := ts.Service.Store.ReadProxyState(context.Background(), "codex", "work")
 	if state == nil || state.Token == "" {
 		t.Fatal("expected persisted token in proxy_state")
 	}
@@ -748,7 +939,7 @@ func TestDisabledConfigAutoEnablesOnStart(t *testing.T) {
 	ctx := context.Background()
 	seedAccount(t, ts.Service, "lazy", false)
 
-	cfg, _ := ts.Service.Store.GetProxyConfig("codex", "lazy")
+	cfg, _ := ts.Service.Store.GetProxyConfig(context.Background(), "codex", "lazy")
 	if cfg.Enabled {
 		t.Fatal("precondition: config starts disabled")
 	}
@@ -758,7 +949,7 @@ func TestDisabledConfigAutoEnablesOnStart(t *testing.T) {
 	}
 	defer func() { _ = ts.Service.Stop(ctx, "codex", "lazy") }()
 
-	cfg, _ = ts.Service.Store.GetProxyConfig("codex", "lazy")
+	cfg, _ = ts.Service.Store.GetProxyConfig(context.Background(), "codex", "lazy")
 	if !cfg.Enabled || cfg.Port != res.Port {
 		t.Errorf("config after auto-enable = %+v, port %d", cfg, res.Port)
 	}
@@ -776,7 +967,7 @@ func TestConfigureValidatesAndPersistsUnderServiceBoundary(t *testing.T) {
 	if !cfg.Enabled || cfg.Port <= 0 || cfg.Port > 65535 {
 		t.Fatalf("enabled config = %+v", cfg)
 	}
-	persisted, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "configured")
+	persisted, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "configured")
 	if err != nil || persisted.Enabled != cfg.Enabled ||
 		persisted.Port != cfg.Port || persisted.Host != cfg.Host {
 		t.Fatalf("persisted config = %+v, err = %v", persisted, err)
@@ -785,7 +976,7 @@ func TestConfigureValidatesAndPersistsUnderServiceBoundary(t *testing.T) {
 	if _, err := ts.Service.Configure(ctx, "codex", "configured", true, 65536); err == nil {
 		t.Fatal("want invalid port error")
 	}
-	afterInvalid, err := ts.Service.Store.GetProxyConfigContext(ctx, "codex", "configured")
+	afterInvalid, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "configured")
 	if err != nil || afterInvalid.Enabled != cfg.Enabled ||
 		afterInvalid.Port != cfg.Port || afterInvalid.Host != cfg.Host {
 		t.Fatalf("invalid update mutated config: %+v, err = %v", afterInvalid, err)

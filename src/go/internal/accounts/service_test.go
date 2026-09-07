@@ -65,7 +65,7 @@ func TestSaveInputSuccessAndDuplicate(t *testing.T) {
 	if meta.Name != "work" || meta.Provider != "deepseek" {
 		t.Fatalf("meta = %#v", meta)
 	}
-	if got, _ := st.Get("deepseek", "work"); got == nil {
+	if got, _ := st.Get(context.Background(), "deepseek", "work"); got == nil {
 		t.Fatal("account not persisted")
 	}
 
@@ -149,7 +149,7 @@ func TestSaveNativeAndGet(t *testing.T) {
 	if meta.Identity != "dev@grok.xai" {
 		t.Fatalf("Identity=%q want dev@grok.xai", meta.Identity)
 	}
-	if got, _ := st.Get("grok", "work"); got == nil {
+	if got, _ := st.Get(context.Background(), "grok", "work"); got == nil {
 		t.Fatal("account not persisted after Save")
 	}
 
@@ -217,7 +217,7 @@ func TestRefreshSnapshotPreservesAccountCreation(t *testing.T) {
 	if refreshed.Identity != "second@grok.xai" {
 		t.Fatalf("Identity = %q, want refreshed live identity", refreshed.Identity)
 	}
-	stored, err := st.Get("grok", "work")
+	stored, err := st.Get(context.Background(), "grok", "work")
 	if err != nil || stored == nil || stored.Meta.Identity != "second@grok.xai" {
 		t.Fatalf("stored refresh = %+v, err = %v", stored, err)
 	}
@@ -246,10 +246,10 @@ func TestDeleteStopsProxyAndClearsActiveAccount(t *testing.T) {
 	if len(stopper.calls) != 1 || stopper.calls[0] != "deepseek/work-account" {
 		t.Fatalf("proxy stop calls = %v", stopper.calls)
 	}
-	if account, err := st.Get("deepseek", "work-account"); err != nil || account != nil {
+	if account, err := st.Get(context.Background(), "deepseek", "work-account"); err != nil || account != nil {
 		t.Fatalf("deleted account = %+v, err = %v", account, err)
 	}
-	if active, err := st.GetActive("deepseek"); err != nil || active != "" {
+	if active, err := st.GetActive(context.Background(), "deepseek"); err != nil || active != "" {
 		t.Fatalf("active = %q, err = %v", active, err)
 	}
 }
@@ -267,7 +267,7 @@ func TestDeleteAbortsWhenProxyCannotStop(t *testing.T) {
 	if err := svc.Delete(ctx, "deepseek", "work"); err == nil {
 		t.Fatal("want proxy stop failure")
 	}
-	if account, err := st.Get("deepseek", "work"); err != nil || account == nil {
+	if account, err := st.Get(context.Background(), "deepseek", "work"); err != nil || account == nil {
 		t.Fatalf("account was deleted after stop failure: %+v, err = %v", account, err)
 	}
 }

@@ -5,9 +5,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/outof0/anypick/go/internal/upstream"
 )
 
 // blockingResolver announces each entry and then waits for release, so a test
@@ -68,6 +73,54 @@ func TestPoolResolvesDifferentMembersInParallel(t *testing.T) {
 
 	if got := len(res.accounts()); got != 2 {
 		t.Fatalf("resolver saw %d accounts, want 2: %v", got, res.accounts())
+	}
+}
+
+// countingResolver records how many members the ring asked for.
+type countingResolver struct {
+	inner UpstreamResolver
+	calls atomic.Int32
+}
+
+func (c *countingResolver) ResolveUpstream(ctx context.Context, p, a string) (*Upstream, error) {
+	c.calls.Add(1)
+	return c.inner.ResolveUpstream(ctx, p, a)
+}
+
+// TestPoolRingStopsWhenTheClientHasGone pins the early exit: once the caller
+// has hung up, resolving another member only to fail on a dead context is
+// wasted store reads and credential refreshes. The resolver call count is the
+// discriminator — the upstream never sees the request either way, because the
+// transport rejects a cancelled context before dialling.
+func TestPoolRingStopsWhenTheClientHasGone(t *testing.T) {
+	upA := newStubUpstream(t, 200)
+	upB := newStubUpstream(t, 200)
+	res := &countingResolver{inner: mapResolver{
+		"a": {BaseURL: upA.url},
+		"b": {BaseURL: upB.url},
+	}}
+	server := &PoolServer{
+		ProviderID: "deepseek", InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		Members:  []string{"a", "b"},
+		Resolver: res,
+		Guard: upstream.NewGuard(upstream.GuardOptions{
+			Enabled:      true,
+			CooldownMs:   60_000,
+			AccountNames: []string{"a", "b"},
+			StatePath:    filepath.Join(t.TempDir(), "guard.json"),
+			ProviderID:   "deepseek",
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"m"}`))
+	req = req.WithContext(ctx)
+
+	server.ServeAuthorized(httptest.NewRecorder(), req)
+
+	if got := res.calls.Load(); got != 0 {
+		t.Fatalf("resolver called %d times for a cancelled request, want 0", got)
 	}
 }
 

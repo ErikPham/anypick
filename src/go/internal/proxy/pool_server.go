@@ -37,9 +37,14 @@ type poolCandidate struct{ account string }
 
 func (c poolCandidate) GetAccountName() string { return c.account }
 
+// DefaultPoolRingDeadline bounds the time spent waiting for an uncommitted
+// response across the whole member ring. Once a member commits response
+// headers, the deadline no longer cancels that stream.
+const DefaultPoolRingDeadline = 2 * time.Minute
+
 // PoolServer is one running multi-account pool instance. Members are enabled
 // account names in ring order at start time.
-//
+
 // A member's egress description is resolved on its first request and then
 // cached for the life of this server — StartPoolProxy rebuilds the server on
 // every start (there is no instance adoption), so the cache cannot outlive a
@@ -53,8 +58,11 @@ type PoolServer struct {
 	// Strategy mirrors the persisted pool row ('failover' | 'round-robin').
 	// Recorded for diagnostics only — no rotation is implemented, matching TS.
 	Strategy string
-	Resolver UpstreamResolver
-	Guard    *upstream.Guard
+	// RingDeadline is an aggregate pre-commit budget. Zero uses
+	// DefaultPoolRingDeadline; it never cuts a stream after commit.
+	RingDeadline time.Duration
+	Resolver     UpstreamResolver
+	Guard        *upstream.Guard
 
 	endpoint string
 	srv      *http.Server
@@ -112,6 +120,14 @@ func (s *PoolServer) ServeAuthorized(w http.ResponseWriter, r *http.Request) {
 // verbatim unless the failure is quota-class AND a next candidate exists AND
 // the guard is enabled — exactly backend.ts fetch().
 func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
+	// The aggregate deadline applies only until one member commits. Each
+	// attempt receives a cancellable context with the same absolute deadline;
+	// commit stops that timer so a valid stream can outlive ring selection.
+	var ringDeadline time.Time
+	if budget := s.ringDeadline(); budget > 0 {
+		ringDeadline = time.Now().Add(budget)
+	}
+
 	// TS reuses a buffered body for every ring attempt; ReverseProxy drains
 	// r.Body on the first hop, so snapshot it once and replay per member.
 	var bodyBytes []byte
@@ -144,26 +160,54 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i, c := range ordered {
-		// A client that hung up mid-ring must not be billed for the remaining
-		// members: every later attempt would resolve an upstream and open a
-		// connection only to fail on a dead context.
+		// A client that hung up, or an uncommitted ring whose aggregate budget
+		// expired, must not be billed for later members. A committed stream is
+		// already inside serveMember and uses the original request context.
 		if r != nil && r.Context() != nil && r.Context().Err() != nil {
 			return
 		}
+		if !ringDeadline.IsZero() && !time.Now().Before(ringDeadline) {
+			writeJSONError(w, http.StatusGatewayTimeout, "upstream_timeout", "pool ring deadline exceeded")
+			return
+		}
 		account := c.GetAccountName()
-		up := s.upstreamFor(r, account)
+		attemptCtx := r.Context()
+		var attemptCancel context.CancelFunc
+		var attemptTimer *time.Timer
+		if !ringDeadline.IsZero() {
+			attemptCtx, attemptCancel = context.WithCancel(r.Context())
+			attemptTimer = time.AfterFunc(time.Until(ringDeadline), attemptCancel)
+		}
+		attempt := r.Clone(attemptCtx)
+		up := s.upstreamFor(attempt, account)
 		if up == nil || up.BaseURL == nil {
 			continue
 		}
 		if bodyBytes != nil {
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			attempt.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		} else {
-			r.Body = nil
+			attempt.Body = nil
 		}
 		cw := &captureWriter{ResponseWriter: w}
-		s.serveMember(cw, r, up)
+		if attemptTimer != nil {
+			cw.onCommit = func() { attemptTimer.Stop() }
+		}
+		s.serveMember(cw, attempt, up)
+		if attemptTimer != nil {
+			attemptTimer.Stop()
+			attemptCancel()
+		}
 		if cw.committed {
 			_ = s.Guard.Activate(account)
+			return
+		}
+		// The attempt died with the budget rather than with an upstream
+		// verdict. Reporting the transport error verbatim would tell the
+		// caller "upstream is broken" when the truth is "we ran out of
+		// members to try", and would burn the ring's cooldown bookkeeping
+		// on a failure no member actually produced.
+		if !ringDeadline.IsZero() && !time.Now().Before(ringDeadline) {
+			writeJSONError(w, http.StatusGatewayTimeout, "upstream_timeout", "pool ring deadline exceeded")
 			return
 		}
 		// TS: `if (!next || !guard.enabled || !isExhausted(...)) return last;`
@@ -180,8 +224,19 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 			_ = gerr
 		}
 	}
+	if !ringDeadline.IsZero() && !time.Now().Before(ringDeadline) {
+		writeJSONError(w, http.StatusGatewayTimeout, "upstream_timeout", "pool ring deadline exceeded")
+		return
+	}
 	// Every candidate lacked a usable upstream target.
 	writeJSONError(w, http.StatusServiceUnavailable, "upstream_error", "No eligible pool account.")
+}
+
+func (s *PoolServer) ringDeadline() time.Duration {
+	if s.RingDeadline > 0 {
+		return s.RingDeadline
+	}
+	return DefaultPoolRingDeadline
 }
 
 // accountLock returns the mutex guarding one member's first resolve. The
@@ -535,18 +590,29 @@ func quotaErrorPatterns(up *Upstream) []string {
 
 // captureWriter lets ReverseProxy stream committed responses while silently
 // buffering responses the ring may replace with a later member's answer.
+// Once commit happens, it switches to the original request context's stream;
+// ring selection may time out, but a valid stream must continue.
 // Until a response commits, Header() hands out a scratch map so a failed
 // member's headers can never pollute the real response.
 type captureWriter struct {
 	http.ResponseWriter
-	committed bool
-	status    int
-	header    http.Header
-	scratch   http.Header
-	body      bytes.Buffer
+	committed  bool
+	commitOnce sync.Once
+	onCommit   func()
+	status     int
+	header     http.Header
+	scratch    http.Header
+	body       bytes.Buffer
 }
 
-func (w *captureWriter) commit() { w.committed = true }
+func (w *captureWriter) commit() {
+	w.commitOnce.Do(func() {
+		w.committed = true
+		if w.onCommit != nil {
+			w.onCommit()
+		}
+	})
+}
 
 func (w *captureWriter) Header() http.Header {
 	if !w.committed {

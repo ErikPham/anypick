@@ -26,6 +26,14 @@ type Lease struct {
 // LeaseStore owns the proxy_leases table (src/core/lease-store.ts).
 type LeaseStore struct{ DB *sql.DB }
 
+// HeartbeatInterval is deliberately shorter than the expiry window. A missed
+// tick must not immediately make a healthy detached proxy reclaimable.
+const HeartbeatInterval = 15 * time.Second
+
+// LeaseExpiry is the maximum age of a lease heartbeat before maintenance may
+// consider it stale, subject to the existing PID and instance-health checks.
+const LeaseExpiry = 2 * time.Minute
+
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
 const leaseColumns = `lease_id, provider, account, port, host, endpoint, owner_pid, instance_id, binding_refs_json, created_at, updated_at`
@@ -96,6 +104,34 @@ func (s *LeaseStore) DeleteContext(ctx context.Context, leaseID string) error {
 	return err
 }
 
+// HeartbeatContext refreshes a lease only when the exact serving instance still
+// owns it. A replacement process cannot accidentally keep the old lease alive.
+func (s *LeaseStore) HeartbeatContext(ctx context.Context, leaseID, instanceID string, ownerPID int) error {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE proxy_leases SET updated_at = ?
+		 WHERE lease_id = ? AND instance_id = ? AND owner_pid = ?`,
+		nowISO(), leaseID, instanceID, ownerPID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// HeartbeatInstanceContext refreshes every lease held by one serving
+// instance. The detached child owns the lease the parent created but never
+// learns the lease id, so it refreshes by the instance id it echoes on
+// /health — the same identity proof maintenance trusts.
+func (s *LeaseStore) HeartbeatInstanceContext(ctx context.Context, instanceID string, ownerPID int) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE proxy_leases SET updated_at = ?
+		 WHERE instance_id = ? AND owner_pid = ?`,
+		nowISO(), instanceID, ownerPID)
+	return err
+}
+
 // ListByAccount returns live leases for an account.
 func (s *LeaseStore) ListByAccount(providerID, accountName string) ([]*Lease, error) {
 	return s.ListByAccountContext(context.Background(), providerID, accountName)
@@ -153,30 +189,77 @@ func (s *LeaseStore) ReapStale() (int, error) {
 
 func (s *LeaseStore) ReapStaleContext(ctx context.Context) (int, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT DISTINCT owner_pid FROM proxy_leases WHERE owner_pid <> ?`, ownPID())
+		`SELECT lease_id, owner_pid, instance_id, endpoint, updated_at
+		 FROM proxy_leases WHERE owner_pid <> ?`, ownPID())
 	if err != nil {
 		return 0, err
 	}
-	var pids []int
+	type candidate struct {
+		id, instanceID, endpoint, updatedAt string
+		pid                                 int
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var pid int
-		if err := rows.Scan(&pid); err == nil {
-			pids = append(pids, pid)
+		var c candidate
+		// instance_id and endpoint are nullable: leases written before the
+		// heartbeat work have neither, and scanning NULL into a plain string
+		// fails, which would drop exactly the rows reaping exists to remove.
+		var instanceID, endpoint sql.NullString
+		if err := rows.Scan(&c.id, &c.pid, &instanceID, &endpoint, &c.updatedAt); err == nil {
+			c.instanceID = instanceID.String
+			c.endpoint = endpoint.String
+			candidates = append(candidates, c)
 		}
 	}
 	rows.Close()
 	reaped := 0
-	for _, pid := range pids {
-		if !processAlive(pid) {
-			res, err := s.DB.ExecContext(ctx, `DELETE FROM proxy_leases WHERE owner_pid = ?`, pid)
-			if err == nil {
-				if n, _ := res.RowsAffected(); n > 0 {
-					reaped += int(n)
+	now := time.Now()
+	for _, c := range candidates {
+		// Rows written before heartbeats existed carry no identity proof at
+		// all, so they keep the PID-only rule they were created under.
+		legacy := c.instanceID == "" && c.endpoint == ""
+		if legacy {
+			if processAlive(c.pid) {
+				continue
+			}
+		} else {
+			// A fresh beat proves the owner is still refreshing, and it
+			// outranks the PID: a PID can be reused by an unrelated process.
+			if leaseExpired(c.updatedAt, now) {
+				// The instance echo is the authoritative proof and outranks
+				// even an expired beat, so a healthy proxy that merely lost
+				// write access to the database is never reclaimed.
+				if c.endpoint != "" && healthInstance(c.endpoint) == c.instanceID {
+					continue
 				}
+				// Nothing to echo against: fall back to the PID, but only as
+				// a veto — it can keep a lease, never condemn one.
+				if c.endpoint == "" && processAlive(c.pid) {
+					continue
+				}
+			} else {
+				continue
+			}
+		}
+		res, err := s.DB.ExecContext(ctx, `DELETE FROM proxy_leases WHERE lease_id = ?`, c.id)
+		if err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				reaped += int(n)
 			}
 		}
 	}
 	return reaped, nil
+}
+
+// leaseExpired reports whether the last heartbeat is older than LeaseExpiry.
+// An unparseable timestamp cannot prove freshness, so it counts as expired —
+// the caller's echo check is what protects a live proxy from that.
+func leaseExpired(updatedAt string, now time.Time) bool {
+	updated, err := time.Parse("2006-01-02T15:04:05.000Z07:00", updatedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(updated) > LeaseExpiry
 }
 
 type rowScanner interface{ Scan(dest ...any) error }

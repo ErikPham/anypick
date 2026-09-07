@@ -83,7 +83,7 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Remove the local account so restore lands as `create`.
-	if _, gerr := srcStore.Get("codex", "alpha"); gerr == nil {
+	if _, gerr := srcStore.Get(context.Background(), "codex", "alpha"); gerr == nil {
 		_ = srcStore.DeleteContext(context.Background(), "codex", "alpha")
 	}
 
@@ -137,7 +137,7 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("import failed: %+v", res)
 	}
-	acct, _ := srcStore.Get("codex", "alpha")
+	acct, _ := srcStore.Get(context.Background(), "codex", "alpha")
 	if acct == nil {
 		t.Fatal("restored account missing after import")
 	}

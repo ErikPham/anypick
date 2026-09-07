@@ -19,17 +19,22 @@ import (
 // Snapshot mirrors TraySnapshot field-for-field. Sections the Go engine does
 // not populate yet are emitted as empty arrays so UI typing keeps working.
 type Snapshot struct {
-	ProxyCount         int                  `json:"proxyCount"`
-	Revision           int                  `json:"revision"`
-	Routes             []map[string]any     `json:"routes"`
-	Actions            []ActionRow          `json:"actions"`
-	ClientModelConfigs []map[string]any     `json:"clientModelConfigs"`
-	Usage              []UsageSnapshotRow   `json:"usage"`
-	Proxies            []ProxyRow           `json:"proxies"`
-	Accounts           []AccountRow         `json:"accounts"`
-	HubSources         []map[string]any     `json:"hubSources"`
-	HubConflicts       []map[string]any     `json:"hubConflicts"`
-	HubPublishedModels []map[string]any     `json:"hubPublishedModels"`
+	ProxyCount         int                `json:"proxyCount"`
+	Revision           int                `json:"revision"`
+	Routes             []map[string]any   `json:"routes"`
+	Actions            []ActionRow        `json:"actions"`
+	ClientModelConfigs []map[string]any   `json:"clientModelConfigs"`
+	Usage              []UsageSnapshotRow `json:"usage"`
+	Proxies            []ProxyRow         `json:"proxies"`
+	Accounts           []AccountRow       `json:"accounts"`
+	HubSources         []map[string]any   `json:"hubSources"`
+	HubConflicts       []map[string]any   `json:"hubConflicts"`
+	HubPublishedModels []map[string]any   `json:"hubPublishedModels"`
+	// HubCatalogs carries per-account model catalogs: {accountID: hub source
+	// id, catalog: catalog provider id, models: [...]}. Model ids only —
+	// keys and endpoints never cross this boundary. Additive and optional:
+	// older readers ignore it, newer readers treat absence as "no catalogs".
+	HubCatalogs        []map[string]any     `json:"hubCatalogs"`
 	LogSources         []LogSourceRow       `json:"logSources"`
 	Gateways           []GatewayRow         `json:"gateways"`
 	AccountProviders   []AccountProviderRow `json:"accountProviders"`
@@ -212,6 +217,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		HubSources:         []map[string]any{},
 		HubConflicts:       []map[string]any{},
 		HubPublishedModels: []map[string]any{},
+		HubCatalogs:        []map[string]any{},
 		LogSources:         []LogSourceRow{},
 		Gateways:           []GatewayRow{},
 		AccountProviders:   []AccountProviderRow{},
@@ -251,11 +257,11 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		if err != nil {
 			continue
 		}
-		list, err := s.Deps.Store.ListAccountsContext(ctx, providerID)
+		list, err := s.Deps.Store.ListAccounts(ctx, providerID)
 		if err != nil {
 			continue
 		}
-		active, _ := s.Deps.Store.GetActiveContext(ctx, providerID)
+		active, _ := s.Deps.Store.GetActive(ctx, providerID)
 
 		sort.Slice(list, func(i, j int) bool { return list[i].Meta.Name < list[j].Meta.Name })
 		for _, acc := range list {
@@ -297,7 +303,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				RouteKind:    "direct-account",
 			})
 
-			cfg, _ := s.Deps.Store.GetProxyConfigContext(ctx, providerID, name)
+			cfg, _ := s.Deps.Store.GetProxyConfig(ctx, providerID, name)
 			// Emit a row for every saved account behind a proxy-capable
 			// provider, not just enabled ones: the Proxies pane is the only
 			// place that offers the first Start, and without a row the
@@ -494,7 +500,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			if perr != nil || !pv2.CanProxy() {
 				continue
 			}
-			list, lerr := s.Deps.Store.ListAccountsContext(ctx, otherProviderID)
+			list, lerr := s.Deps.Store.ListAccounts(ctx, otherProviderID)
 			if lerr != nil || len(list) == 0 {
 				continue
 			}
@@ -589,7 +595,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			if srcRef.Kind == refs.KindAccount {
 				kind = "native"
 				routeKind = "direct-account"
-				if accRow, aerr := s.Deps.Store.GetContext(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
+				if accRow, aerr := s.Deps.Store.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
 					pv2, _ := s.Deps.Providers.Get(srcRef.Provider)
 					sn := srcRef.Provider
 					if pv2 != nil {
@@ -957,7 +963,7 @@ func (s *Server) buildUsage(ctx context.Context) []UsageSnapshotRow {
 		}
 		short := provider.ShortNameOf(pv)
 		account := ""
-		if active, _ := s.Deps.Store.GetActive(providerID); active != "" {
+		if active, _ := s.Deps.Store.GetActive(ctx, providerID); active != "" {
 			account = active
 		}
 		var windows []map[string]interface{}

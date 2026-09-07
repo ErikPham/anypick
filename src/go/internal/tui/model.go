@@ -262,7 +262,7 @@ func exportAccountCmd(ctx context.Context, a *app.App, providerID, name string) 
 // exportProviderCmd exports every saved account of a provider to its own file.
 func exportProviderCmd(ctx context.Context, a *app.App, providerID string) tea.Cmd {
 	return func() tea.Msg {
-		accounts, err := a.Store.ListAccountsContext(ctx, providerID)
+		accounts, err := a.Store.ListAccounts(ctx, providerID)
 		if err != nil {
 			return actionMsg{err: err}
 		}

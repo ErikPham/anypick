@@ -379,7 +379,7 @@ func TestNonTTYConfirmationGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer closeFn()
-		acct, gerr := a.Store.GetContext(context.Background(), "deepseek", "ds")
+		acct, gerr := a.Store.Get(context.Background(), "deepseek", "ds")
 		if gerr != nil || acct == nil {
 			t.Fatalf("account was removed without --yes: %+v err=%v", acct, gerr)
 		}

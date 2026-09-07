@@ -69,7 +69,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if meta.Name != "personal" || meta.Identity != `{"email":"user@example.com"}` {
 		t.Fatalf("imported meta = %+v", meta)
 	}
-	imported, _ := st.GetContext(ctx, "codex", "personal")
+	imported, _ := st.Get(ctx, "codex", "personal")
 	if imported == nil {
 		t.Fatal("imported account missing")
 	}
@@ -77,7 +77,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if !strings.Contains(string(raw), "access_token") {
 		t.Fatalf("snapshot files were not restored: %s", raw)
 	}
-	cfg, _ := st.GetProxyConfig("codex", "personal")
+	cfg, _ := st.GetProxyConfig(context.Background(), "codex", "personal")
 	if cfg.Enabled {
 		t.Fatal("imported proxy must be disabled")
 	}
@@ -86,7 +86,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 func TestImportRejectionLeavesStateUntouched(t *testing.T) {
 	st, reg := newTransferEnv(t)
 	saveFakeAccount(t, st, "codex", "existing")
-	before, _ := st.GetContext(context.Background(), "codex", "existing")
+	before, _ := st.Get(context.Background(), "codex", "existing")
 
 	bad := filepath.Join(t.TempDir(), "bad.json")
 	os.WriteFile(bad, []byte(`{"kind":"anypick-account","version":1,"meta":{"name":"x","provider":"claude"},"files":{"a.txt":""}}`), 0o600)
@@ -94,7 +94,7 @@ func TestImportRejectionLeavesStateUntouched(t *testing.T) {
 	if _, err := ImportEnvelope(deps, context.Background(), "codex", "incoming", bad, false); err == nil {
 		t.Fatal("expected provider mismatch rejection")
 	}
-	after, _ := st.GetContext(context.Background(), "codex", "existing")
+	after, _ := st.Get(context.Background(), "codex", "existing")
 	if before.Meta.Name != after.Meta.Name {
 		t.Fatal("rejection mutated state")
 	}
@@ -301,7 +301,7 @@ func TestBackupExportInspectRestoreAtomic(t *testing.T) {
 		t.Fatalf("approved batch restore failed: %v", err)
 	}
 	// Original creation timestamps preserved.
-	acct, _ := st.GetContext(ctx, "claude", "alpha")
+	acct, _ := st.Get(ctx, "claude", "alpha")
 	if acct.Meta.CreatedAt != "2026-01-01T00:00:00.000Z" {
 		t.Fatalf("createdAt not preserved: %q", acct.Meta.CreatedAt)
 	}

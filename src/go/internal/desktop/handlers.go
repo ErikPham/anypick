@@ -61,7 +61,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 		dest := backupDestination(m.Path)
 		var selection []transfer.BackupEntry
 		for _, providerID := range s.Deps.Providers.IDs() {
-			list, lerr := s.Deps.Store.ListAccounts(providerID)
+			list, lerr := s.Deps.Store.ListAccounts(ctx, providerID)
 			if lerr != nil {
 				continue
 			}
@@ -109,12 +109,12 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 // enabled (startEnabledProxies in src/tray/supervisor-mutations.ts).
 func (s *Server) startEnabledProxies(ctx context.Context) {
 	for _, providerID := range s.Deps.Providers.IDs() {
-		list, lerr := s.Deps.Store.ListAccounts(providerID)
+		list, lerr := s.Deps.Store.ListAccounts(ctx, providerID)
 		if lerr != nil {
 			continue
 		}
 		for _, acc := range list {
-			cfg, _ := s.Deps.Store.GetProxyConfig(providerID, acc.Meta.Name)
+			cfg, _ := s.Deps.Store.GetProxyConfig(ctx, providerID, acc.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}
@@ -180,12 +180,12 @@ func (s *Server) poolProxyIsRunning(ctx context.Context, providerID string) (boo
 	if len(leases) == 0 {
 		return false, nil
 	}
-	accounts, err := s.Deps.Store.ListAccountsContext(ctx, providerID)
+	accounts, err := s.Deps.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return false, err
 	}
 	for _, account := range accounts {
-		state, serr := s.Deps.Store.ReadProxyStateContext(ctx, providerID, account.Meta.Name)
+		state, serr := s.Deps.Store.ReadProxyState(ctx, providerID, account.Meta.Name)
 		if serr != nil {
 			return false, serr
 		}

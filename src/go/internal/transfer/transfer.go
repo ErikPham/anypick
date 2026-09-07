@@ -27,7 +27,7 @@ type EnvelopeJSON struct {
 
 // BuildEnvelope assembles an envelope in memory for single and package export.
 func BuildEnvelope(st *store.AccountStore, ctx context.Context, providerID, name string) (*EnvelopeJSON, error) {
-	acct, err := st.Require(providerID, name)
+	acct, err := st.Require(ctx, providerID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name
 	if _, err := os.Stat(inPath); err != nil {
 		return zero, anyerr.Newf(fmt.Sprintf("Import file not found: %s", inPath), "IMPORT_MISSING")
 	}
-	existing, _ := deps.Store.GetContext(ctx, providerID, accountName)
+	existing, _ := deps.Store.Get(ctx, providerID, accountName)
 	if existing != nil && !force {
 		return zero, anyerr.Newf(
 			fmt.Sprintf("Account %q already exists. Use --force to overwrite.", accountName),
@@ -158,7 +158,7 @@ func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name
 	}
 	accountName = resolvedName
 
-	existing, gerr := deps.Store.GetContext(ctx, providerID, accountName)
+	existing, gerr := deps.Store.Get(ctx, providerID, accountName)
 	if gerr != nil {
 		return zero, gerr
 	}

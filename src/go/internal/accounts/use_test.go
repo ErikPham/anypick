@@ -56,7 +56,7 @@ func TestUseSwitchesActiveAndRestoresSnapshot(t *testing.T) {
 	if res.From != "acc-a" || res.To != "acc-a" {
 		// From was acc-a before switch, To is acc-a (same). Allow.
 	}
-	if active, _ := st.GetActive("grok"); active != "acc-a" {
+	if active, _ := st.GetActive(context.Background(), "grok"); active != "acc-a" {
 		t.Fatalf("active=%q want acc-a", active)
 	}
 	livePath := os.Getenv("GROK_AUTH_PATH")
@@ -104,7 +104,7 @@ func TestUseBetweenTwoAccounts(t *testing.T) {
 	if res.From != "acc-a" || res.To != "acc-b" {
 		t.Fatalf("SwitchResult = %#v want From acc-a To acc-b", res)
 	}
-	if active, _ := st.GetActive("grok"); active != "acc-b" {
+	if active, _ := st.GetActive(context.Background(), "grok"); active != "acc-b" {
 		t.Fatalf("active=%q want acc-b", active)
 	}
 }
@@ -135,7 +135,7 @@ func TestUseProxyOnlySkipsRestore(t *testing.T) {
 	if res.Provider != "deepseek" || res.To != "proxy-acc" {
 		t.Fatalf("result = %#v", res)
 	}
-	if active, _ := st.GetActive("deepseek"); active != "proxy-acc" {
+	if active, _ := st.GetActive(context.Background(), "deepseek"); active != "proxy-acc" {
 		t.Fatalf("active deepseek=%q", active)
 	}
 	// Grok live unchanged.

@@ -73,7 +73,7 @@ func TestAccountSaveInputHandler(t *testing.T) {
 	if res.Status != "success" {
 		t.Fatalf("save-input = %+v", res)
 	}
-	acct, err := env.Deps.Store.Get("deepseek", "work")
+	acct, err := env.Deps.Store.Get(context.Background(), "deepseek", "work")
 	if err != nil || acct == nil {
 		t.Fatalf("saved account = %+v, %v", acct, err)
 	}

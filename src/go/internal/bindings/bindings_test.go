@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-func testDB(t *testing.T) *db.DB {
+func testDB(t *testing.T) (*db.DB, string) {
 	t.Helper()
 	root := t.TempDir()
 	database, err := db.Open(root)
@@ -16,7 +17,7 @@ func testDB(t *testing.T) *db.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return database
+	return database, root
 }
 
 func spec() Spec {
@@ -29,8 +30,8 @@ func spec() Spec {
 }
 
 func TestGlobalUpsertGetDelete(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	g := Global{
 		Client:     "claude",
 		Spec:       spec(),
@@ -70,9 +71,39 @@ func TestGlobalUpsertGetDelete(t *testing.T) {
 	}
 }
 
+func TestMutationsSelfLockWhenCallerDoesNot(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	if _, err := s.UpsertGlobalContext(context.Background(), Global{Client: "claude", Spec: spec(), Provenance: Provenance{Kind: "direct"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteGlobalContext(context.Background(), "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertProjectContext(context.Background(), Project{ProjectRoot: "/tmp/proj", Client: "claude", Spec: spec(), Provenance: Provenance{Kind: "direct"}}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.DeleteAllProjectsContext(context.Background(), "/tmp/proj"); err != nil || n != 1 {
+		t.Fatalf("DeleteAllProjects = %d %v", n, err)
+	}
+}
+
+func TestNestedMutationReentersHeldScope(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	ctx := context.Background()
+	err := lock.WithMutationLock(ctx, root, "client/claude", func(held context.Context) error {
+		_, err := s.UpsertGlobalContext(held, Global{Client: "claude", Spec: spec(), Provenance: Provenance{Kind: "direct"}})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGlobalGetMissingNil(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	got, err := s.GetGlobalContext(context.Background(), "nope")
 	if err != nil || got != nil {
 		t.Fatalf("GetGlobal missing = %#v %v want nil,nil", got, err)
@@ -80,8 +111,8 @@ func TestGlobalGetMissingNil(t *testing.T) {
 }
 
 func TestProjectUpsertGetDelete(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	p := Project{
 		ProjectRoot: "/tmp/proj",
 		Client:      "claude",
