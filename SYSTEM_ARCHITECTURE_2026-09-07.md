@@ -363,6 +363,5 @@ bắt được nhờ assertion phân loại class, không phải nhờ đọc co
 
 - Gom bốn pipeline request ở tầng serving (bước 2–3 của
   `BACKEND_ARCHITECTURE_2026-09-07.md`) — việc nhiều ngày, chưa đụng vào.
-- `.github/CODEOWNERS`.
 - Ba quyết định chỉ Erik chốt được (§6 mục 1–3): signing credentials,
   publication approval, giữ tên npm. Hai cái đầu chặn toàn bộ G2.
