@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/pools"
@@ -835,7 +836,7 @@ type proxyHealth struct {
 }
 
 func healthOwnership(endpoint string) proxyHealth {
-	client := &http.Client{Timeout: 750 * time.Millisecond}
+	client := egress.NewClient(750 * time.Millisecond)
 	resp, err := client.Get(strings.TrimSuffix(endpoint, "/") + "/health")
 	if err != nil {
 		return proxyHealth{}

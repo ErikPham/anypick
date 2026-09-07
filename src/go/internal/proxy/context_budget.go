@@ -116,9 +116,15 @@ func extractMessage(raw string) string {
 	return raw
 }
 
+// contextWindowTooLongPattern is compiled once at package init. Compiling it
+// per call put a regexp build on the error path — which is exactly where a
+// caller is already waiting and where a burst of context-window failures used
+// to pay for it repeatedly.
+var contextWindowTooLongPattern = regexp.MustCompile(`(?i)prompt is too long:\s*(\d+)\s+tokens\s*>\s*(\d+)\s+maximum`)
+
 func anthropicContextWindowMessage(raw string) string {
 	msg := strings.TrimSpace(extractMessage(raw))
-	if m := regexp.MustCompile(`(?i)prompt is too long:\s*(\d+)\s+tokens\s*>\s*(\d+)\s+maximum`).FindStringSubmatch(msg); m != nil {
+	if m := contextWindowTooLongPattern.FindStringSubmatch(msg); m != nil {
 		return "prompt is too long: " + m[1] + " tokens > " + m[2] + " maximum"
 	}
 	if msg != "" && len(msg) <= 800 {

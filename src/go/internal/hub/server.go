@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,6 +45,7 @@ type Server struct {
 		Shutdown() error
 	}
 	endpoint string
+	errCh    chan error
 }
 
 // Start binds the hub on loopback and begins serving. Health stays
@@ -79,26 +82,62 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	s.endpoint = fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*tcpAddr).Port)
+	// Publish every runtime field under mu: Endpoint() and Stop() read them
+	// from other goroutines, and the accept loop publishes its failure through
+	// errCh instead of discarding it. A hub whose listener died used to stay
+	// "running" forever with no observable error.
 	hs := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = hs.Serve(ln) }()
+	done := make(chan error, 1)
+	go func() { done <- hs.Serve(ln) }()
+
+	s.mu.Lock()
+	s.endpoint = fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*tcpAddr).Port)
+	s.errCh = done
 	s.httpSrv = shutdownAdapter{srv: hs}
+	s.mu.Unlock()
 	return nil
 }
 
 // Endpoint returns http://127.0.0.1:<bound port> once started.
-func (s *Server) Endpoint() string { return s.endpoint }
-
-// Stop shuts the hub down; idempotent.
-func (s *Server) Stop() error {
+func (s *Server) Endpoint() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.httpSrv == nil {
+	return s.endpoint
+}
+
+// Err reports an accept-loop failure. It returns a nil channel before Start,
+// which blocks forever rather than spinning on a closed one.
+func (s *Server) Err() <-chan error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.errCh
+}
+
+// config returns a snapshot of the running configuration. The request handler
+// reads it on every request, so it is copied under mu instead of read
+// unlocked. The Sources slice is shared with the copy, so it must be treated
+// as immutable once Start has returned.
+func (s *Server) config() Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Config
+}
+
+// Stop shuts the hub down; idempotent.
+//
+// The lock is released before Shutdown is called. Shutdown waits for in-flight
+// requests, and every request calls config() under that same lock — holding it
+// here would stall all of them until the shutdown context expires, and would
+// block Endpoint() and Err() behind them.
+func (s *Server) Stop() error {
+	s.mu.Lock()
+	srv := s.httpSrv
+	s.httpSrv = nil
+	s.mu.Unlock()
+	if srv == nil {
 		return nil
 	}
-	err := s.httpSrv.Shutdown()
-	s.httpSrv = nil
-	return err
+	return srv.Shutdown()
 }
 
 func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
@@ -118,16 +157,22 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 	if merr := s.Store.MigrateRouteTokenContext(r.Context(), route.RouteID, token); merr != nil {
 		log.Printf("hub: route token migration failed for %s: %v", route.RouteID, merr)
 	}
-	if !s.Config.Enabled {
-		writeErr(w, http.StatusConflict, "PROXY_DISABLED", "hub "+s.Config.Name+" is disabled")
+	cfg := s.config()
+	if !cfg.Enabled {
+		writeErr(w, http.StatusConflict, "PROXY_DISABLED", "hub "+cfg.Name+" is disabled")
 		return
 	}
 
 	// Which source serves this request?
-	sourceIdx := defaultSourceIndex(&s.Config)
+	sourceIdx := defaultSourceIndex(&cfg)
 	var requestedModel string
 	if r.Method == http.MethodPost {
-		body, readErr := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+		body, readErr := proxy.ReadCappedBody(r, proxy.MaxBodyBytes)
+		if errors.Is(readErr, proxy.ErrBodyTooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+				fmt.Sprintf("request body exceeds %d bytes", proxy.MaxBodyBytes))
+			return
+		}
 		if readErr != nil {
 			writeErr(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 			return
@@ -141,20 +186,32 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 			sourceIdx = idx
 		} else if strings.HasPrefix(requestedModel, "#") {
 			// "#N" pins a source index explicitly.
-			if n := parseIndex(requestedModel); n >= 0 && n < len(s.Config.Sources) {
+			if n := parseIndex(requestedModel); n >= 0 && n < len(cfg.Sources) {
 				sourceIdx = n
+			} else {
+				sourceIdx = -1
 			}
 		}
+		// A model absent from the manifest falls through to the default source:
+		// route.Models is a pinning table, not an allowlist. ADR 0013 §3's
+		// "no first-source-wins" rule is about collisions — when two sources
+		// claim the same model id, the id stays out of the catalog until the
+		// user records an owner. It does not make an unlisted model an error.
 		// Rebody for the upstream with any route-model mapping applied.
 		rewritten := rewriteModel(body, route, requestedModel)
 		r.Body = io.NopCloser(strings.NewReader(rewritten))
 		r.ContentLength = int64(len(rewritten))
 	}
-	if sourceIdx < 0 || sourceIdx >= len(s.Config.Sources) {
-		writeErr(w, http.StatusNotFound, "NO_SOURCE", "hub has no sources")
+	if sourceIdx < 0 || sourceIdx >= len(cfg.Sources) {
+		if len(cfg.Sources) == 0 {
+			writeErr(w, http.StatusNotFound, "NO_SOURCE", "hub has no sources")
+			return
+		}
+		writeErr(w, http.StatusNotFound, "NO_MODEL_SOURCE",
+			fmt.Sprintf("no source in this route serves model %q", requestedModel))
 		return
 	}
-	src := s.Config.Sources[sourceIdx]
+	src := cfg.Sources[sourceIdx]
 
 	// A source whose account value is `pool:<provider>` (the refs.AccountPoolRef
 	// serialization) delegates to that provider's multi-account credential ring.
@@ -207,8 +264,14 @@ func routeSourceIndex(route *Route, model string) (int, bool) {
 func rewriteModel(body []byte, route *Route, model string) string {
 	for _, m := range route.Models {
 		if m.Model == model && m.UpstreamModel != "" && m.UpstreamModel != model {
+			// Decode with UseNumber. Unmarshalling into interface{} turns every
+			// JSON number into a float64, so re-marshalling rewrites large
+			// integers that cannot survive the round trip — a proxy has no
+			// business changing numbers it was only asked to relabel.
+			dec := json.NewDecoder(bytes.NewReader(body))
+			dec.UseNumber()
 			var doc map[string]interface{}
-			if json.Unmarshal(body, &doc) != nil {
+			if dec.Decode(&doc) != nil {
 				return string(body)
 			}
 			doc["model"] = m.UpstreamModel

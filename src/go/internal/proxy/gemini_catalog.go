@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/protocol/gemini"
 )
 
@@ -137,7 +138,7 @@ func refreshGeminiModelCatalog(ctx context.Context, up *Upstream) (*gemini.Gemin
 // ListModels and returns bare ids that support generateContent. Ports
 // listGeminiModelsFromGoogle (server.ts).
 func fetchGeminiCatalogFromGoogle(ctx context.Context, base, apiKey string) (*gemini.GeminiModelCatalog, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := egress.NewClient(15 * time.Second)
 	ids := make([]string, 0)
 	seen := map[string]bool{}
 	pageToken := ""
@@ -228,7 +229,7 @@ type codeAssistModelDetails struct {
 // (server.ts), including the retrieveUserQuota fallback when fetchAvailableModels
 // is denied.
 func fetchGeminiCatalogFromCodeAssist(ctx context.Context, base, token, project, userAgent string) (*gemini.GeminiModelCatalog, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := egress.NewClient(30 * time.Second)
 	u := base + "/v1internal:fetchAvailableModels"
 	payload, _ := json.Marshal(map[string]string{"project": project})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))

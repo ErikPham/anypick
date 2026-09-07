@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/protocol/gemini"
 )
 
@@ -30,6 +32,13 @@ type codeAssistProjectCache struct {
 
 var codeAssistProjects = &codeAssistProjectCache{byToken: map[string]string{}}
 
+// maxCodeAssistProjectEntries bounds the cache. An OAuth refresh mints a new
+// token, so a map keyed by token grows once per refresh and never shrinks —
+// and this process is a proxy expected to run for days. Clearing outright is
+// deliberate: an LRU costs more than the loadCodeAssist call it protects, and
+// the cached value is only a resolved project id.
+const maxCodeAssistProjectEntries = 64
+
 func (c *codeAssistProjectCache) get(token string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -40,6 +49,10 @@ func (c *codeAssistProjectCache) get(token string) (string, bool) {
 func (c *codeAssistProjectCache) set(token, project string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, present := c.byToken[token]; !present &&
+		len(c.byToken) >= maxCodeAssistProjectEntries {
+		c.byToken = map[string]string{}
+	}
 	c.byToken[token] = project
 }
 
@@ -49,7 +62,12 @@ func (c *codeAssistProjectCache) set(token, project string) {
 // back — synthesizing SSE for streaming requests exactly like the TypeScript
 // gemini-proxy (which always calls non-stream generateContent and fakes SSE).
 func serveGemini(w http.ResponseWriter, r *http.Request, up *Upstream) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	body, err := ReadCappedBody(r, MaxBodyBytes)
+	if errors.Is(err, ErrBodyTooLarge) {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+			fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))
+		return
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 		return
@@ -183,7 +201,7 @@ func callGeminiAPIKey(ctx context.Context, up *Upstream, model, routeKey string,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-goog-api-key", token)
 
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := egress.StreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, anyerr.Wrapf(err, "Gemini network error", "GEMINI_UPSTREAM")
@@ -289,7 +307,7 @@ func doCodeAssistRequest(ctx context.Context, base, token, model string, geminiR
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := egress.StreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, nil, nil, anyerr.Wrapf(err, "Gemini network error", "GEMINI_UPSTREAM")
@@ -375,8 +393,22 @@ func (c *geminiCooldown) set(key string, ms int64) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Without this sweep an entry is removed only when that exact key is
+	// queried again, so a key that is set and never asked for lives for the
+	// lifetime of the process.
+	if len(c.until) >= maxGeminiCooldownEntries {
+		now := time.Now()
+		for k, u := range c.until {
+			if !u.After(now) {
+				delete(c.until, k)
+			}
+		}
+	}
 	c.until[key] = time.Now().Add(time.Duration(ms) * time.Millisecond)
 }
+
+// maxGeminiCooldownEntries is the size at which set() sweeps expired entries.
+const maxGeminiCooldownEntries = 512
 
 // geminiErrorStatusMessage extracts an HTTP status + message from a Gemini
 // egress error so the pool ring can decide whether to fail over.
@@ -408,7 +440,7 @@ func resolveCodeAssistProject(ctx context.Context, base, token string) (string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := egress.NewClient(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", anyerr.Wrapf(err, "loadCodeAssist network error", "GEMINI_OAUTH")

@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -25,6 +27,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/protocol"
 	"github.com/outof0/anypick/go/internal/upstream"
 )
@@ -35,8 +38,13 @@ type poolCandidate struct{ account string }
 func (c poolCandidate) GetAccountName() string { return c.account }
 
 // PoolServer is one running multi-account pool instance. Members are enabled
-// account names in ring order; upstreams resolve lazily per request so a hot
-// member snapshot change cannot strand the server.
+// account names in ring order at start time.
+//
+// A member's egress description is resolved on its first request and then
+// cached for the life of this server — StartPoolProxy rebuilds the server on
+// every start (there is no instance adoption), so the cache cannot outlive a
+// membership change. It is per-account, so one slow member's first resolve no
+// longer blocks another's.
 type PoolServer struct {
 	ProviderID string
 	InstanceID string
@@ -54,6 +62,12 @@ type PoolServer struct {
 
 	resolvedMu sync.Mutex
 	resolved   map[string]*Upstream
+	// accountMu serializes per-account resolution only. The map lock above
+	// guards the cache, never the resolve: ResolveUpstream reads the store and
+	// may refresh a credential over the network, and holding one pool-wide
+	// lock across it made every member wait for the slowest one's first
+	// resolve.
+	accountMu map[string]*sync.Mutex
 }
 
 // Handler builds the auth + failover pipeline. /health stays unauthenticated
@@ -67,14 +81,22 @@ func (s *PoolServer) Handler() http.Handler {
 			`","pid":` + strconv.Itoa(ownPID()) + `,"provider":"` + s.ProviderID + `","account":""}`))
 	})
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Pool requests used to be the only path with no access log at all:
+		// three of the four egress paths recorded a line and this one did not,
+		// so a failing pool was invisible in proxy.log.
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		if unauthenticatedLiveness(r) {
-			writeLiveness(w, r)
+			writeLiveness(rec, r)
+			logProxyLine(r, rec.status, time.Since(start))
 			return
 		}
-		if !requireProxyAuth(w, r, s.Token) {
+		if !requireProxyAuth(rec, r, s.Token) {
+			logProxyLine(r, rec.status, time.Since(start))
 			return
 		}
-		s.servePoolRequest(w, r)
+		s.servePoolRequest(rec, r)
+		logProxyLine(r, rec.status, time.Since(start))
 	}))
 	return mux
 }
@@ -94,8 +116,13 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 	// r.Body on the first hop, so snapshot it once and replay per member.
 	var bodyBytes []byte
 	if r.Body != nil {
-		raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+		raw, err := ReadCappedBody(r, MaxBodyBytes)
 		_ = r.Body.Close()
+		if errors.Is(err, ErrBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+				fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 			return
@@ -117,6 +144,12 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i, c := range ordered {
+		// A client that hung up mid-ring must not be billed for the remaining
+		// members: every later attempt would resolve an upstream and open a
+		// connection only to fail on a dead context.
+		if r != nil && r.Context() != nil && r.Context().Err() != nil {
+			return
+		}
 		account := c.GetAccountName()
 		up := s.upstreamFor(r, account)
 		if up == nil || up.BaseURL == nil {
@@ -151,25 +184,58 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSONError(w, http.StatusServiceUnavailable, "upstream_error", "No eligible pool account.")
 }
 
-// upstreamFor resolves and caches one member's egress description through the
-// shared resolver path used by single-account proxies.
-func (s *PoolServer) upstreamFor(_ *http.Request, account string) *Upstream {
+// accountLock returns the mutex guarding one member's first resolve. The
+// per-account map is bounded by the member list, so entries are never evicted.
+func (s *PoolServer) accountLock(account string) *sync.Mutex {
 	s.resolvedMu.Lock()
 	defer s.resolvedMu.Unlock()
-	if s.resolved == nil {
-		s.resolved = map[string]*Upstream{}
+	if s.accountMu == nil {
+		s.accountMu = map[string]*sync.Mutex{}
 	}
-	if up, ok := s.resolved[account]; ok {
+	mu := s.accountMu[account]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.accountMu[account] = mu
+	}
+	return mu
+}
+
+// upstreamFor resolves and caches one member's egress description through the
+// shared resolver path used by single-account proxies.
+//
+// Only the per-account mutex is held across ResolveUpstream. Concurrent
+// requests for different members resolve in parallel; concurrent requests for
+// the same member collapse onto one resolve instead of stampeding the store.
+func (s *PoolServer) upstreamFor(r *http.Request, account string) *Upstream {
+	mu := s.accountLock(account)
+	mu.Lock()
+	defer mu.Unlock()
+
+	s.resolvedMu.Lock()
+	up, ok := s.resolved[account]
+	s.resolvedMu.Unlock()
+	if ok {
 		return up
 	}
 	if s.Resolver == nil {
 		return nil
 	}
-	up, err := s.Resolver.ResolveUpstream(context.Background(), s.ProviderID, account)
+	// Resolve under the caller's context, not context.Background(): a client
+	// that hangs up mid-request must not leave resolver work running.
+	ctx := context.Background()
+	if r != nil && r.Context() != nil {
+		ctx = r.Context()
+	}
+	up, err := s.Resolver.ResolveUpstream(ctx, s.ProviderID, account)
 	if err != nil || up == nil {
 		return nil
 	}
+	s.resolvedMu.Lock()
+	if s.resolved == nil {
+		s.resolved = map[string]*Upstream{}
+	}
 	s.resolved[account] = up
+	s.resolvedMu.Unlock()
 	return up
 }
 
@@ -221,7 +287,12 @@ func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream
 // /v1/chat/completions and translates them to generateContent, capturing
 // non-2xx responses so the ring can fail over like any other member.
 func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Upstream) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	body, err := ReadCappedBody(r, MaxBodyBytes)
+	if errors.Is(err, ErrBodyTooLarge) {
+		w.commitJSON(http.StatusRequestEntityTooLarge,
+			jsonErrorBody("invalid_request_error", fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes)))
+		return
+	}
 	if err != nil {
 		w.commitJSON(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"unreadable body"}}`)
 		return
@@ -259,7 +330,15 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
 		chatPath = strings.TrimSuffix(target.Path, "/") + up.OpenAIPath
 		if up.SanitizeOpenAIBody != nil {
-			if raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<20)); err == nil {
+			raw, err := ReadCappedBody(r, MaxBodyBytes)
+			if errors.Is(err, ErrBodyTooLarge) {
+				w.capture(http.StatusRequestEntityTooLarge,
+					http.Header{"Content-Type": []string{"application/json"}},
+					[]byte(jsonErrorBody("invalid_request_error",
+						fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))))
+				return
+			}
+			if err == nil {
 				sanitized = up.SanitizeOpenAIBody(raw)
 				sanitizing = true
 			}
@@ -299,6 +378,7 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 			pr.Out.Header.Set(authHeader, authPrefix+authToken)
 			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
+		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(flush http.ResponseWriter, _ *http.Request, _ error) {
 			// Transport errors surface as a verbatim 502; transient class never
@@ -332,7 +412,12 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 // translatedWithCapture ports serveTranslatedMessagesWith's manual egress with
 // capture semantics: OpenAI-only members still accept /v1/messages requests.
 func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up *Upstream) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	body, err := ReadCappedBody(r, MaxBodyBytes)
+	if errors.Is(err, ErrBodyTooLarge) {
+		w.commitJSON(http.StatusRequestEntityTooLarge,
+			jsonErrorBody("invalid_request_error", fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes)))
+		return
+	}
 	if err != nil {
 		w.commitJSON(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"unreadable body"}}`)
 		return
@@ -359,7 +444,7 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := egress.StreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		w.commitJSON(http.StatusBadGateway, `{"error":{"type":"upstream_error","message":"upstream unavailable"}}`)
@@ -573,7 +658,7 @@ func (s *PoolServer) WaitReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		resp, err := (&http.Client{Timeout: 2 * time.Second}).Get(s.endpoint + "/health")
+		resp, err := egress.NewClient(2 * time.Second).Get(s.endpoint + "/health")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {

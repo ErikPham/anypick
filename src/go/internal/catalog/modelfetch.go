@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/outof0/anypick/go/internal/egress"
 )
 
 const fetchTimeout = 6 * time.Second
@@ -84,7 +86,7 @@ func (c *FetchContext) httpClient() *http.Client {
 	if c.Client != nil {
 		return c.Client
 	}
-	return &http.Client{Timeout: fetchTimeout}
+	return egress.NewClient(fetchTimeout)
 }
 
 func readModelIDs(resp *http.Response) ([]string, error) {

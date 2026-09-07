@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/egress"
 )
 
 // LoopbackHosts mirrors assertLoopbackHost's accepted set.
@@ -294,13 +295,21 @@ func logProxyLine(r *http.Request, status int, latency time.Duration) {
 }
 
 // proxyLogSink is os.Stderr in production (the spawned child redirects it
-// to proxy.log); tests point it at a buffer.
-var proxyLogSink io.Writer = os.Stderr
+// to proxy.log); tests point it at a buffer. It is a package-level variable,
+// so every writer shares one mutex — concurrent handlers interleaving partial
+// lines into the same file is worse than the cost of the lock.
+var (
+	proxyLogMu   sync.Mutex
+	proxyLogSink io.Writer = os.Stderr
+)
 
 // proxyLogf writes one design-shaped console line to the child log.
 func proxyLogf(format string, args ...any) {
-	fmt.Fprintf(proxyLogSink, "%s  %s\n",
+	line := fmt.Sprintf("%s  %s\n",
 		time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
+	proxyLogMu.Lock()
+	defer proxyLogMu.Unlock()
+	_, _ = io.WriteString(proxyLogSink, line)
 }
 
 // upstreamValue composes the single egress description consumed by Serve.
@@ -338,7 +347,7 @@ func writeJSONError(w http.ResponseWriter, status int, typ, message string) {
 func (s *Server) httpClient() *http.Client {
 	s.clientOnce.Do(func() {
 		if s.client == nil {
-			s.client = &http.Client{Timeout: 10 * time.Minute}
+			s.client = egress.StreamClient()
 		}
 	})
 	return s.client
@@ -364,7 +373,7 @@ func (s *Server) Listen(host string, port int) error {
 
 // WaitReady polls /health until it answers or times out.
 func (s *Server) WaitReady(timeout time.Duration) error {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := egress.NewClient(2 * time.Second)
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {

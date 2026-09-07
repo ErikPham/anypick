@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/protocol"
 )
 
@@ -65,6 +68,7 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 			pr.Out.Header.Set(header, prefix+token)
 			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
+		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
@@ -93,7 +97,12 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	var sanitized []byte
 	sanitizing := false
 	if up.SanitizeOpenAIBody != nil {
-		raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+		raw, err := ReadCappedBody(r, MaxBodyBytes)
+		if errors.Is(err, ErrBodyTooLarge) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+				fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 			return
@@ -127,6 +136,7 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 			pr.Out.Header.Set(header, prefix+token)
 			applyExtraHeaders(pr.Out, up.ExtraHeaders)
 		},
+		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
@@ -163,6 +173,7 @@ func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) 
 			applyExtraHeaders(out, t.ExtraHeaders)
 			applyExtraHeaders(out, up.ExtraHeaders)
 		},
+		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
@@ -177,7 +188,12 @@ func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) 
 // serveTranslatedMessagesWith is the shared implementation used by both the
 // per-account Server and the hub.
 func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Upstream) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+	body, err := ReadCappedBody(r, MaxBodyBytes)
+	if errors.Is(err, ErrBodyTooLarge) {
+		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+			fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))
+		return
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 		return
@@ -205,7 +221,7 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Minute}
+	client := egress.StreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
