@@ -1,0 +1,45 @@
+# AnyPick rewrites other tools' credential and config files and spawns local
+# proxies, so a careless change corrupts a developer's real logins
+# (AGENTS.md). Review is not optional here.
+#
+# Today there is one owner for all of it. This file is still worth having: it
+# draws the areas now, so that when a second maintainer arrives the split is a
+# decision someone already made rather than one made in a hurry, and so a PR
+# that touches the credential boundary is visibly one that needs eyes on it.
+#
+# This file does not block anything on its own. It only bites once branch
+# protection requires a review from code owners — at which point the sole
+# maintainer can no longer merge their own PRs, which is the point.
+
+* @outof0
+
+# Credential and config rewriting: a bug here corrupts a real login.
+/src/go/internal/client/       @outof0
+/src/go/internal/provider/     @outof0
+/src/go/internal/activation/   @outof0
+/src/go/internal/compensation/ @outof0
+
+# Egress: loopback-only listeners, per-instance secrets, capability pairing
+# (ADR 0006, ADR 0016).
+/src/go/internal/proxy/        @outof0
+/src/go/internal/hub/          @outof0
+/src/go/internal/egress/       @outof0
+/src/go/internal/transport/    @outof0
+
+# Persistence and the coordinator: the deadlock trap (ADR 0009, ADR 0011).
+/src/go/internal/store/        @outof0
+/src/go/internal/db/           @outof0
+/src/go/internal/journal/      @outof0
+
+# Native apps.
+/src/macos/                    @outof0
+/src/tauri/                    @outof0
+
+# Gates and authority documents: editing these changes what the repository
+# enforces, which is a review decision and not a chore.
+/Makefile                      @outof0
+/.github/workflows/            @outof0
+/adr/                          @outof0
+/AGENTS.md                     @outof0
+/CODE_REVIEW.md                @outof0
+/CONTRIBUTING.md               @outof0
