@@ -327,42 +327,28 @@ func (s *PoolServer) upstreamFor(r *http.Request, account string) *Upstream {
 // passthrough), but captures non-2xx responses instead of committing them so
 // the ring loop can decide whether to fail over.
 func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream) {
-	isMessages := r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages")
-	isGemini := r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/chat/completions" ||
-			r.URL.Path == "/v1/responses" ||
-			r.URL.Path == "/v1/messages")
-	if isGemini && up.TranslateGemini {
+	// Same table as Serve, from the same function. The leaves differ because
+	// this path must hold a failed response back for the ring instead of
+	// sending it, not because it makes a different decision about which
+	// upstream surface to speak.
+	switch egressKindFor(r, up) {
+	case kindGemini:
 		s.geminiWithCapture(w, r, up)
-		return
-	}
-	if isMessages && up.Anthropic != nil {
-		t := up.Anthropic
-		auth := t.Auth
-		if auth == "" {
-			auth = up.Auth
-		}
-		header, prefix := t.AuthHeader, t.AuthValuePrefix
-		if header == "" {
-			header, prefix = up.AuthHeader, up.AuthValuePrefix
-		}
-		provider := t.AuthProvider
-		if provider == nil {
-			provider = up.AuthProvider
-		}
-		headers := append(append([]ExtraHeader(nil), t.ExtraHeaders...), up.ExtraHeaders...)
-		s.reverseWithCapture(w, r, t.BaseURL, &Upstream{
-			Auth: auth, AuthHeader: header, AuthValuePrefix: prefix,
-			AuthProvider: provider, ExtraHeaders: headers,
-		})
-		return
-	}
-	if isMessages && up.TranslateAnthropic {
+	case kindNativeAnthropic:
+		// Same merge as the single-account path, from the same function:
+		// serveNativeAnthropic flattens through flattenedNativeUpstream, so
+		// this leaf cannot disagree with it about which credential wins.
+		// It stays on reverseWithCapture rather than reusing that leaf
+		// outright because a pool member must hold a failed response back
+		// for the ring — serveNativeAnthropic commits unconditionally and
+		// would stream a 4xx past the failover decision.
+		flat := flattenedNativeUpstream(up)
+		s.reverseWithCapture(w, r, flat.BaseURL, flat)
+	case kindTranslatedMessages:
 		s.translatedWithCapture(w, r, up)
-		return
+	default:
+		s.reverseWithCapture(w, r, up.BaseURL, up)
 	}
-	s.reverseWithCapture(w, r, up.BaseURL, up)
 }
 
 // geminiWithCapture ports serveGemini's manual egress with capture semantics:
@@ -471,6 +457,14 @@ func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseU
 			_, _ = flush.Write([]byte(`{"error":{"type":"upstream_error","message":"upstream unavailable"}}`))
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// The compaction rewrite belongs here too, not only on the
+			// single-account path. A pool member that hits the context limit
+			// used to return the raw vendor error, so the client never saw
+			// the signal that makes it compact — the conversation just broke
+			// with an error nobody could act on.
+			if err := rewriteContextWindowResponse(resp, r); err != nil {
+				return err
+			}
 			if resp.StatusCode < 400 {
 				w.commit()
 				return nil
@@ -537,7 +531,13 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		w.capture(resp.StatusCode, resp.Header, raw)
+		// Same classifier as the single-account path. The copy that used to
+		// live here skipped the context-window conversion, so a member that
+		// hit the limit was captured as a raw vendor error: the ring saw a
+		// 400 it could not price, and when it was the last member the client
+		// got the vendor body and never compacted.
+		f := classifyTranslatedFailure(resp, body, translated, raw)
+		w.capture(f.Status, f.Header, f.Body)
 		return
 	}
 	w.commit()

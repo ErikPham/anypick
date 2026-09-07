@@ -17,6 +17,50 @@ import (
 	"github.com/outof0/anypick/go/internal/protocol"
 )
 
+// egressKind names which leaf serves one (request, upstream) pair.
+//
+// There is exactly one copy of this decision. Before it was extracted the
+// single-account path and the pool ring each carried their own copy of the
+// branch table, and they had already drifted: the ring's copy skipped the
+// context-window rewrite every single-account branch applies, so a member
+// that hit the context limit returned a raw vendor error and the client never
+// compacted. Two copies of one decision is not duplication, it is a bug that
+// has not happened yet — or, as here, one that already did.
+type egressKind int
+
+const (
+	kindGemini egressKind = iota
+	kindNativeAnthropic
+	kindTranslatedMessages
+	kindOpenAIPath
+	kindPassthrough
+)
+
+func egressKindFor(r *http.Request, up *Upstream) egressKind {
+	if up == nil {
+		return kindPassthrough
+	}
+	isMessages := r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages")
+	isGemini := r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" ||
+			r.URL.Path == "/v1/responses" ||
+			r.URL.Path == "/v1/messages")
+	switch {
+	case isGemini && up.TranslateGemini:
+		return kindGemini
+	case isMessages && up.Anthropic != nil:
+		return kindNativeAnthropic
+	case isMessages && up.TranslateAnthropic:
+		return kindTranslatedMessages
+	case r.Method == http.MethodPost && up.OpenAIPath != "" &&
+		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions"):
+		return kindOpenAIPath
+	default:
+		return kindPassthrough
+	}
+}
+
 // Serve forwards one authenticated inbound request to the described upstream.
 // Dispatch order for POST /v1/messages: native Anthropic target when present,
 // else translation into chat completions when TranslateAnthropic, else plain
@@ -28,26 +72,17 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		writeJSONError(w, http.StatusBadGateway, "upstream_error", "no upstream")
 		return
 	}
-	isMessages := r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages")
-	isGemini := r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/chat/completions" ||
-			r.URL.Path == "/v1/responses" ||
-			r.URL.Path == "/v1/messages")
-	if isGemini && up.TranslateGemini {
+	switch egressKindFor(r, up) {
+	case kindGemini:
 		serveGemini(w, r, up)
 		return
-	}
-	if isMessages && up.Anthropic != nil {
+	case kindNativeAnthropic:
 		serveNativeAnthropic(w, r, up)
 		return
-	}
-	if isMessages && up.TranslateAnthropic {
+	case kindTranslatedMessages:
 		serveTranslatedMessagesWith(w, r, up)
 		return
-	}
-	if r.Method == http.MethodPost && up.OpenAIPath != "" &&
-		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
+	case kindOpenAIPath:
 		serveOpenAIPath(w, r, up)
 		return
 	}
@@ -148,19 +183,57 @@ func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	rp.ServeHTTP(w, r)
 }
 
+// flattenedNativeUpstream flattens a native Anthropic target and its parent
+// Upstream into one *Upstream: the target wins, the parent fills whatever the
+// target leaves empty.
+//
+// Both callers need this shape and neither may own the merge. The pool ring
+// needs a plain *Upstream to hand to its capture leaf; the single-account path
+// needs the same fields to build its ReverseProxy. The copy that used to live
+// in the pool skipped the header default that resolveUpstreamAuth applies, so
+// a target that left AuthHeader empty was forwarded with an empty header name
+// — a request the vendor answers 401, indistinguishable from a dead token.
+func flattenedNativeUpstream(up *Upstream) *Upstream {
+	t := up.Anthropic
+	if t == nil {
+		return up
+	}
+	auth := t.Auth
+	if auth == "" {
+		auth = up.Auth
+	}
+	header, prefix := t.AuthHeader, t.AuthValuePrefix
+	if header == "" {
+		header, prefix = up.AuthHeader, up.AuthValuePrefix
+	}
+	provider := t.AuthProvider
+	if provider == nil {
+		provider = up.AuthProvider
+	}
+	headers := append(append([]ExtraHeader(nil), t.ExtraHeaders...), up.ExtraHeaders...)
+	return &Upstream{
+		BaseURL:         t.BaseURL,
+		Auth:            auth,
+		AuthHeader:      header,
+		AuthValuePrefix: prefix,
+		AuthProvider:    provider,
+		ExtraHeaders:    headers,
+	}
+}
+
 // serveNativeAnthropic forwards /v1/messages verbatim to a vendor's native
 // Anthropic-compatible endpoint (e.g. api.z.ai/api/anthropic). ReverseProxy
 // joins the base path with the request path, so a base of …/anthropic plus
 // /v1/messages lands on …/anthropic/v1/messages.
 func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) {
-	t := up.Anthropic
-	header, prefix, token, aerr := resolveTargetAuth(r.Context(), t, up)
+	flat := flattenedNativeUpstream(up)
+	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), flat)
 	if aerr != nil {
 		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
 		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
 		return
 	}
-	target := *t.BaseURL
+	target := *flat.BaseURL
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&target)
@@ -170,8 +243,7 @@ func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) 
 			out.Header.Del("x-api-key")
 			out.Header.Del("api-key")
 			out.Header.Set(header, prefix+token)
-			applyExtraHeaders(out, t.ExtraHeaders)
-			applyExtraHeaders(out, up.ExtraHeaders)
+			applyExtraHeaders(out, flat.ExtraHeaders)
 		},
 		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
@@ -231,28 +303,15 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		raw := string(rawBody)
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			// Log the vendor envelope on 4xx: it names the real rejection
-			// (channel/quota/model variants) that the client would otherwise
-			// see only opaquely. Vendor-authored text only, safe to log.
-			proxyLogf("upstream %d; vendor says: %s", resp.StatusCode, describeVendorError(raw, resp.StatusCode))
-			proxyLogf("upstream %d; failed shape: %s", resp.StatusCode, describeAnthropicShape(body))
-			if strings.Contains(raw, "11128") {
-				proxyLogf("upstream 11128; sanitized: %s", describeSanitizedOpenAI(translated))
-			}
-		}
-		if IsContextWindowError(raw) {
-			body := anthropicContextWindowErrorBody(raw, resp.Header.Get("request-id"))
+		f := classifyTranslatedFailure(resp, body, translated, rawBody)
+		if f.ContextWindow {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("request-id", extractRequestID(body))
-			w.WriteHeader(400)
-			_, _ = w.Write(body)
-			return
+			w.Header().Set("request-id", extractRequestID(f.Body))
+		} else {
+			w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
 		}
-		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(rawBody)
+		w.WriteHeader(f.Status)
+		_, _ = w.Write(f.Body)
 		return
 	}
 	ct := resp.Header.Get("Content-Type")
@@ -274,6 +333,53 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 	_, _ = w.Write(out)
 }
 
+// translatedFailure is one non-2xx upstream answer on the translated
+// /v1/messages path, already converted: a context-window error becomes the
+// canonical 400 compaction body, everything else passes through verbatim.
+//
+// It carries the upstream headers for a caller that replays the response
+// later (the pool ring needs Retry-After to price a cooldown). A caller that
+// writes straight through sets Content-Type itself and ignores them.
+type translatedFailure struct {
+	Status        int
+	Body          []byte
+	ContextWindow bool
+	Header        http.Header
+}
+
+// classifyTranslatedFailure logs why an upstream rejected a translated
+// request and decides what the client should receive. It is shared by the
+// committing path and the pool's capturing path, which differ in *where* the
+// bytes go — not in what they are. The pool used to have its own copy without
+// the context-window branch, so a member that hit the limit returned a raw
+// vendor error and the client never compacted.
+func classifyTranslatedFailure(resp *http.Response, sent, forwarded, raw []byte) translatedFailure {
+	status := resp.StatusCode
+	if status >= 400 && status < 500 {
+		// Log the vendor envelope on 4xx: it names the real rejection
+		// (channel/quota/model variants) that the client would otherwise
+		// see only opaquely. Vendor-authored text only, safe to log.
+		proxyLogf("upstream %d; vendor says: %s", status, describeVendorError(string(raw), status))
+		proxyLogf("upstream %d; failed shape: %s", status, describeAnthropicShape(sent))
+		if strings.Contains(string(raw), "11128") {
+			proxyLogf("upstream 11128; sanitized: %s", describeSanitizedOpenAI(forwarded))
+		}
+	}
+	if IsContextWindowError(string(raw)) {
+		body := anthropicContextWindowErrorBody(string(raw), resp.Header.Get("request-id"))
+		header := resp.Header.Clone()
+		header.Set("Content-Type", "application/json")
+		header.Set("request-id", extractRequestID(body))
+		return translatedFailure{
+			Status:        http.StatusBadRequest,
+			Body:          body,
+			ContextWindow: true,
+			Header:        header,
+		}
+	}
+	return translatedFailure{Status: status, Body: raw, Header: resp.Header}
+}
+
 // resolveUpstreamAuth returns the header/prefix/token to forward for an
 // OpenAI-surface request. A configured AuthProvider wins over static Auth.
 // On provider error it fails closed with an error: forwarding an empty or
@@ -287,36 +393,6 @@ func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, tok
 	token = up.Auth
 	if up.AuthProvider != nil {
 		got, perr := up.AuthProvider(ctx)
-		if perr != nil {
-			return header, prefix, "", perr
-		}
-		token = got
-	}
-	return header, prefix, token, nil
-}
-
-// resolveTargetAuth resolves the credential for a native Anthropic target,
-// falling back to the parent Upstream's provider/header when the target leaves
-// them empty. Provider errors fail closed (see resolveUpstreamAuth).
-func resolveTargetAuth(ctx context.Context, t *UpstreamTarget, up *Upstream) (header, prefix, token string, err error) {
-	header, prefix = t.AuthHeader, t.AuthValuePrefix
-	if header == "" {
-		header, prefix = up.AuthHeader, up.AuthValuePrefix
-	}
-	if header == "" {
-		header = "Authorization"
-		prefix = "Bearer "
-	}
-	token = t.Auth
-	if token == "" {
-		token = up.Auth
-	}
-	provider := t.AuthProvider
-	if provider == nil {
-		provider = up.AuthProvider
-	}
-	if provider != nil {
-		got, perr := provider(ctx)
 		if perr != nil {
 			return header, prefix, "", perr
 		}
