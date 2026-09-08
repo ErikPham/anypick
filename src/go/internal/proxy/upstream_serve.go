@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -83,107 +84,15 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		serveTranslatedMessagesWith(w, r, up)
 		return
 	case kindOpenAIPath:
-		serveOpenAIPath(w, r, up)
+		reverseEgress(r, up, &commitSink{w: w}, reverseOpts{
+			baseURL:   up.BaseURL,
+			chatPath:  up.OpenAIPath,
+			sanitizer: up.SanitizeOpenAIBody,
+		})
 		return
 	}
-	target := *up.BaseURL
-	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
-	if aerr != nil {
-		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
-		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
-		return
-	}
-	rp := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(&target)
-			pr.Out.Host = target.Host
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("x-api-key")
-			pr.Out.Header.Del("api-key")
-			pr.Out.Header.Set(header, prefix+token)
-			applyExtraHeaders(pr.Out, up.ExtraHeaders)
-		},
-		Transport:     egress.Transport(),
-		FlushInterval: 10 * time.Millisecond,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			return rewriteContextWindowResponse(resp, r)
-		},
-	}
-	rp.ServeHTTP(w, r)
-}
-
-// serveOpenAIPath forwards an OpenAI-surface chat request to an upstream
-// whose chat surface lives at a non-default path (Upstream.OpenAIPath joined
-// onto the base path). Unlike the generic branch it never lets the inbound
-// /v1/… path through: vendors like WorkBuddy read the /v1/ segment as an
-// API-key channel marker and reject subscription calls on it (code 11128).
-// The body is buffered once so Upstream.SanitizeOpenAIBody can run; the
-// RESPONSE still streams via ReverseProxy. Without a sanitizer the buffered
-// body forwards byte-identical to the generic branch.
-func serveOpenAIPath(w http.ResponseWriter, r *http.Request, up *Upstream) {
-	base := *up.BaseURL
-	chatPath := strings.TrimSuffix(base.Path, "/") + up.OpenAIPath
-	target := base
-	target.Path = chatPath
-	target.RawPath = ""
-	var sanitized []byte
-	sanitizing := false
-	if up.SanitizeOpenAIBody != nil {
-		raw, err := ReadCappedBody(r, MaxBodyBytes)
-		if errors.Is(err, ErrBodyTooLarge) {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
-				fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))
-			return
-		}
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
-			return
-		}
-		sanitized = up.SanitizeOpenAIBody(raw)
-		sanitizing = true
-	}
-	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
-	if aerr != nil {
-		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
-		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
-		return
-	}
-	rp := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(&target)
-			pr.Out.Host = target.Host
-			// SetURL re-joins the inbound path; pin the subscription path.
-			pr.Out.URL.Path = chatPath
-			pr.Out.URL.RawPath = ""
-			if sanitizing {
-				pr.Out.Body = io.NopCloser(bytes.NewReader(sanitized))
-				pr.Out.ContentLength = int64(len(sanitized))
-				pr.Out.GetBody = func() (io.ReadCloser, error) {
-					return io.NopCloser(bytes.NewReader(sanitized)), nil
-				}
-			}
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("x-api-key")
-			pr.Out.Header.Del("api-key")
-			pr.Out.Header.Set(header, prefix+token)
-			applyExtraHeaders(pr.Out, up.ExtraHeaders)
-		},
-		Transport:     egress.Transport(),
-		FlushInterval: 10 * time.Millisecond,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			return rewriteContextWindowResponse(resp, r)
-		},
-	}
-	rp.ServeHTTP(w, r)
-}
-
-// flattenedNativeUpstream flattens a native Anthropic target and its parent
+	reverseEgress(r, up, &commitSink{w: w}, reverseOpts{baseURL: up.BaseURL})
+}// flattenedNativeUpstream flattens a native Anthropic target and its parent
 // Upstream into one *Upstream: the target wins, the parent fills whatever the
 // target leaves empty.
 //
@@ -224,37 +133,53 @@ func flattenedNativeUpstream(up *Upstream) *Upstream {
 // serveNativeAnthropic forwards /v1/messages verbatim to a vendor's native
 // Anthropic-compatible endpoint (e.g. api.z.ai/api/anthropic). ReverseProxy
 // joins the base path with the request path, so a base of …/anthropic plus
-// /v1/messages lands on …/anthropic/v1/messages.
+// /v1/messages lands on …/anthropic/v1/messages. The flattened upstream carries
+// the resolved auth + headers, handed to the shared reverse egress.
 func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	flat := flattenedNativeUpstream(up)
-	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), flat)
-	if aerr != nil {
-		proxyLogf("credential refresh failed: %s", redactAuthError(aerr))
-		writeJSONError(w, http.StatusBadGateway, "proxy_error", "credential refresh failed")
-		return
+	reverseEgress(r, flat, &commitSink{w: w}, reverseOpts{baseURL: flat.BaseURL, sanitizer: flat.SanitizeOpenAIBody})
+}
+
+// translatedBuildError carries the exact (status, type, message) a leaf must
+// surface when the translated-request build fails, so the single shared builder
+// and each caller's own sink (write vs capture) stay in agreement.
+type translatedBuildError struct {
+	status  int
+	typ     string
+	message string
+}
+
+func (e *translatedBuildError) Error() string { return e.message }
+
+// buildTranslatedChatRequest translates an inbound /v1/messages body and
+// constructs the outbound /chat/completions request. It is shared by the
+// committing single-account path (serveTranslatedMessagesWith) and the pool
+// ring's capturing path (translatedWithCapture): the request side is identical,
+// so it lives in one place. The caller reads the capped body and injects auth,
+// then maps any returned error to its own response (write vs capture).
+//
+// auth is intentionally left to the caller: the committing path logs the refresh
+// failure (proxyLogf) before responding, and that side effect must not be lost
+// by folding the call into the shared builder.
+func buildTranslatedChatRequest(r *http.Request, up *Upstream, body []byte) (*http.Request, []byte, *translatedBuildError) {
+	translated, terr := translateRequestBody(body)
+	if terr != nil {
+		return nil, nil, &translatedBuildError{http.StatusBadRequest, "invalid_request_error", terr.Error()}
 	}
-	target := *flat.BaseURL
-	rp := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(&target)
-			pr.Out.Host = target.Host
-			out := pr.Out
-			out.Header.Del("Authorization")
-			out.Header.Del("x-api-key")
-			out.Header.Del("api-key")
-			out.Header.Set(header, prefix+token)
-			applyExtraHeaders(out, flat.ExtraHeaders)
-		},
-		Transport:     egress.Transport(),
-		FlushInterval: 10 * time.Millisecond,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			writeJSONError(w, http.StatusBadGateway, "upstream_error", "upstream unavailable")
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			return rewriteContextWindowResponse(resp, r)
-		},
+	if up.SanitizeOpenAIBody != nil {
+		translated = up.SanitizeOpenAIBody(translated)
 	}
-	rp.ServeHTTP(w, r)
+	target := *up.BaseURL
+	target.Path = strings.TrimSuffix(target.Path, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), bytes.NewReader(translated))
+	if err != nil {
+		// NewRequestWithContext only fails on a malformed URL; up.BaseURL is
+		// always valid here, so this branch is unreachable in practice. The
+		// committing path surfaces err.Error(); the capture path uses a fixed
+		// "upstream unavailable" string — both are inert for a never-taken path.
+		return nil, nil, &translatedBuildError{http.StatusBadGateway, "upstream_error", err.Error()}
+	}
+	return req, translated, nil
 }
 
 // serveTranslatedMessagesWith is the shared implementation used by both the
@@ -270,20 +195,9 @@ func serveTranslatedMessagesWith(w http.ResponseWriter, r *http.Request, up *Ups
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 		return
 	}
-	translated, terr := translateRequestBody(body)
-	if terr != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", terr.Error())
-		return
-	}
-	if up.SanitizeOpenAIBody != nil {
-		translated = up.SanitizeOpenAIBody(translated)
-	}
-	upstreamURL := *up.BaseURL
-	upstreamURL.Path = strings.TrimSuffix(upstreamURL.Path, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		upstreamURL.String(), bytes.NewReader(translated))
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "upstream_error", err.Error())
+	req, translated, be := buildTranslatedChatRequest(r, up, body)
+	if be != nil {
+		writeJSONError(w, be.status, be.typ, be.message)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -652,3 +566,159 @@ func describeVendorError(raw string, status int) string {
 }
 
 func translateRequestBody(body []byte) ([]byte, error) { return protocol.TranslateRequest(body) }
+
+// egressSink unifies the committing single-account reverse path and the pool
+// ring's capturing path behind one ReverseProxy. commit()/reject()/onNon2xx()
+// let the shared ModifyResponse behave correctly for each without a type switch
+// at the call site; asResponseWriter() is the writer ReverseProxy streams into.
+// Keeping the two paths behind one implementation is what stops them drifting
+// (the ring's old copy had already dropped the context-window rewrite).
+type egressSink interface {
+	// commit marks a <400 response as streaming to the real client. The
+	// committing sink is already there; the capture sink flips from buffering to
+	// the underlying stream so an SSE response reaches the caller.
+	commit()
+	// reject terminates the request before any upstream call (oversized body or
+	// credential-refresh failure). The committing sink writes it to the client;
+	// the capture sink holds it for the ring to inspect or fail over on.
+	reject(status int, header http.Header, body []byte)
+	// onNon2xx handles a non-2xx upstream response from inside ModifyResponse.
+	// The committing sink lets ReverseProxy stream the real response; the capture
+	// sink records it and suppresses the duplicate body write.
+	onNon2xx(resp *http.Response) error
+	// asResponseWriter is the writer ReverseProxy streams the response into.
+	asResponseWriter() http.ResponseWriter
+}
+
+// reverseOpts selects the ReverseProxy target and request shaping for one
+// reverse egress. chatPath pins the OpenAI chat surface onto a non-default
+// path; sanitizer rewrites an OpenAI chat body (only applied when chatPath is
+// set, matching the prior per-leaf behavior — a generic passthrough never
+// sanitized).
+type reverseOpts struct {
+	baseURL   *url.URL
+	chatPath  string
+	sanitizer func([]byte) []byte
+}
+
+// commitSink is the committing egressSink: bytes go straight to the client.
+type commitSink struct{ w http.ResponseWriter }
+
+func (c *commitSink) commit() {}
+
+func (c *commitSink) reject(status int, header http.Header, body []byte) {
+	for k, vs := range header {
+		for _, v := range vs {
+			c.w.Header().Add(k, v)
+		}
+	}
+	c.w.WriteHeader(status)
+	_, _ = c.w.Write(body)
+}
+
+func (c *commitSink) onNon2xx(_ *http.Response) error { return nil }
+
+func (c *commitSink) asResponseWriter() http.ResponseWriter { return c.w }
+
+func jsonErrorHeader() http.Header {
+	return http.Header{"Content-Type": []string{"application/json"}}
+}
+
+// reverseEgress builds the single ReverseProxy for every reverse surface
+// (generic passthrough, OpenAI-path pinning, native Anthropic flattening) and
+// drives it through the given sink. The committing callers pass a commitSink;
+// the pool ring passes its captureWriter (which implements egressSink). The body
+// cap is enforced here at the reverse door (per TestPipelineBodyPolicy): the
+// bytes are read once, capped, and re-fed to ReverseProxy, so the reverse path
+// is capped too — not only the gemini/translated doors, and not the
+// pre-existing gap where the generic passthrough streamed the body untouched.
+func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseOpts) {
+	body, err := ReadCappedBody(r, MaxBodyBytes)
+	if errors.Is(err, ErrBodyTooLarge) {
+		sink.reject(http.StatusRequestEntityTooLarge, jsonErrorHeader(),
+			[]byte(jsonErrorBody("invalid_request_error",
+				fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))))
+		return
+	}
+	if err != nil {
+		sink.reject(http.StatusBadRequest, jsonErrorHeader(),
+			[]byte(jsonErrorBody("invalid_request_error", "unreadable body")))
+		return
+	}
+	var sanitized []byte
+	sanitizing := false
+	if opts.chatPath != "" && opts.sanitizer != nil && r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
+		sanitized = opts.sanitizer(body)
+		sanitizing = true
+	}
+	// Re-feed the (capped, possibly sanitized) body so ReverseProxy streams the
+	// right bytes. ReverseProxy drains r.Body, so this single read is the one
+	// that counts for the cap.
+	outBody := body
+	if sanitizing {
+		outBody = sanitized
+	}
+	r.Body = io.NopCloser(bytes.NewReader(outBody))
+	r.ContentLength = int64(len(outBody))
+	if r.GetBody == nil {
+		b := outBody
+		r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
+	}
+
+	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
+	if aerr != nil {
+		sink.reject(http.StatusBadGateway, jsonErrorHeader(),
+			[]byte(jsonErrorBody("proxy_error", "credential refresh failed")))
+		return
+	}
+	target := *opts.baseURL
+	if opts.chatPath != "" {
+		target.Path = strings.TrimSuffix(target.Path, "/") + opts.chatPath
+		target.RawPath = ""
+	}
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(&target)
+			pr.Out.Host = target.Host
+			if opts.chatPath != "" {
+				pr.Out.URL.Path = target.Path
+				pr.Out.URL.RawPath = ""
+			}
+			if sanitizing {
+				pr.Out.Body = io.NopCloser(bytes.NewReader(sanitized))
+				pr.Out.ContentLength = int64(len(sanitized))
+				pr.Out.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(sanitized)), nil
+				}
+			}
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("x-api-key")
+			pr.Out.Header.Del("api-key")
+			pr.Out.Header.Set(header, prefix+token)
+			applyExtraHeaders(pr.Out, up.ExtraHeaders)
+		},
+		Transport:     egress.Transport(),
+		FlushInterval: 10 * time.Millisecond,
+		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, _ error) {
+			// Transport errors surface as a verbatim 502; the transient class
+			// never triggers failover. For the capture sink rw is the
+			// captureWriter, so the ring sees the 502; for the committing sink
+			// it is the real client writer.
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusBadGateway)
+			_, _ = rw.Write([]byte(`{"error":{"type":"upstream_error","message":"upstream unavailable"}}`))
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if err := rewriteContextWindowResponse(resp, r); err != nil {
+				return err
+			}
+			if resp.StatusCode < 400 {
+				sink.commit()
+				return nil
+			}
+			return sink.onNon2xx(resp)
+		},
+	}
+	rp.ServeHTTP(sink.asResponseWriter(), r)
+}

@@ -39,6 +39,9 @@ type stubUpstream struct {
 	status atomic.Int32 // status returned per request; 200 default
 	hits   atomic.Int32
 	body   string
+	// headers are applied to every response, so a test can assert that the
+	// capture path preserves arbitrary upstream headers (e.g. Retry-After).
+	headers map[string]string
 	// delayMs is applied before the status is written, so a test can make one
 	// member slower than the aggregate ring budget.
 	delayMs atomic.Int64
@@ -53,6 +56,9 @@ func newStubUpstream(t *testing.T, defaultStatus int) *stubUpstream {
 			time.Sleep(time.Duration(d) * time.Millisecond)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		for k, v := range s.headers {
+			w.Header().Set(k, v)
+		}
 		code := int(s.status.Load())
 		if code == 0 {
 			code = defaultStatus
@@ -481,5 +487,74 @@ func TestPoolRoundRobinStrategyStillFailsOver(t *testing.T) {
 	}
 	if upB.hitCount() == 0 {
 		t.Error("successor never contacted under round-robin strategy")
+	}
+}
+
+// TestReverseEgressCaptureMatchesCommit locks the core invariant of the pool
+// pipeline unification: the committing single-account reverse path (Serve) and
+// the pool ring's capture leaf (reverseWithCapture) are now the SAME
+// reverseEgress, differing only by their sink. For one upstream answer they must
+// therefore produce byte-identical output — on success the capture commits and
+// streams the same bytes; on a non-quota failure the captured headers (incl.
+// Retry-After) and body equal what the committing path streams verbatim.
+func TestReverseEgressCaptureMatchesCommit(t *testing.T) {
+	up := newStubUpstream(t, 200)
+	up.body = `{"echo":"payload"}`
+
+	cases := []struct {
+		name       string
+		status     int
+		retryAfter string
+	}{
+		{"success-200", 200, ""},
+		{"non-quota-400-with-retry-after", 400, "30"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.retryAfter != "" {
+				up.headers = map[string]string{"Retry-After": tc.retryAfter}
+			} else {
+				up.headers = nil
+			}
+			up.status.Store(int32(tc.status))
+
+			// Committing path: Serve streams the real response to the client.
+			rec := httptest.NewRecorder()
+			reqCommit := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			reqCommit.Header.Set("Content-Type", "application/json")
+			Serve(rec, reqCommit, &Upstream{BaseURL: up.url, Auth: "upstream-secret"})
+
+			// Capture path: reverseWithCapture holds the response for the ring.
+			inner := httptest.NewRecorder()
+			cw := &captureWriter{ResponseWriter: inner}
+			reqCapture := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+			reqCapture.Header.Set("Content-Type", "application/json")
+			(&PoolServer{}).reverseWithCapture(cw, reqCapture, up.url, &Upstream{BaseURL: up.url, Auth: "upstream-secret"})
+
+			if tc.status < 400 {
+				if !cw.committed {
+					t.Fatalf("capture path did not commit on status %d", tc.status)
+				}
+				if inner.Code != http.StatusOK {
+					t.Fatalf("captured status = %d, want 200", inner.Code)
+				}
+				if inner.Body.String() != rec.Body.String() {
+					t.Fatalf("commit body %q != captured body %q", rec.Body.String(), inner.Body.String())
+				}
+				return
+			}
+			if cw.committed {
+				t.Fatalf("capture path must not commit a %d response", tc.status)
+			}
+			if cw.status != tc.status {
+				t.Fatalf("captured status = %d, want %d", cw.status, tc.status)
+			}
+			if string(cw.body.Bytes()) != rec.Body.String() {
+				t.Fatalf("commit body %q != captured body %q", rec.Body.String(), cw.body.Bytes())
+			}
+			if got := cw.header.Get("Retry-After"); got != tc.retryAfter {
+				t.Fatalf("captured Retry-After = %q, want %q", got, tc.retryAfter)
+			}
+		})
 	}
 }

@@ -61,7 +61,44 @@ func (c *codeAssistProjectCache) set(token, project string) {
 // call, issues it (API-key or OAuth/Code Assist), and translates the response
 // back — synthesizing SSE for streaming requests exactly like the TypeScript
 // gemini-proxy (which always calls non-stream generateContent and fakes SSE).
+// geminiBuildError carries the exact (status, type, message) a leaf must surface
+// when the Gemini request build fails, so the shared egress and each caller's
+// own sink (write vs capture) stay in agreement. Network errors are returned
+// separately (cerr) so each leaf can reproduce writeGeminiError / w.capture
+// exactly, including the credential-error vs upstream-error type split.
+type geminiBuildError struct {
+	status  int
+	typ     string
+	message string
+}
+
+func (e *geminiBuildError) Error() string { return e.message }
+
+// geminiEgress translates the already-capped inbound body to a Gemini
+// generateContent request and issues it. The body cap is enforced by the caller
+// (serveGemini / geminiWithCapture) at the door — per TestPipelineBodyPolicy —
+// which passes the capped bytes in. Sharing the request side here means the two
+// leaves cannot diverge; the caller maps the result to its own sink (write vs
+// capture), including the credential-error vs upstream-error type split.
+func geminiEgress(r *http.Request, up *Upstream, body []byte) (resp *gemini.GeminiGenerateResponse, resolvedModel string, stream bool, berr *geminiBuildError, cerr error) {
+	geminiReq, resolvedModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
+	if terr != nil {
+		return nil, "", false, &geminiBuildError{http.StatusBadGateway, "upstream_error", terr.Error()}, nil
+	}
+	if resolvedModel == "" {
+		return nil, "", false, &geminiBuildError{http.StatusBadRequest, "invalid_request_error",
+			"model is required and no model could be discovered for this account"}, nil
+	}
+	resp, cerr = callGemini(r.Context(), up, resolvedModel, geminiReq)
+	if cerr != nil {
+		return nil, "", false, nil, cerr
+	}
+	return resp, resolvedModel, stream, nil, nil
+}
+
 func serveGemini(w http.ResponseWriter, r *http.Request, up *Upstream) {
+	// Body cap enforced at the door (per TestPipelineBodyPolicy); the shared
+	// egress takes the already-capped bytes.
 	body, err := ReadCappedBody(r, MaxBodyBytes)
 	if errors.Is(err, ErrBodyTooLarge) {
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
@@ -72,17 +109,11 @@ func serveGemini(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request_error", "unreadable body")
 		return
 	}
-	geminiReq, resolvedModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
-	if terr != nil {
-		writeJSONError(w, http.StatusBadGateway, "upstream_error", terr.Error())
+	resp, resolvedModel, stream, berr, cerr := geminiEgress(r, up, body)
+	if berr != nil {
+		writeJSONError(w, berr.status, berr.typ, berr.message)
 		return
 	}
-	if resolvedModel == "" {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request_error",
-			"model is required and no model could be discovered for this account")
-		return
-	}
-	resp, cerr := callGemini(r.Context(), up, resolvedModel, geminiReq)
 	if cerr != nil {
 		writeGeminiError(w, cerr)
 		return

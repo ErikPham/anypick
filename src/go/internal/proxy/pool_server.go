@@ -18,7 +18,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -356,27 +355,23 @@ func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream
 // /v1/chat/completions and translates them to generateContent, capturing
 // non-2xx responses so the ring can fail over like any other member.
 func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Upstream) {
+	// Body cap enforced at the door (per TestPipelineBodyPolicy); the shared
+	// egress takes the already-capped bytes, matching serveGemini exactly.
 	body, err := ReadCappedBody(r, MaxBodyBytes)
 	if errors.Is(err, ErrBodyTooLarge) {
-		w.commitJSON(http.StatusRequestEntityTooLarge,
-			jsonErrorBody("invalid_request_error", fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes)))
+		w.commitJSON(http.StatusRequestEntityTooLarge, jsonErrorBody("invalid_request_error",
+			fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes)))
 		return
 	}
 	if err != nil {
-		w.commitJSON(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"unreadable body"}}`)
+		w.commitJSON(http.StatusBadRequest, jsonErrorBody("invalid_request_error", "unreadable body"))
 		return
 	}
-	geminiReq, resolvedModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
-	if terr != nil {
-		w.commitJSON(http.StatusBadGateway, jsonErrorBody("upstream_error", terr.Error()))
+	resp, resolvedModel, stream, berr, cerr := geminiEgress(r, up, body)
+	if berr != nil {
+		w.commitJSON(berr.status, jsonErrorBody(berr.typ, berr.message))
 		return
 	}
-	if resolvedModel == "" {
-		w.commitJSON(http.StatusBadRequest,
-			jsonErrorBody("invalid_request_error", "model is required and no model could be discovered for this account"))
-		return
-	}
-	resp, cerr := callGemini(r.Context(), up, resolvedModel, geminiReq)
 	if cerr != nil {
 		// Capture the upstream failure so the ring loop can decide failover.
 		status, msg := geminiErrorStatusMessage(cerr)
@@ -389,101 +384,13 @@ func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Up
 }
 
 // reverseWithCapture streams committed responses straight through and buffers
-// non-committed (≥400) responses into the capture writer.
+// non-committed (≥400) responses into the capture writer, so the ring can decide
+// failover. It is the capture-door spelling of reverseEgress: the *captureWriter
+// itself implements egressSink, so the single shared ReverseProxy in
+// reverseEgress drives the capturing behavior without a second copy of the proxy
+// logic (and without the context-window rewrite the old copy silently dropped).
 func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseURL *url.URL, up *Upstream) {
-	target := *baseURL
-	chatPath := ""
-	var sanitized []byte
-	sanitizing := false
-	if up != nil && up.OpenAIPath != "" && r.Method == http.MethodPost &&
-		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
-		chatPath = strings.TrimSuffix(target.Path, "/") + up.OpenAIPath
-		if up.SanitizeOpenAIBody != nil {
-			raw, err := ReadCappedBody(r, MaxBodyBytes)
-			if errors.Is(err, ErrBodyTooLarge) {
-				w.capture(http.StatusRequestEntityTooLarge,
-					http.Header{"Content-Type": []string{"application/json"}},
-					[]byte(jsonErrorBody("invalid_request_error",
-						fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes))))
-				return
-			}
-			if err == nil {
-				sanitized = up.SanitizeOpenAIBody(raw)
-				sanitizing = true
-			}
-		}
-	}
-	// Fail closed on credential refresh: a stale/empty token would only
-	// surface as an upstream 401 and hide the real cause. Pre-resolve here
-	// because Rewrite cannot return an error.
-	var authHeader, authPrefix, authToken string
-	if up != nil {
-		var aerr error
-		authHeader, authPrefix, authToken, aerr = resolveUpstreamAuth(r.Context(), up)
-		if aerr != nil {
-			w.capture(http.StatusBadGateway, http.Header{"Content-Type": []string{"application/json"}},
-				[]byte(jsonErrorBody("proxy_error", "credential refresh failed")))
-			return
-		}
-	}
-	rp := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(&target)
-			pr.Out.Host = target.Host
-			if chatPath != "" {
-				pr.Out.URL.Path = chatPath
-				pr.Out.URL.RawPath = ""
-			}
-			if sanitizing {
-				pr.Out.Body = io.NopCloser(bytes.NewReader(sanitized))
-				pr.Out.ContentLength = int64(len(sanitized))
-				pr.Out.GetBody = func() (io.ReadCloser, error) {
-					return io.NopCloser(bytes.NewReader(sanitized)), nil
-				}
-			}
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("x-api-key")
-			pr.Out.Header.Del("api-key")
-			pr.Out.Header.Set(authHeader, authPrefix+authToken)
-			applyExtraHeaders(pr.Out, up.ExtraHeaders)
-		},
-		Transport:     egress.Transport(),
-		FlushInterval: 10 * time.Millisecond,
-		ErrorHandler: func(flush http.ResponseWriter, _ *http.Request, _ error) {
-			// Transport errors surface as a verbatim 502; transient class never
-			// triggers failover.
-			flush.Header().Set("Content-Type", "application/json")
-			flush.WriteHeader(http.StatusBadGateway)
-			_, _ = flush.Write([]byte(`{"error":{"type":"upstream_error","message":"upstream unavailable"}}`))
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			// The compaction rewrite belongs here too, not only on the
-			// single-account path. A pool member that hits the context limit
-			// used to return the raw vendor error, so the client never saw
-			// the signal that makes it compact — the conversation just broke
-			// with an error nobody could act on.
-			if err := rewriteContextWindowResponse(resp, r); err != nil {
-				return err
-			}
-			if resp.StatusCode < 400 {
-				w.commit()
-				return nil
-			}
-			raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-			_ = resp.Body.Close()
-			if err != nil {
-				raw = nil
-			}
-			w.capture(resp.StatusCode, resp.Header, raw)
-			// ReverseProxy replays resp.Body into this same uncommitted writer
-			// after ModifyResponse returns; leaving the captured bytes there
-			// appended every verbatim passthrough body a second time. Hand it an
-			// empty body — flushCaptured replays the capture exactly once.
-			resp.Body = io.NopCloser(bytes.NewReader(nil))
-			return nil
-		},
-	}
-	rp.ServeHTTP(w, r)
+	reverseEgress(r, up, w, reverseOpts{baseURL: baseURL, sanitizer: up.SanitizeOpenAIBody})
 }
 
 // translatedWithCapture ports serveTranslatedMessagesWith's manual egress with
@@ -499,20 +406,9 @@ func (s *PoolServer) translatedWithCapture(w *captureWriter, r *http.Request, up
 		w.commitJSON(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","message":"unreadable body"}}`)
 		return
 	}
-	translated, terr := translateRequestBody(body)
-	if terr != nil {
-		w.commitJSON(http.StatusBadRequest, jsonErrorBody("invalid_request_error", terr.Error()))
-		return
-	}
-	if up.SanitizeOpenAIBody != nil {
-		translated = up.SanitizeOpenAIBody(translated)
-	}
-	target := *up.BaseURL
-	target.Path = strings.TrimSuffix(target.Path, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(),
-		bytes.NewReader(translated))
-	if err != nil {
-		w.commitJSON(http.StatusBadGateway, `{"error":{"type":"upstream_error","message":"upstream unavailable"}}`)
+	req, translated, be := buildTranslatedChatRequest(r, up, body)
+	if be != nil {
+		w.commitJSON(be.status, jsonErrorBody(be.typ, be.message))
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -660,6 +556,35 @@ func (w *captureWriter) capture(status int, header http.Header, body []byte) {
 	w.body.Reset()
 	w.body.Write(body)
 }
+
+// reject terminates the request before any upstream call (oversized body or
+// credential-refresh failure). Like a captured upstream failure it is held in
+// the buffer for the ring to inspect or fail over on — TestPool* assert exactly
+// this (e.g. body-too-large is captured, not streamed to the client).
+func (w *captureWriter) reject(status int, header http.Header, body []byte) {
+	w.capture(status, header, body)
+}
+
+// onNon2xx handles a non-2xx upstream response from inside ModifyResponse. It
+// records the response and hands ReverseProxy an empty body so the captured
+// bytes are replayed exactly once by flushCaptured, never twice (the proxy
+// would otherwise stream resp.Body into this same uncommitted writer).
+func (w *captureWriter) onNon2xx(resp *http.Response) error {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+	if err != nil {
+		raw = nil
+	}
+	w.capture(resp.StatusCode, resp.Header, raw)
+	resp.Body = io.NopCloser(bytes.NewReader(nil))
+	return nil
+}
+
+// asResponseWriter returns the writer ReverseProxy streams into. Until commit()
+// the bytes buffer; on <400 commit() flips it to the underlying client stream
+// (so an SSE response reaches the caller rather than being held), and on ≥400
+// flushCaptured replays the held bytes.
+func (w *captureWriter) asResponseWriter() http.ResponseWriter { return w }
 
 // headerValue reads captured headers; safe on transport-error paths where no
 // upstream response ever arrived.
