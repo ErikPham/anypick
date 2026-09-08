@@ -36,7 +36,7 @@ func wireActivation(t *testing.T, env *trayEnv) {
 		Root:     env.Root,
 		Home:     env.Home,
 		Clients:  env.Deps.Clients,
-		Profiles: env.Deps.Profiles,
+		Profiles: env.Deps.Profiles.Store,
 		Catalog:  catalog.NewIndex(catalog.Builtin()),
 	}
 	catalogEntries := map[string]activation.CatalogEntry{}

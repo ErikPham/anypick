@@ -220,7 +220,7 @@ func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
 			Providers: a.Providers,
 			Bindings:  a.BindingSvc,
 			Store:     a.Store,
-			Profiles:  a.Runtime.Profiles,
+			Profiles:  a.Runtime.ProfileSvc,
 			Presets:   a.PresetSvc,
 			Accounts:  a.Accounts,
 			Proxy:     a.Proxy,
@@ -981,7 +981,7 @@ func (m *Model) wizardChooseSource() (tea.Model, tea.Cmd) {
 func (m *Model) sourceProviderFor(ref refs.Ref) string {
 	switch ref.Kind {
 	case refs.KindGateway:
-		if pr, err := m.app.Runtime.Profiles.GetContext(m.ctx, ref.Name); err == nil && pr != nil {
+		if pr, err := m.app.Runtime.ProfileSvc.GetContext(m.ctx, ref.Name); err == nil && pr != nil {
 			return pr.Meta.Provider
 		}
 	case refs.KindAccount, refs.KindAccountPool:

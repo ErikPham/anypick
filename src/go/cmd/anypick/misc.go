@@ -379,7 +379,7 @@ func cmdComplete(ctx context.Context, a *appView, args []string) int {
 	case "clients":
 		out = append(out, a.Clients.IDs()...)
 	case "gateways", "profiles":
-		names, err := a.Runtime.Profiles.ListContext(ctx)
+		names, err := a.Runtime.ProfileSvc.ListContext(ctx)
 		if err != nil {
 			return reportErr(err)
 		}

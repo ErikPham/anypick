@@ -490,7 +490,7 @@ func providerShortName(a *app.App, providerID string) string {
 func sourceExists(ctx context.Context, a *app.App, ref refs.Ref) bool {
 	switch ref.Kind {
 	case refs.KindGateway:
-		names, err := a.Runtime.Profiles.ListContext(ctx)
+		names, err := a.Runtime.ProfileSvc.ListContext(ctx)
 		if err != nil {
 			return false
 		}
@@ -606,10 +606,10 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 		}
 	}
 
-	if names, err := a.Runtime.Profiles.ListContext(ctx); err == nil {
+	if names, err := a.Runtime.ProfileSvc.ListContext(ctx); err == nil {
 		for _, name := range names {
 			sub := "gateway"
-			if meta, merr := a.Runtime.Profiles.GetContext(ctx, name); merr == nil && meta.Meta.DefaultModel != "" {
+			if meta, merr := a.Runtime.ProfileSvc.GetContext(ctx, name); merr == nil && meta.Meta.DefaultModel != "" {
 				sub = "gateway · default model set"
 			}
 			opts = append(opts, SourceOption{
@@ -670,14 +670,14 @@ type GatewayRow struct {
 
 // LoadGateways reads stored gateway profiles.
 func LoadGateways(ctx context.Context, a *app.App) []GatewayRow {
-	names, err := a.Runtime.Profiles.ListContext(ctx)
+	names, err := a.Runtime.ProfileSvc.ListContext(ctx)
 	if err != nil {
 		return nil
 	}
 	rows := make([]GatewayRow, 0, len(names))
 	for _, name := range names {
 		row := GatewayRow{Name: name}
-		if meta, merr := a.Runtime.Profiles.GetContext(ctx, name); merr == nil && meta != nil {
+		if meta, merr := a.Runtime.ProfileSvc.GetContext(ctx, name); merr == nil && meta != nil {
 			row.Provider = meta.Meta.Provider
 			row.DefaultModel = meta.Meta.DefaultModel
 			row.Endpoint = meta.Meta.Endpoint

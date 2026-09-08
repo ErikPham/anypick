@@ -226,7 +226,7 @@ func cmdGatewayShow(ctx context.Context, a *appView, args []string) int {
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
 		return usageError("usage: anypick gateway show <name>")
 	}
-	pr, err := a.Runtime.Profiles.GetContext(ctx, fs.Arg(0))
+	pr, err := a.Runtime.ProfileSvc.GetContext(ctx, fs.Arg(0))
 	if err != nil {
 		return reportErr(err)
 	}
@@ -291,7 +291,7 @@ func cmdGatewayEdit(ctx context.Context, a *appView, args []string) int {
 		return int(anyerr.Success)
 	}
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.GatewayRef(name)), func(c context.Context) error {
-		existing, gerr := a.Runtime.Profiles.GetContext(c, name)
+		existing, gerr := a.Runtime.ProfileSvc.GetContext(c, name)
 		if gerr != nil {
 			return gerr
 		}
@@ -305,7 +305,7 @@ func cmdGatewayEdit(ctx context.Context, a *appView, args []string) int {
 		if *model != "" {
 			existing.Meta.DefaultModel = *model
 		}
-		_, uerr := a.Runtime.Profiles.UpsertContext(c, *existing)
+		_, uerr := a.Runtime.ProfileSvc.UpsertContext(c, *existing)
 		return uerr
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func cmdGatewayRemove(ctx context.Context, a *appView, args []string) int {
 		return reportErr(err)
 	}
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.GatewayRef(name)), func(c context.Context) error {
-		return a.Runtime.Profiles.DeleteContext(c, name)
+		return a.Runtime.ProfileSvc.DeleteContext(c, name)
 	})
 	if err != nil {
 		return reportErr(err)

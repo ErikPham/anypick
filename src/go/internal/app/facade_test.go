@@ -64,7 +64,11 @@ var facadeBudget = map[string]int{
 	// a.Pools dropped 7 -> 0: App.PoolSvc is a pools.Service, and a.PoolSvc does
 	// not contain the literal "a.Pools" (the "a.PoolsSvc" prefix would have
 	// kept counting it).
-	"a.Runtime.Profiles": 9,
+	// a.Runtime.Profiles dropped 9 -> 0: App.Runtime.ProfileSvc is a
+	// profile.Service, and a.Runtime.ProfileSvc does not contain the literal
+	// "a.Runtime.Profiles" (the "a.Runtime.ProfilesSvc" prefix would have kept
+	// counting it). desktop.Deps.Profiles and doctor.Deps.Profiles also take
+	// *profile.Service now — the outer layers reach profiles through a service.
 	"Deps.Proxy.Pools":   2,
 	"a.Leases":           1,
 	"Deps.Proxy.Jobs":    1,

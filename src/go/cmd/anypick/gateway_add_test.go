@@ -31,7 +31,7 @@ func TestGatewayAddKeySourcesAndModels(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer closeFn()
-		pr, gerr := a.Runtime.Profiles.GetContext(context.Background(), name)
+		pr, gerr := a.Runtime.ProfileSvc.GetContext(context.Background(), name)
 		if gerr != nil || pr == nil {
 			t.Fatalf("gateway %s missing: %v", name, gerr)
 		}

@@ -47,7 +47,7 @@ type Deps struct {
 	Providers *provider.Registry
 	Bindings  *bindings.Service
 	Store     *store.AccountStore
-	Profiles  *profile.Store
+	Profiles  *profile.Service
 	Presets   *presets.Service
 	Accounts  *accounts.Service
 	Proxy     *proxy.Service

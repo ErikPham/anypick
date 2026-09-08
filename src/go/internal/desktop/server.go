@@ -48,7 +48,7 @@ type Deps struct {
 	Proxy     *proxy.Service
 	Providers *provider.Registry
 	Clients   *client.Registry
-	Profiles  *profile.Store
+	Profiles  *profile.Service
 	Bindings  *bindings.Service
 	// Journal is the operation history backing the Activity snapshot section.
 	// Read-only here: the snapshot maps recent entries to display rows and

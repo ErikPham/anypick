@@ -847,7 +847,7 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 	}
 	gatewayName := fs.Arg(0)
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.GatewayRef(gatewayName)), func(c context.Context) error {
-		_, err := a.Runtime.Profiles.UpsertContext(c, profile.Runtime{
+		_, err := a.Runtime.ProfileSvc.UpsertContext(c, profile.Runtime{
 			Meta: profile.Meta{
 				Name: gatewayName, Provider: *providerID, Endpoint: resolvedEndpoint,
 				DefaultModel: *model, Models: map[string]string(models),
@@ -868,12 +868,12 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 }
 
 func cmdGatewayList(ctx context.Context, a *app.App) int {
-	names, err := a.Runtime.Profiles.ListContext(ctx)
+	names, err := a.Runtime.ProfileSvc.ListContext(ctx)
 	if err != nil {
 		return reportErr(err)
 	}
 	for _, name := range names {
-		pr, gerr := a.Runtime.Profiles.GetContext(ctx, name)
+		pr, gerr := a.Runtime.ProfileSvc.GetContext(ctx, name)
 		if gerr != nil || pr == nil {
 			continue
 		}
@@ -1104,7 +1104,7 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Proxy:             a.Proxy,
 		Providers:         a.Providers,
 		Clients:           a.Clients,
-		Profiles:          a.Runtime.Profiles,
+		Profiles:          a.Runtime.ProfileSvc,
 		Bindings:          a.BindingSvc,
 		Journal:           a.Journal,
 		Activation:        a.Deps,

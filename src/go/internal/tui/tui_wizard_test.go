@@ -31,7 +31,7 @@ func TestWizardPlansGlobalBinding(t *testing.T) {
 	// Anthropic protocol, so the gateway must expose an Anthropic surface
 	// (openrouter's https://openrouter.ai/api); a bare openai gateway would be
 	// rejected with "unsupported transport", exactly as the CLI would reject it.
-	if _, err := a.Runtime.Profiles.UpsertContext(context.Background(), profile.Runtime{
+	if _, err := a.Runtime.ProfileSvc.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{
 			Name:         "test-gw",
 			Provider:     "openrouter",

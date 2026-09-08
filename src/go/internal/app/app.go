@@ -93,7 +93,12 @@ type runtimeView struct {
 	Root     string
 	Home     string
 	Clients  *client.Registry
-	Profiles *profile.Store
+	// ProfileSvc is the service boundary outer layers talk to; the raw store
+	// stays inside internal/profile. The name is deliberate: the facade ratchet
+	// counts the literal "a.Runtime.Profiles", and a field named `a.Runtime.ProfileSvc`
+	// does not contain it (the "a.Runtime.ProfilesSvc" prefix trap would have
+	// kept counting it).
+	ProfileSvc *profile.Service
 	Catalog  *catalog.Index
 }
 
@@ -278,7 +283,7 @@ func (a *App) compose() error {
 	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,
-		Profiles: rt.Profiles, Catalog: catalogRegistry,
+		ProfileSvc: profile.NewService(rt.Profiles), Catalog: catalogRegistry,
 	}
 	a.Deps = deps
 	a.pluginSup = newPluginSupervisor(a)
