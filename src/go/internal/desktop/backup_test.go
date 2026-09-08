@@ -250,8 +250,8 @@ func TestInspectionForgetDropsStagedCopy(t *testing.T) {
 		[]transfer.BackupEntry{{Provider: "codex", Name: "alpha"}}, pkgPath, false); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewInspectionManager()
-	preview, err := mgr.Inspect(env.Deps.Store, env.Deps.Providers, "req1", pkgPath)
+	mgr := NewInspectionManager(env.Deps.Store)
+	preview, err := mgr.Inspect(env.Deps.Providers, "req1", pkgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestInspectionForgetDropsStagedCopy(t *testing.T) {
 		t.Fatalf("staged copy survives forget: %v", serr)
 	}
 	entryIDs := []string{preview.Entries[0].ID}
-	if _, rerr := mgr.Restore(context.Background(), env.Deps.Store, env.Deps.Providers,
+	if _, rerr := mgr.Restore(context.Background(), env.Deps.Providers,
 		id, entryIDs, true); rerr == nil {
 		t.Fatal("restore after forget succeeded")
 	} else if !strings.Contains(rerr.Error(), "unknown or expired") {

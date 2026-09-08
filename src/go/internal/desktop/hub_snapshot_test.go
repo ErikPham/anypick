@@ -3,16 +3,20 @@ package desktop
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
+	"github.com/outof0/anypick/go/internal/modelcache"
 )
 
 func hubTestEnv(t *testing.T) *trayEnv {
 	t.Helper()
 	env := newTrayEnv(t)
-	env.Deps.Hub = &hub.Store{DB: env.Deps.Store.DB.DB, Root: env.Root}
+	env.Deps.Hub = hub.NewService(&hub.Store{DB: env.Deps.Store.DB.DB, Root: env.Root})
 	return env
 }
 
@@ -150,5 +154,152 @@ func TestSnapshotPublishesPinnedRouteModels(t *testing.T) {
 	row := snap.HubPublishedModels[0]
 	if row["id"] != "gpt-x" || row["ownerProviderId"] != "codex" || row["needsChoice"] != false {
 		t.Fatalf("published row = %+v", row)
+	}
+}
+
+// HubCatalogs carry static policy models without egress: a codex account
+// resolves through the openai catalog policy (CatalogProviderFor), cold
+// cache, no network.
+func TestSnapshotEmitsHubCatalogsFromStaticPolicy(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	env.writeCodexLive("hub@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "work", true); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := New(env.Deps, strings.NewReader(""), &strings.Builder{}).buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range snap.HubCatalogs {
+		id, _ := row["accountID"].(string)
+		if id != "hub/default/codex/work" {
+			continue
+		}
+		found = true
+		if row["catalog"] != "openai" {
+			t.Fatalf("catalog = %+v, want openai", row)
+		}
+		models, _ := row["models"].([]string)
+		if len(models) == 0 {
+			t.Fatalf("codex catalog is empty: %+v", row)
+		}
+		seen := map[string]bool{}
+		for _, m := range models {
+			seen[m] = true
+		}
+		if !seen["gpt-5.6-sol"] {
+			t.Fatalf("codex catalog missing static fallback: %v", models)
+		}
+	}
+	if !found {
+		t.Fatalf("hub catalog missing: %+v", snap.HubCatalogs)
+	}
+}
+
+// Warm-on-start writes opencode live models to the cache (fake fetch, no
+// network); the next snapshot tick reads them cache-only alongside the
+// static mirror union.
+func TestWarmOpenCodeCatalogsCachesLiveModels(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"opencode-go":{"type":"api","key":"sk-test"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_AUTH_PATH", authPath)
+	if _, err := env.Svc.Save(ctx, "opencode", "work", true); err != nil {
+		t.Fatal(err)
+	}
+	env.Deps.Discovery = &discovery.Service{Root: env.Root, Cache: &modelcache.Store{DB: env.Deps.Store.DB}}
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+
+	calls := 0
+	srv.warmOpenCodeCatalogs(ctx, func(context.Context, string, string) ([]string, error) {
+		calls++
+		return []string{"m-warm-1"}, nil
+	})
+	if calls == 0 {
+		t.Fatal("warm did not fetch for the opencode mirror")
+	}
+	snap, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range snap.HubCatalogs {
+		id, _ := row["accountID"].(string)
+		if id != "hub/default/opencode/work" {
+			continue
+		}
+		found = true
+		models, _ := row["models"].([]string)
+		seen := map[string]bool{}
+		for _, m := range models {
+			seen[m] = true
+		}
+		if !seen["m-warm-1"] || !seen["glm-5.2"] {
+			t.Fatalf("opencode catalog = %v, want warmed + static union", models)
+		}
+	}
+	if !found {
+		t.Fatalf("opencode hub catalog missing: %+v", snap.HubCatalogs)
+	}
+}
+
+// Warm is a no-op without opencode accounts: no fetch, no cache write, no error.
+func TestWarmOpenCodeCatalogsSkipsWithoutAccounts(t *testing.T) {
+	env := hubTestEnv(t)
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+	srv.warmOpenCodeCatalogs(context.Background(), func(context.Context, string, string) ([]string, error) {
+		t.Fatal("fetch must not run without opencode accounts")
+		return nil, nil
+	})
+}
+
+// Pinned route models merge into catalog rows, so Swift compiles published
+// models and conflicts from a single input.
+func TestSnapshotMergesPinnedModelsIntoCatalogs(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	env.writeCodexLive("pub@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "work", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.Deps.Hub.UpsertConfigContext(ctx, hub.Config{
+		Name: "default", Sources: []hub.Source{{ProviderID: "codex", Account: "work"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Deps.Hub.AttachRouteContext(ctx, hub.Route{
+		RouteID: hub.DefaultRouteID("default"), HubName: "default",
+		ClientID: "codex", Token: "tok-123",
+		Models: []hub.ModelRoute{{Model: "gpt-pinned-x", SourceIndex: 0}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := New(env.Deps, strings.NewReader(""), &strings.Builder{}).buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range snap.HubCatalogs {
+		id, _ := row["accountID"].(string)
+		if id != "hub/default/codex/work" {
+			continue
+		}
+		found = true
+		models, _ := row["models"].([]string)
+		seen := map[string]bool{}
+		for _, m := range models {
+			seen[m] = true
+		}
+		if !seen["gpt-pinned-x"] || !seen["gpt-5.6-sol"] {
+			t.Fatalf("catalog = %v, want pinned + static union", models)
+		}
+	}
+	if !found {
+		t.Fatalf("hub catalog missing: %+v", snap.HubCatalogs)
 	}
 }

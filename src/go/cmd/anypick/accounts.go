@@ -18,7 +18,6 @@ import (
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/store"
-	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 // jsonOut prints one machine-readable result on stdout (invariant #6).
@@ -177,7 +176,7 @@ func cmdAccountExport(ctx context.Context, a *appView, args []string) int {
 			kv{Key: "out", Value: *out})
 		return int(anyerr.Success)
 	}
-	if err := transfer.ExportEnvelope(a.Store, ctx, fs.Arg(0), fs.Arg(1), *out); err != nil {
+	if err := a.Accounts.ExportEnvelope(ctx, fs.Arg(0), fs.Arg(1), *out); err != nil {
 		return reportErr(err)
 	}
 	if !wantJSON(args) {
@@ -200,14 +199,7 @@ func cmdAccountImport(ctx context.Context, a *appView, args []string) int {
 			kv{Key: "input", Value: fs.Arg(2)}, kv{Key: "force", Value: *force})
 		return int(anyerr.Success)
 	}
-	deps := transfer.ImportDeps{
-		Store:     a.Store,
-		Providers: a.Providers,
-		ResolveIdentityTarget: func(c context.Context, providerID, identity, accountName string, allowOverwrite bool) (string, error) {
-			return a.Accounts.ResolveIdentityTarget(c, providerID, identity, accountName, allowOverwrite)
-		},
-	}
-	meta, err := transfer.ImportEnvelope(deps, ctx, fs.Arg(0), fs.Arg(1), fs.Arg(2), *force)
+	meta, err := a.Accounts.ImportEnvelope(ctx, fs.Arg(0), fs.Arg(1), fs.Arg(2), *force)
 	if err != nil {
 		return reportErr(err)
 	}

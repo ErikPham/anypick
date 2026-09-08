@@ -90,7 +90,7 @@ func startPinHub(t *testing.T, models []ModelRoute, token string) (*Server, *rec
 	attachLifecycle(t, st, Route{
 		RouteID: "pins/r", HubName: "pins", ClientID: "cli", Token: token, Models: models,
 	})
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

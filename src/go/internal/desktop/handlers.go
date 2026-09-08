@@ -32,15 +32,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 		}
 		err := lock.WithMutationLock(ctx, s.Deps.Root,
 			refs.ProviderScope(m.ProviderID), func(c context.Context) error {
-				deps := transfer.ImportDeps{
-					Store:     s.Deps.Store,
-					Providers: s.Deps.Providers,
-					ResolveIdentityTarget: func(c context.Context, providerID, identity, accountName string, allowOverwrite bool) (string, error) {
-						return s.Deps.Accounts.ResolveIdentityTarget(c, providerID, identity, accountName,
-							allowOverwrite || m.Overwrite)
-					},
-				}
-				_, err := transfer.ImportEnvelope(deps, c, m.ProviderID, m.Name, m.Path, m.Overwrite)
+				_, err := s.Deps.Accounts.ImportEnvelope(c, m.ProviderID, m.Name, m.Path, m.Overwrite)
 				return err
 			})
 		if err != nil {
@@ -53,7 +45,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 		}
 		if err := lock.WithMutationLock(ctx, s.Deps.Root,
 			refs.ProviderScope(m.ProviderID), func(c context.Context) error {
-				return transfer.ExportEnvelope(s.Deps.Store, c, m.ProviderID, m.Name, outPath)
+				return s.Deps.Accounts.ExportEnvelope(c, m.ProviderID, m.Name, outPath)
 			}); err != nil {
 			return fail(err)
 		}
@@ -69,7 +61,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 				selection = append(selection, transfer.BackupEntry{Provider: providerID, Name: acct.Meta.Name})
 			}
 		}
-		_, err := transfer.ExportSelectedBackup(s.Deps.Store, ctx, selection, dest, m.Overwrite)
+		_, err := s.Deps.Accounts.ExportSelectedBackup(ctx, selection, dest, m.Overwrite)
 		if err != nil {
 			return fail(err)
 		}
@@ -85,13 +77,13 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 		for _, ref := range m.Accounts {
 			selection = append(selection, transfer.BackupEntry{Provider: ref.Provider, Name: ref.Name})
 		}
-		if _, err := transfer.ExportSelectedBackup(s.Deps.Store, ctx, selection, m.Path, m.Overwrite); err != nil {
+		if _, err := s.Deps.Accounts.ExportSelectedBackup(ctx, selection, m.Path, m.Overwrite); err != nil {
 			return fail(err)
 		}
 	case "account-backup-import":
 		// Import resolves a previously inspected package by inspectionId; the
 		// protocol never sends a raw path here.
-		count, err := s.inspections.Restore(ctx, s.Deps.Store, s.Deps.Providers,
+		count, err := s.inspections.Restore(ctx, s.Deps.Providers,
 			m.InspectionID, m.EntryIDs, m.OverwriteConfirmed)
 		if err != nil {
 			return fail(err)

@@ -50,19 +50,27 @@ type Deps struct {
 	Clients   *client.Registry
 	Profiles  *profile.Service
 	Bindings  *bindings.Service
+	// Inspections owns staged backup inspection for the backup-import flow. It
+	// holds the account store, so the desktop protocol asks the manager rather
+	// than reaching the raw store through this Deps struct.
+	Inspections *InspectionManager
 	// Journal is the operation history backing the Activity snapshot section.
 	// Read-only here: the snapshot maps recent entries to display rows and
 	// never writes. Nil (legacy tests) yields an honest empty list.
 	Journal *journal.OperationJournal
 	// Activation drives model-role re-activation and other planned mutations.
 	Activation *activation.Deps
-	Hub        *hub.Store
+	Hub        *hub.Service
 	// Config owns global-config mutations; nil in legacy compositions only.
 	Config *config.ConfigService
 	// Discovery owns model-cache reads and writes for snapshot/catalog paths.
 	// Keeping it injected prevents the desktop protocol from reaching through
 	// the account store's database handle.
 	Discovery *discovery.Service
+	// ModelCache is the model-cache store backing gateway-test and snapshot
+	// catalog paths. Injected (built in the composition root) so the desktop
+	// protocol never reaches through the account store's database handle.
+	ModelCache *modelcache.Store
 	// HostState is the native host's report channel for platform truth such
 	// as login-item registration (ADR 0020 §7); optional until handshake.
 	HostState HostStateProvider
@@ -118,7 +126,7 @@ type Server struct {
 // New builds a server. In/Out are the pipes to the native app; when the host
 // has no app binary they may be os.Stdin/os.Stdout so any client can attach.
 func New(deps Deps, in io.Reader, out io.Writer) *Server {
-	return &Server{Deps: deps, In: in, Out: out, inspections: NewInspectionManager(),
+	return &Server{Deps: deps, In: in, Out: out, inspections: deps.Inspections,
 		cancellables:       map[string]context.CancelFunc{},
 		pendingHostEffects: map[string]config.HostEffectRequest{}}
 }
@@ -610,7 +618,7 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 	case "backup-inspect":
 		var p backupInspectPayload
 		_ = json.Unmarshal(cmd.Payload, &p)
-		preview, err := s.inspections.Inspect(s.Deps.Store, s.Deps.Providers, p.RequestID, p.Path)
+		preview, err := s.inspections.Inspect(s.Deps.Providers, p.RequestID, p.Path)
 		if err != nil {
 			reason := inspectionFailureReason(err)
 			s.write(FrameBackupPreview(BackupPreviewResult{
@@ -1387,7 +1395,7 @@ func sameIdentity(a, b string) bool {
 }
 
 func (s *Server) handleGatewayRefresh(ctx context.Context, m Mutate) Result {
-	if s.Deps.Profiles == nil || s.Deps.Store == nil || m.Name == "" {
+	if s.Deps.Profiles == nil || s.Deps.Accounts == nil || m.Name == "" {
 		return errorResult(m.RequestID,
 			anyerr.Newf("gateway-refresh needs an available profile and name", "INVALID_USAGE"))
 	}
@@ -1399,7 +1407,7 @@ func (s *Server) handleGatewayRefresh(ctx context.Context, m Mutate) Result {
 		return errorResult(m.RequestID, anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND"))
 	}
 	discoveryService := &discovery.Service{
-		Root: s.Deps.Root, Cache: &modelcache.Store{DB: s.Deps.Store.DB},
+		Root: s.Deps.Root, Cache: s.Deps.ModelCache,
 	}
 	models := discoveryService.List(ctx, discovery.Request{
 		ProviderID: pr.Meta.Provider,

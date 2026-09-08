@@ -423,7 +423,7 @@ func serveHubChild(ctx context.Context, a *appView, args []string) int {
 		// Echo the parent-recorded instance so `proxy hub stop` can prove the
 		// process it is about to signal is the one it spawned (ADR 0003 §3).
 		Instance:  os.Getenv(ownership.EnvInstanceID),
-		Store:     a.Hub,
+		Store:     a.ProxyHub,
 		Resolver:  hubUpstreamResolver{a},
 		PoolRings: hubPoolRings{a},
 	}

@@ -63,7 +63,7 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 	}
 
 	resolver := &fakeResolver{}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,7 @@ type PoolRingResolver interface {
 type Server struct {
 	Config   Config
 	Instance string
-	Store    *Store
+	Store    *Service
 	Resolver UpstreamResolver
 	// PoolRings serves pool-backed sources; nil makes them fail closed with a
 	// clear upstream error instead of a panic.

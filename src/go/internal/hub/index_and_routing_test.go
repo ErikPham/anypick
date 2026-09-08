@@ -280,7 +280,7 @@ func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 	}
 
 	post := func(cfg Config, model string) *httptest.ResponseRecorder {
-		srv := &Server{Config: cfg, Store: st, Resolver: &fakeResolver{}}
+		srv := &Server{Config: cfg, Store: NewService(st), Resolver: &fakeResolver{}}
 		body := `{"model":"` + model + `"}` + "\n"
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -304,7 +304,7 @@ func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 	// Resolver failure → 502 upstream_error.
 	resolverSrv := &Server{
 		Config:   Config{Name: "d", Enabled: true, Sources: []Source{{ProviderID: "glm", Account: "cn"}}},
-		Store:    st,
+		Store:    NewService(st),
 		Resolver: &errResolver{err: errors.New("no credential")},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -336,7 +336,7 @@ func TestServeRoutePinsSourceByModelIndex(t *testing.T) {
 	}
 
 	resolver := &fakeResolver{}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver}
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"deepseek-chat"}`))
 	req.Header.Set("Authorization", "Bearer "+token)

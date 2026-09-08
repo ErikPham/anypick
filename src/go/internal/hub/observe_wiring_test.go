@@ -48,7 +48,7 @@ func TestHubCountsItsServedRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: cfg, Store: st, Resolver: &fakeResolver{}}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: &fakeResolver{}}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestHubPoolSourceCountsOnBothRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver, PoolRings: staticRing{ring}}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver, PoolRings: staticRing{ring}}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

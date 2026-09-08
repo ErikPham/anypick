@@ -18,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/desktop"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/lock"
@@ -43,34 +44,39 @@ type App struct {
 	Providers *provider.Registry
 	Clients   *client.Registry
 	Accounts  *accounts.Service
-	Deps      *activation.Deps
-	Proxy     *proxy.Service
-	Runtime   *runtimeView
+	// Inspections owns the desktop backup-import staged review; it holds the
+	// account store so the desktop protocol never reaches the raw store. Built
+	// here (unscanned by the facade gate) so cmd/anypick wiring needs no a.Store
+	// handle.
+	Inspections *desktop.InspectionManager
+	Deps        *activation.Deps
+	Proxy       *proxy.Service
+	Runtime     *runtimeView
 	// PoolSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/pools. The name is deliberate: the facade ratchet
 	// counts the literal "a.Pools", and a field named `a.PoolSvc` does not
 	// contain it (the "a.PoolsSvc" prefix trap would have kept counting it).
 	PoolSvc *pools.Service
-	Hub       *hub.Store
+	Hub     *hub.Store
 	// ProxyHub is what outer layers should use. Hub stays because
 	// activation.Deps takes the store itself, and that wiring is not ours to
 	// change here. The name deliberately does not start with "Hub": the facade
 	// ratchet counts the literal "a.Hub", and "a.HubService" matched it — the
 	// same substring trap that already fooled the "s.Deps.Store" pattern.
-	ProxyHub    *hub.Service
-	Journal     *journal.OperationJournal	// PresetSvc is the service boundary outer layers talk to; the raw store
+	ProxyHub *hub.Service
+	Journal  *journal.OperationJournal // PresetSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/presets. The name is deliberate: the facade
 	// ratchet counts the literal "a.Presets", and a field named `a.PresetSvc`
 	// does not contain it (the "a.PresetsSvc" prefix trap would have kept
 	// counting it, exactly like a.Bindings did).
-	PresetSvc  *presets.Service
+	PresetSvc *presets.Service
 	// BindingSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/bindings. The name is deliberate: the facade
 	// ratchet counts the literal "a.Bindings", and a field named
 	// `a.BindingsSvc` would still match it (prefix trap), so the field must
 	// not contain "a.Bindings" at all.
-	BindingSvc *bindings.Service
-	Config     *config.ConfigService
+	BindingSvc  *bindings.Service
+	Config      *config.ConfigService
 	ConfigStore *config.Store
 	Plugins     *plugins.Service
 	PluginStore *plugins.Store
@@ -88,16 +94,16 @@ type App struct {
 // runtimeView groups the runtime-facing stores the CLI needs (profiles,
 // presets, catalog). Kept unexported-typed to avoid widening the surface.
 type runtimeView struct {
-	Root     string
-	Home     string
-	Clients  *client.Registry
+	Root    string
+	Home    string
+	Clients *client.Registry
 	// ProfileSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/profile. The name is deliberate: the facade ratchet
 	// counts the literal "a.Runtime.Profiles", and a field named `a.Runtime.ProfileSvc`
 	// does not contain it (the "a.Runtime.ProfilesSvc" prefix trap would have
 	// kept counting it).
 	ProfileSvc *profile.Service
-	Catalog  *catalog.Index
+	Catalog    *catalog.Index
 }
 
 // Options mirror CreateAppOptions in src/core/app.ts.
@@ -271,6 +277,7 @@ func (a *App) compose() error {
 	a.Providers = provReg
 	a.Clients = clientReg
 	a.Accounts = svc
+	a.Inspections = desktop.NewInspectionManager(st)
 	a.Proxy = px
 	a.PoolSvc = pools.NewService(poolsStore)
 	a.Hub = hubStore

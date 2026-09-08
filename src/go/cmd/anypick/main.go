@@ -1098,9 +1098,10 @@ func cmdDesktopService(ctx context.Context, a *app.App, args []string) int {
 func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writer, appOwned bool) int {
 	deps := desktop.Deps{
 		Root:              a.Root,
-		Store:             a.Store,
 		Accounts:          a.Accounts,
+		Inspections:       a.Inspections,
 		Discovery:         &discovery.Service{Root: a.Root, Cache: &modelcache.Store{DB: a.DB}},
+		ModelCache:        &modelcache.Store{DB: a.DB},
 		Proxy:             a.Proxy,
 		Providers:         a.Providers,
 		Clients:           a.Clients,
@@ -1108,7 +1109,7 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Bindings:          a.BindingSvc,
 		Journal:           a.Journal,
 		Activation:        a.Deps,
-		Hub:               a.Hub,
+		Hub:               a.ProxyHub,
 		Config:            a.Config,
 		PluginDiagnostics: a.PluginDiagnostics,
 		ShutdownOwned: func(shutdownCtx context.Context) error {

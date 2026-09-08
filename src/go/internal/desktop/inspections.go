@@ -39,26 +39,29 @@ type inspectionRecord struct {
 	entries    []transfer.PreviewEntry
 }
 
-// InspectionManager owns staged backups for this supervisor process.
+// InspectionManager owns staged backups for this supervisor process. It holds
+// the account store so the outer layers (desktop protocol) never reach the raw
+// store through the snapshot — they ask the manager to inspect/restore.
 type InspectionManager struct {
+	store   *store.AccountStore
 	mu      sync.Mutex
 	now     func() time.Time
 	records map[string]*inspectionRecord
 }
 
-func NewInspectionManager() *InspectionManager {
-	return &InspectionManager{now: time.Now, records: map[string]*inspectionRecord{}}
+func NewInspectionManager(store *store.AccountStore) *InspectionManager {
+	return &InspectionManager{store: store, now: time.Now, records: map[string]*inspectionRecord{}}
 }
 
 // Inspect stages path, inspects it, and binds a fresh inspection id. The
 // result echoes requestID — the native app ignores previews whose requestId
 // does not match the in-flight request.
-func (m *InspectionManager) Inspect(st *store.AccountStore, reg *provider.Registry, requestID, path string) (*BackupPreviewResult, error) {
+func (m *InspectionManager) Inspect(reg *provider.Registry, requestID, path string) (*BackupPreviewResult, error) {
 	stagedPath, stagedRoot, digest, err := stageBackup(path)
 	if err != nil {
 		return nil, err
 	}
-	inspection, ierr := transfer.InspectBackup(st, reg, stagedPath)
+	inspection, ierr := transfer.InspectBackup(m.store, reg, stagedPath)
 	if ierr != nil {
 		os.RemoveAll(stagedRoot)
 		return nil, ierr
@@ -126,7 +129,7 @@ func (m *InspectionManager) Inspect(st *store.AccountStore, reg *provider.Regist
 // Restore restores entryIds from the staged inspection. Replacements require
 // overwriteConfirmed; blocked/unavailable entries are rejected like TS.
 func (m *InspectionManager) Restore(
-	ctx context.Context, st *store.AccountStore, reg *provider.Registry,
+	ctx context.Context, reg *provider.Registry,
 	inspectionID string, entryIDs []string, overwriteConfirmed bool,
 ) (int, error) {
 	m.mu.Lock()
@@ -171,7 +174,7 @@ func (m *InspectionManager) Restore(
 	if derr != nil || digest != record.digest {
 		return 0, inspectionError("The staged backup failed its integrity check.")
 	}
-	current, cerr := transfer.InspectBackup(st, reg, record.stagedPath)
+	current, cerr := transfer.InspectBackup(m.store, reg, record.stagedPath)
 	if cerr != nil {
 		return 0, inspectionError("The staged backup failed its integrity check.")
 	}
@@ -186,7 +189,7 @@ func (m *InspectionManager) Restore(
 		}
 	}
 
-	metas, rerr := transfer.RestoreSelected(st, reg, record.stagedPath, selected,
+	metas, rerr := transfer.RestoreSelected(m.store, reg, record.stagedPath, selected,
 		transfer.RestoreOptions{Replace: replace})
 	m.mu.Lock()
 	m.deleteLocked(inspectionID)

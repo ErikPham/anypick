@@ -19,6 +19,7 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/slug"
 	"github.com/outof0/anypick/go/internal/store"
+	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 // Checkpoint mirrors LiveAuthCheckpoint: the exact local auth captured before
@@ -507,4 +508,29 @@ func lower(s string) string {
 		}
 	}
 	return string(b)
+}
+
+// ExportEnvelope serializes a saved account to a portable owner-only JSON file.
+// Lives on the service so the outer layers ask for an export instead of
+// reaching through the raw store the service owns.
+func (s *Service) ExportEnvelope(ctx context.Context, providerID, name, outPath string) error {
+	return transfer.ExportEnvelope(s.Store, ctx, providerID, name, outPath)
+}
+
+// ExportSelectedBackup writes one multi-account package. The selection is the
+// same BackupEntry slice transfer expects; the store belongs to the service.
+func (s *Service) ExportSelectedBackup(ctx context.Context, accounts []transfer.BackupEntry, dest string, overwrite bool) (int, error) {
+	return transfer.ExportSelectedBackup(s.Store, ctx, accounts, dest, overwrite)
+}
+
+// ImportEnvelope decodes, validates, and stages one account envelope. The
+// caller's identity-resolution closure is the service's own, so the outer
+// layer never hands the raw store into transfer.
+func (s *Service) ImportEnvelope(ctx context.Context, providerID, name, inPath string, force bool) (store.Meta, error) {
+	deps := transfer.ImportDeps{
+		Store:                 s.Store,
+		Providers:             s.Providers,
+		ResolveIdentityTarget: s.ResolveIdentityTarget,
+	}
+	return transfer.ImportEnvelope(deps, ctx, providerID, name, inPath, force)
 }

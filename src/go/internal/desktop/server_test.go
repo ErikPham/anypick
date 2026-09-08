@@ -18,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
@@ -73,8 +74,10 @@ func newTrayEnv(t *testing.T) *trayEnv {
 	env.Deps = Deps{
 		Root: root, Store: st, Accounts: svc, Proxy: px,
 		Providers: provReg, Clients: clientReg,
-		Profiles: profile.NewService(&profile.Store{DB: database.DB}),
-		Bindings: bindings.NewService(&bindings.Store{Root: root, DB: database.DB}),
+		Profiles:    profile.NewService(&profile.Store{DB: database.DB}),
+		Bindings:    bindings.NewService(&bindings.Store{Root: root, DB: database.DB}),
+		Inspections: NewInspectionManager(st),
+		ModelCache:  &modelcache.Store{DB: database},
 	}
 	cfgStore := config.NewStore(root, database)
 	env.Deps.Config = config.NewService(cfgStore)

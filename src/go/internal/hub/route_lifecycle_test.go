@@ -168,7 +168,7 @@ func TestRouteAttachGrantRotateRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestHubPoolSourceFailsOverQuotaClassOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver, PoolRings: staticRing{ring}}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver, PoolRings: staticRing{ring}}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestHubPoolSourcePassesNonQuotaThroughOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Config: cfg, Store: st, Resolver: resolver, PoolRings: staticRing{ring}}
+	srv := &Server{Config: cfg, Store: NewService(st), Resolver: resolver, PoolRings: staticRing{ring}}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestHubPoolSourceFailsClosedWhenPoolDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	rings := failingRings{}
-	srv := &Server{Config: cfg, Store: st, PoolRings: rings}
+	srv := &Server{Config: cfg, Store: NewService(st), PoolRings: rings}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
