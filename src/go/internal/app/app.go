@@ -46,7 +46,11 @@ type App struct {
 	Deps      *activation.Deps
 	Proxy     *proxy.Service
 	Runtime   *runtimeView
-	Pools     *pools.Store
+	// PoolSvc is the service boundary outer layers talk to; the raw store
+	// stays inside internal/pools. The name is deliberate: the facade ratchet
+	// counts the literal "a.Pools", and a field named `a.PoolSvc` does not
+	// contain it (the "a.PoolsSvc" prefix trap would have kept counting it).
+	PoolSvc *pools.Service
 	Hub       *hub.Store
 	// ProxyHub is what outer layers should use. Hub stays because
 	// activation.Deps takes the store itself, and that wiring is not ours to
@@ -265,7 +269,7 @@ func (a *App) compose() error {
 	a.Clients = clientReg
 	a.Accounts = svc
 	a.Proxy = px
-	a.Pools = poolsStore
+	a.PoolSvc = pools.NewService(poolsStore)
 	a.Hub = hubStore
 	a.ProxyHub = hub.NewService(hubStore)
 	a.Journal = jrnl

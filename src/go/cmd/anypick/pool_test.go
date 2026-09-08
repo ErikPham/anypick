@@ -32,7 +32,7 @@ func TestPoolMemberCommandPreservesPoolConfiguration(t *testing.T) {
 		{Account: "alpha", Enabled: true},
 		{Account: "beta", Enabled: true},
 	}
-	if err := a.Pools.Set(ctx, pools.Pool{
+	if err := a.PoolSvc.Set(ctx, pools.Pool{
 		Provider: "deepseek", Mode: "single", Enabled: false,
 		Strategy: "round-robin", Host: "127.0.0.1", Port: 43123,
 		Members: wantMembers,

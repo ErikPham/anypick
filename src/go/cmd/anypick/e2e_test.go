@@ -290,7 +290,7 @@ func openPoolForTest(t *testing.T) (*pools.Pool, error) {
 		return nil, err
 	}
 	defer closeFn()
-	return a.Pools.GetContext(context.Background(), "deepseek")
+	return a.PoolSvc.GetContext(context.Background(), "deepseek")
 }
 
 func TestHubActivationEndToEnd(t *testing.T) {

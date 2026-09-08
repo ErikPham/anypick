@@ -61,8 +61,10 @@ var facadeBudget = map[string]int{
 	// a.Presets dropped 3 -> 0 the same way: App.PresetSvc is a presets.Service,
 	// and a.PresetSvc does not contain the literal "a.Presets" (the
 	// "a.PresetsSvc" prefix would have kept counting it).
+	// a.Pools dropped 7 -> 0: App.PoolSvc is a pools.Service, and a.PoolSvc does
+	// not contain the literal "a.Pools" (the "a.PoolsSvc" prefix would have
+	// kept counting it).
 	"a.Runtime.Profiles": 9,
-	"a.Pools":            7,
 	"Deps.Proxy.Pools":   2,
 	"a.Leases":           1,
 	"Deps.Proxy.Jobs":    1,

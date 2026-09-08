@@ -120,7 +120,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 			return usage()
 		}
-		pool, err := a.Pools.GetContext(ctx, fs.Arg(0))
+		pool, err := a.PoolSvc.GetContext(ctx, fs.Arg(0))
 		if err != nil {
 			return reportErr(err)
 		}
@@ -172,7 +172,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			return int(anyerr.Success)
 		}
 		err := lock.WithMutationLock(ctx, a.Root, refs.ProviderScope(providerID), func(c context.Context) error {
-			existing, gerr := a.Pools.GetContext(c, providerID)
+			existing, gerr := a.PoolSvc.GetContext(c, providerID)
 			if gerr != nil {
 				return gerr
 			}
@@ -202,7 +202,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			if pool.Host == "" {
 				pool.Host = "127.0.0.1"
 			}
-			return a.Pools.Set(c, pool)
+			return a.PoolSvc.Set(c, pool)
 		})
 		if err != nil {
 			return reportErr(err)
@@ -222,7 +222,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			return int(anyerr.Success)
 		}
 		err := lock.WithMutationLock(ctx, a.Root, refs.ProviderScope(providerID), func(c context.Context) error {
-			return a.Pools.DisableContext(c, providerID)
+			return a.PoolSvc.DisableContext(c, providerID)
 		})
 		if err != nil {
 			return reportErr(err)
@@ -260,7 +260,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		}
 		var updated *pools.Pool
 		err := lock.WithMutationLock(ctx, a.Root, refs.ProviderScope(providerID), func(c context.Context) error {
-			existing, gerr := a.Pools.GetContext(c, providerID)
+			existing, gerr := a.PoolSvc.GetContext(c, providerID)
 			if gerr != nil {
 				return gerr
 			}
@@ -284,7 +284,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			next := *existing
 			next.Members = append([]pools.Member(nil), existing.Members...)
 			next.Members = upsertMember(next.Members, account.Meta.Name, enabled)
-			if serr := a.Pools.Set(c, next); serr != nil {
+			if serr := a.PoolSvc.Set(c, next); serr != nil {
 				return serr
 			}
 			updated = &next
@@ -313,7 +313,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			return usage()
 		}
 		providerID := fs.Arg(0)
-		pool, perr := a.Pools.GetContext(ctx, providerID)
+		pool, perr := a.PoolSvc.GetContext(ctx, providerID)
 		if perr != nil {
 			return reportErr(perr)
 		}
