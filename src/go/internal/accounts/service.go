@@ -160,6 +160,13 @@ func (s *Service) Active(ctx context.Context, providerID string) (string, error)
 	return s.Store.GetActive(ctx, providerID)
 }
 
+// PatchMeta applies a partial metadata update to a saved account. The store's
+// mutator takes the coordinator lock itself, so a caller that already holds the
+// same provider scope re-enters rather than deadlocking.
+func (s *Service) PatchMeta(ctx context.Context, providerID, name string, patch store.MetaPatch) (store.Meta, error) {
+	return s.Store.PatchMetaContext(ctx, providerID, name, patch)
+}
+
 func (s *Service) Get(ctx context.Context, providerID, name string) (*store.Account, error) {
 	normalized, err := slug.AccountName(name)
 	if err != nil {

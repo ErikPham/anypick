@@ -232,7 +232,7 @@ func (b *snapshotBuilder) actionID() string {
 }
 
 func (b *snapshotBuilder) addProxyRow(ctx context.Context, pv provider.Provider, providerID, name, rowID string) {
-	cfg, _ := b.srv.Deps.Store.GetProxyConfig(ctx, providerID, name)
+	cfg, _ := b.srv.Deps.Proxy.ProxyConfig(ctx, providerID, name)
 	st, statusErr := b.srv.Deps.Proxy.Status(providerID, name)
 	toggleID := b.actionID()
 	restartID := b.actionID()
@@ -281,11 +281,11 @@ func (b *snapshotBuilder) accountsAndProxies(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		list, err := b.srv.Deps.Store.ListAccounts(ctx, providerID)
+		list, err := b.srv.Deps.Accounts.List(ctx, providerID)
 		if err != nil {
 			continue
 		}
-		active, _ := b.srv.Deps.Store.GetActive(ctx, providerID)
+		active, _ := b.srv.Deps.Accounts.Active(ctx, providerID)
 
 		sort.Slice(list, func(i, j int) bool { return list[i].Meta.Name < list[j].Meta.Name })
 		for _, acc := range list {
@@ -515,7 +515,7 @@ func (b *snapshotBuilder) crossProviderActions(ctx context.Context) {
 			if perr != nil || !pv2.CanProxy() {
 				continue
 			}
-			list, lerr := b.srv.Deps.Store.ListAccounts(ctx, otherProviderID)
+			list, lerr := b.srv.Deps.Accounts.List(ctx, otherProviderID)
 			if lerr != nil || len(list) == 0 {
 				continue
 			}
@@ -614,7 +614,7 @@ func (b *snapshotBuilder) currentRouteActions(ctx context.Context, appIDs []stri
 			if srcRef.Kind == refs.KindAccount {
 				kind = "native"
 				routeKind = "direct-account"
-				if accRow, aerr := b.srv.Deps.Store.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
+				if accRow, aerr := b.srv.Deps.Accounts.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
 					pv2, _ := b.srv.Deps.Providers.Get(srcRef.Provider)
 					sn := srcRef.Provider
 					if pv2 != nil {
@@ -1032,7 +1032,7 @@ func (s *Server) buildUsage(ctx context.Context) []UsageSnapshotRow {
 		}
 		short := provider.ShortNameOf(pv)
 		account := ""
-		if active, _ := s.Deps.Store.GetActive(ctx, providerID); active != "" {
+		if active, _ := s.Deps.Accounts.Active(ctx, providerID); active != "" {
 			account = active
 		}
 		var windows []map[string]interface{}

@@ -396,12 +396,12 @@ func (s *Server) shutdown(_ context.Context) error {
 		return nil
 	}
 	for _, providerID := range s.Deps.Providers.IDs() {
-		list, err := s.Deps.Store.ListAccounts(ctx, providerID)
+		list, err := s.Deps.Accounts.List(ctx, providerID)
 		if err != nil {
 			continue
 		}
 		for _, acc := range list {
-			cfg, _ := s.Deps.Store.GetProxyConfig(ctx, providerID, acc.Meta.Name)
+			cfg, _ := s.Deps.Proxy.ProxyConfig(ctx, providerID, acc.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}
@@ -886,12 +886,12 @@ func (s *Server) mutateProxyStopAll(ctx context.Context, m Mutate, result Result
 	// being mistaken for "nothing to do".
 	enumerateCtx := context.WithoutCancel(ctx)
 	for _, providerID := range s.Deps.Providers.IDs() {
-		list, lerr := s.Deps.Store.ListAccounts(enumerateCtx, providerID)
+		list, lerr := s.Deps.Accounts.List(enumerateCtx, providerID)
 		if lerr != nil {
 			continue
 		}
 		for _, acc := range list {
-			cfg, _ := s.Deps.Store.GetProxyConfig(enumerateCtx, providerID, acc.Meta.Name)
+			cfg, _ := s.Deps.Proxy.ProxyConfig(enumerateCtx, providerID, acc.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}
@@ -1075,7 +1075,7 @@ func (s *Server) handleAccountSave(ctx context.Context, raw json.RawMessage, m M
 			if jsonFieldPresent(raw, "label") {
 				label := strings.TrimSpace(m.Label)
 				if label != "" && label != saved.Label {
-					saved, saveErr = s.Deps.Store.PatchMetaContext(c, m.ProviderID, saved.Name,
+					saved, saveErr = s.Deps.Accounts.PatchMeta(c, m.ProviderID, saved.Name,
 						store.MetaPatch{LabelSet: true, Label: label})
 				}
 			}
@@ -1200,7 +1200,7 @@ func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result 
 // an identity-derived stable slug. The active pointer alone is never identity.
 func (s *Server) currentSaveName(ctx context.Context, providerID, requested string,
 	live provider.LiveAuthStatus) (string, error) {
-	list, err := s.Deps.Store.ListAccounts(ctx, providerID)
+	list, err := s.Deps.Accounts.List(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -1214,7 +1214,7 @@ func (s *Server) currentSaveName(ctx context.Context, providerID, requested stri
 	if requested != "" {
 		return slug.AccountName(requested)
 	}
-	active, err := s.Deps.Store.GetActive(ctx, providerID)
+	active, err := s.Deps.Accounts.Active(ctx, providerID)
 	if err != nil {
 		return "", err
 	}
@@ -1240,7 +1240,7 @@ func (s *Server) handleAccountEdit(ctx context.Context, raw json.RawMessage, m M
 	var edited store.Meta
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.ProviderScope(m.ProviderID),
 		func(c context.Context) error {
-			account, err := s.Deps.Store.Get(c, m.ProviderID, m.Name)
+			account, err := s.Deps.Accounts.Get(c, m.ProviderID, m.Name)
 			if err != nil {
 				return err
 			}
@@ -1253,7 +1253,7 @@ func (s *Server) handleAccountEdit(ctx context.Context, raw json.RawMessage, m M
 			if !jsonFieldPresent(raw, "label") {
 				return nil
 			}
-			edited, err = s.Deps.Store.PatchMetaContext(c, m.ProviderID, m.Name,
+			edited, err = s.Deps.Accounts.PatchMeta(c, m.ProviderID, m.Name,
 				store.MetaPatch{LabelSet: true, Label: strings.TrimSpace(m.Label)})
 			return err
 		})
@@ -1339,7 +1339,7 @@ func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 
 func (s *Server) stashSaveName(ctx context.Context, providerID string,
 	live provider.LiveAuthStatus) (string, bool, error) {
-	list, err := s.Deps.Store.ListAccounts(ctx, providerID)
+	list, err := s.Deps.Accounts.List(ctx, providerID)
 	if err != nil {
 		return "", false, err
 	}
@@ -1350,7 +1350,7 @@ func (s *Server) stashSaveName(ctx context.Context, providerID string,
 			}
 		}
 	}
-	active, err := s.Deps.Store.GetActive(ctx, providerID)
+	active, err := s.Deps.Accounts.Active(ctx, providerID)
 	if err != nil {
 		return "", false, err
 	}

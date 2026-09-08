@@ -30,8 +30,17 @@ import (
 // counting rather than by types. `a.Store` dropped 20 -> 3 by routing
 // ListAccounts/Get/GetActive through accounts.Service and
 // GetProxyConfig/ReadProxyState through proxy.Service, which already owns the
-// store. What remains is two struct-field wirings and one transfer call that
-// genuinely need the store itself. `s.Deps.Store` (30) is the next cluster.
+// store. Then `Deps.Store` went 30 -> 8 by routing ListAccounts/GetActive/Get
+// to accounts.Service, GetProxyConfig/ReadProxyState to proxy.Service and
+// PatchMetaContext to accounts.Service.PatchMeta.
+//
+// The 11 that remain are irreducible, and each kind is worth naming so nobody
+// spends an afternoon on it again: `transfer.ExportEnvelope`,
+// `transfer.ExportSelectedBackup`, `inspections.Inspect`/`Restore` all take the
+// store because the transfer and inspection subsystems are the store's peers;
+// one `Store:` struct wiring; one nil guard; one `s.Deps.Store.DB` handed to
+// modelcache, which needs the *sql.DB rather than an account.
+//
 // Target: <= 40 by 2026-10-08, then replace the whole map with an AST gate
 // forbidding `internal/store` imports from cmd/anypick and internal/desktop.
 // Decision 7 in SYSTEM_ARCHITECTURE_2026-09-07.md §6.
@@ -43,7 +52,7 @@ var facadeBudget = map[string]int{
 	// but because the call sites now spell it `b.srv.Deps.Store`. A ratchet
 	// that measures how a variable is named is not measuring the thing it
 	// claims to. Match on the coupling, never on the receiver.
-	"Deps.Store":         30,
+	"Deps.Store":         8,
 	"a.Hub":              15,
 	"a.Bindings":         11,
 	"a.Runtime.Profiles": 9,
