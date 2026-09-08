@@ -539,7 +539,7 @@ func LoadApps(ctx context.Context, a *app.App) []AppRow {
 			row.DisplayName = id
 		}
 		native := clientNativeProvider(a, id)
-		binding, _ := a.Bindings.GetGlobalContext(ctx, id)
+		binding, _ := a.BindingSvc.GetGlobalContext(ctx, id)
 		if binding != nil && binding.Spec.Source.Kind != "" {
 			row.SourceText = refs.DisplayRef(binding.Spec.Source)
 			row.ModelText = binding.Spec.Model.ID

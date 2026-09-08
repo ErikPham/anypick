@@ -258,7 +258,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 	}
 	defer closeFn()
 
-	global, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
+	global, gerr := a.BindingSvc.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil {
 		t.Fatal(gerr)
 	}
@@ -266,7 +266,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 		t.Fatalf("link must not write a global binding: %+v", global)
 	}
 	cwd, _ := os.Getwd()
-	project, perr := a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
+	project, perr := a.BindingSvc.GetProjectContext(context.Background(), cwd, "claude")
 	if perr != nil || project == nil {
 		t.Fatalf("project binding missing: %+v err=%v", project, perr)
 	}
@@ -275,7 +275,7 @@ func TestLinkUnlinkAreProjectScoped(t *testing.T) {
 	if code := run([]string{"unlink", "claude"}); code != 0 {
 		t.Fatalf("unlink exited %d", code)
 	}
-	project, _ = a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
+	project, _ = a.BindingSvc.GetProjectContext(context.Background(), cwd, "claude")
 	if project != nil {
 		t.Fatalf("unlink left the project binding: %+v", project)
 	}
@@ -559,7 +559,7 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	global, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
+	global, gerr := a.BindingSvc.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil || global == nil {
 		t.Fatalf("global binding missing: %+v %v", global, gerr)
 	}
@@ -577,7 +577,7 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	}
 	defer closeFn()
 	cwd, _ := os.Getwd()
-	project, perr := a.Bindings.GetProjectContext(context.Background(), cwd, "claude")
+	project, perr := a.BindingSvc.GetProjectContext(context.Background(), cwd, "claude")
 	if perr != nil || project == nil {
 		t.Fatalf("project binding missing: %v", perr)
 	}

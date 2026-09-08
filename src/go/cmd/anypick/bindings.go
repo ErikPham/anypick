@@ -118,7 +118,7 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	// would silently drop them.
 	var planOpts activation.Options
 	if *withFlag == "" {
-		global, gerr := a.Bindings.GetGlobalContext(ctx, clientID)
+		global, gerr := a.BindingSvc.GetGlobalContext(ctx, clientID)
 		if gerr != nil {
 			return reportErr(gerr)
 		}
@@ -205,13 +205,13 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 		// Read-only count (commands.ts unlink): no lock, no mutation.
 		var removed int64
 		if clientID == "" {
-			n, cerr := a.Bindings.CountProjectsContext(ctx, root)
+			n, cerr := a.BindingSvc.CountProjectsContext(ctx, root)
 			if cerr != nil {
 				return reportErr(cerr)
 			}
 			removed = n
 		} else {
-			existing, gerr := a.Bindings.GetProjectContext(ctx, root, clientID)
+			existing, gerr := a.BindingSvc.GetProjectContext(ctx, root, clientID)
 			if gerr != nil {
 				return reportErr(gerr)
 			}
@@ -227,11 +227,11 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 	var removed int64
 	err := lock.WithMutationLock(ctx, a.Root, "project/"+root, func(c context.Context) error {
 		if clientID == "" {
-			n, derr := a.Bindings.DeleteAllProjectsContext(c, root)
+			n, derr := a.BindingSvc.DeleteAllProjectsContext(c, root)
 			removed = n
 			return derr
 		}
-		existed, gerr := a.Bindings.GetProjectContext(c, root, clientID)
+		existed, gerr := a.BindingSvc.GetProjectContext(c, root, clientID)
 		if gerr != nil {
 			return gerr
 		}
@@ -239,7 +239,7 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 			return nil
 		}
 		removed = 1
-		return a.Bindings.DeleteProjectContext(c, root, clientID)
+		return a.BindingSvc.DeleteProjectContext(c, root, clientID)
 	})
 	if err != nil {
 		return reportErr(err)
@@ -265,7 +265,7 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 		return reportErr(gerr)
 	}
 	if globals.DryRun {
-		g, rerr := a.Bindings.GetGlobalContext(ctx, clientID)
+		g, rerr := a.BindingSvc.GetGlobalContext(ctx, clientID)
 		if rerr != nil {
 			return reportErr(rerr)
 		}
@@ -279,7 +279,7 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 		if err := cad.Reset(); err != nil {
 			return err
 		}
-		return a.Bindings.DeleteGlobalContext(c, clientID)
+		return a.BindingSvc.DeleteGlobalContext(c, clientID)
 	})
 	if err != nil {
 		return reportErr(err)

@@ -49,7 +49,7 @@ func wireActivation(t *testing.T, env *trayEnv) {
 		Accounts:  activation.NewAccountsView(env.Svc),
 		Providers: env.Deps.Providers,
 		Clients:   env.Deps.Clients,
-		Bindings:  env.Deps.Bindings,
+		Bindings:  env.Deps.Bindings.Store,
 		Presets:   activation.NewPresetsView(&presets.Store{DB: database}),
 		Profiles:  rt.Profiles,
 		Pools:     activation.NewPoolsView(&pools.Store{DB: database}),

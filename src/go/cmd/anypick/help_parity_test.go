@@ -401,7 +401,7 @@ func TestQuietSuppressesChatterButNotMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeFn()
-	binding, gerr := a.Bindings.GetGlobalContext(context.Background(), "claude")
+	binding, gerr := a.BindingSvc.GetGlobalContext(context.Background(), "claude")
 	if gerr != nil || binding == nil {
 		t.Fatalf("--quiet must still persist the binding: %+v err=%v", binding, gerr)
 	}

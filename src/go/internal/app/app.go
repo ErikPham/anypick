@@ -57,8 +57,13 @@ type App struct {
 	Journal     *journal.OperationJournal
 	Leases      *proxy.LeaseStore
 	Presets     *presets.Store
-	Bindings    *bindings.Store
-	Config      *config.ConfigService
+	// BindingSvc is the service boundary outer layers talk to; the raw store
+	// stays inside internal/bindings. The name is deliberate: the facade
+	// ratchet counts the literal "a.Bindings", and a field named
+	// `a.BindingsSvc` would still match it (prefix trap), so the field must
+	// not contain "a.Bindings" at all.
+	BindingSvc *bindings.Service
+	Config     *config.ConfigService
 	ConfigStore *config.Store
 	Plugins     *plugins.Service
 	PluginStore *plugins.Store
@@ -261,7 +266,7 @@ func (a *App) compose() error {
 	a.Journal = jrnl
 	a.Leases = leases
 	a.Presets = &presets.Store{DB: a.DB.DB}
-	a.Bindings = &bindings.Store{Root: a.Root, DB: a.DB.DB}
+	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,
 		Profiles: rt.Profiles, Catalog: catalogRegistry,

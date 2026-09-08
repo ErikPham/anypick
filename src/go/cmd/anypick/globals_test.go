@@ -29,7 +29,7 @@ func openAppBindingForTest(t *testing.T, clientID string) (*bindings.Global, err
 		return nil, err
 	}
 	defer closeFn()
-	return a.Bindings.GetGlobalContext(context.Background(), clientID)
+	return a.BindingSvc.GetGlobalContext(context.Background(), clientID)
 }
 
 // captureStdout redirects os.Stdout for the duration of fn.

@@ -600,7 +600,7 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 	// Record a successful source resume for persistent activations. This is a
 	// best-effort DX cache: binding + native config already succeeded.
 	if plan.BindingSpec != nil {
-		_ = a.Bindings.RecordSourceResumeContext(ctx, *plan.BindingSpec)
+		_ = a.BindingSvc.RecordSourceResumeContext(ctx, *plan.BindingSpec)
 	}
 	// --quiet silences human chatter only; JSON mode never printed these.
 	if !globals.Quiet {
@@ -1105,7 +1105,7 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Providers:         a.Providers,
 		Clients:           a.Clients,
 		Profiles:          a.Runtime.Profiles,
-		Bindings:          a.Bindings,
+		Bindings:          a.BindingSvc,
 		Journal:           a.Journal,
 		Activation:        a.Deps,
 		Hub:               a.Hub,

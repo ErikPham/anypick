@@ -352,7 +352,7 @@ func cmdGatewayReset(ctx context.Context, a *appView, args []string) int {
 		return reportErr(err)
 	}
 	if globals.DryRun {
-		g, gerr := a.Bindings.GetGlobalContext(ctx, *clientID)
+		g, gerr := a.BindingSvc.GetGlobalContext(ctx, *clientID)
 		if gerr != nil {
 			return reportErr(gerr)
 		}

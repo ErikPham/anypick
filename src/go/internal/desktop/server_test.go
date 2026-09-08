@@ -74,7 +74,7 @@ func newTrayEnv(t *testing.T) *trayEnv {
 		Root: root, Store: st, Accounts: svc, Proxy: px,
 		Providers: provReg, Clients: clientReg,
 		Profiles: &profile.Store{DB: database.DB},
-		Bindings: &bindings.Store{Root: root, DB: database.DB},
+		Bindings: bindings.NewService(&bindings.Store{Root: root, DB: database.DB}),
 	}
 	cfgStore := config.NewStore(root, database)
 	env.Deps.Config = config.NewService(cfgStore)

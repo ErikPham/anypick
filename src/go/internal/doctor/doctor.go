@@ -45,7 +45,7 @@ type Report struct {
 type Deps struct {
 	Clients   *client.Registry
 	Providers *provider.Registry
-	Bindings  *bindings.Store
+	Bindings  *bindings.Service
 	Store     *store.AccountStore
 	Profiles  *profile.Store
 	Presets   *presets.Store

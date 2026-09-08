@@ -54,7 +54,10 @@ var facadeBudget = map[string]int{
 	// claims to. Match on the coupling, never on the receiver.
 	"Deps.Store":         8,
 	"a.Hub":              2,
-	"a.Bindings":         11,
+	// a.Bindings dropped 11 -> 0: the App now exposes bindings.Service
+	// (App.BindingSvc), so the CLI/desktop/TUI reach bindings through a service
+	// boundary instead of the raw store. The field is named BindingSvc on
+	// purpose — a.BindingsSvc would still match the old "a.Bindings" prefix.
 	"a.Runtime.Profiles": 9,
 	"a.Pools":            7,
 	"a.Presets":          3,

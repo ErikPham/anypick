@@ -192,7 +192,7 @@ func activateWizardCmd(ctx context.Context, a *app.App, plan *activation.Plan) t
 			return actionMsg{err: err}
 		}
 		if plan.BindingSpec != nil {
-			_ = a.Bindings.RecordSourceResumeContext(ctx, *plan.BindingSpec)
+			_ = a.BindingSvc.RecordSourceResumeContext(ctx, *plan.BindingSpec)
 		}
 		display := clientIDOf(plan)
 		if plan.ResolvedSource != nil {
@@ -218,7 +218,7 @@ func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
 		rep, err := doctor.DiagnoseClient(ctx, doctor.Deps{
 			Clients:   a.Clients,
 			Providers: a.Providers,
-			Bindings:  a.Bindings,
+			Bindings:  a.BindingSvc,
 			Store:     a.Store,
 			Profiles:  a.Runtime.Profiles,
 			Presets:   a.Presets,
