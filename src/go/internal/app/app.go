@@ -56,7 +56,12 @@ type App struct {
 	ProxyHub    *hub.Service
 	Journal     *journal.OperationJournal
 	Leases      *proxy.LeaseStore
-	Presets     *presets.Store
+	// PresetSvc is the service boundary outer layers talk to; the raw store
+	// stays inside internal/presets. The name is deliberate: the facade
+	// ratchet counts the literal "a.Presets", and a field named `a.PresetSvc`
+	// does not contain it (the "a.PresetsSvc" prefix trap would have kept
+	// counting it, exactly like a.Bindings did).
+	PresetSvc  *presets.Service
 	// BindingSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/bindings. The name is deliberate: the facade
 	// ratchet counts the literal "a.Bindings", and a field named
@@ -265,7 +270,7 @@ func (a *App) compose() error {
 	a.ProxyHub = hub.NewService(hubStore)
 	a.Journal = jrnl
 	a.Leases = leases
-	a.Presets = &presets.Store{DB: a.DB.DB}
+	a.PresetSvc = presets.NewService(&presets.Store{DB: a.DB.DB})
 	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,

@@ -512,7 +512,7 @@ func sourceExists(ctx context.Context, a *app.App, ref refs.Ref) bool {
 		}
 		return false
 	case refs.KindPreset:
-		saved, err := a.Presets.ListContext(ctx)
+		saved, err := a.PresetSvc.ListContext(ctx)
 		if err != nil {
 			return false
 		}
@@ -640,7 +640,7 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 		}
 	}
 
-	if saved, err := a.Presets.ListContext(ctx); err == nil {
+	if saved, err := a.PresetSvc.ListContext(ctx); err == nil {
 		for _, p := range saved {
 			if p.Spec.Client != clientID {
 				continue

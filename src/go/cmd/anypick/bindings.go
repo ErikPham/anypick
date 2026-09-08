@@ -24,7 +24,7 @@ func cmdPreset(ctx context.Context, a *appView, args []string) int {
 	}
 	switch args[0] {
 	case "list":
-		saved, err := a.Presets.ListContext(ctx)
+		saved, err := a.PresetSvc.ListContext(ctx)
 		if err != nil {
 			return reportErr(err)
 		}
@@ -50,7 +50,7 @@ func cmdPresetShow(ctx context.Context, a *appView, args []string) int {
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
 		return usageError("usage: anypick preset show <name>")
 	}
-	p, err := a.Presets.GetByNameContext(ctx, fs.Arg(0))
+	p, err := a.PresetSvc.GetByNameContext(ctx, fs.Arg(0))
 	if err != nil || p == nil {
 		return reportErr(anyerr.Newf("preset not found: "+fs.Arg(0), "PRESET_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound)))
@@ -82,7 +82,7 @@ func cmdPresetRemove(ctx context.Context, a *appView, args []string) int {
 		return int(anyerr.Success)
 	}
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.PresetRef(fs.Arg(0))), func(c context.Context) error {
-		return a.Presets.DeleteByNameContext(c, fs.Arg(0))
+		return a.PresetSvc.DeleteByNameContext(c, fs.Arg(0))
 	})
 	if err != nil {
 		return reportErr(err)

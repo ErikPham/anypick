@@ -221,7 +221,7 @@ func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
 			Bindings:  a.BindingSvc,
 			Store:     a.Store,
 			Profiles:  a.Runtime.Profiles,
-			Presets:   a.Presets,
+			Presets:   a.PresetSvc,
 			Accounts:  a.Accounts,
 			Proxy:     a.Proxy,
 		}, clientID)
