@@ -19,7 +19,7 @@ import (
 // that change most often, and that combination is where regressions come from.
 // Lower the number in the same commit that shortens a function.
 const (
-	longFunctionBudget = 53
+	longFunctionBudget = 52
 	longFunctionLines  = 80
 )
 

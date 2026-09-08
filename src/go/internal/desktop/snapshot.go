@@ -204,70 +204,88 @@ func (s *Server) currentSettings(ctx context.Context) Preferences {
 // handlers for this revision. Field names match TraySnapshot exactly so the
 // existing native app can consume it unchanged.
 //
-// TODO(gate:long-functions): at 532 lines this is the longest function in the
-// tree, and it both builds state and registers handlers into one registry.
-// Split per domain (accounts, proxies, hub, gateways) returning rows plus a
-// partial registry. It also sits in the highest-churn file in the tree, which
-// is what makes the length a risk rather than a taste question.
-func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
-	s.revision++
-	rev := s.revision
-	snap := &Snapshot{
-		Revision:           rev,
-		Routes:             []map[string]any{},
-		Actions:            []ActionRow{},
-		ClientModelConfigs: []map[string]any{},
-		Usage:              []UsageSnapshotRow{},
-		Proxies:            []ProxyRow{},
-		Accounts:           []AccountRow{},
-		HubSources:         []map[string]any{},
-		HubConflicts:       []map[string]any{},
-		HubPublishedModels: []map[string]any{},
-		HubCatalogs:        []map[string]any{},
-		LogSources:         []LogSourceRow{},
-		Gateways:           []GatewayRow{},
-		AccountProviders:   []AccountProviderRow{},
-		GatewayProviders:   []GatewayProviderRow{},
-		Settings:           Preferences{ShowQuota: true},
-		Activity:           []map[string]any{},
-		DegradedConditions: []DegradedCondition{},
-	}
-	registry := map[string]func(context.Context) error{}
-	actionSeq := 0
-	actionID := func() string { actionSeq++; return fmt.Sprintf("act-%d-%03d", rev, actionSeq) }
+// The body is a list of domain sections on snapshotBuilder. It used to be one
+// 532-line function that both built state and registered handlers; the split is
+// what makes the order readable, and each section keeps the mutable state it
+// needs on the builder instead of threading four locals through N helpers.
+//
+// TODO(gate:long-functions): the ratchet now stands at 52. The next names on
+// it are BuiltinDefinitions (387) and handleMutate (275) — handleMutate is the
+// one to do next, because it lives in the highest-churn file in the tree and
+// that combination is where regressions come from.
+// snapshotBuilder carries the mutable state one snapshot pass needs. It exists
+// so buildSnapshot reads as a list of domain sections instead of one 500-line
+// body: every section appends to the same Snapshot and registers handlers into
+// the same registry, and threading four locals through N helpers is exactly how
+// the original grew past the point where anyone could read it.
+type snapshotBuilder struct {
+	srv      *Server
+	snap     *Snapshot
+	registry map[string]func(context.Context) error
+	rev      int
+	seq      int
+}
 
-	// Settings reflect the persisted global config + login-item state.
-	snap.Settings = s.currentSettings(ctx)
-	if s.Deps.PluginDiagnostics != nil {
-		diagnostics := s.Deps.PluginDiagnostics(ctx)
-		if diagnostics.Host.State == "degraded" {
-			snap.DegradedConditions = append(snap.DegradedConditions, DegradedCondition{
-				ID: "plugin-host", Kind: "plugin-host", Title: "Plugin host unavailable",
-				Detail: diagnostics.Host.Error,
-			})
-		}
-		for _, failure := range diagnostics.Failures {
-			title := "Plugin couldn’t load"
-			if failure.Untrusted {
-				title = "Plugin changed after trust"
-			}
-			snap.DegradedConditions = append(snap.DegradedConditions, DegradedCondition{
-				ID: "plugin:" + failure.Name, Kind: "plugin", Title: title,
-				Detail: failure.Name + ": " + failure.Reason,
-			})
-		}
-	}
+func (b *snapshotBuilder) actionID() string {
+	b.seq++
+	return fmt.Sprintf("act-%d-%03d", b.rev, b.seq)
+}
 
-	for _, providerID := range s.Deps.Providers.IDs() {
-		pv, err := s.Deps.Providers.Get(providerID)
+func (b *snapshotBuilder) addProxyRow(ctx context.Context, pv provider.Provider, providerID, name, rowID string) {
+	cfg, _ := b.srv.Deps.Store.GetProxyConfig(ctx, providerID, name)
+	st, statusErr := b.srv.Deps.Proxy.Status(providerID, name)
+	toggleID := b.actionID()
+	restartID := b.actionID()
+	running, address := proxySnapshotState(st, statusErr)
+	b.snap.Proxies = append(b.snap.Proxies, ProxyRow{
+		ID: rowID, ProviderID: providerID,
+		Label:           fmt.Sprintf("%s/%s proxy", providerID, name),
+		Detail:          detailFor(running, cfg.Port),
+		Address:         address,
+		Running:         running,
+		Enabled:         cfg.Enabled,
+		LogsAvailable:   true,
+		ToggleActionID:  toggleID,
+		RestartActionID: restartID,
+	})
+	b.registry[toggleID] = func(c context.Context) error {
+		// Re-check liveness inside the handler: `running` was captured
+		// at snapshot build and the child may have died (or started)
+		// since, which used to run the wrong branch with a false
+		// success (PX2).
+		if st, serr := b.srv.Deps.Proxy.StatusContext(c, providerID, name); serr == nil && st != nil && st.Running {
+			return b.srv.Deps.Proxy.Stop(c, providerID, name)
+		}
+		if _, serr := b.srv.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
+			return serr
+		}
+		return b.srv.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
+	}
+	b.registry[restartID] = func(c context.Context) error {
+		if err := b.srv.Deps.Proxy.Stop(c, providerID, name); err != nil {
+			return err
+		}
+		if _, serr := b.srv.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
+			return serr
+		}
+		return b.srv.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
+	}
+	if cfg.Enabled {
+		b.snap.ProxyCount++
+	}
+}
+
+func (b *snapshotBuilder) accountsAndProxies(ctx context.Context) {
+	for _, providerID := range b.srv.Deps.Providers.IDs() {
+		pv, err := b.srv.Deps.Providers.Get(providerID)
 		if err != nil {
 			continue
 		}
-		list, err := s.Deps.Store.ListAccounts(ctx, providerID)
+		list, err := b.srv.Deps.Store.ListAccounts(ctx, providerID)
 		if err != nil {
 			continue
 		}
-		active, _ := s.Deps.Store.GetActive(ctx, providerID)
+		active, _ := b.srv.Deps.Store.GetActive(ctx, providerID)
 
 		sort.Slice(list, func(i, j int) bool { return list[i].Meta.Name < list[j].Meta.Name })
 		for _, acc := range list {
@@ -279,24 +297,24 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			// (account-switch operation), while the Switch-menu chip binds the
 			// client through the persistent planner (invokeTrayAction →
 			// bindingService.use). One shared id cannot serve both.
-			switchID := actionID()
-			routeID := actionID()
+			switchID := b.actionID()
+			routeID := b.actionID()
 			name := acc.Meta.Name
 			_, canRefresh := pv.(interface{ RefreshAuth(string) error })
-			snap.Accounts = append(snap.Accounts, AccountRow{
+			b.snap.Accounts = append(b.snap.Accounts, AccountRow{
 				ID: rowID, ProviderID: providerID, SourceID: sourceID,
 				Name: name, Label: labelOr(acc.Meta.Label, name),
 				Active: active == name, CanRefresh: canRefresh,
 				SwitchActionID: switchID,
 			})
-			registry[switchID] = func(c context.Context) error {
-				_, uerr := s.Deps.Accounts.Use(c, providerID, name, accounts.UseOptions{NoProxy: false})
+			b.registry[switchID] = func(c context.Context) error {
+				_, uerr := b.srv.Deps.Accounts.Use(c, providerID, name, accounts.UseOptions{NoProxy: false})
 				return uerr
 			}
-			registry[routeID] = s.routeActivator(providerID, refs.AccountRef(providerID, acc.Meta.Name))
+			b.registry[routeID] = b.srv.routeActivator(providerID, refs.AccountRef(providerID, acc.Meta.Name))
 			selected := active == name
-			short := shortNameOf(s, pv)
-			snap.Actions = append(snap.Actions, ActionRow{
+			short := shortNameOf(b.srv, pv)
+			b.snap.Actions = append(b.snap.Actions, ActionRow{
 				ID:           routeID,
 				ClientID:     providerID,
 				SourceID:     sourceID,
@@ -309,7 +327,6 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				RouteKind:    "direct-account",
 			})
 
-			cfg, _ := s.Deps.Store.GetProxyConfig(ctx, providerID, name)
 			// Emit a row for every saved account behind a proxy-capable
 			// provider, not just enabled ones: the Proxies pane is the only
 			// place that offers the first Start, and without a row the
@@ -317,96 +334,87 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			if !pv.CanProxy() {
 				continue
 			}
-			st, statusErr := s.Deps.Proxy.Status(providerID, name)
-			toggleID := actionID()
-			restartID := actionID()
-			running, address := proxySnapshotState(st, statusErr)
-			snap.Proxies = append(snap.Proxies, ProxyRow{
-				ID: rowID, ProviderID: providerID,
-				Label:           fmt.Sprintf("%s/%s proxy", providerID, name),
-				Detail:          detailFor(running, cfg.Port),
-				Address:         address,
-				Running:         running,
-				Enabled:         cfg.Enabled,
-				LogsAvailable:   true,
-				ToggleActionID:  toggleID,
-				RestartActionID: restartID,
-			})
-			registry[toggleID] = func(c context.Context) error {
-				// Re-check liveness inside the handler: `running` was captured
-				// at snapshot build and the child may have died (or started)
-				// since, which used to run the wrong branch with a false
-				// success (PX2).
-				if st, serr := s.Deps.Proxy.StatusContext(c, providerID, name); serr == nil && st != nil && st.Running {
-					return s.Deps.Proxy.Stop(c, providerID, name)
-				}
-				if _, serr := s.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
-					return serr
-				}
-				return s.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
-			}
-			registry[restartID] = func(c context.Context) error {
-				if err := s.Deps.Proxy.Stop(c, providerID, name); err != nil {
-					return err
-				}
-				if _, serr := s.Deps.Proxy.StartProxy(c, providerID, name); serr != nil {
-					return serr
-				}
-				return s.reapplyClientsBoundTo(c, refs.AccountRef(providerID, name))
-			}
-			if cfg.Enabled {
-				snap.ProxyCount++
-			}
+			b.addProxyRow(ctx, pv, providerID, name, rowID)
 		}
 
-		// accountProviders rows for file-snapshot providers.
-		live, lerr := pv.DetectLive()
-		methods, merr := s.Deps.Accounts.LoginMethods(ctx, providerID, "")
-		loginMethods := make([]LoginMethodRow, 0, len(methods))
-		installed := lerr == nil && live.Present
-		if merr == nil {
-			for _, method := range methods {
-				loginMethods = append(loginMethods, LoginMethodRow{
-					ID: method.ID, Label: method.Label, Detail: method.Description,
-					Provenance: method.Provenance, Preferred: method.Preferred,
-					Available: method.Available, UnavailableReason: method.UnavailableReason,
-				})
-				installed = installed || method.Available
-			}
-		}
-		row := AccountProviderRow{
-			ID: providerID, ProviderID: providerID,
-			// ClientID lets the native client resolve this provider to its
-			// managed app row (Store.managedAppClientIDs). Without it the
-			// Apps view can only see providers that already own actions, so
-			// a provider with zero saved accounts (e.g. fresh WorkBuddy)
-			// never appears.
-			ClientID: providerID,
-			Label:    pv.Name(), Detail: pv.Description(),
-			Installed: installed, LoginMethods: loginMethods,
-		}
-		if lerr == nil {
-			row.LivePresent = live.Present
-			row.LiveIdentity = live.Identity
-			if live.Identity != "" {
-				row.Detail = live.Identity
-			}
-		}
-		if clearer, ok := pv.(provider.LiveClearer); ok && clearer != nil {
-			row.CanClear = true
-		}
-		// Compatible vendors (and any future BackupInputer) accept typed
-		// credentials even though they have no live login and no browser
-		// flow. Publishing the kinds/profiles is what lets the native Add
-		// Account sheet offer "API key" input instead of a disabled row.
-		if def, ok := pv.(interface {
-			Definition() *provider.CompatibleDefinition
-		}); ok {
-			row.CredentialKinds = credentialKindRows(def.Definition())
-		}
-		snap.AccountProviders = append(snap.AccountProviders, row)
+		b.accountProviders(ctx, pv, providerID)
 	}
+}
 
+func (b *snapshotBuilder) accountProviders(ctx context.Context, pv provider.Provider, providerID string) {
+	// accountProviders rows for file-snapshot providers.
+	live, lerr := pv.DetectLive()
+	methods, merr := b.srv.Deps.Accounts.LoginMethods(ctx, providerID, "")
+	loginMethods := make([]LoginMethodRow, 0, len(methods))
+	installed := lerr == nil && live.Present
+	if merr == nil {
+		for _, method := range methods {
+			loginMethods = append(loginMethods, LoginMethodRow{
+				ID: method.ID, Label: method.Label, Detail: method.Description,
+				Provenance: method.Provenance, Preferred: method.Preferred,
+				Available: method.Available, UnavailableReason: method.UnavailableReason,
+			})
+			installed = installed || method.Available
+		}
+	}
+	row := AccountProviderRow{
+		ID: providerID, ProviderID: providerID,
+		// ClientID lets the native client resolve this provider to its
+		// managed app row (Store.managedAppClientIDs). Without it the
+		// Apps view can only see providers that already own actions, so
+		// a provider with zero saved accounts (e.g. fresh WorkBuddy)
+		// never appears.
+		ClientID: providerID,
+		Label:    pv.Name(), Detail: pv.Description(),
+		Installed: installed, LoginMethods: loginMethods,
+	}
+	if lerr == nil {
+		row.LivePresent = live.Present
+		row.LiveIdentity = live.Identity
+		if live.Identity != "" {
+			row.Detail = live.Identity
+		}
+	}
+	if clearer, ok := pv.(provider.LiveClearer); ok && clearer != nil {
+		row.CanClear = true
+	}
+	// Compatible vendors (and any future BackupInputer) accept typed
+	// credentials even though they have no live login and no browser
+	// flow. Publishing the kinds/profiles is what lets the native Add
+	// Account sheet offer "API key" input instead of a disabled row.
+	if def, ok := pv.(interface {
+		Definition() *provider.CompatibleDefinition
+	}); ok {
+		row.CredentialKinds = credentialKindRows(def.Definition())
+	}
+	b.snap.AccountProviders = append(b.snap.AccountProviders, row)
+}
+
+func (b *snapshotBuilder) settings(ctx context.Context) {
+	// Settings reflect the persisted global config + login-item state.
+	b.snap.Settings = b.srv.currentSettings(ctx)
+	if b.srv.Deps.PluginDiagnostics != nil {
+		diagnostics := b.srv.Deps.PluginDiagnostics(ctx)
+		if diagnostics.Host.State == "degraded" {
+			b.snap.DegradedConditions = append(b.snap.DegradedConditions, DegradedCondition{
+				ID: "plugin-host", Kind: "plugin-host", Title: "Plugin host unavailable",
+				Detail: diagnostics.Host.Error,
+			})
+		}
+		for _, failure := range diagnostics.Failures {
+			title := "Plugin couldn’t load"
+			if failure.Untrusted {
+				title = "Plugin changed after trust"
+			}
+			b.snap.DegradedConditions = append(b.snap.DegradedConditions, DegradedCondition{
+				ID: "plugin:" + failure.Name, Kind: "plugin", Title: title,
+				Detail: failure.Name + ": " + failure.Reason,
+			})
+		}
+	}
+}
+
+func (b *snapshotBuilder) gatewayProviders(ctx context.Context) {
 	// Gateway providers: compatible vendors (fixed endpoint) plus first-party
 	// providers that can serve an upstream from a profile. gemini implements
 	// ResolveUpstream(snapshotDir) and is bridged from the saved profile key,
@@ -419,8 +427,8 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	// login), so they are intentionally excluded (see the eligibility gate
 	// below). Compatible providers win on ID so there is no duplicate row.
 	addedGateway := make(map[string]bool)
-	for _, providerID := range s.Deps.Providers.IDs() {
-		pv, err := s.Deps.Providers.Get(providerID)
+	for _, providerID := range b.srv.Deps.Providers.IDs() {
+		pv, err := b.srv.Deps.Providers.Get(providerID)
 		if err != nil {
 			continue
 		}
@@ -428,7 +436,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			Definition() *provider.CompatibleDefinition
 		}); ok {
 			def := cp.Definition()
-			snap.GatewayProviders = append(snap.GatewayProviders, GatewayProviderRow{
+			b.snap.GatewayProviders = append(b.snap.GatewayProviders, GatewayProviderRow{
 				ID: def.ID, Label: def.Name, Detail: def.Description,
 				ProvidesEndpoint: len(def.Credentials) > 0 &&
 					len(def.Credentials[0].Profiles) > 0 &&
@@ -478,17 +486,18 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			row.DefaultEndpoint = "https://cli-chat-proxy.grok.com"
 			row.RequiresApiKey = false
 		}
-		snap.GatewayProviders = append(snap.GatewayProviders, row)
+		b.snap.GatewayProviders = append(b.snap.GatewayProviders, row)
 	}
+}
 
+func (b *snapshotBuilder) crossProviderActions(ctx context.Context) {
 	// Apps view rows: every client id that appears anywhere — the five known
 	// apps plus any provider holding saved accounts (managedAppClientIDs).
-	appIDs := s.managedAppClientIDs()
 
 	// Cross-provider actions: each client sees every compatible account as a
 	// switching chip. Uses the transport adapter to determine pairing.
-	for _, clientID := range s.Deps.Clients.IDs() {
-		cad, cerr := s.Deps.Clients.Get(clientID)
+	for _, clientID := range b.srv.Deps.Clients.IDs() {
+		cad, cerr := b.srv.Deps.Clients.Get(clientID)
 		if cerr != nil {
 			continue
 		}
@@ -498,15 +507,15 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		} else if fields := strings.Fields(cad.Name()); len(fields) > 0 {
 			short = fields[0]
 		}
-		for _, otherProviderID := range s.Deps.Providers.IDs() {
+		for _, otherProviderID := range b.srv.Deps.Providers.IDs() {
 			if otherProviderID == clientID {
 				continue // own accounts already emitted above
 			}
-			pv2, perr := s.Deps.Providers.Get(otherProviderID)
+			pv2, perr := b.srv.Deps.Providers.Get(otherProviderID)
 			if perr != nil || !pv2.CanProxy() {
 				continue
 			}
-			list, lerr := s.Deps.Store.ListAccounts(ctx, otherProviderID)
+			list, lerr := b.srv.Deps.Store.ListAccounts(ctx, otherProviderID)
 			if lerr != nil || len(list) == 0 {
 				continue
 			}
@@ -517,7 +526,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			}
 			sn := provider.ShortNameOf(pv2)
 			for _, acc := range list {
-				id := fmt.Sprintf("xprov-%d-%s-%s-%s", rev, clientID, otherProviderID, acc.Meta.Name)
+				id := fmt.Sprintf("xprov-%d-%s-%s-%s", b.rev, clientID, otherProviderID, acc.Meta.Name)
 				row := ActionRow{
 					ID:           id,
 					ClientID:     clientID,
@@ -530,26 +539,28 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 					Enabled:      true,
 					RouteKind:    "account",
 				}
-				snap.Actions = append(snap.Actions, row)
+				b.snap.Actions = append(b.snap.Actions, row)
 				// The chip binds THIS client to the other provider's account;
 				// switching that provider's own active account would be a
 				// wrong-scope mutation (TS target: {clientId, source}).
-				registry[id] = s.routeActivator(clientID,
+				b.registry[id] = b.srv.routeActivator(clientID,
 					refs.AccountRef(otherProviderID, acc.Meta.Name))
 			}
 		}
 	}
+}
 
+func (b *snapshotBuilder) gatewayActions(ctx context.Context) {
 	// Gateway actions: each client sees every ready gateway as a chip.
-	if names, lerr := s.Deps.Profiles.ListContext(ctx); lerr == nil {
+	if names, lerr := b.srv.Deps.Profiles.ListContext(ctx); lerr == nil {
 		sort.Strings(names)
 		for _, gwName := range names {
-			pr, gerr := s.Deps.Profiles.GetContext(ctx, gwName)
+			pr, gerr := b.srv.Deps.Profiles.GetContext(ctx, gwName)
 			if gerr != nil || pr == nil || pr.Meta.Endpoint == "" {
 				continue
 			}
-			for _, clientID := range s.Deps.Clients.IDs() {
-				cad, cerr := s.Deps.Clients.Get(clientID)
+			for _, clientID := range b.srv.Deps.Clients.IDs() {
+				cad, cerr := b.srv.Deps.Clients.Get(clientID)
 				if cerr != nil {
 					continue
 				}
@@ -559,7 +570,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				} else if fields := strings.Fields(cad.Name()); len(fields) > 0 {
 					short = fields[0]
 				}
-				id := fmt.Sprintf("gw-%d-%s-%s", rev, clientID, gwName)
+				id := fmt.Sprintf("gw-%d-%s-%s", b.rev, clientID, gwName)
 				row := ActionRow{
 					ID:           id,
 					ClientID:     clientID,
@@ -572,24 +583,26 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 					Enabled:      true,
 					RouteKind:    "gateway",
 				}
-				snap.Actions = append(snap.Actions, row)
+				b.snap.Actions = append(b.snap.Actions, row)
 				// Gateway chips activate like any other source (bindingService.use).
 				// A nil handler reported success without mutating anything.
-				registry[id] = s.routeActivator(clientID, refs.GatewayRef(gwName))
+				b.registry[id] = b.srv.routeActivator(clientID, refs.GatewayRef(gwName))
 			}
 		}
 	}
+}
 
+func (b *snapshotBuilder) currentRouteActions(ctx context.Context, appIDs []string) error {
 	// Current-route action per client — the Apps view subtitle reads the
 	// selected action's label ("Uses …"), so it must exist even when there is
 	// no binding (native login case).
 	for _, clientID := range appIDs {
 		short := designAppName(clientID)
-		binding, berr := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
+		binding, berr := b.srv.Deps.Bindings.GetGlobalContext(ctx, clientID)
 		if berr != nil {
-			return nil, berr
+			return berr
 		}
-		cur, _ := s.Deps.Accounts.Current(ctx, clientID)
+		cur, _ := b.srv.Deps.Accounts.Current(ctx, clientID)
 
 		var row *ActionRow
 		switch {
@@ -601,8 +614,8 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			if srcRef.Kind == refs.KindAccount {
 				kind = "native"
 				routeKind = "direct-account"
-				if accRow, aerr := s.Deps.Store.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
-					pv2, _ := s.Deps.Providers.Get(srcRef.Provider)
+				if accRow, aerr := b.srv.Deps.Store.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
+					pv2, _ := b.srv.Deps.Providers.Get(srcRef.Provider)
 					sn := srcRef.Provider
 					if pv2 != nil {
 						sn = provider.ShortNameOf(pv2)
@@ -610,7 +623,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 					label = fmt.Sprintf("%s · %s", sn, accRow.Meta.Name)
 				}
 			}
-			id := actionID()
+			id := b.actionID()
 			row = &ActionRow{
 				ID: id, ClientID: clientID,
 				SourceID:     refs.SerializeRef(srcRef),
@@ -624,14 +637,14 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			}
 			// Re-invoking the selected route re-applies its source through the
 			// planner regardless of kind; never a silent no-op.
-			registry[id] = s.routeActivator(clientID, srcRef)
+			b.registry[id] = b.srv.routeActivator(clientID, srcRef)
 		case cur != nil && cur.Live.Present && cur.Active != "":
-			pv2, perr := s.Deps.Providers.Get(clientID)
+			pv2, perr := b.srv.Deps.Providers.Get(clientID)
 			sn := clientID
 			if perr == nil && pv2 != nil {
 				sn = provider.ShortNameOf(pv2)
 			}
-			id := actionID()
+			id := b.actionID()
 			active := cur.Active
 			row = &ActionRow{
 				ID: id, ClientID: clientID,
@@ -644,19 +657,22 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 				Enabled:      true,
 				RouteKind:    "direct-account",
 			}
-			registry[id] = s.routeActivator(clientID, refs.AccountRef(clientID, active))
+			b.registry[id] = b.srv.routeActivator(clientID, refs.AccountRef(clientID, active))
 		}
 		if row != nil {
-			snap.Actions = append(snap.Actions, *row)
+			b.snap.Actions = append(b.snap.Actions, *row)
 		}
 	}
+	return nil
+}
 
+func (b *snapshotBuilder) routes(ctx context.Context, appIDs []string) {
 	// Routes: one row per app — what Apps view renders.
 	for _, clientID := range appIDs {
 		var binding *bindings.Global
-		if s.Deps.Bindings != nil {
+		if b.srv.Deps.Bindings != nil {
 			var berr error
-			binding, berr = s.Deps.Bindings.GetGlobalContext(ctx, clientID)
+			binding, berr = b.srv.Deps.Bindings.GetGlobalContext(ctx, clientID)
 			if berr != nil {
 				// A single client binding must not blank the whole snapshot
 				// (Proxies pane included). Treat it as unbound.
@@ -664,8 +680,8 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			}
 		}
 		nativePresent := false
-		if _, perr := s.Deps.Providers.Get(clientID); perr == nil {
-			if cur, cerr2 := s.Deps.Accounts.Current(ctx, clientID); cerr2 == nil && cur != nil {
+		if _, perr := b.srv.Deps.Providers.Get(clientID); perr == nil {
+			if cur, cerr2 := b.srv.Deps.Accounts.Current(ctx, clientID); cerr2 == nil && cur != nil {
 				nativePresent = cur.Live.Present
 			}
 		}
@@ -685,18 +701,20 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			route["source"] = "native login"
 			route["status"] = "native"
 		}
-		snap.Routes = append(snap.Routes, route)
+		b.snap.Routes = append(b.snap.Routes, route)
 	}
+}
 
+func (b *snapshotBuilder) gateways(ctx context.Context) {
 	// Gateways: saved vendor profiles.
-	if names, lerr := s.Deps.Profiles.ListContext(ctx); lerr == nil {
+	if names, lerr := b.srv.Deps.Profiles.ListContext(ctx); lerr == nil {
 		for _, name := range names {
-			pr, gerr := s.Deps.Profiles.GetContext(ctx, name)
+			pr, gerr := b.srv.Deps.Profiles.GetContext(ctx, name)
 			if gerr != nil || pr == nil {
 				continue
 			}
 			defaultModel := pr.Meta.DefaultModel
-			snap.Gateways = append(snap.Gateways, GatewayRow{
+			b.snap.Gateways = append(b.snap.Gateways, GatewayRow{
 				"id":           name,
 				"providerId":   pr.Meta.Provider,
 				"name":         name,
@@ -706,6 +724,51 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 			})
 		}
 	}
+}
+
+func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
+	s.revision++
+	rev := s.revision
+	snap := &Snapshot{
+		Revision:           rev,
+		Routes:             []map[string]any{},
+		Actions:            []ActionRow{},
+		ClientModelConfigs: []map[string]any{},
+		Usage:              []UsageSnapshotRow{},
+		Proxies:            []ProxyRow{},
+		Accounts:           []AccountRow{},
+		HubSources:         []map[string]any{},
+		HubConflicts:       []map[string]any{},
+		HubPublishedModels: []map[string]any{},
+		HubCatalogs:        []map[string]any{},
+		LogSources:         []LogSourceRow{},
+		Gateways:           []GatewayRow{},
+		AccountProviders:   []AccountProviderRow{},
+		GatewayProviders:   []GatewayProviderRow{},
+		Settings:           Preferences{ShowQuota: true},
+		Activity:           []map[string]any{},
+		DegradedConditions: []DegradedCondition{},
+	}
+	b := &snapshotBuilder{
+		srv:      s,
+		snap:     snap,
+		registry: map[string]func(context.Context) error{},
+		rev:      rev,
+	}
+
+	b.settings(ctx)
+	b.accountsAndProxies(ctx)
+	b.gatewayProviders(ctx)
+
+	// Apps view rows: every client id that appears anywhere.
+	appIDs := s.managedAppClientIDs()
+	b.crossProviderActions(ctx)
+	b.gatewayActions(ctx)
+	if err := b.currentRouteActions(ctx, appIDs); err != nil {
+		return nil, err
+	}
+	b.routes(ctx, appIDs)
+	b.gateways(ctx)
 
 	// Usage: quota/rate-limit for providers with a live login. Kept in a
 	// separate builder so app-service mode can refresh this bounded section
@@ -727,7 +790,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	// lifecycle-managed proxy row per hub, pinned published models. Hub
 	// entries append to Proxies/LogSources; conflicts stay empty (no
 	// fabricated rows without model catalogs).
-	if err := s.buildHubSections(ctx, snap, registry, actionID); err != nil {
+	if err := s.buildHubSections(ctx, snap, b.registry, b.actionID); err != nil {
 		// Account proxy rows are already filled. A hub-store read must not
 		// drop the snapshot and leave Proxies empty.
 		s.logErr(err)
@@ -735,7 +798,7 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 
 	s.actionsMu.Lock()
 	s.prevActions = s.actions
-	s.actions = registry
+	s.actions = b.registry
 	s.actionRows = snapActionsIndex(snap)
 	s.actionOrder = snapActionsOrder(snap)
 	s.actionsMu.Unlock()
