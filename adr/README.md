@@ -28,6 +28,9 @@ immutable once accepted.
 | [0019](0019-native-app-cutover-architecture.md) | The native app owns lifecycle over a bundled Go service on bounded, versioned stdio; host effects are narrow typed requests; the Node plugin-host and npm channel are documented exceptions. | superseded by [0020](0020-node-free-native-app-distribution.md) |
 | [0020](0020-node-free-native-app-distribution.md) | Native downloads are full desktop applications over one bundled Go engine, contain no Node runtime, and treat npm only as an optional distribution adapter. | accepted |
 | [0021](0021-plugin-host-removed-from-native-builds.md) | Native builds install plugins but never execute them: the registry and the whole-package digest survive, no third-party code is loaded, and every candidate degrades to a visible `LoadFailure`. (EXT-05) | accepted |
+| [0022](0022-bindings-coordinator-scopes.md) | `bindings.Store` carries the data `Root` and self-locks every persisted mutation through the coordinator by resource scope; correctness no longer depends on the caller locking. (CONC-03) | accepted |
+| [0023](0023-lease-heartbeat-ttl.md) | A lease stays alive by heartbeat (`HeartbeatInterval=15s`, `LeaseExpiry=2m`); reaping is a PID *veto* plus a failed instance echo, never a PID verdict. (PROC-02) | accepted, amends [0003](0003-process-lease-ownership.md) |
+| [0024](0024-pool-ring-total-deadline.md) | A pool ring has one pre-commit deadline budget (`DefaultPoolRingDeadline=2m`); a committed stream is never cut, and budget exhaustion returns `504 upstream_timeout`. (POOL-01) | accepted |
 
 ## Writing a new one
 
