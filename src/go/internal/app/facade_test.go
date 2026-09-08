@@ -1,6 +1,9 @@
 package app
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,61 +20,64 @@ import (
 // methods is a refactor of its own, and until it is done the honest thing is to
 // make sure it does not get worse.
 //
-// Each pattern below is a raw store handle reachable from an outer layer. The
-// number is how many times it is used today. Adding one fails the build;
-// removing one does not, and when a count reaches zero the entry should be
-// deleted so the budget cannot creep back up.
-// The Proxy Hub's two account reads now go through accounts.Service. The
-// remaining store access budget is legacy transfer/activation wiring; it is a
-// ratchet and must shrink, never grow.
+// Two mechanisms enforce this, both walking cmd/anypick + internal/desktop
+// (non-test) and reconstructing every selector chain from the parse tree rather
+// than grepping source text:
 //
-// TODO(gate:facade-budget): this map is a tourniquet, not a cure — 82 call
-// sites still hold a raw persistence handle, so the layering rule is upheld by
-// counting rather than by types. `a.Store` dropped 20 -> 3 by routing
-// ListAccounts/Get/GetActive through accounts.Service and
-// GetProxyConfig/ReadProxyState through proxy.Service, which already owns the
-// store. Then `Deps.Store` went 30 -> 8 by routing ListAccounts/GetActive/Get
-// to accounts.Service, GetProxyConfig/ReadProxyState to proxy.Service and
-// PatchMetaContext to accounts.Service.PatchMeta.
+//   - facadeForbidden: raw store handles that have been fully routed behind a
+//     service boundary. ANY occurrence fails the build, so the count cannot
+//     creep back up. Structural detection means a rename that keeps the
+//     coupling is still caught — `a.BindingSvc` no longer contains "a.Bindings",
+//     but `b.srv.Deps.Store` would still contain "Deps.Store", and a re-added
+//     raw field matching an old name fails immediately.
+//   - facadeBudget: irreducible store couplings that remain — the composition
+//     root wiring at cmd/anypick/main.go, where the App hands its raw store and
+//     hub store to inner Deps structs that legitimately own them. Their budget
+//     is 1 each and must never grow; a second occurrence is a new leak.
 //
-// The 11 that remain are irreducible, and each kind is worth naming so nobody
-// spends an afternoon on it again: `transfer.ExportEnvelope`,
-// `transfer.ExportSelectedBackup`, `inspections.Inspect`/`Restore` all take the
-// store because the transfer and inspection subsystems are the store's peers;
-// one `Store:` struct wiring; one nil guard; one `s.Deps.Store.DB` handed to
-// modelcache, which needs the *sql.DB rather than an account.
+// The walk is structural, not textual: it parses each file and rebuilds the
+// dotted selector chain (e.g. `s.Deps.Proxy.Pools`) from the AST, so the old
+// `b.srv.Deps.Store` undercount trick and substring matches inside comments or
+// string literals can no longer hide a leak.
 //
-// Target: <= 40 by 2026-10-08, then replace the whole map with an AST gate
-// forbidding `internal/store` imports from cmd/anypick and internal/desktop.
-// Decision 7 in SYSTEM_ARCHITECTURE_2026-09-07.md §6.
+// TODO(gate:facade-budget): the irreducible wiring (a.Store, a.Hub) is the last
+// survivor of the tourniquet. Once activation/runtime stop requiring the raw
+// store at the boundary it can be forbidden too. Decision 7 in
+// SYSTEM_ARCHITECTURE_2026-09-07.md §6.
+
+// facadeForbidden are raw store handles that have been fully routed behind a
+// service boundary and must never be reached from an outer layer again. Each
+// tail is matched against the reconstructed selector chain, so the routing
+// that removed them is locked in: re-adding a field that matches one of these
+// names, or reaching the raw store through a renamed handle, fails the build.
+var facadeForbidden = []string{
+	"a.Bindings",         // -> a.BindingSvc (bindings.Service)
+	"a.Presets",          // -> a.PresetSvc (presets.Service)
+	"a.Pools",            // -> a.PoolSvc (pools.Service)
+	"a.Runtime.Profiles", // -> a.Runtime.ProfileSvc (profile.Service)
+	"Deps.Proxy.Pools",   // -> s.Deps.Proxy.HasPools() / GetPoolContext()
+	"a.Leases",           // -> a.Proxy.ReapStaleContext()
+	"Deps.Proxy.Jobs",    // -> s.Deps.Proxy.ListPoolLeasesContext()
+}
+
+// facadeBudget is the irreducible store coupling that remains: transfer,
+// inspection and modelcache subsystems are the store's peers (not its clients),
+// and the composition root hands the raw store/hub store to inner Deps structs
+// that own them (activation.Deps takes the store itself). These budgets must
+// never grow; when one of them can be routed behind a service it should move to
+// facadeForbidden instead. The structural walk makes the count robust to the
+// old `b.srv.Deps.Store` rename trick and to substring matches in comments.
 var facadeBudget = map[string]int{
+	// cmd/anypick: transfer.ExportEnvelope + a desktop.Deps wiring (accounts.go,
+	// main.go). Irreducible until transfer takes a service, not the store.
 	"a.Store": 3,
-	// Receiver-independent on purpose. This used to be "s.Deps.Store", and
-	// splitting buildSnapshot into methods on a `b *snapshotBuilder` silently
-	// dropped the count from 30 to 25 — not because any coupling went away,
-	// but because the call sites now spell it `b.srv.Deps.Store`. A ratchet
-	// that measures how a variable is named is not measuring the thing it
-	// claims to. Match on the coupling, never on the receiver.
-	"Deps.Store":         8,
-	"a.Hub":              2,
-	// a.Bindings dropped 11 -> 0: the App now exposes bindings.Service
-	// (App.BindingSvc), so the CLI/desktop/TUI reach bindings through a service
-	// boundary instead of the raw store. The field is named BindingSvc on
-	// purpose — a.BindingsSvc would still match the old "a.Bindings" prefix.
-	// a.Presets dropped 3 -> 0 the same way: App.PresetSvc is a presets.Service,
-	// and a.PresetSvc does not contain the literal "a.Presets" (the
-	// "a.PresetsSvc" prefix would have kept counting it).
-	// a.Pools dropped 7 -> 0: App.PoolSvc is a pools.Service, and a.PoolSvc does
-	// not contain the literal "a.Pools" (the "a.PoolsSvc" prefix would have
-	// kept counting it).
-	// a.Runtime.Profiles dropped 9 -> 0: App.Runtime.ProfileSvc is a
-	// profile.Service, and a.Runtime.ProfileSvc does not contain the literal
-	// "a.Runtime.Profiles" (the "a.Runtime.ProfilesSvc" prefix would have kept
-	// counting it). desktop.Deps.Profiles and doctor.Deps.Profiles also take
-	// *profile.Service now — the outer layers reach profiles through a service.
-	"Deps.Proxy.Pools":   2,
-	"a.Leases":           1,
-	"Deps.Proxy.Jobs":    1,
+	// internal/desktop: transfer.ExportEnvelope/ExportSelectedBackup,
+	// inspections.Inspect/Restore, a nil guard and the modelcache *sql.DB handoff
+	// (handlers.go, server.go). Irreducible: those subsystems are the store's peers.
+	"Deps.Store": 8,
+	// cmd/anypick: desktop.Deps wiring at main.go and misc.go — activation.Deps
+	// owns the hub store, so the boundary cannot avoid the raw handle yet.
+	"a.Hub": 2,
 }
 
 // facadeLayers are the packages that must talk to services, not stores.
@@ -85,6 +91,8 @@ func TestFacadeBudgetDoesNotGrow(t *testing.T) {
 
 	counts := map[string]int{}
 	locations := map[string][]string{}
+	forbiddenHits := map[string][]string{}
+
 	for _, layer := range facadeLayers {
 		dir := filepath.Join(root, filepath.FromSlash(layer))
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -94,21 +102,36 @@ func TestFacadeBudgetDoesNotGrow(t *testing.T) {
 			if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
-			body, rerr := os.ReadFile(path)
-			if rerr != nil {
-				return rerr
+			fset := token.NewFileSet()
+			f, perr := parser.ParseFile(fset, path, nil, 0)
+			if perr != nil {
+				return perr
 			}
-			text := string(body)
-			for pattern := range facadeBudget {
-				n := strings.Count(text, pattern)
-				if n == 0 {
-					continue
+			rel, _ := filepath.Rel(root, path)
+			ast.Inspect(f, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
 				}
-				counts[pattern] += n
-				rel, _ := filepath.Rel(root, path)
-				locations[pattern] = append(locations[pattern],
-					filepath.ToSlash(rel)+" ("+itoa(n)+")")
-			}
+				chain := selectorChain(sel)
+				if chain == "" {
+					return true
+				}
+				for _, pat := range facadeForbidden {
+					if strings.Contains(chain, pat) {
+						forbiddenHits[pat] = append(forbiddenHits[pat],
+							filepath.ToSlash(rel)+" ("+chain+")")
+					}
+				}
+				for pat := range facadeBudget {
+					if leafMatchesBudget(sel, chain, pat) {
+						counts[pat]++
+						locations[pat] = append(locations[pat],
+							filepath.ToSlash(rel)+" ("+chain+")")
+					}
+				}
+				return true
+			})
 			return nil
 		})
 		if err != nil {
@@ -117,6 +140,13 @@ func TestFacadeBudgetDoesNotGrow(t *testing.T) {
 	}
 
 	var problems []string
+	for _, pat := range facadeForbidden {
+		if hits := forbiddenHits[pat]; len(hits) > 0 {
+			problems = append(problems, pat+" is forbidden (routed behind a service): "+
+				strings.Join(hits, ", "))
+		}
+	}
+
 	patterns := make([]string, 0, len(facadeBudget))
 	for p := range facadeBudget {
 		patterns = append(patterns, p)
@@ -143,6 +173,45 @@ func TestFacadeBudgetDoesNotGrow(t *testing.T) {
 		t.Errorf("the App facade leaked (AGENTS.md invariant: outer layers call services, not stores):\n  %s",
 			strings.Join(problems, "\n  "))
 	}
+}
+
+// selectorChain reconstructs the dotted chain of a selector expression from the
+// parse tree: `a.B.C` becomes "a.B.C". A chain whose root is not a bare
+// identifier (e.g. `foo().Bar`) returns "" so it cannot silently match a
+// facade pattern.
+func selectorChain(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.SelectorExpr:
+		return selectorChain(x.X) + "." + x.Sel.Name
+	case *ast.Ident:
+		return x.Name
+	case *ast.StarExpr:
+		return selectorChain(x.X)
+	case *ast.ParenExpr:
+		return selectorChain(x.X)
+	default:
+		return ""
+	}
+}
+
+// leafMatchesBudget reports whether sel is the leaf store access described by
+// pat (PREFIX.FIELD): its selector name is FIELD and the chain of the value it
+// is selected from ends with PREFIX. Matching on the leaf selector — rather
+// than testing the whole chain for the substring — avoids double-counting
+// nested accesses: `s.Deps.Store.DB` would otherwise tally both `s.Deps.Store`
+// and `s.Deps.Store.DB`.
+func leafMatchesBudget(sel *ast.SelectorExpr, _ string, pat string) bool {
+	dot := strings.LastIndex(pat, ".")
+	if dot < 0 {
+		return false
+	}
+	field := pat[dot+1:]
+	prefix := pat[:dot]
+	if sel.Sel.Name != field {
+		return false
+	}
+	xChain := selectorChain(sel.X)
+	return xChain == prefix || strings.HasSuffix(xChain, "."+prefix)
 }
 
 func itoa(n int) string {

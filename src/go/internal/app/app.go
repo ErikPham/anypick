@@ -58,9 +58,7 @@ type App struct {
 	// ratchet counts the literal "a.Hub", and "a.HubService" matched it — the
 	// same substring trap that already fooled the "s.Deps.Store" pattern.
 	ProxyHub    *hub.Service
-	Journal     *journal.OperationJournal
-	Leases      *proxy.LeaseStore
-	// PresetSvc is the service boundary outer layers talk to; the raw store
+	Journal     *journal.OperationJournal	// PresetSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/presets. The name is deliberate: the facade
 	// ratchet counts the literal "a.Presets", and a field named `a.PresetSvc`
 	// does not contain it (the "a.PresetsSvc" prefix trap would have kept
@@ -278,7 +276,6 @@ func (a *App) compose() error {
 	a.Hub = hubStore
 	a.ProxyHub = hub.NewService(hubStore)
 	a.Journal = jrnl
-	a.Leases = leases
 	a.PresetSvc = presets.NewService(&presets.Store{DB: a.DB.DB})
 	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
 	a.Runtime = &runtimeView{
@@ -362,7 +359,7 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 
 	// Reap detached proxy processes only when no live supervisor owns them.
 	if !opts.SkipMaintenance && RunningTrayPid(root) == nil {
-		if _, rerr := a.Leases.ReapStaleContext(ctx); rerr != nil {
+		if _, rerr := a.Proxy.ReapStaleContext(ctx); rerr != nil {
 			fmt.Fprintf(os.Stderr, "[anypick] stale lease reaping failed: %v\n", rerr)
 		}
 	}

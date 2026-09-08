@@ -129,12 +129,12 @@ func (s *Server) startEnabledProxies(ctx context.Context) {
 // restartRunningPools restarts pool proxies that are currently running so a
 // Quota Guard toggle takes effect immediately (restartRunningPools in TS).
 func (s *Server) restartRunningPools(ctx context.Context) error {
-	if s.Deps.Proxy == nil || s.Deps.Proxy.Pools == nil {
+	if s.Deps.Proxy == nil || !s.Deps.Proxy.HasPools() {
 		return nil
 	}
 	var restartErrs []error
 	for _, providerID := range s.Deps.Providers.IDs() {
-		pool, perr := s.Deps.Proxy.Pools.GetContext(ctx, providerID)
+		pool, perr := s.Deps.Proxy.GetPoolContext(ctx, providerID)
 		if perr != nil {
 			restartErrs = append(restartErrs,
 				fmt.Errorf("inspect %s pool configuration: %w", providerID, perr))
@@ -173,7 +173,7 @@ func (s *Server) restartRunningPools(ctx context.Context) error {
 // lease before consulting account-backed runtime state. Account proxies have
 // similar state rows, so Status alone cannot identify a pool process.
 func (s *Server) poolProxyIsRunning(ctx context.Context, providerID string) (bool, error) {
-	leases, err := s.Deps.Proxy.Jobs.ListPoolLeasesContext(ctx, providerID)
+	leases, err := s.Deps.Proxy.ListPoolLeasesContext(ctx, providerID)
 	if err != nil {
 		return false, err
 	}

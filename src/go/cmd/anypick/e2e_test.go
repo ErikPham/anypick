@@ -431,7 +431,7 @@ func TestPoolActivationEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leases, lerr := a2.Leases.ListPoolLeases("deepseek")
+	leases, lerr := a2.Proxy.ListPoolLeasesContext(context.Background(), "deepseek")
 	closeFn2()
 	if lerr != nil || len(leases) != 0 {
 		t.Fatalf("pool leases survived verified stop: %+v err=%v", leases, lerr)

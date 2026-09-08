@@ -373,7 +373,7 @@ func poolMemberState(state string) (enabled bool, valid bool) {
 // proxy. Both store runtime state under an account, but only a pool owns a
 // NULL-account lease whose instance id and endpoint match that live state.
 func poolProxyIsRunning(ctx context.Context, a *appView, providerID string) (bool, error) {
-	leases, err := a.Leases.ListPoolLeasesContext(ctx, providerID)
+	leases, err := a.Proxy.ListPoolLeasesContext(ctx, providerID)
 	if err != nil {
 		return false, err
 	}

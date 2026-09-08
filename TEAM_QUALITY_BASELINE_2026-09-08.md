@@ -125,29 +125,39 @@ khẳng định về *kết quả*: bao nhiêu mục đã được kiểm tra, v
 
 ### F2 · P1 · 99 điểm rò rỉ persistence — ratchet là băng cầm máu, không phải thuốc
 
-`internal/app/facade_test.go:27`:
+`internal/app/facade_test.go` — ratchet đã bị **thay bằng AST gate** (2026-09-08):
 
 ```go
+// 7 pattern đã route xong qua service → cấm cứng (bất kỳ xuất hiện nào là build fail)
+var facadeForbidden = []string{
+	"a.Bindings", "a.Presets", "a.Pools", "a.Runtime.Profiles",
+	"Deps.Proxy.Pools", "a.Leases", "Deps.Proxy.Jobs",
+}
+
+// 3 pattern còn lại là irreducible (transfer/inspection/modelcache là peer của store,
+// activation.Deps cầm raw hub store) → budget co lại, không cho tăng
 var facadeBudget = map[string]int{
-	"a.Store": 3,
-	"Deps.Store":         8,
-	"a.Hub":              2,
-	// a.Bindings 11 -> 0 and a.Presets 3 -> 0: App exposes bindings.Service /
-	// presets.Service, so the outer layers reach them through a service boundary
-	// instead of the raw store; the keys are deleted so the count can't creep back.
-	"a.Runtime.Profiles": 9,
-	"a.Pools":            7,
-	"Deps.Proxy.Pools":   2,
-	"a.Leases":           1,
-	"Deps.Proxy.Jobs":    1,
+	"a.Store":   3, // transfer.ExportEnvelope + wiring desktop.Deps (accounts.go, main.go)
+	"Deps.Store": 8, // transfer/inspections + nil guard + modelcache *sql.DB (handlers.go, server.go)
+	"a.Hub":     2, // wiring desktop.Deps (main.go, misc.go)
 }
 ```
 
-**Tổng còn 33 chỗ** (bắt đầu từ 99 ngày 2026-09-08) `cmd/anypick` và `internal/desktop` cầm tay nắm persistence trực
-tiếp. Comment trong file tự nói rõ: *"`App` exposes every store, so the CLI and the
-desktop protocol can reach persistence directly instead of going through a service…
-AGENTS.md's 'CLI/TUI call services, never stores' has never been enforceable: the
-type system offers no objection."*
+Gate duyệt `cmd/anypick` + `internal/desktop` (bỏ `_test.go`), parse mỗi file bằng
+`go/ast` và tái dựng selector chain (`s.Deps.Proxy.Pools`) từ cây phân tích — đếm
+theo **cấu trúc**, không phải substring nguồn. Nên:
+- Mẹo rename `b.srv.Deps.Store` (đã từng làm ratchet thụt từ 30 → 25) bị bắt.
+- Mẹo substring trong comment / string literal không lọt.
+- 7 pattern về 0 bị **cấm cứng** — không thể creep back (khác với ratchet cũ chỉ
+  cảnh báo "xóa key").
+
+**Tổng còn 13 chỗ irreducible** (từ 99 ngày 2026-09-08): 7 đã route xong bị cấm
+cứng + 3 budget (a.Store 3, Deps.Store 8, a.Hub 2). Comment trong file tự nói rõ:
+*`"App exposes every store, so the CLI and the desktop protocol can reach
+persistence directly instead of going through a service… AGENTS.md's 'CLI/TUI call
+services, never stores' has never been enforceable: the type system offers no
+objection."`* Nhưng giờ ít nhất việc xấu đi bị chặn bằng loại, và 7 nhánh đã xong
+không bao giờ lọt lại.
 
 Nói thẳng: **quy tắc layering đang được giữ bằng cách đếm, không phải bằng kiểu.**
 Ratchet này ngăn nợ *tăng*, nhưng 99 điểm rò rỉ có nghĩa là mọi thay đổi schema,
@@ -576,13 +586,24 @@ ghi rõ: giá trị hiện tại, mục tiêu, ngày hạ, và điều kiện đ
 
 Bổ sung sau khi đo: F3 `BuiltinDefinitions` (387) **quyết định không tách** —
 bảng dữ liệu thuần, ratchet vẫn đếm, chấp nhận (xem §3). Nhắm split tiếp theo
-theo churn: `PlanActivation` (268), `cmdHub` (259). F2 còn 33 điểm đã có bảng
-điểm gọi chuẩn (§2, "33 điểm còn lại"); thứ tự route: 3 cụm `proxy` (4) →
-`a.Pools` (7) → `a.Runtime.Profiles` (9). `a.Bindings` (11) và `a.Presets` (3) đã xong.
-Mục tiêu ≤ 40 giữ nguyên; mỗi bước xong phải hạ budget tương ứng và xoá key về 0.
+theo churn: `PlanActivation` (268), `cmdHub` (259).
 
-Sau 90 ngày: thay `facadeBudget` bằng AST gate cấm import `internal/store` từ hai
-layer ngoài cùng, rồi xóa ratchet.
+**F2 — HOÀN THÀNH 2026-09-08** (vượt mục tiêu ≤ 40):
+- 7 cụm đã route xong qua service và bị **cấm cứng** bằng AST gate:
+  `a.Bindings`, `a.Presets`, `a.Pools`, `a.Runtime.Profiles`, `Deps.Proxy.Pools`,
+  `a.Leases`, `Deps.Proxy.Jobs`.
+- 3 budget còn lại là irreducible (transfer/inspection/modelcache là peer của
+  store, activation.Deps cầm raw hub store): `a.Store` 3, `Deps.Store` 8, `a.Hub` 2.
+- Ratchet substring (`facadeBudget`) đã bị **thay thế** bằng AST gate duyệt
+  cấu trúc (`go/ast`), không thể creep back. Chi tiết code: `internal/app/facade_test.go`.
+- Cách làm: mỗi cụm → tạo `Xxx.Service` (type `Service struct{ Store *Store }` +
+  `NewService`), đổi field App thành `XxxSvc` (tránh substring trap), route mọi
+  caller ngoài qua service, xoá key khỏi budget. `proxy.Service` đã có sẵn
+  `Pools`/`Jobs` nên cụm proxy chỉ thêm 4 method delegate.
+
+Còn lại (không thuộc F2, cần refactor riêng): route `transfer`/`inspections`/
+`modelcache` qua service thay vì cầm raw store — khi đó 3 budget cuối mới về 0
+và xoá hẳn.
 
 ---
 

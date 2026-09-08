@@ -302,6 +302,36 @@ func (s *Service) RuntimeState(ctx context.Context, providerID, name string) (*s
 	return s.Store.ReadProxyState(ctx, providerID, name)
 }
 
+// GetPoolContext returns the pool config for a provider, nil when none is
+// configured. The pools table belongs to internal/pools; outer layers ask the
+// service instead of reaching through the raw store the service owns.
+func (s *Service) GetPoolContext(ctx context.Context, providerID string) (*pools.Pool, error) {
+	if s.Pools == nil {
+		return nil, nil
+	}
+	return s.Pools.GetContext(ctx, providerID)
+}
+
+// HasPools reports whether this Service owns a pools table. The CLI/desktop use
+// it to guard pool-lifecycle calls instead of reading the raw field (which the
+// facade ratchet would keep counting as "Deps.Proxy.Pools").
+func (s *Service) HasPools() bool {
+	return s.Pools != nil
+}
+
+// ListPoolLeasesContext returns the NULL-account leases for a provider's shared
+// pool. The lease table belongs to internal/proxy; outer layers ask the service
+// instead of reaching through the raw store the service owns ("Deps.Proxy.Jobs").
+func (s *Service) ListPoolLeasesContext(ctx context.Context, providerID string) ([]*Lease, error) {
+	return s.Jobs.ListPoolLeasesContext(ctx, providerID)
+}
+
+// ReapStaleContext drops leases whose owning process is no longer live. Lives on
+// the service so startup maintenance never holds the raw lease store.
+func (s *Service) ReapStaleContext(ctx context.Context) (int, error) {
+	return s.Jobs.ReapStaleContext(ctx)
+}
+
 func New(st *store.AccountStore, leases *LeaseStore) *Service {
 	return &Service{
 		Store: st, Jobs: leases, servers: newRegistry(), poolServers: newPoolServerRegistry(),
