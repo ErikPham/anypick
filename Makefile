@@ -176,56 +176,137 @@ paths: ## Verify every script still resolves the repository root
 	  echo "  FAIL helper builds from $$helper_go/go.mod (missing)"; fail=1; \
 	else echo "  OK   $$helper_go/go.mod"; fi; \
 	echo "checking Xcode SRCROOT references"; \
-	while read -r rel; do \
-	  if [ ! -e "$(MACOS_DIR)/$$rel" ]; then echo "  FAIL SRCROOT/$$rel"; fail=1; \
-	  else echo "  OK   SRCROOT/$$rel"; fi; \
-	done < <(sed -n 's@.*SRCROOT)/@@p' $(MACOS_DIR)/AnyPick.xcodeproj/project.pbxproj \
-	         | sed 's@".*@@; s@\\.*@@' | grep -v '^$$' | sort -u); \
+	srclist="$$(mktemp)"; \
+	src_rc=0; ( set -o pipefail; sed -n 's@.*SRCROOT)/@@p' $(MACOS_DIR)/AnyPick.xcodeproj/project.pbxproj \
+	         | sed 's@".*@@; s@\\.*@@' | sed '/^$$/d' | sort -u > "$$srclist" ) || src_rc=$$?; \
+	if [ "$$src_rc" -gt 1 ]; then \
+	  echo "  FAIL could not extract SRCROOT references (pipeline exited $$src_rc)"; \
+	  echo "       the extraction did not run, so nothing below is verified"; fail=1; \
+	elif [ ! -s "$$srclist" ]; then \
+	  echo "  FAIL no SRCROOT reference extracted from project.pbxproj"; \
+	  echo "       a check over zero entries proves nothing: either the script"; \
+	  echo "       references were removed, or the extraction broke. If the"; \
+	  echo "       project genuinely has none left, delete this check."; fail=1; \
+	else \
+	  while read -r rel; do \
+	    if [ ! -e "$(MACOS_DIR)/$$rel" ]; then echo "  FAIL SRCROOT/$$rel"; fail=1; \
+	    else echo "  OK   SRCROOT/$$rel"; fi; \
+	  done < "$$srclist"; \
+	fi; \
+	rm -f "$$srclist"; \
 	echo "checking Xcode asset references"; \
-	while read -r rel; do \
-	  rel="$$(printf '%s' "$$rel" | sed 's/.*path = //; s/;$$//')"; \
-	  case "$$rel" in ../*) \
-	    if [ ! -e "$(MACOS_DIR)/$$rel" ]; then echo "  FAIL $$rel"; fail=1; else echo "  OK   $$rel"; fi;; \
-	  esac; \
-	done < <(grep -o 'path = \.\.[^;]*;' $(MACOS_DIR)/AnyPick.xcodeproj/project.pbxproj | sort -u); \
+	aslist="$$(mktemp)"; \
+	as_rc=0; ( set -o pipefail; grep -o 'path = \.\.[^;]*;' $(MACOS_DIR)/AnyPick.xcodeproj/project.pbxproj \
+	         | sort -u > "$$aslist" ) || as_rc=$$?; \
+	if [ "$$as_rc" -gt 1 ]; then \
+	  echo "  FAIL could not extract Xcode asset references (pipeline exited $$as_rc)"; \
+	  echo "       the extraction did not run, so nothing below is verified"; fail=1; \
+	elif [ ! -s "$$aslist" ]; then \
+	  echo "  FAIL no '../*' asset reference extracted from project.pbxproj"; \
+	  echo "       a check over zero entries proves nothing: either the assets"; \
+	  echo "       were removed, or the extraction broke. If the project"; \
+	  echo "       genuinely has none left, delete this check."; fail=1; \
+	else \
+	  while read -r rel; do \
+	    rel="$$(printf '%s' "$$rel" | sed 's/.*path = //; s/;$$//')"; \
+	    case "$$rel" in ../*) \
+	      if [ ! -e "$(MACOS_DIR)/$$rel" ]; then echo "  FAIL $$rel"; fail=1; else echo "  OK   $$rel"; fi;; \
+	    esac; \
+	  done < "$$aslist"; \
+	fi; \
+	rm -f "$$aslist"; \
 	echo "checking Tauri icon references"; \
-	while read -r icon; do \
-	  icon="$$(printf '%s' "$$icon" | sed 's/.*"\(.*\)".*/\1/')"; \
-	  if [ ! -e "$(TAURI_CORE)/$$icon" ]; then echo "  FAIL $$icon"; fail=1; else echo "  OK   $$icon"; fi; \
-	done < <(grep -o '"\.\./\.\./\.\./assets/[^"]*"' $(TAURI_CORE)/tauri.conf.json); \
+	iclist="$$(mktemp)"; \
+	ic_rc=0; grep -o '"\.\./\.\./\.\./assets/[^"]*"' $(TAURI_CORE)/tauri.conf.json > "$$iclist" || ic_rc=$$?; \
+	if [ "$$ic_rc" -gt 1 ]; then \
+	  echo "  FAIL could not extract Tauri icon references (exited $$ic_rc)"; \
+	  echo "       the extraction did not run, so nothing below is verified"; fail=1; \
+	elif [ ! -s "$$iclist" ]; then \
+	  echo "  FAIL no icon reference extracted from tauri.conf.json"; \
+	  echo "       a check over zero entries proves nothing: either the icons"; \
+	  echo "       were removed, or the extraction broke. If the config"; \
+	  echo "       genuinely has none left, delete this check."; fail=1; \
+	else \
+	  while read -r icon; do \
+	    icon="$$(printf '%s' "$$icon" | sed 's/.*"\(.*\)".*/\1/')"; \
+	    if [ ! -e "$(TAURI_CORE)/$$icon" ]; then echo "  FAIL $$icon"; fail=1; else echo "  OK   $$icon"; fi; \
+	  done < "$$iclist"; \
+	fi; \
+	rm -f "$$iclist"; \
 	echo "checking Go sidecar path in build.rs"; \
 	go_dep="$$(grep -o 'rerun-if-changed=[^"]*' $(TAURI_CORE)/build.rs | sed 's/rerun-if-changed=//')"; \
 	if [ -d "$(TAURI_CORE)/$$go_dep" ]; then echo "  OK   $$go_dep"; else echo "  FAIL $$go_dep"; fail=1; fi; \
 	echo "checking GitHub Actions working-directories"; \
-	while read -r wd; do \
-	  case "$$wd" in ''|'.'|'*$${{'*) continue;; esac; \
-	  case "$$wd" in *'$${{'*) echo "  SKIP $$wd (expression)"; continue;; esac; \
-	  if [ -d "$$wd" ]; then echo "  OK   $$wd"; \
-	  else echo "  FAIL working-directory '$$wd' does not exist"; fail=1; fi; \
-	done < <(grep -h -o 'working-directory:[[:space:]]*[^[:space:]]*' .github/workflows/*.yml \
-	         | sed 's/working-directory:[[:space:]]*//' | sort -u); \
+	wdlist="$$(mktemp)"; \
+	wd_rc=0; ( set -o pipefail; grep -h -o 'working-directory:[[:space:]]*[^[:space:]]*' .github/workflows/*.yml \
+	         | sed 's/working-directory:[[:space:]]*//' | sort -u > "$$wdlist" ) || wd_rc=$$?; \
+	if [ "$$wd_rc" -gt 1 ]; then \
+	  echo "  FAIL could not extract GitHub Actions working-directories (pipeline exited $$wd_rc)"; \
+	  echo "       the extraction did not run, so nothing below is verified"; fail=1; \
+	elif [ ! -s "$$wdlist" ]; then \
+	  echo "  FAIL no working-directory extracted from .github/workflows/*.yml"; \
+	  echo "       a check over zero entries proves nothing: either every"; \
+	  echo "       workflow dropped its working-directory, or the extraction"; \
+	  echo "       broke. If so, delete this check."; fail=1; \
+	else \
+	  while read -r wd; do \
+	    case "$$wd" in ''|'.'|'*$${{'*) continue;; esac; \
+	    case "$$wd" in *'$${{'*) echo "  SKIP $$wd (expression)"; continue;; esac; \
+	    if [ -d "$$wd" ]; then echo "  OK   $$wd"; \
+	    else echo "  FAIL working-directory '$$wd' does not exist"; fail=1; fi; \
+	  done < "$$wdlist"; \
+	fi; \
+	rm -f "$$wdlist"; \
 	echo "checking no Go source is git-ignored"; \
-	ignored="$$(find $(GO_DIR) -name '*.go' -not -path '*/bin/*' \
-	          | git check-ignore --no-index --stdin 2>/dev/null || true)"; \
-	if [ -n "$$ignored" ]; then \
-	  printf '%s\n' "$$ignored" | sed 's/^/  FAIL /'; \
-	  echo "       git-ignored source can never be committed, and git status"; \
-	  echo "       stays completely silent about it (see .gitignore)"; \
+	found="$$(find $(GO_DIR) -name '*.go' -not -path '*/bin/*')"; \
+	if [ -z "$$found" ]; then \
+	  echo "  FAIL find listed no .go file under $(GO_DIR), so this check proved nothing"; \
 	  fail=1; \
 	else \
-	  echo "  OK   every .go file under $(GO_DIR) is visible to git"; \
+	  irc=0; ignored="$$(printf '%s\n' "$$found" | git check-ignore --no-index --stdin 2>/dev/null)" || irc=$$?; \
+	  if [ "$$irc" -gt 1 ]; then \
+	    echo "  FAIL 'git check-ignore --no-index --stdin' exited $$irc"; \
+	    echo "       the ignore lookup did not run, so this check proved nothing"; \
+	    fail=1; \
+	  elif [ -n "$$ignored" ]; then \
+	    printf '%s\n' "$$ignored" | sed 's/^/  FAIL /'; \
+	    echo "       git-ignored source can never be committed, and git status"; \
+	    echo "       stays completely silent about it (see .gitignore)"; \
+	    fail=1; \
+	  else \
+	    echo "  OK   every .go file under $(GO_DIR) is visible to git"; \
+	  fi; \
 	fi; \
 	echo "checking no build artifact is tracked"; \
-	nontext="$$(git ls-files src/ | grep -vFxf <(git grep -Il . -- src/ 2>/dev/null) || true)"; \
-	bad="$$(printf '%s\n' "$$nontext" | while IFS= read -r f; do if [ -z "$$f" ] || [ "$$(git cat-file -s ":$$f" 2>/dev/null || echo 0)" -eq 0 ]; then continue; elif [[ "$$f" == *.png ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 8 | od -An -tx1 | tr -d ' \n')"; if [ "$$magic" != "89504e470d0a1a0a" ]; then printf '%s\n' "$$f"; fi; elif [[ "$$f" == *.icns ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 4)"; if [ "$$magic" != "icns" ]; then printf '%s\n' "$$f"; fi; else printf '%s\n' "$$f"; fi; done)"; \
-	if [ -n "$$bad" ]; then \
-	  echo "  FAIL tracked non-text file(s) under src/ (add an icon exemption with magic, or untrack):"; \
-	  printf '%s\n' "$$bad" | sed 's/^/       /'; \
-	  echo "       untrack it: git rm --cached <path> (the file stays on disk)"; \
+	txtlist="$$(mktemp)"; \
+	tracked="$$(git ls-files src/)"; \
+	grc=0; git grep -Il . -- src/ > "$$txtlist" 2>/dev/null || grc=$$?; \
+	if [ "$$grc" -gt 1 ]; then \
+	  echo "  FAIL 'git grep -Il . -- src/' exited $$grc"; \
+	  echo "       no usable text-file list, so this check did NOT run"; \
+	  fail=1; \
+	elif [ -z "$$tracked" ]; then \
+	  echo "  FAIL 'git ls-files src/' listed nothing, so this check proved nothing"; \
 	  fail=1; \
 	else \
-	  echo "  OK   every tracked file under src/ is text, empty, or a magic-verified image asset"; \
+	  lrc=0; nontext="$$(printf '%s\n' "$$tracked" | grep -vFxf "$$txtlist")" || lrc=$$?; \
+	  if [ "$$lrc" -gt 1 ]; then \
+	    echo "  FAIL grep exited $$lrc while filtering the tracked-file list"; \
+	    echo "       the filter did not run, so this check proved nothing"; \
+	    fail=1; \
+	  else \
+	    bad="$$(printf '%s\n' "$$nontext" | while IFS= read -r f; do if [ -z "$$f" ] || [ "$$(git cat-file -s ":$$f" 2>/dev/null || echo 0)" -eq 0 ]; then continue; elif [[ "$$f" == *.png ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 8 | od -An -tx1 | tr -d ' \n')"; if [ "$$magic" != "89504e470d0a1a0a" ]; then printf '%s\n' "$$f"; fi; elif [[ "$$f" == *.icns ]]; then magic="$$(git cat-file -p ":$$f" 2>/dev/null | head -c 4)"; if [ "$$magic" != "icns" ]; then printf '%s\n' "$$f"; fi; else printf '%s\n' "$$f"; fi; done)"; \
+	    if [ -n "$$bad" ]; then \
+	      echo "  FAIL tracked non-text file(s) under src/ (add an icon exemption with magic, or untrack):"; \
+	      printf '%s\n' "$$bad" | sed 's/^/       /'; \
+	      echo "       untrack it: git rm --cached <path> (the file stays on disk)"; \
+	      fail=1; \
+	    else \
+	      echo "  OK   every tracked file under src/ is text, empty, or a magic-verified image asset"; \
+	    fi; \
+	  fi; \
 	fi; \
+	rm -f "$$txtlist"; \
 	echo "checking the authority documents are tracked"; \
 	for doc in AGENTS.md CODE_REVIEW.md CONTRIBUTING.md src/macos/README.md; do \
 	  if git ls-files --error-unmatch "$$doc" >/dev/null 2>&1; then \
