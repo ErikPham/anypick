@@ -683,54 +683,9 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 	case "account-save-current":
 		result = s.handleAccountSaveCurrent(ctx, m)
 	case "gateway-create":
-		if m.Name == "" || m.ProviderID == "" {
-			result.Status, result.Message = "error",
-				"gateway-create needs name and providerId"
-			break
-		}
-		// grok gateways authenticate with the live x.ai OIDC session shared
-		// with the account flow, so no API key is collected. Every other
-		// gateway (including gemini) carries its key in the profile.
-		needsKey := m.ProviderID != "grok"
-		if (needsKey && m.APIKey == "") || m.Endpoint == "" {
-			result.Status, result.Message = "error",
-				"gateway-create needs endpoint"+map[bool]string{true: " and apiKey", false: ""}[needsKey]
-			break
-		}
-		if s.Deps.Profiles == nil {
-			result.Status, result.Message = "error", "profiles unavailable"
-			break
-		}
-		// grok's upstream base is fixed and engine-supplied; fall back to it
-		// when the UI sends no endpoint (providerSuppliesEndpoint).
-		endpoint := m.Endpoint
-		if m.ProviderID == "grok" && endpoint == "" {
-			endpoint = "https://cli-chat-proxy.grok.com"
-		}
-		err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
-			_, err := s.Deps.Profiles.UpsertContext(c, profile.Runtime{
-				Meta: profile.Meta{
-					Name:         m.Name,
-					Provider:     orString(m.ProviderID, "custom"),
-					Label:        strings.TrimSpace(m.Label),
-					Endpoint:     endpoint,
-					DefaultModel: m.DefaultModel,
-				},
-				Secrets: profile.Secrets{APIKey: m.APIKey},
-			})
-			return err
-		})
-		if err != nil {
-			result.Status, result.Message = "error", err.Error()
-		}
+		result = s.mutateGatewayCreate(ctx, m, result)
 	case "account-remove":
-		if m.ProviderID == "" || m.Name == "" {
-			result.Status, result.Message = "error", "account-remove needs providerId and name"
-			break
-		}
-		if err := s.Deps.Accounts.Delete(ctx, m.ProviderID, m.Name); err != nil {
-			result.Status, result.Message = "error", err.Error()
-		}
+		result = s.mutateAccountRemove(ctx, m, result)
 	case "account-save":
 		result = s.handleAccountSave(ctx, payload, m)
 	case "account-save-input":
@@ -738,72 +693,15 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 	case "account-edit":
 		result = s.handleAccountEdit(ctx, payload, m)
 	case "account-refresh":
-		if m.ProviderID == "" || m.Name == "" {
-			result.Status, result.Message = "error", "account-refresh needs providerId and name"
-			break
-		}
-		if _, err := s.Deps.Accounts.RefreshSnapshot(ctx, m.ProviderID, m.Name); err != nil {
-			result.Status, result.Message = "error", err.Error()
-			if ae, ok := err.(*anyerr.Error); ok && ae.Code == "ACCOUNT_NOT_FOUND" {
-				result.Message = "account not found"
-			}
-		}
+		result = s.mutateAccountRefresh(ctx, m, result)
 	case "gateway-remove":
-		if s.Deps.Profiles == nil || m.Name == "" {
-			result.Status, result.Message = "error", "gateway-remove needs name"
-			break
-		}
-		err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
-			return s.Deps.Profiles.DeleteContext(c, m.Name)
-		})
-		if err != nil {
-			result.Status, result.Message = "error", err.Error()
-		}
+		result = s.mutateGatewayRemove(ctx, m, result)
 	case "gateway-edit":
-		if s.Deps.Profiles == nil || m.Name == "" {
-			result.Status, result.Message = "error", "gateway-edit needs name"
-			break
-		}
-		err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
-			existing, err := s.Deps.Profiles.GetContext(c, m.Name)
-			if err != nil {
-				return err
-			}
-			if existing == nil {
-				return anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND")
-			}
-			if m.Label != "" {
-				existing.Meta.Label = m.Label
-			}
-			if m.Endpoint != "" {
-				existing.Meta.Endpoint = m.Endpoint
-			}
-			if m.APIKey != "" {
-				existing.Secrets.APIKey = m.APIKey
-			}
-			if m.DefaultModel != "" {
-				existing.Meta.DefaultModel = m.DefaultModel
-			}
-			_, err = s.Deps.Profiles.UpsertContext(c, *existing)
-			return err
-		})
-		if err != nil {
-			result.Status, result.Message = "error", err.Error()
-		}
+		result = s.mutateGatewayEdit(ctx, m, result)
 	case "account-clear":
 		result = s.handleAccountClear(ctx, m)
 	case "client-reset":
-		cad, cerr := s.Deps.Clients.Get(m.Name)
-		if cerr != nil {
-			result.Status, result.Message = "error", cerr.Error()
-			break
-		}
-		rerr := lock.WithMutationLock(ctx, s.Deps.Root, "client/"+cad.ID(), func(context.Context) error {
-			return cad.Reset()
-		})
-		if rerr != nil {
-			result.Status, result.Message = "error", rerr.Error()
-		}
+		result = s.mutateClientReset(ctx, m, result)
 	case "account-import", "account-export", "account-backup-all",
 		"account-backup-export", "account-backup-import":
 		result = s.handleTransferOp(ctx, m)
@@ -814,123 +712,18 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 	case "hub-source-toggle":
 		result = s.handleHubSourceToggle(ctx, m)
 	case "proxy-stop-all", "proxy-restart-all":
-		restart := m.Operation == "proxy-restart-all"
-		verb, infinitive := "stopped", "stop"
-		if restart {
-			verb, infinitive = "restarted", "restart"
-		}
-		// Aggregate per-proxy failures (PX4): the old loop swallowed every
-		// error and always reported success. Per-row progress would need
-		// protocol work; naming the failures in the result is what fits.
-		var failed []string
-		attempted := 0
-		// Discovery is read-only and must still identify the concrete proxies
-		// when the command context was cancelled. The stop/restart operation
-		// itself keeps ctx, so cancellation is reported per proxy instead of
-		// being mistaken for "nothing to do".
-		enumerateCtx := context.WithoutCancel(ctx)
-		for _, providerID := range s.Deps.Providers.IDs() {
-			list, lerr := s.Deps.Store.ListAccounts(enumerateCtx, providerID)
-			if lerr != nil {
-				continue
-			}
-			for _, acc := range list {
-				cfg, _ := s.Deps.Store.GetProxyConfig(enumerateCtx, providerID, acc.Meta.Name)
-				if !cfg.Enabled {
-					continue
-				}
-				attempted++
-				label := providerID + "/" + acc.Meta.Name
-				if serr := s.Deps.Proxy.Stop(ctx, providerID, acc.Meta.Name); serr != nil {
-					failed = append(failed, label+": "+serr.Error())
-					continue
-				}
-				if restart {
-					if _, rerr := s.Deps.Proxy.StartProxy(ctx, providerID, acc.Meta.Name); rerr != nil {
-						failed = append(failed, label+": "+rerr.Error())
-					}
-				}
-			}
-		}
-		if len(failed) > 0 {
-			result.Status, result.Message = "error", fmt.Sprintf("could not %s %d of %d proxies: %s",
-				infinitive, len(failed), attempted, strings.Join(failed, "; "))
-		} else if attempted == 0 {
-			result.Message = "no enabled proxies to " + infinitive
-		} else {
-			result.Message = fmt.Sprintf("%s %d of %d proxies", verb, attempted, attempted)
-		}
+		result = s.mutateProxyStopAll(ctx, m, result)
 	case "setting-launch-at-login":
-		// ADR 0020 §7: the engine validates and emits a typed host effect;
-		// the native app executes SMAppService and reflects the new state in
-		// its next host report. No OS mutation happens here — on any platform.
-		effect := config.NewLaunchAtLoginEffect(m.Enabled)
-		if s.serviceMode {
-			if err := s.requestHostEffect(m, effect); err != nil {
-				result.Status, result.Message = "error", err.Error()
-				break
-			}
-			return nil // terminal result follows the typed host-effect result
-		}
-		payload, perr := json.Marshal(effect)
-		if perr != nil {
-			result.Status, result.Message = "error", perr.Error()
-			break
-		}
-		result.Payload = payload
-		if m.Enabled {
-			result.Message = "AnyPick will open at login."
-		} else {
-			result.Message = "Launch at login disabled."
+		var terminal bool
+		if result, terminal = s.mutateLaunchAtLogin(ctx, m, result); terminal {
+			return nil
 		}
 	case "setting-auto-start-proxies":
-		if s.Deps.Config == nil {
-			result.Status, result.Message = "error", "config service unavailable"
-			break
-		}
-		_, uerr := s.Deps.Config.SetTrayPreference(ctx, "startEnabledProxies", m.Enabled)
-		if uerr != nil {
-			result.Status, result.Message = "error", uerr.Error()
-			break
-		}
-		if m.Enabled {
-			s.startEnabledProxies(ctx)
-		}
-		if m.Enabled {
-			result.Message = "Enabled proxies will start with AnyPick."
-		} else {
-			result.Message = "Proxy auto-start disabled."
-		}
+		result = s.mutateAutoStartProxies(ctx, m, result)
 	case "setting-show-quota":
-		if s.Deps.Config == nil {
-			result.Status, result.Message = "error", "config service unavailable"
-			break
-		}
-		if _, qerr := s.Deps.Config.SetTrayPreference(ctx, "showQuota", m.Enabled); qerr != nil {
-			result.Status, result.Message = "error", qerr.Error()
-		} else if m.Enabled {
-			result.Message = "Quota is visible."
-		} else {
-			result.Message = "Quota is hidden."
-		}
+		result = s.mutateShowQuota(ctx, m, result)
 	case "setting-quota-guard":
-		if s.Deps.Config == nil {
-			result.Status, result.Message = "error", "config service unavailable"
-			break
-		}
-		if _, gerr := s.Deps.Config.SetQuotaGuardEnabled(ctx, m.Enabled); gerr != nil {
-			result.Status, result.Message = "error", gerr.Error()
-			break
-		}
-		if rerr := s.restartRunningPools(ctx); rerr != nil {
-			result.Status, result.Message = "error", rerr.Error()
-			break
-		}
-		if m.Enabled {
-			result.Message = "Quota Guard enabled for multi-account compatibility proxy pools."
-		} else {
-			result.Message = "Quota Guard disabled. Native app logins were not changed."
-		}
+		result = s.mutateQuotaGuard(ctx, m, result)
 	default:
 		// Unknown operations must surface as structured errors, never crash
 		// or silently succeed (mirrors TS unknown-mutation handling).
@@ -942,6 +735,271 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 		return s.refresh(ctx)
 	}
 	return nil
+}
+
+func (s *Server) mutateGatewayCreate(ctx context.Context, m Mutate, result Result) Result {
+	if m.Name == "" || m.ProviderID == "" {
+		result.Status, result.Message = "error",
+			"gateway-create needs name and providerId"
+		return result
+	}
+	// grok gateways authenticate with the live x.ai OIDC session shared
+	// with the account flow, so no API key is collected. Every other
+	// gateway (including gemini) carries its key in the profile.
+	needsKey := m.ProviderID != "grok"
+	if (needsKey && m.APIKey == "") || m.Endpoint == "" {
+		result.Status, result.Message = "error",
+			"gateway-create needs endpoint"+map[bool]string{true: " and apiKey", false: ""}[needsKey]
+		return result
+	}
+	if s.Deps.Profiles == nil {
+		result.Status, result.Message = "error", "profiles unavailable"
+		return result
+	}
+	// grok's upstream base is fixed and engine-supplied; fall back to it
+	// when the UI sends no endpoint (providerSuppliesEndpoint).
+	endpoint := m.Endpoint
+	if m.ProviderID == "grok" && endpoint == "" {
+		endpoint = "https://cli-chat-proxy.grok.com"
+	}
+	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
+		_, err := s.Deps.Profiles.UpsertContext(c, profile.Runtime{
+			Meta: profile.Meta{
+				Name:         m.Name,
+				Provider:     orString(m.ProviderID, "custom"),
+				Label:        strings.TrimSpace(m.Label),
+				Endpoint:     endpoint,
+				DefaultModel: m.DefaultModel,
+			},
+			Secrets: profile.Secrets{APIKey: m.APIKey},
+		})
+		return err
+	})
+	if err != nil {
+		result.Status, result.Message = "error", err.Error()
+	}
+	return result
+}
+
+func (s *Server) mutateAccountRemove(ctx context.Context, m Mutate, result Result) Result {
+	if m.ProviderID == "" || m.Name == "" {
+		result.Status, result.Message = "error", "account-remove needs providerId and name"
+		return result
+	}
+	if err := s.Deps.Accounts.Delete(ctx, m.ProviderID, m.Name); err != nil {
+		result.Status, result.Message = "error", err.Error()
+	}
+	return result
+}
+
+func (s *Server) mutateAccountRefresh(ctx context.Context, m Mutate, result Result) Result {
+	if m.ProviderID == "" || m.Name == "" {
+		result.Status, result.Message = "error", "account-refresh needs providerId and name"
+		return result
+	}
+	if _, err := s.Deps.Accounts.RefreshSnapshot(ctx, m.ProviderID, m.Name); err != nil {
+		result.Status, result.Message = "error", err.Error()
+		if ae, ok := err.(*anyerr.Error); ok && ae.Code == "ACCOUNT_NOT_FOUND" {
+			result.Message = "account not found"
+		}
+	}
+	return result
+}
+
+func (s *Server) mutateGatewayRemove(ctx context.Context, m Mutate, result Result) Result {
+	if s.Deps.Profiles == nil || m.Name == "" {
+		result.Status, result.Message = "error", "gateway-remove needs name"
+		return result
+	}
+	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
+		return s.Deps.Profiles.DeleteContext(c, m.Name)
+	})
+	if err != nil {
+		result.Status, result.Message = "error", err.Error()
+	}
+	return result
+}
+
+func (s *Server) mutateGatewayEdit(ctx context.Context, m Mutate, result Result) Result {
+	if s.Deps.Profiles == nil || m.Name == "" {
+		result.Status, result.Message = "error", "gateway-edit needs name"
+		return result
+	}
+	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
+		existing, err := s.Deps.Profiles.GetContext(c, m.Name)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			return anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND")
+		}
+		if m.Label != "" {
+			existing.Meta.Label = m.Label
+		}
+		if m.Endpoint != "" {
+			existing.Meta.Endpoint = m.Endpoint
+		}
+		if m.APIKey != "" {
+			existing.Secrets.APIKey = m.APIKey
+		}
+		if m.DefaultModel != "" {
+			existing.Meta.DefaultModel = m.DefaultModel
+		}
+		_, err = s.Deps.Profiles.UpsertContext(c, *existing)
+		return err
+	})
+	if err != nil {
+		result.Status, result.Message = "error", err.Error()
+	}
+	return result
+}
+
+func (s *Server) mutateClientReset(ctx context.Context, m Mutate, result Result) Result {
+	cad, cerr := s.Deps.Clients.Get(m.Name)
+	if cerr != nil {
+		result.Status, result.Message = "error", cerr.Error()
+		return result
+	}
+	rerr := lock.WithMutationLock(ctx, s.Deps.Root, "client/"+cad.ID(), func(context.Context) error {
+		return cad.Reset()
+	})
+	if rerr != nil {
+		result.Status, result.Message = "error", rerr.Error()
+	}
+	return result
+}
+
+func (s *Server) mutateProxyStopAll(ctx context.Context, m Mutate, result Result) Result {
+	restart := m.Operation == "proxy-restart-all"
+	verb, infinitive := "stopped", "stop"
+	if restart {
+		verb, infinitive = "restarted", "restart"
+	}
+	// Aggregate per-proxy failures (PX4): the old loop swallowed every
+	// error and always reported success. Per-row progress would need
+	// protocol work; naming the failures in the result is what fits.
+	var failed []string
+	attempted := 0
+	// Discovery is read-only and must still identify the concrete proxies
+	// when the command context was cancelled. The stop/restart operation
+	// itself keeps ctx, so cancellation is reported per proxy instead of
+	// being mistaken for "nothing to do".
+	enumerateCtx := context.WithoutCancel(ctx)
+	for _, providerID := range s.Deps.Providers.IDs() {
+		list, lerr := s.Deps.Store.ListAccounts(enumerateCtx, providerID)
+		if lerr != nil {
+			continue
+		}
+		for _, acc := range list {
+			cfg, _ := s.Deps.Store.GetProxyConfig(enumerateCtx, providerID, acc.Meta.Name)
+			if !cfg.Enabled {
+				continue
+			}
+			attempted++
+			label := providerID + "/" + acc.Meta.Name
+			if serr := s.Deps.Proxy.Stop(ctx, providerID, acc.Meta.Name); serr != nil {
+				failed = append(failed, label+": "+serr.Error())
+				continue
+			}
+			if restart {
+				if _, rerr := s.Deps.Proxy.StartProxy(ctx, providerID, acc.Meta.Name); rerr != nil {
+					failed = append(failed, label+": "+rerr.Error())
+				}
+			}
+		}
+	}
+	if len(failed) > 0 {
+		result.Status, result.Message = "error", fmt.Sprintf("could not %s %d of %d proxies: %s",
+			infinitive, len(failed), attempted, strings.Join(failed, "; "))
+	} else if attempted == 0 {
+		result.Message = "no enabled proxies to " + infinitive
+	} else {
+		result.Message = fmt.Sprintf("%s %d of %d proxies", verb, attempted, attempted)
+	}
+	return result
+}
+
+func (s *Server) mutateLaunchAtLogin(ctx context.Context, m Mutate, result Result) (Result, bool) {
+	// ADR 0020 §7: the engine validates and emits a typed host effect;
+	// the native app executes SMAppService and reflects the new state in
+	// its next host report. No OS mutation happens here — on any platform.
+	effect := config.NewLaunchAtLoginEffect(m.Enabled)
+	if s.serviceMode {
+		if err := s.requestHostEffect(m, effect); err != nil {
+			result.Status, result.Message = "error", err.Error()
+			return result, false
+		}
+		return result, true
+	}
+	payload, perr := json.Marshal(effect)
+	if perr != nil {
+		result.Status, result.Message = "error", perr.Error()
+		return result, false
+	}
+	result.Payload = payload
+	if m.Enabled {
+		result.Message = "AnyPick will open at login."
+	} else {
+		result.Message = "Launch at login disabled."
+	}
+	return result, false
+}
+
+func (s *Server) mutateAutoStartProxies(ctx context.Context, m Mutate, result Result) Result {
+	if s.Deps.Config == nil {
+		result.Status, result.Message = "error", "config service unavailable"
+		return result
+	}
+	_, uerr := s.Deps.Config.SetTrayPreference(ctx, "startEnabledProxies", m.Enabled)
+	if uerr != nil {
+		result.Status, result.Message = "error", uerr.Error()
+		return result
+	}
+	if m.Enabled {
+		s.startEnabledProxies(ctx)
+	}
+	if m.Enabled {
+		result.Message = "Enabled proxies will start with AnyPick."
+	} else {
+		result.Message = "Proxy auto-start disabled."
+	}
+	return result
+}
+
+func (s *Server) mutateShowQuota(ctx context.Context, m Mutate, result Result) Result {
+	if s.Deps.Config == nil {
+		result.Status, result.Message = "error", "config service unavailable"
+		return result
+	}
+	if _, qerr := s.Deps.Config.SetTrayPreference(ctx, "showQuota", m.Enabled); qerr != nil {
+		result.Status, result.Message = "error", qerr.Error()
+	} else if m.Enabled {
+		result.Message = "Quota is visible."
+	} else {
+		result.Message = "Quota is hidden."
+	}
+	return result
+}
+
+func (s *Server) mutateQuotaGuard(ctx context.Context, m Mutate, result Result) Result {
+	if s.Deps.Config == nil {
+		result.Status, result.Message = "error", "config service unavailable"
+		return result
+	}
+	if _, gerr := s.Deps.Config.SetQuotaGuardEnabled(ctx, m.Enabled); gerr != nil {
+		result.Status, result.Message = "error", gerr.Error()
+		return result
+	}
+	if rerr := s.restartRunningPools(ctx); rerr != nil {
+		result.Status, result.Message = "error", rerr.Error()
+		return result
+	}
+	if m.Enabled {
+		result.Message = "Quota Guard enabled for multi-account compatibility proxy pools."
+	} else {
+		result.Message = "Quota Guard disabled. Native app logins were not changed."
+	}
+	return result
 }
 
 func errorResult(requestID string, err error) Result {
