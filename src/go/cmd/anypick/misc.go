@@ -114,7 +114,7 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 			continue
 		}
 		for _, acct := range list {
-			cfg, _ := a.Store.GetProxyConfig(ctx, providerID, acct.Meta.Name)
+			cfg, _ := a.Proxy.ProxyConfig(ctx, providerID, acct.Meta.Name)
 			if !cfg.Enabled {
 				continue
 			}

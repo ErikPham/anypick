@@ -385,7 +385,7 @@ func poolProxyIsRunning(ctx context.Context, a *appView, providerID string) (boo
 		return false, err
 	}
 	for _, account := range accounts {
-		state, serr := a.Store.ReadProxyState(ctx, providerID, account.Meta.Name)
+		state, serr := a.Proxy.RuntimeState(ctx, providerID, account.Meta.Name)
 		if serr != nil {
 			return false, serr
 		}

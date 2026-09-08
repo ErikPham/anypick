@@ -288,6 +288,20 @@ type Service struct {
 	heartbeats  map[string]context.CancelFunc
 }
 
+// ProxyConfig reads the persisted proxy settings for one account. The table
+// belongs to internal/store; outer layers ask the service so a proxy setting is
+// never reached by holding a handle on the table-owning store.
+func (s *Service) ProxyConfig(ctx context.Context, providerID, name string) (store.ProxyConfig, error) {
+	return s.Store.GetProxyConfig(ctx, providerID, name)
+}
+
+// RuntimeState reads the persisted runtime state of a running proxy, nil when
+// nothing is recorded. Same boundary as ProxyConfig: a caller that wants to
+// know what a proxy is doing asks the service, not the table.
+func (s *Service) RuntimeState(ctx context.Context, providerID, name string) (*store.ProxyRuntimeState, error) {
+	return s.Store.ReadProxyState(ctx, providerID, name)
+}
+
 func New(st *store.AccountStore, leases *LeaseStore) *Service {
 	return &Service{
 		Store: st, Jobs: leases, servers: newRegistry(), poolServers: newPoolServerRegistry(),

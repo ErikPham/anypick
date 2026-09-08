@@ -25,26 +25,33 @@ import (
 // remaining store access budget is legacy transfer/activation wiring; it is a
 // ratchet and must shrink, never grow.
 //
-// TODO(gate:facade-budget): this map is a tourniquet, not a cure — 85 call
+// TODO(gate:facade-budget): this map is a tourniquet, not a cure — 82 call
 // sites still hold a raw persistence handle, so the layering rule is upheld by
-// counting rather than by types. `a.Store` dropped 20 -> 6 by routing
-// ListAccounts/Get/GetActive through accounts.Service; what remains is two
-// struct-field wirings, `GetProxyConfig` and `ReadProxyState` (which need a
-// proxy service read surface, not an accounts one) and one transfer call.
+// counting rather than by types. `a.Store` dropped 20 -> 3 by routing
+// ListAccounts/Get/GetActive through accounts.Service and
+// GetProxyConfig/ReadProxyState through proxy.Service, which already owns the
+// store. What remains is two struct-field wirings and one transfer call that
+// genuinely need the store itself. `s.Deps.Store` (30) is the next cluster.
 // Target: <= 40 by 2026-10-08, then replace the whole map with an AST gate
 // forbidding `internal/store` imports from cmd/anypick and internal/desktop.
 // Decision 7 in SYSTEM_ARCHITECTURE_2026-09-07.md §6.
 var facadeBudget = map[string]int{
-	"a.Store":            6,
-	"s.Deps.Store":       30,
+	"a.Store": 3,
+	// Receiver-independent on purpose. This used to be "s.Deps.Store", and
+	// splitting buildSnapshot into methods on a `b *snapshotBuilder` silently
+	// dropped the count from 30 to 25 — not because any coupling went away,
+	// but because the call sites now spell it `b.srv.Deps.Store`. A ratchet
+	// that measures how a variable is named is not measuring the thing it
+	// claims to. Match on the coupling, never on the receiver.
+	"Deps.Store":         30,
 	"a.Hub":              15,
 	"a.Bindings":         11,
 	"a.Runtime.Profiles": 9,
 	"a.Pools":            7,
 	"a.Presets":          3,
-	"s.Deps.Proxy.Pools": 2,
+	"Deps.Proxy.Pools":   2,
 	"a.Leases":           1,
-	"s.Deps.Proxy.Jobs":  1,
+	"Deps.Proxy.Jobs":    1,
 }
 
 // facadeLayers are the packages that must talk to services, not stores.
