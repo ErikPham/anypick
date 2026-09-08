@@ -413,7 +413,7 @@ func serveHubChild(ctx context.Context, a *appView, args []string) int {
 		return usageError("_serve-hub requires a hub name")
 	}
 	name := args[0]
-	cfg, err := a.Hub.GetConfig(name)
+	cfg, err := a.ProxyHub.GetConfig(ctx, name)
 	if err != nil || cfg == nil || !cfg.Enabled {
 		fmt.Fprintln(os.Stderr, "hub is not enabled:", name)
 		return int(anyerr.Operational)

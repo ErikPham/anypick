@@ -37,7 +37,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			return usage()
 		}
 		name := fs.Arg(0)
-		cfg, gerr := a.Hub.GetConfigContext(ctx, name)
+		cfg, gerr := a.ProxyHub.GetConfig(ctx, name)
 		if gerr != nil {
 			return reportErr(gerr)
 		}
@@ -67,7 +67,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			// Resolve the effective host/port read-only (TS: opts ?? current).
 			effPort := *port
 			var portVal any
-			if existing, gerr := a.Hub.GetConfigContext(ctx, name); gerr == nil && existing != nil && effPort == 0 {
+			if existing, gerr := a.ProxyHub.GetConfig(ctx, name); gerr == nil && existing != nil && effPort == 0 {
 				effPort = existing.Port
 			}
 			if effPort != 0 {
@@ -81,7 +81,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 		}
 		var saved *hub.Config
 		err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
-			existing, gerr := a.Hub.GetConfigContext(c, name)
+			existing, gerr := a.ProxyHub.GetConfig(c, name)
 			if gerr != nil {
 				return gerr
 			}
@@ -95,7 +95,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			if *host != "" {
 				existing.Host = *host
 			}
-			upserted, uerr := a.Hub.UpsertConfigContext(c, *existing)
+			upserted, uerr := a.ProxyHub.UpsertConfig(c, *existing)
 			saved = &upserted
 			return uerr
 		})
@@ -112,7 +112,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 		name, providerID, account := fs.Arg(0), fs.Arg(1), fs.Arg(2)
 		if globals.DryRun {
 			// Toggle semantics resolved READ-ONLY: present → would disable.
-			existing, gerr := a.Hub.GetConfigContext(ctx, name)
+			existing, gerr := a.ProxyHub.GetConfig(ctx, name)
 			if gerr != nil {
 				return reportErr(gerr)
 			}
@@ -136,7 +136,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			return int(anyerr.Success)
 		}
 		err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
-			existing, gerr := a.Hub.GetConfigContext(c, name)
+			existing, gerr := a.ProxyHub.GetConfig(c, name)
 			if gerr != nil {
 				return gerr
 			}
@@ -162,7 +162,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 				updated = append(updated, hub.Source{ProviderID: providerID, Account: account})
 			}
 			existing.Sources = updated
-			_, uerr := a.Hub.UpsertConfigContext(c, *existing)
+			_, uerr := a.ProxyHub.UpsertConfig(c, *existing)
 			return uerr
 		})
 		if err != nil {
@@ -186,7 +186,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			return int(anyerr.Success)
 		}
 		err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
-			return a.Hub.SetModelOwnerContext(c, name, model, owner)
+			return a.ProxyHub.SetModelOwner(c, name, model, owner)
 		})
 		if err != nil {
 			return reportErr(err)
@@ -198,7 +198,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 		if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 			return usage()
 		}
-		manifest, perr := a.Hub.PreviewManifest(ctx, fs.Arg(0))
+		manifest, perr := a.ProxyHub.PreviewManifest(ctx, fs.Arg(0))
 		if perr != nil {
 			return reportErr(perr)
 		}
@@ -216,7 +216,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 			return usage()
 		}
 		name := fs.Arg(0)
-		cfg, gerr := a.Hub.GetConfigContext(ctx, name)
+		cfg, gerr := a.ProxyHub.GetConfig(ctx, name)
 		if gerr != nil {
 			return reportErr(gerr)
 		}
@@ -252,7 +252,7 @@ func cmdHub(ctx context.Context, a *appView, args []string) int {
 		}
 		// ADR 0003 §3: prove the live process is ours via the /health instance
 		// echo before signalling its session group.
-		cfg, gerr := a.Hub.GetConfigContext(ctx, name)
+		cfg, gerr := a.ProxyHub.GetConfig(ctx, name)
 		if gerr != nil {
 			return reportErr(gerr)
 		}

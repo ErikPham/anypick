@@ -66,7 +66,7 @@ func stopAllHubChildren(ctx context.Context, a *app.App) error {
 		if record == nil {
 			continue
 		}
-		cfg, cfgErr := a.Hub.GetConfigContext(ctx, name)
+		cfg, cfgErr := a.ProxyHub.GetConfig(ctx, name)
 		if cfgErr != nil {
 			errs = append(errs, fmt.Errorf("read Hub %s: %w", name, cfgErr))
 			continue

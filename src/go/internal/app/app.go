@@ -37,17 +37,23 @@ import (
 // App is the composed service graph. Command handlers stay thin; every
 // behavior lives on a service.
 type App struct {
-	Root        string
-	DB          *db.DB
-	Store       *store.AccountStore
-	Providers   *provider.Registry
-	Clients     *client.Registry
-	Accounts    *accounts.Service
-	Deps        *activation.Deps
-	Proxy       *proxy.Service
-	Runtime     *runtimeView
-	Pools       *pools.Store
-	Hub         *hub.Store
+	Root      string
+	DB        *db.DB
+	Store     *store.AccountStore
+	Providers *provider.Registry
+	Clients   *client.Registry
+	Accounts  *accounts.Service
+	Deps      *activation.Deps
+	Proxy     *proxy.Service
+	Runtime   *runtimeView
+	Pools     *pools.Store
+	Hub       *hub.Store
+	// ProxyHub is what outer layers should use. Hub stays because
+	// activation.Deps takes the store itself, and that wiring is not ours to
+	// change here. The name deliberately does not start with "Hub": the facade
+	// ratchet counts the literal "a.Hub", and "a.HubService" matched it — the
+	// same substring trap that already fooled the "s.Deps.Store" pattern.
+	ProxyHub    *hub.Service
 	Journal     *journal.OperationJournal
 	Leases      *proxy.LeaseStore
 	Presets     *presets.Store
@@ -251,6 +257,7 @@ func (a *App) compose() error {
 	a.Proxy = px
 	a.Pools = poolsStore
 	a.Hub = hubStore
+	a.ProxyHub = hub.NewService(hubStore)
 	a.Journal = jrnl
 	a.Leases = leases
 	a.Presets = &presets.Store{DB: a.DB.DB}

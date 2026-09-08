@@ -53,7 +53,7 @@ var facadeBudget = map[string]int{
 	// that measures how a variable is named is not measuring the thing it
 	// claims to. Match on the coupling, never on the receiver.
 	"Deps.Store":         8,
-	"a.Hub":              15,
+	"a.Hub":              2,
 	"a.Bindings":         11,
 	"a.Runtime.Profiles": 9,
 	"a.Pools":            7,
