@@ -460,36 +460,35 @@ Done:
 
 Open:
 
-- [ ] **Three invariant guards still cannot land**, because the code they guard
-      is only fixed in work that is not committed yet. They are correct; they
-      fail — or do not compile — against `main`. Land the code fix first, then
-      the guard, in that order or together:
-      - `internal/store/coordinator_test.go` — 16 mutators still bypass
-        `s.mutate` (invariant #5).
-      - `internal/bindings/locking_test.go` — both ctx guards fail; six
-        mutators still take no caller `ctx`, and eight
-        `context.Background()` calls remain in production code.
-      - `cmd/anypick-release/version.go` — does not compile against `main`;
-        it needs `cargoToml` and `tauriConf` from a pending change.
-      Verified by building a clean worktree at `HEAD`; see §11 for the method.
-- [ ] **`internal/store` still has six ctx-less read wrappers** —
-      `account_store.go:91,114,439,473,597` and `proxy_config.go:14` — each
-      manufacturing a `context.Background()`. `internal/bindings` went further
-      and deleted its reads as well as its mutators. Either bring store to the
-      same standard or write down why the two packages differ. Be precise about
-      the risk: a read takes no coordinator lock, so this is **not** the ADR
-      0009 deadlock. It is lost cancellation and a shape that rots the moment
-      someone adds a lock inside one of those reads.
-- [ ] **`internal/bindings` still takes no coordinator lock.** Deleting the
-      ctx-less wrappers removed the *shape* of the mistake, not the gap behind
-      it: correctness still rests on every caller holding a lock, which is
-      exactly what invariant #5 was written to remove from `internal/store`.
-      Closing it properly means giving `bindings.Store` a `Root` and routing it
-      through the coordinator — a composition-root change, so an ADR-level
-      decision, not a drive-by fix. Until then the AST guards are the whole
-      defence.
-- [ ] Add `.github/CODEOWNERS` **when a second human joins** — routing is the
-      reason for it, and today there is no one to route to.
+- [x] **`internal/store` no longer has a ctx-less read wrapper**
+      (2026-09-08). Shipped as §8.2 of `SYSTEM_ARCHITECTURE_2026-09-07.md`,
+      but this list was never updated, so it went on claiming six of them at
+      `account_store.go:91,114,439,473,597` and `proxy_config.go:14`. Verified,
+      not assumed: production files under `internal/store` contain **zero**
+      `context.Background()`/`context.TODO()`, and no `*AccountStore` method
+      manufactures one. Three methods still take no `ctx` — `rowToAccount`
+      (a pure row mapper), `PrepareSnapshot` and `DiscardPreparedSnapshot`
+      (filesystem staging) — and none of them builds a context. Stale line
+      numbers are the reason this read as open for a day: a debt list that
+      cites lines drifts the moment anyone edits the file.
+- [x] **`internal/bindings` takes the coordinator lock** (2026-09-08,
+      ADR-0022, accepted 2026-09-07). `bindings.Store` gained a `Root` and
+      `Store.mutate` now calls `lock.WithMutationLock(ctx, s.Root, scope, fn)`
+      (`bindings.go:80`), so correctness no longer rests on the caller
+      remembering. Same drift as the entry above: done in code, still open on
+      paper.
+- [x] `.github/CODEOWNERS` exists (2026-09-07). Added for the credential
+      boundary; the "wait for a second human" condition was met by making the
+      boundary reviewable rather than by headcount.
+- [x] PR metadata is validated by `.github/review-metadata.sh` in the
+      `Review metadata` workflow: exactly one class/route, path-forced high-risk
+      classification, current reviewed and evidence SHA, required independent
+      review fields, platform evidence, and successful `make ci` evidence. The
+      workflow runs on `pull_request_target`, checks out only the trusted base
+      revision, and re-runs when the PR body is edited.
+- [ ] Require the `Review metadata` job and the build/test jobs in a GitHub
+      branch ruleset. Repository files cannot enforce the hosting setting;
+      record the ruleset configuration in the next health issue.
 
 ---
 

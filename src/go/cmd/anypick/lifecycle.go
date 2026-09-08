@@ -140,7 +140,7 @@ func runSuperviseChild(ctx context.Context, a *appView) int {
 	dir := supervisorRuntimeDir(a.Root)
 	started := [][2]string{} // provider/account pairs we own
 	for _, providerID := range a.Providers.IDs() {
-		list, lerr := a.Store.ListAccounts(ctx, providerID)
+		list, lerr := a.Accounts.List(ctx, providerID)
 		if lerr != nil {
 			continue
 		}

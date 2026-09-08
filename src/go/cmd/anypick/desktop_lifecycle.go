@@ -26,7 +26,7 @@ func stopDesktopOwnedServices(ctx context.Context, a *app.App) error {
 		if err := a.Proxy.StopPoolProxy(ctx, providerID); err != nil {
 			errs = append(errs, fmt.Errorf("stop pool %s: %w", providerID, err))
 		}
-		accounts, err := a.Store.ListAccounts(ctx, providerID)
+		accounts, err := a.Accounts.List(ctx, providerID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("list %s proxies: %w", providerID, err))
 		} else {

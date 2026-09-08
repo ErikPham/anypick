@@ -92,11 +92,11 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 
 	// Active pointers must reference existing accounts.
 	for _, providerID := range a.Providers.IDs() {
-		active, _ := a.Store.GetActive(ctx, providerID)
+		active, _ := a.Accounts.Active(ctx, providerID)
 		if active == "" {
 			continue
 		}
-		acct, gerr := a.Store.Get(ctx, providerID, active)
+		acct, gerr := a.Accounts.Get(ctx, providerID, active)
 		switch {
 		case gerr != nil || acct == nil:
 			findings = append(findings, finding{Check: "active-binding", Status: "warn",
@@ -109,7 +109,7 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 
 	// Enabled proxies should have persisted state or be restartable.
 	for _, providerID := range a.Providers.IDs() {
-		list, lerr := a.Store.ListAccounts(ctx, providerID)
+		list, lerr := a.Accounts.List(ctx, providerID)
 		if lerr != nil {
 			continue
 		}
@@ -390,7 +390,7 @@ func cmdComplete(ctx context.Context, a *appView, args []string) int {
 			providers = a.Providers.IDs()
 		}
 		for _, providerID := range providers {
-			list, err := a.Store.ListAccounts(ctx, providerID)
+			list, err := a.Accounts.List(ctx, providerID)
 			if err != nil {
 				continue
 			}

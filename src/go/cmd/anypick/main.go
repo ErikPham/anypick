@@ -685,11 +685,11 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 			providerIDs = a.Providers.IDs()
 		}
 		for _, providerID := range providerIDs {
-			all, err := a.Store.ListAccounts(ctx, providerID)
+			all, err := a.Accounts.List(ctx, providerID)
 			if err != nil {
 				return reportErr(err)
 			}
-			active, _ := a.Store.GetActive(ctx, providerID)
+			active, _ := a.Accounts.Active(ctx, providerID)
 			for _, acct := range all {
 				marker := ""
 				if active == acct.Meta.Name {

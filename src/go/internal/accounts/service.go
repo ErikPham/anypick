@@ -152,6 +152,14 @@ func (s *Service) List(ctx context.Context, providerID string) ([]store.Account,
 	return s.Store.ListAccounts(ctx, providerID)
 }
 
+// Active is the cheap read behind "which account is selected for this
+// provider". It deliberately does not do the live-auth probing that Current
+// does: call sites that only want the pointer must not pay for, or be
+// affected by, a live credential check.
+func (s *Service) Active(ctx context.Context, providerID string) (string, error) {
+	return s.Store.GetActive(ctx, providerID)
+}
+
 func (s *Service) Get(ctx context.Context, providerID, name string) (*store.Account, error) {
 	normalized, err := slug.AccountName(name)
 	if err != nil {

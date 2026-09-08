@@ -203,6 +203,12 @@ func (s *Server) currentSettings(ctx context.Context) Preferences {
 // buildSnapshot assembles the current state and registers opaque action
 // handlers for this revision. Field names match TraySnapshot exactly so the
 // existing native app can consume it unchanged.
+//
+// TODO(gate:long-functions): at 532 lines this is the longest function in the
+// tree, and it both builds state and registers handlers into one registry.
+// Split per domain (accounts, proxies, hub, gateways) returning rows plus a
+// partial registry. It also sits in the highest-churn file in the tree, which
+// is what makes the length a risk rather than a taste question.
 func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	s.revision++
 	rev := s.revision

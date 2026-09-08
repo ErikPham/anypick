@@ -24,8 +24,18 @@ import (
 // The Proxy Hub's two account reads now go through accounts.Service. The
 // remaining store access budget is legacy transfer/activation wiring; it is a
 // ratchet and must shrink, never grow.
+//
+// TODO(gate:facade-budget): this map is a tourniquet, not a cure — 85 call
+// sites still hold a raw persistence handle, so the layering rule is upheld by
+// counting rather than by types. `a.Store` dropped 20 -> 6 by routing
+// ListAccounts/Get/GetActive through accounts.Service; what remains is two
+// struct-field wirings, `GetProxyConfig` and `ReadProxyState` (which need a
+// proxy service read surface, not an accounts one) and one transfer call.
+// Target: <= 40 by 2026-10-08, then replace the whole map with an AST gate
+// forbidding `internal/store` imports from cmd/anypick and internal/desktop.
+// Decision 7 in SYSTEM_ARCHITECTURE_2026-09-07.md §6.
 var facadeBudget = map[string]int{
-	"a.Store":            20,
+	"a.Store":            6,
 	"s.Deps.Store":       30,
 	"a.Hub":              15,
 	"a.Bindings":         11,

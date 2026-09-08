@@ -267,8 +267,8 @@ func serveStatusSnapshot(ctx context.Context, a *app.App) map[string]interface{}
 	}
 	accountsOut := []acctRow{}
 	for _, providerID := range a.Providers.IDs() {
-		active, _ := a.Store.GetActive(ctx, providerID)
-		list, err := a.Store.ListAccounts(ctx, providerID)
+		active, _ := a.Accounts.Active(ctx, providerID)
+		list, err := a.Accounts.List(ctx, providerID)
 		if err != nil {
 			continue
 		}
@@ -293,7 +293,7 @@ func serveStatusSnapshot(ctx context.Context, a *app.App) map[string]interface{}
 	}
 	proxiesOut := []proxyRow{}
 	for _, providerID := range a.Providers.IDs() {
-		list, err := a.Store.ListAccounts(ctx, providerID)
+		list, err := a.Accounts.List(ctx, providerID)
 		if err != nil {
 			continue
 		}
