@@ -258,7 +258,40 @@ Apple. **Kiểm tra trước khi bấm dispatch**, vì mỗi lần fail tốn c�
 
 ---
 
-## 8. Hai việc nên làm ngay sau release
+## 8. Đã xử lý xong — 9 commit lên `main`, working tree sạch
+
+| # | Commit | Nội dung |
+| --- | --- | --- |
+| 1 | `4539289` | `feat(desktop)` warm opencode catalogs — 7 file Go WIP đang làm `HEAD` không build được test |
+| 2 | `8344cf6` | `style(proxy)` gofmt + bỏ byte copy thừa (`S1030`) |
+| 3 | `9c6ef40` | `chore(gates)` track `.githooks/` |
+| 4 | `663b24b` | `docs(review)` hai báo cáo này |
+| 5 | `7f4ccda` | `chore(ci)` track `.github/review-metadata.sh` + workflow — **chưa từng được track** |
+| 6 | `f52fa4c` | `docs` track báo cáo kiến trúc 2026-09-08 |
+| 7 | `c229e91` | `feat(macos)` nửa Swift của hub catalogs (16 file) |
+| 8 | `5d27ae9` | `build` Makefile: help nhóm, alias, target docs, `npm ci` |
+| 9 | `4d5b1cf` | `docs(review)` PR/issue template + `SECURITY.md` khớp chuẩn |
+
+Mỗi commit đều có `Risk:` trailer theo đúng §7, và hai commit `feat` có
+`Reviewed-By:` thật — commit (1) vì tôi đã đọc diff từng dòng, commit (7) vì
+`xcodebuild test` chạy với nửa Go đã commit cho **50 test, 0 failure**.
+
+Verify sau cùng, ngay trên `main`:
+
+```
+make review   @ f52fa4c  → REVIEW_EXIT=0, 43/43 package, path/protocol/release OK
+race          @ f52fa4c  → desktop 44s, proxy 20s, catalog 1.5s, provider 7.9s — 0 data race
+make gates    @ 4d5b1cf  → path check OK · protocol OK (2) · version 1.0.0 đồng bộ
+make fmt-check / vet      → xanh
+make lint                 → 0 finding
+git status                → trống
+```
+
+**B1 ✅ · B2 ✅ · còn B3 (chưa push, 85 commit) và B4 (secrets).**
+
+---
+
+## 9. Hai việc nên làm ngay sau release
 
 - **Cài `pre-push`** (`.githooks/install.sh`). B1 và B2 đều là lỗi mà `make review` bắt
   được trong 10 phút — nhưng không ai chạy, vì không có gì tự động. Đây không phải lý
