@@ -1,0 +1,40 @@
+name: Review metadata
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: review-metadata-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Review metadata
+    runs-on: ubuntu-latest
+    steps:
+      # pull_request_target runs in the base repository context. Check out the
+      # trusted base revision only; never execute the PR's validator or code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Validate review classification and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          body_file="${RUNNER_TEMP}/pr-body.md"
+          changed_files="${RUNNER_TEMP}/changed-files.txt"
+          printf '%s' "$PR_BODY" > "$body_file"
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[].filename' > "$changed_files"
+          bash .github/review-metadata.sh "$body_file" "$PR_HEAD_SHA" "$changed_files"
