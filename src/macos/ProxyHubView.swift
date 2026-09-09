@@ -8,38 +8,19 @@ struct ProxyHubView: View {
   var body: some View {
     DesignGroupedPane {
       Section {
+        // Status only — no inline buttons. Start/Restart live once, in the
+        // footer (hubActions). A value + two buttons in one row reads
+        // cluttered next to the quiet Address/Published rows.
         LabeledContent("Status") {
-          HStack(spacing: 8) {
-            if let operation = model.serviceOperations["hub"] {
-              HStack(spacing: 6) {
-                ProgressView()
-                  .controlSize(.small)
-                Text(operation.label)
-                  .foregroundStyle(.secondary)
-              }
-            } else {
-              DesignStatusLabel(status: hubStatus)
+          if let operation = model.serviceOperations["hub"] {
+            HStack(spacing: 6) {
+              ProgressView()
+                .controlSize(.small)
+              Text(operation.label)
+                .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
-            Button(model.proxyHubEnabled ? "Stop" : "Start") {
-              if model.proxyHubEnabled {
-                confirmStop = true
-              } else {
-                model.setProxyHubEnabled(true)
-              }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
-            .help(startHelp)
-            .accessibilityIdentifier("hub.toggle-inline")
-            Button("Restart") { model.restartProxy(id: "hub") }
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .disabled(
-                model.isBusy || !model.proxyHubEnabled || model.serviceOperations["hub"] != nil
-              )
-              .accessibilityIdentifier("hub.restart-inline")
+          } else {
+            DesignStatusLabel(status: hubStatus)
           }
         }
         .accessibilityElement(children: .contain)
@@ -103,7 +84,7 @@ struct ProxyHubView: View {
         } header: {
           Text("Accounts in This Hub")
         } footer: {
-          Text(hubMembershipFooter)
+          hubSourceFooter(isLast: true)
         }
       } else if usableModelCount == 0 && !model.proxyHubEnabled {
         Section {
@@ -132,9 +113,7 @@ struct ProxyHubView: View {
           } header: {
             Text(hubSourceGroups.count == 1 ? "Accounts in This Hub" : group.provider)
           } footer: {
-            if index == hubSourceGroups.count - 1 {
-              Text(hubMembershipFooter)
-            }
+            hubSourceFooter(isLast: index == hubSourceGroups.count - 1)
           }
         }
       } else {
@@ -146,9 +125,7 @@ struct ProxyHubView: View {
           } header: {
             Text(hubSourceGroups.count == 1 ? "Accounts in This Hub" : group.provider)
           } footer: {
-            if index == hubSourceGroups.count - 1 {
-              Text(hubMembershipFooter)
-            }
+            hubSourceFooter(isLast: index == hubSourceGroups.count - 1)
           }
         }
       }
@@ -161,29 +138,12 @@ struct ProxyHubView: View {
         } header: {
           Text("Model Routing")
         } footer: {
-          Text("One choice applies to every model ID in this group.")
+          VStack(alignment: .leading) {
+            Text("One choice applies to every model ID in this group.")
+            hubActions
+          }
         }
       }
-
-    } actions: {
-      Button("Restart Hub") { model.restartProxy(id: "hub") }
-        .disabled(
-          model.isBusy || !model.proxyHubEnabled || model.serviceOperations["hub"] != nil
-        )
-        .accessibilityIdentifier("hub.restart")
-      Button(
-        model.proxyHubEnabled ? "Stop Hub" : "Start Hub",
-        role: model.proxyHubEnabled ? .destructive : nil
-      ) {
-        if model.proxyHubEnabled {
-          confirmStop = true
-        } else {
-          model.setProxyHubEnabled(true)
-        }
-      }
-      .disabled(!canStartHub && !model.proxyHubEnabled || model.isBusy || model.serviceOperations["hub"] != nil)
-      .help(startHelp)
-      .accessibilityIdentifier("hub.enabled")
     }
     .confirmationDialog(
       "Stop Proxy Hub?",
@@ -199,6 +159,48 @@ struct ProxyHubView: View {
 
   private var hubMembershipFooter: String {
     "Include a saved account or gateway to publish its models on the Hub address. Independent per-account services appear under Proxies."
+  }
+
+  @ViewBuilder
+  private var hubActions: some View {
+    DesignPaneActions {
+      DesignSheetButton(
+        title: "Restart Hub",
+        enabled: !model.isBusy && model.proxyHubEnabled && model.serviceOperations["hub"] == nil,
+        identifier: "hub.restart"
+      ) { model.restartProxy(id: "hub") }
+      DesignSheetButton(
+        title: model.proxyHubEnabled ? "Stop Hub" : "Start Hub",
+        enabled: (canStartHub || model.proxyHubEnabled)
+          && !model.isBusy
+          && model.serviceOperations["hub"] == nil,
+        destructive: model.proxyHubEnabled,
+        identifier: "hub.enabled"
+      ) {
+        if model.proxyHubEnabled {
+          confirmStop = true
+        } else {
+          model.setProxyHubEnabled(true)
+        }
+      }
+    }
+  }
+
+  /// Footer of a hub-source section. The buttons live under the true last
+  /// group: this footer when there is no Model Routing section, that
+  /// section's footer otherwise.
+  @ViewBuilder
+  private func hubSourceFooter(isLast: Bool) -> some View {
+    if isLast {
+      if model.routingConflicts.isEmpty {
+        VStack(alignment: .leading) {
+          Text(hubMembershipFooter)
+          hubActions
+        }
+      } else {
+        Text(hubMembershipFooter)
+      }
+    }
   }
 
   private var hubSourceGroups: [(provider: String, sources: [DesignHubSource])] {

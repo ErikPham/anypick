@@ -30,61 +30,39 @@ struct AccountDetailView: View {
           } icon: {
             DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)
           }
-          if model.isCurrentAccount(account) {
-            LabeledContent("Status", value: "Current")
-          } else {
-            LabeledContent {
+        }
+
+        Section {
+          LabeledContent("Provider", value: account.provider)
+          LabeledContent("Type", value: account.kind == .gateway ? "API Gateway" : "Saved Login")
+          LabeledContent("Status") {
+            if model.isCurrentAccount(account) {
+              Text("Current")
+                .foregroundStyle(.secondary)
+            } else {
               DesignStatusLabel(status: account.status)
-            } label: {
-              Text("Status")
             }
+          }
+        } footer: {
+          if usageWindows.isEmpty {
+            detailActions(for: account)
           }
         }
 
         if !usageWindows.isEmpty {
           Section {
             ForEach(usageWindows) { window in
-              VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                  Text(window.label)
-                  Spacer()
-                  Text("\(window.remainingPercent)% remaining")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                }
-                ProgressView(value: Double(window.remainingPercent), total: 100)
-              }
-              .accessibilityIdentifier("accounts.inspector.usage.\(window.id)")
+              usageRow(window)
             }
           } header: {
             Text("Remaining Quotas")
           } footer: {
-            Text("Reported by \(account.provider) for the account currently active on this Mac.")
+            VStack(alignment: .leading) {
+              Text("Reported by \(account.provider) for the account currently active on this Mac.")
+              detailActions(for: account)
+            }
           }
         }
-      }
-    } actions: {
-      if let account {
-        Button("Edit…") { editing = true }
-        if account.kind == .saved && !model.isCurrentAccount(account) {
-          Button("Make Current") { model.makeAccountCurrent(id: account.id) }
-            .disabled(model.isBusy)
-            .accessibilityIdentifier("accounts.inspector.make-current")
-        }
-        Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
-          // Gateways re-probe the stored credential (C7); saved logins
-          // refresh. The key never leaves the engine either way.
-          if account.kind == .gateway {
-            model.testSavedGateway(id: account.id)
-          } else {
-            model.refreshAccount(id: account.id)
-          }
-        }
-        .disabled(model.isBusy)
-        .accessibilityIdentifier("accounts.inspector.test")
-        Button("Remove Account…", role: .destructive) { confirmingRemoval = true }
-          .disabled(model.isBusy)
-          .accessibilityIdentifier("accounts.inspector.remove")
       }
     }
     .navigationTitle(account?.name ?? "Account")
@@ -114,6 +92,53 @@ struct AccountDetailView: View {
         removalRequested = false
       }
     }
+  }
+
+  private func detailActions(for account: DesignAccount) -> some View {
+    DesignPaneActions {
+      DesignSheetButton(title: "Edit…") { editing = true }
+      if account.kind == .saved && !model.isCurrentAccount(account) {
+        DesignSheetButton(
+          title: "Make Current",
+          enabled: !model.isBusy,
+          identifier: "accounts.inspector.make-current"
+        ) { model.makeAccountCurrent(id: account.id) }
+      }
+      DesignSheetButton(
+        title: account.kind == .gateway ? "Test Connection" : "Refresh Login",
+        enabled: !model.isBusy,
+        identifier: "accounts.inspector.test"
+      ) {
+        if account.kind == .gateway {
+          model.testSavedGateway(id: account.id)
+        } else {
+          model.refreshAccount(id: account.id)
+        }
+      }
+      DesignSheetButton(
+        title: "Remove Account…",
+        enabled: !model.isBusy,
+        destructive: true,
+        identifier: "accounts.inspector.remove"
+      ) { confirmingRemoval = true }
+    }
+  }
+
+  private func usageRow(_ window: DesignUsageWindow) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      LabeledContent(window.label) {
+        Text("\(window.remainingPercent)% remaining")
+          .foregroundStyle(.secondary)
+          .monospacedDigit()
+      }
+      ProgressView(value: Double(window.remainingPercent), total: 100)
+      if let resetsAtMs = window.resetsAtMs {
+        Text("Resets \(Date(timeIntervalSince1970: resetsAtMs / 1000), style: .relative)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .accessibilityIdentifier("accounts.inspector.usage.\(window.id)")
   }
 
   private var removalMessage: String {

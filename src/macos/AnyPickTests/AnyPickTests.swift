@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 final class AnyPickTests: XCTestCase {
@@ -1062,4 +1064,51 @@ final class AnyPickTests: XCTestCase {
 
 private final class CommandBox {
   var lines: [String] = []
+}
+
+// MARK: - Pane render smoke (interaction-crash gate)
+
+/// Every destination must build its body and lay out without trapping.
+/// Added after a "crash khi thao tác" report: SwiftUI body traps only
+/// surface when the pane actually renders, so helper unit tests never
+/// catch them. NSHostingView layout runs headless (no pixels drawn).
+final class PaneRenderTests: XCTestCase {
+  @MainActor
+  private func render(_ view: some View) {
+    let host = NSHostingView(rootView: AnyView(view))
+    host.frame = NSRect(x: 0, y: 0, width: 920, height: 640)
+    host.layoutSubtreeIfNeeded()
+  }
+
+  @MainActor
+  func testEditedPanesRenderWithoutTrapping() {
+    let model = MacOSDesignModel.fromEnvironment(["ANYPICK_MACOS_FIXTURE": "ready"])
+    XCTAssertFalse(model.accounts.isEmpty, "fixture needs accounts for row coverage")
+    render(AccountsView(model: model))
+    render(ProxiesView(model: model))
+    render(ProxyHubView(model: model))
+    render(ActivityView(model: model))
+    for account in model.accounts {
+      render(AccountDetailView(model: model, accountID: account.id))
+    }
+    render(AccountDetailView(model: model, accountID: "no-such-account"))
+    for app in model.apps {
+      render(AppDetailView(model: model, appID: app.id))
+    }
+    for proxy in model.proxies {
+      render(ProxyDetailView(model: model, proxyID: proxy.id))
+    }
+    render(ProxyDetailView(model: model, proxyID: "no-such-proxy"))
+    let logsModel = MacOSDesignModel.fromEnvironment([
+      "ANYPICK_MACOS_FIXTURE": "ready",
+      "ANYPICK_MACOS_ACTIVITY_MODE": "logs",
+    ])
+    render(ActivityView(model: logsModel))
+    // Both hub power states: the footer buttons attach to different
+    // sections depending on conflicts, and the status row changes shape.
+    model.proxyHubEnabled = false
+    render(ProxyHubView(model: model))
+    model.proxyHubEnabled = true
+    render(ProxyHubView(model: model))
+  }
 }

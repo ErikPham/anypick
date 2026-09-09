@@ -15,6 +15,7 @@ final class TrayStore: ObservableObject {
   @Published private(set) var hubSources: [HubSourceSnapshot] = []
   @Published private(set) var hubConflicts: [HubConflictSnapshot] = []
   @Published private(set) var hubPublishedModels: [HubPublishedModelSnapshot] = []
+  @Published private(set) var hubCatalogs: [HubCatalogSnapshot] = []
   @Published private(set) var logSources: [LogSourceSnapshot] = []
   @Published private(set) var clientModelConfigs: [ClientModelConfigSnapshot] = []
   @Published private(set) var gateways: [GatewaySnapshot] = []
@@ -663,6 +664,7 @@ final class TrayStore: ObservableObject {
     hubSources = snapshot.hubSources ?? []
     hubConflicts = snapshot.hubConflicts ?? []
     hubPublishedModels = snapshot.hubPublishedModels ?? []
+    hubCatalogs = snapshot.hubCatalogs ?? []
     clientModelConfigs = snapshot.clientModelConfigs ?? []
     gateways = snapshot.gateways
     accountProviders = snapshot.accountProviders

@@ -60,17 +60,25 @@ struct ProxiesView: View {
       } header: {
         Text("Account Proxies")
       } footer: {
-        Text(
-          "All endpoints stay on this Mac and require authentication. Tokens are never shown."
-        )
+        VStack(alignment: .leading) {
+          Text(
+            "All endpoints stay on this Mac and require authentication. Tokens are never shown."
+          )
+          DesignPaneActions {
+            DesignSheetButton(
+              title: "Restart Running Proxies",
+              enabled: !model.isBusy && hasRunningProxy,
+              identifier: "proxies.restart"
+            ) { model.restartRunningProxies() }
+            DesignSheetButton(
+              title: "Stop All…",
+              enabled: !model.isBusy && hasRunningProxy,
+              destructive: true,
+              identifier: "proxies.stop-all"
+            ) { confirmStopAll = true }
+          }
+        }
       }
-    } actions: {
-      Button("Restart Running Proxies") { model.restartRunningProxies() }
-        .disabled(model.isBusy || !hasRunningProxy)
-        .accessibilityIdentifier("proxies.restart")
-      Button("Stop All…", role: .destructive) { confirmStopAll = true }
-        .disabled(model.isBusy || !hasRunningProxy)
-        .accessibilityIdentifier("proxies.stop-all")
     }
     .accessibilityIdentifier("proxies.list")
     .confirmationDialog(

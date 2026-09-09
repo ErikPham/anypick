@@ -1009,10 +1009,15 @@ final class ProductionDesignModel: MacOSDesignModel {
     proxies = store.proxies.filter { $0.providerId != "proxy-hub" }.map(designProxy)
     hubSources = store.hubSources.map(designHubSource)
     hubSourceIDs = Set(store.hubSources.filter(\.enabled).map(\.id))
-    routingConflicts = store.hubConflicts.map(designRoutingConflict)
-    publishedModels = designPublishedModels()
+    // Catalogs (static policy + warmed live lists, pins merged server-side)
+    // compile to counts, conflicts and published models here — one logic for
+    // fixture and production. The legacy Go-computed conflicts/published
+    // stay on the wire but no longer drive the pane.
+    hubCatalogs = store.hubCatalogs.map {
+      DesignHubCatalog(accountID: $0.accountID, catalogID: $0.catalog, models: $0.models)
+    }
+    recompileHubRouting()
     proxyHubEnabled = store.proxyHub?.running == true
-    proxyHubModelCount = store.proxyHub?.modelCount
     proxyHubPort = servicePort(from: store.proxyHub?.address) ?? proxyHubPort
     logSources = store.logSources.map {
       DesignLogSource(
@@ -1410,9 +1415,10 @@ final class ProductionDesignModel: MacOSDesignModel {
       return
     }
     if !serviceRunning {
+      let startTarget = store.proxyHub?.id == source.id ? "Proxy Hub" : "the proxy"
       setLogState(
         .stopped,
-        message: "Prior logs remain visible. Start the service to view new entries.")
+        message: "Prior logs may remain visible. Start \(startTarget) to view new entries.")
       return
     }
     switch store.logStatesBySource[source.id] {
@@ -1481,65 +1487,6 @@ final class ProductionDesignModel: MacOSDesignModel {
       warning: source.warning,
       modelCount: source.modelCount ?? 0
     )
-  }
-
-  private func designRoutingConflict(_ conflict: HubConflictSnapshot) -> DesignRoutingConflict {
-    let kind: DesignRoutingConflictKind =
-      conflict.kind == "source-choice" ? .sourceChoice : .modelOverlap
-    let models = conflict.models
-    let title: String
-    if let explicit = conflict.title, !explicit.isEmpty, kind == .sourceChoice {
-      title = explicit.replacingOccurrences(of: "Choose one ", with: "")
-        .replacingOccurrences(of: " account", with: "")
-    } else if kind == .sourceChoice {
-      title = "Account"
-    } else if models.count == 1 {
-      title = models[0]
-    } else {
-      title = "\(models.count) Models"
-    }
-    return DesignRoutingConflict(
-      id: conflict.id,
-      kind: kind,
-      title: title,
-      detail: DesignHubRouting.modelSummary(models),
-      models: models,
-      needsAttention: true,
-      candidates: conflict.candidates.map {
-        DesignRoutingCandidate(
-          id: $0.id,
-          label: $0.label,
-          detail: $0.detail,
-          provider: nativeProviderName($0.providerId),
-          actionID: $0.actionId
-        )
-      }
-    )
-  }
-
-  private func designPublishedModels() -> [DesignPublishedModel] {
-    if !store.hubPublishedModels.isEmpty {
-      return store.hubPublishedModels.map {
-        DesignPublishedModel(
-          modelID: $0.id,
-          ownerAccountID: $0.ownerAccountId,
-          ownerName: $0.ownerLabel,
-          ownerProvider: nativeProviderName($0.ownerProviderId),
-          needsChoice: $0.needsChoice
-        )
-      }
-    }
-    return store.hubConflicts.flatMap { conflict in
-      conflict.models.map { model in
-        DesignPublishedModel(
-          modelID: model,
-          ownerAccountID: nil,
-          ownerName: "Needs a choice",
-          ownerProvider: nativeProviderName(conflict.candidates.first?.providerId ?? ""),
-          needsChoice: true
-        )
-      }
-    }
   }
 
   override var savedAccountProviderOptions: [DesignProviderOption] {

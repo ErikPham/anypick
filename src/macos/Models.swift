@@ -57,7 +57,7 @@ class MacOSDesignModel: ObservableObject {
   @Published var serviceOperations: [String: DesignServiceOperation] = [:]
   @Published var serviceFailures: [String: String] = [:]
   @Published var degradedConditions: [DesignDegradedCondition] = []
-  private var hubCatalogs: [DesignHubCatalog] = []
+  var hubCatalogs: [DesignHubCatalog] = []
   private var hubModelOwners: [String: String] = [:]
   /// In-flight fixture simulations (L7/PX5). Production overrides every path
   /// that uses these, so they never affect the live service.

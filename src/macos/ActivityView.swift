@@ -9,96 +9,133 @@ struct ActivityView: View {
 
   var body: some View {
     activityPane
-    .searchable(
-      text: $searchQuery,
-      placement: .toolbar,
-      prompt: model.activityShowsLogs ? "Search logs" : "Search events"
-    )
-    .onChange(of: model.activityShowsLogs) { _, enabled in
-      searchQuery = ""
-      model.setActivityShowsLogs(enabled)
-      model.setLogPolling(enabled)
+      .toolbar { activityToolbar }
+      .onChange(of: model.activityShowsLogs) { _, enabled in
+        searchQuery = ""
+        model.setActivityShowsLogs(enabled)
+        model.setLogPolling(enabled)
+      }
+      .onChange(of: model.selectedLogSourceID) {
+        if model.activityShowsLogs { model.setLogPolling(true) }
+      }
+      .onAppear {
+        if model.activityShowsLogs { model.setLogPolling(true) }
+      }
+      .onDisappear {
+        model.setLogPolling(false)
+      }
+      .confirmationDialog(
+        "Clear Visible Logs?",
+        isPresented: $confirmClear,
+        titleVisibility: .visible
+      ) {
+        Button("Clear", role: .destructive) { model.clearActivity() }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("Accounts, apps, and proxies are unchanged.")
+      }
+      .confirmationDialog(
+        "Clear Visible Events?",
+        isPresented: $confirmClearEvents,
+        titleVisibility: .visible
+      ) {
+        Button("Clear", role: .destructive) { model.clearActivity() }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("Accounts, apps, and proxies are unchanged.")
+      }
+  }
+
+  /// Filter + search stay mounted. Adding/removing toolbar items when the
+  /// segmented control flips is what crashed Live Logs.
+  @ToolbarContentBuilder
+  private var activityToolbar: some ToolbarContent {
+    ToolbarItem(placement: .automatic) {
+      Menu {
+        Picker(
+          "Log Source",
+          selection: Binding(
+            get: { model.selectedLogSourceID },
+            set: { model.selectLogSource($0) }
+          )
+        ) {
+          if model.logSources.isEmpty {
+            Text("No Sources").tag("")
+          } else {
+            ForEach(model.logSources) { source in
+              Text(source.label).tag(source.id)
+            }
+          }
+        }
+        // Inline (not menu) style: the sources list flat, with a checkmark
+        // on the selected one — no nested "Log Source >" submenu.
+        .pickerStyle(.inline)
+      } label: {
+        Label("Filter Logs", systemImage: "line.3.horizontal.decrease")
+      }
+      .labelStyle(.iconOnly)
+      .help("Filter logs by provider")
+      .disabled(!model.activityShowsLogs || model.logSources.isEmpty)
+      .opacity(model.activityShowsLogs ? 1 : 0)
+      .allowsHitTesting(model.activityShowsLogs)
+      .accessibilityIdentifier("activity.logs.filter")
     }
-    .onChange(of: model.selectedLogSourceID) {
-      if model.activityShowsLogs { model.setLogPolling(true) }
-    }
-    .onAppear {
-      if model.activityShowsLogs { model.setLogPolling(true) }
-    }
-    .onDisappear {
-      model.setLogPolling(false)
-    }
-    .confirmationDialog(
-      "Clear Visible Logs?",
-      isPresented: $confirmClear,
-      titleVisibility: .visible
-    ) {
-      Button("Clear", role: .destructive) { model.clearActivity() }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Accounts, apps, and proxies are unchanged.")
-    }
-    .confirmationDialog(
-      "Clear Visible Events?",
-      isPresented: $confirmClearEvents,
-      titleVisibility: .visible
-    ) {
-      Button("Clear", role: .destructive) { model.clearActivity() }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Accounts, apps, and proxies are unchanged.")
+    ToolbarItem(placement: .primaryAction) {
+      DesignToolbarSearch(
+        text: $searchQuery,
+        prompt: model.activityShowsLogs ? "Search logs" : "Search events"
+      )
+      .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
     }
   }
 
   @ViewBuilder
   private var activityPane: some View {
-    if model.activityShowsLogs {
-      DesignGroupedPane {
-        Section {
-          paneHeader
-          modeControl
+    DesignGroupedPane(fillHeight: true) {
+      Section {
+        paneHeader
+        modeControl
+        if model.activityShowsLogs {
           logStateNotice
           logsRows
-        } footer: {
-          Text("Sensitive values are redacted before logs reach this window.")
+        } else if filteredActivity.isEmpty {
+          emptyState(
+            symbol: "clock.arrow.circlepath",
+            message: searchQuery.isEmpty
+              // Design node QiTN4 (Activity Event).
+              ? "Changes to accounts and app settings will appear here."
+              : "No events match your search."
+          )
+        } else {
+          eventsWell
         }
-      } actions: {
-        Button("Clear Log…", role: .destructive) { confirmClear = true }
-          .disabled(filteredLogLines.isEmpty)
-          .accessibilityIdentifier("activity.clear-log")
-      }
-    } else {
-      DesignGroupedPane {
-        Section {
-          paneHeader
-          modeControl
-          if filteredActivity.isEmpty {
-            emptyState(
-              symbol: "clock.arrow.circlepath",
-              message: searchQuery.isEmpty
-                ? "Activity will appear here."
-                : "No events match your search."
-            )
-          } else {
-            ForEach(eventSections, id: \.key) { section in
-              dayHeader(section.key)
-              ForEach(section.items) { item in
-                eventRow(item)
-              }
+      } footer: {
+        VStack(alignment: .leading, spacing: 8) {
+          if model.activityShowsLogs {
+            Text("Sensitive values are redacted before logs reach this window.")
+          }
+          DesignPaneActions {
+            if model.activityShowsLogs {
+              DesignSheetButton(
+                title: "Clear Log…",
+                enabled: !filteredLogLines.isEmpty,
+                destructive: true,
+                identifier: "activity.clear-log"
+              ) { confirmClear = true }
+            } else {
+              DesignSheetButton(
+                title: "Clear Events…",
+                enabled: !filteredActivity.isEmpty,
+                destructive: true,
+                identifier: "activity.clear-events"
+              ) { confirmClearEvents = true }
             }
           }
         }
-      } actions: {
-        // Events had no Clear path (L1): the dialog existed for logs only
-        // while the model already supported both branches.
-        Button("Clear Events…", role: .destructive) { confirmClearEvents = true }
-          .disabled(filteredActivity.isEmpty)
-          .accessibilityIdentifier("activity.clear-events")
       }
     }
   }
 
-  /// Subtitle only — the toolbar already titles the pane "Activity".
   private var paneHeader: some View {
     Text("Recent changes and recovery information")
       .font(.subheadline)
@@ -108,69 +145,54 @@ struct ActivityView: View {
       .accessibilityIdentifier("activity.header")
   }
 
-  /// Activity rows use the compact rhythm from the design while SwiftUI owns
-  /// the actual grouped Form and separators.
   private let rowInsets = EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
 
-  /// Native segmented Events/Live Logs picker with system styling.
+  /// Segmented control only — filter belongs in the toolbar (c2cES), not
+  /// beside the tabs (YwThk).
   private var modeControl: some View {
-    HStack(spacing: 12) {
-      Picker("View", selection: $model.activityShowsLogs) {
-        Text("Events").tag(false)
-        Text("Live Logs").tag(true)
-      }
-      .pickerStyle(.segmented)
-      .frame(maxWidth: 240)
-      .accessibilityIdentifier("activity.mode.picker")
-      Spacer(minLength: 12)
-      // No toolbar buttons: the log filter lives beside the mode picker so
-      // it survives without titlebar chrome.
-      if model.activityShowsLogs {
-        logSourceMenu
-      }
-      if model.activityShowsLogs, model.logState == .ready {
-        Label {
-          Text("Live")
-        } icon: {
-          Image(systemName: "dot.radiowaves.left.and.right")
-        }
-        .foregroundStyle(.green)
-        .accessibilityIdentifier("activity.logs.live")
-      }
+    Picker("View", selection: $model.activityShowsLogs) {
+      Text("Events").tag(false)
+      Text("Live Logs").tag(true)
     }
-    .padding(.vertical, 10)
-    .padding(.horizontal, 12)
-    .accessibilityElement(children: .contain)
+    .pickerStyle(.segmented)
+    .labelsHidden()
+    .controlSize(.regular)
     .accessibilityLabel("Activity view")
     .accessibilityIdentifier("activity.mode")
+    .accessibilityIdentifier("activity.mode.picker")
   }
 
-  /// The Pencil filter button maps to a native toolbar Menu. The selected
-  /// source receives the standard checkmark treatment from NSMenu. Design
-  /// ngJKM draws it icon-only (three filter lines, no title).
-  private var logSourceMenu: some View {
-    Menu {
-      ForEach(model.logSources) { source in
-        Button {
-          model.selectLogSource(source.id)
-        } label: {
-          if source.id == model.selectedLogSourceID {
-            Label(source.label, systemImage: "checkmark")
-          } else {
-            Text(source.label)
+  /// Events well, mirroring the log viewer: hugs short content but grows to
+  /// fill the pane's full height (the enclosing `DesignGroupedPane` is opened
+  /// with `fillHeight: true`) so the Activity view no longer floats with empty
+  /// space below. Scrolls past a long list — the controls above stay put.
+  private var eventsWell: some View {
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 0) {
+        ForEach(eventSections, id: \.key) { section in
+          dayHeader(section.key)
+            .padding(.top, section.key == eventSections.first?.key ? 0 : 8)
+          ForEach(section.items) { item in
+            eventRow(item)
+              .padding(.vertical, 6)
+            if item.id != section.items.last?.id {
+              Divider()
+            }
           }
         }
       }
-    } label: {
-      Label("Filter Logs", systemImage: "line.3.horizontal.decrease")
+      .padding(8)
     }
-    .labelStyle(.iconOnly)
-    .help("Filter logs by provider")
-    .disabled(model.logSources.isEmpty)
-    .accessibilityIdentifier("activity.logs.filter")
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color(nsColor: .textBackgroundColor))
+    .clipShape(RoundedRectangle(cornerRadius: 6))
+    .overlay(
+      RoundedRectangle(cornerRadius: 6)
+        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+    )
+    .accessibilityIdentifier("activity.events.well")
   }
 
-  /// Day label row ("Today") as a semantic section header.
   private func dayHeader(_ label: String) -> some View {
     Text(label)
       .foregroundStyle(.secondary)
@@ -186,8 +208,6 @@ struct ActivityView: View {
         .monospacedDigit()
         .frame(width: 62, alignment: .leading)
         .accessibilityHidden(true)
-      // Success events keep their own icon; problem states use the canonical
-      // status glyph so they never read as success.
       Image(
         systemName: item.status == .ready || item.status == .running
           ? item.symbol : item.status.symbol
@@ -219,7 +239,6 @@ struct ActivityView: View {
     .accessibilityIdentifier("activity.event.\(item.id)")
   }
 
-  /// Day buckets in list order; the model already returns newest first.
   private var eventSections: [(key: String, items: [DesignActivity])] {
     var sections: [(String, [DesignActivity])] = []
     for item in filteredActivity {
@@ -234,18 +253,16 @@ struct ActivityView: View {
 
   @ViewBuilder
   private var logsRows: some View {
-    // The design keeps the console frame always visible — a bounded,
-    // independently scrolling region — with placeholder copy inside it when
-    // there is nothing to show. Conditionally removing the frame left a void
-    // and made the pane jump between states.
+    if model.logState == .ready {
+      LabeledContent("Status", value: "Live")
+        .accessibilityIdentifier("activity.logs.live")
+        .listRowInsets(rowInsets)
+    }
     ActivityLogViewer(lines: Array(filteredLogLines.suffix(200)), placeholder: logPlaceholder)
-      .frame(maxWidth: .infinity, minHeight: 320, maxHeight: 320)
-      .listRowBackground(Color.clear)
+      .frame(maxWidth: .infinity, minHeight: 280, maxHeight: .infinity)
       .listRowInsets(rowInsets)
   }
 
-  /// Passive copy inside the console when it has no lines. Status + actions
-  /// still live in the notice above; this only fills the frame.
   private var logPlaceholder: String? {
     guard filteredLogLines.isEmpty else { return nil }
     if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -270,7 +287,7 @@ struct ActivityView: View {
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
     }
-    .frame(maxWidth: .infinity, minHeight: 120)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     .accessibilityElement(children: .combine)
     .listRowInsets(rowInsets)
   }
@@ -278,7 +295,9 @@ struct ActivityView: View {
   @ViewBuilder
   private var logStateNotice: some View {
     switch model.logState {
-    case .idle, .ready:
+    case .idle, .ready, .stopped:
+      // Stopped shows no notice block: the log viewer placeholder already
+      // says the proxy is not running. A notice + placeholder says it twice.
       EmptyView()
     case .loading:
       HStack(spacing: 8) {
@@ -294,14 +313,6 @@ struct ActivityView: View {
         title: "No Logs Yet",
         message: model.logStateMessage ?? "The service has not written any log entries.",
         symbol: "doc.text"
-      )
-    case .stopped:
-      logNotice(
-        title: "Proxy Is Not Running",
-        message: model.logStateMessage ?? "Prior logs remain visible.",
-        symbol: "stop.circle",
-        actionTitle: stoppedActionTitle,
-        action: startStoppedSource
       )
     case .error:
       logNotice(
@@ -346,33 +357,6 @@ struct ActivityView: View {
     .listRowInsets(rowInsets)
   }
 
-  /// The stopped notice offers Start right here (L6): sending the user to
-  /// the Proxies pane for the one action this screen is about is a dead end.
-  /// Hub sources resolve to the hub toggle — the hub has no proxy row.
-  private var stoppedProxyID: String? {
-    let id = model.selectedLogSourceID
-    guard !id.isEmpty else { return nil }
-    if model.logSources.first(where: { $0.id == id })?.provider == "proxy-hub" {
-      return model.proxyHubEnabled ? nil : "hub"
-    }
-    guard model.proxies.contains(where: { $0.id == id }) else { return nil }
-    return id
-  }
-
-  private var stoppedActionTitle: String? {
-    guard let id = stoppedProxyID else { return nil }
-    return id == "hub" ? "Start Hub" : "Start Proxy"
-  }
-
-  private func startStoppedSource() {
-    guard let id = stoppedProxyID else { return }
-    if id == "hub" {
-      model.setProxyHubEnabled(true)
-    } else {
-      model.setProxyEnabled(id: id, enabled: true)
-    }
-  }
-
   private var filteredActivity: [DesignActivity] {
     let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return model.activity }
@@ -388,122 +372,82 @@ struct ActivityView: View {
   }
 }
 
-extension Color {
-  /// Log console uses system colors so Increase Contrast follows the OS.
-  static var logConsoleText: Color { .white }
-  static var logConsoleAccent: Color { .green }
-}
-
-/// The log console from design EKVHg ("Raw Log Viewer"): pure-black frame
-/// both modes, 13pt mono $log-text lines, redaction note in $log-accent
-/// green, 12/14 padding. Selectable, independently scrolling AppKit text
-/// view — no bezel, fixed 320 height like the design frame.
+/// Bezel log well. System mono and label colors. Fills the pane height (the
+/// enclosing `DesignGroupedPane` is opened with `fillHeight: true`) so Live
+/// Logs no longer floats with empty space below. The historical crash from
+/// filling the window with an NSTextView is now guarded by the coordinator's
+/// `lastText` check — `apply` returns early when the text is unchanged, so a
+/// scroll-to-end cannot re-enter `updateNSView` and loop.
 private struct ActivityLogViewer: NSViewRepresentable {
   let lines: [String]
-  /// Shown in secondary color when lines is empty so the console frame is
-  /// never a dead black box. Nil disables the placeholder.
   let placeholder: String?
 
-  private static let logFont: NSFont =
-    NSFont(name: "JetBrainsMono-Regular", size: 13)
-    ?? NSFont(name: "JetBrains Mono", size: 13)
-    ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-
-  private static let lineSpacing: CGFloat = 7
-
   func makeNSView(context: Context) -> NSScrollView {
-    let scrollView = NSScrollView()
+    let scrollView = NSTextView.scrollableTextView()
     scrollView.hasVerticalScroller = true
     scrollView.autohidesScrollers = true
-    scrollView.borderType = .noBorder
-    scrollView.drawsBackground = false
-    scrollView.backgroundColor = .black
+    scrollView.borderType = .bezelBorder
     scrollView.setAccessibilityIdentifier("activity.logs")
-
-    let textView = NSTextView()
-    textView.isEditable = false
-    textView.isRichText = true
-    textView.isSelectable = true
-    textView.drawsBackground = true
-    textView.backgroundColor = .black
-    textView.textColor = .white
-    textView.font = Self.logFont
-    textView.textContainerInset = NSSize(width: 14, height: 12)
-    textView.textContainer?.widthTracksTextView = true
-    scrollView.documentView = textView
-    update(textView, in: scrollView)
+    if let textView = scrollView.documentView as? NSTextView {
+      textView.isEditable = false
+      textView.isSelectable = true
+      textView.isRichText = true
+      textView.drawsBackground = true
+      textView.backgroundColor = .textBackgroundColor
+      textView.textColor = .labelColor
+      textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+      textView.textContainerInset = NSSize(width: 8, height: 8)
+      textView.textContainer?.widthTracksTextView = true
+      textView.minSize = .zero
+      textView.maxSize = NSSize(
+        width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+      textView.isVerticallyResizable = true
+      textView.isHorizontallyResizable = false
+      textView.autoresizingMask = [.width]
+    }
+    context.coordinator.apply(lines: lines, placeholder: placeholder, in: scrollView)
     return scrollView
   }
 
   func updateNSView(_ scrollView: NSScrollView, context: Context) {
-    guard let textView = scrollView.documentView as? NSTextView else { return }
-    update(textView, in: scrollView)
+    context.coordinator.apply(lines: lines, placeholder: placeholder, in: scrollView)
   }
 
-  private static func paragraph() -> NSParagraphStyle {
-    let style = NSMutableParagraphStyle()
-    style.lineSpacing = lineSpacing
-    return style
-  }
+  func makeCoordinator() -> Coordinator { Coordinator() }
 
-  private func update(_ textView: NSTextView, in scrollView: NSScrollView) {
-    // Placeholder mode: grey, tracked by content so the color flips back
-    // the moment real lines arrive.
-    if lines.isEmpty, let placeholder {
-      let styled = NSAttributedString(
-        string: placeholder,
-        attributes: [
-          .font: Self.logFont,
-          .foregroundColor: NSColor.secondaryLabelColor,
-          .paragraphStyle: Self.paragraph(),
-        ])
-      if !textView.attributedString().isEqual(to: styled) {
-        textView.textStorage?.setAttributedString(styled)
-        // Entering placeholder mode (e.g. right after Clear) keeps the old
-        // scroll offset, stranding the frame on empty space (L8) — pin top.
-        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
-        scrollView.reflectScrolledClipView(scrollView.contentView)
+  final class Coordinator {
+    private var lastText = ""
+
+    func apply(lines: [String], placeholder: String?, in scrollView: NSScrollView) {
+      guard let textView = scrollView.documentView as? NSTextView else { return }
+      let font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+      let text: String
+      let color: NSColor
+      if lines.isEmpty, let placeholder {
+        text = placeholder
+        color = .secondaryLabelColor
+      } else {
+        text = lines.joined(separator: "\n")
+        color = .labelColor
       }
-      return
-    }
-    let full = NSMutableAttributedString()
-    let bodyAttributes: [NSAttributedString.Key: Any] = [
-      .font: Self.logFont,
-      .foregroundColor: NSColor.white,
-      .paragraphStyle: Self.paragraph(),
-    ]
-    let accentAttributes: [NSAttributedString.Key: Any] = [
-      .font: Self.logFont,
-      .foregroundColor: NSColor.systemGreen,
-      .paragraphStyle: Self.paragraph(),
-    ]
-    for (index, line) in lines.enumerated() {
-      // The design paints the redaction note green ($log-accent); every
-      // other line is $log-text.
-      let attrs =
-        line.localizedCaseInsensitiveContains("redact")
-        ? accentAttributes : bodyAttributes
-      full.append(NSAttributedString(string: line, attributes: attrs))
-      if index < lines.count - 1 {
-        full.append(NSAttributedString(string: "\n", attributes: bodyAttributes))
-      }
-    }
-    if !textView.attributedString().isEqual(to: full) {
-      // Pin the offset before the layout changes. When the user was already
-      // at the bottom (the common tail-following case), re-pin to the new
-      // bottom after the update instead of leaving them one page up.
+      guard text != lastText else { return }
+      lastText = text
       let visible = scrollView.documentVisibleRect
       let contentHeight =
         (scrollView.documentView?.bounds.height ?? visible.maxY) - visible.height
       let wasAtBottom = visible.minY >= contentHeight - 4
-      let savedOrigin = scrollView.contentView.bounds.origin
-      textView.textStorage?.setAttributedString(full)
-      textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-      if wasAtBottom {
-        textView.scrollToEndOfDocument(nil)
-      } else {
-        scrollView.contentView.scroll(to: savedOrigin)
+      textView.textStorage?.setAttributedString(
+        NSAttributedString(
+          string: text,
+          attributes: [
+            .font: font,
+            .foregroundColor: color,
+          ]))
+      if lines.isEmpty {
+        scrollView.contentView.scroll(to: .zero)
         scrollView.reflectScrolledClipView(scrollView.contentView)
+      } else if wasAtBottom {
+        textView.scrollToEndOfDocument(nil)
       }
     }
   }

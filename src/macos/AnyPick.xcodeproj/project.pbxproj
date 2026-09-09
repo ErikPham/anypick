@@ -68,6 +68,34 @@
 		12000000000000000000000D /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* Motion.swift */; };
 		12000000000000000000000E /* ProductionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProductionModel.swift */; };
 		12000000000000000000000F /* DesignFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* DesignFixture.swift */; };
+		120000000000000000000010 /* AccountDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* AccountDetailView.swift */; };
+		120000000000000000000011 /* AccountFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountFlows.swift */; };
+		120000000000000000000012 /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* AccountsView.swift */; };
+		120000000000000000000013 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* ActivityView.swift */; };
+		120000000000000000000014 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* AppDelegate.swift */; };
+		120000000000000000000015 /* AppDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AppDetailView.swift */; };
+		120000000000000000000016 /* AppSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AppSheets.swift */; };
+		120000000000000000000017 /* AppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* AppsView.swift */; };
+		120000000000000000000018 /* BackupFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* BackupFlows.swift */; };
+		120000000000000000000019 /* BackupsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* BackupsView.swift */; };
+		12000000000000000000001A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
+		12000000000000000000001B /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* MainWindow.swift */; };
+		12000000000000000000001C /* MenuBarChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001E /* MenuBarChrome.swift */; };
+		12000000000000000000001D /* MenuBarFirstRun.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* MenuBarFirstRun.swift */; };
+		12000000000000000000001E /* MenuBarHome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* MenuBarHome.swift */; };
+		12000000000000000000001F /* MenuBarMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* MenuBarMenu.swift */; };
+		120000000000000000000020 /* MenuBarPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* MenuBarPreview.swift */; };
+		120000000000000000000021 /* MenuBarSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001F /* MenuBarSearch.swift */; };
+		120000000000000000000022 /* MenuBarSwitching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* MenuBarSwitching.swift */; };
+		120000000000000000000023 /* MenuBarUseWith.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* MenuBarUseWith.swift */; };
+		120000000000000000000024 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* OverviewView.swift */; };
+		120000000000000000000025 /* ProxiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* ProxiesView.swift */; };
+		120000000000000000000026 /* ProxyDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* ProxyDetailView.swift */; };
+		120000000000000000000027 /* ProxyFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* ProxyFlows.swift */; };
+		120000000000000000000028 /* ProxyHubView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000017 /* ProxyHubView.swift */; };
+		120000000000000000000029 /* SettingsPanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* SettingsPanes.swift */; };
+		12000000000000000000002A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* SettingsView.swift */; };
+		12000000000000000000002B /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* SharedUI.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -472,6 +500,34 @@
 				12000000000000000000000D /* Motion.swift in Sources */,
 				12000000000000000000000E /* ProductionModel.swift in Sources */,
 				12000000000000000000000F /* DesignFixture.swift in Sources */,
+							120000000000000000000010 /* AccountDetailView.swift in Sources */,
+				120000000000000000000011 /* AccountFlows.swift in Sources */,
+				120000000000000000000012 /* AccountsView.swift in Sources */,
+				120000000000000000000013 /* ActivityView.swift in Sources */,
+				120000000000000000000014 /* AppDelegate.swift in Sources */,
+				120000000000000000000015 /* AppDetailView.swift in Sources */,
+				120000000000000000000016 /* AppSheets.swift in Sources */,
+				120000000000000000000017 /* AppsView.swift in Sources */,
+				120000000000000000000018 /* BackupFlows.swift in Sources */,
+				120000000000000000000019 /* BackupsView.swift in Sources */,
+				12000000000000000000001A /* GoServiceProcess.swift in Sources */,
+				12000000000000000000001B /* MainWindow.swift in Sources */,
+				12000000000000000000001C /* MenuBarChrome.swift in Sources */,
+				12000000000000000000001D /* MenuBarFirstRun.swift in Sources */,
+				12000000000000000000001E /* MenuBarHome.swift in Sources */,
+				12000000000000000000001F /* MenuBarMenu.swift in Sources */,
+				120000000000000000000020 /* MenuBarPreview.swift in Sources */,
+				120000000000000000000021 /* MenuBarSearch.swift in Sources */,
+				120000000000000000000022 /* MenuBarSwitching.swift in Sources */,
+				120000000000000000000023 /* MenuBarUseWith.swift in Sources */,
+				120000000000000000000024 /* OverviewView.swift in Sources */,
+				120000000000000000000025 /* ProxiesView.swift in Sources */,
+				120000000000000000000026 /* ProxyDetailView.swift in Sources */,
+				120000000000000000000027 /* ProxyFlows.swift in Sources */,
+				120000000000000000000028 /* ProxyHubView.swift in Sources */,
+				120000000000000000000029 /* SettingsPanes.swift in Sources */,
+				12000000000000000000002A /* SettingsView.swift in Sources */,
+				12000000000000000000002B /* SharedUI.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

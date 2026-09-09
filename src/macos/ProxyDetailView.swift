@@ -78,29 +78,11 @@ struct ProxyDetailView: View {
         } header: {
           Text("Endpoint")
         } footer: {
-          Text("This proxy listens only on this Mac. Its token isn’t shown.")
-        }
-
-        } actions: {
-          Button("Restart Proxy") { model.restartProxy(id: proxy.id) }
-            .disabled(
-              model.isBusy
-                || !canRestartProxy(enabled: proxy.enabled, status: proxy.status)
-                || model.serviceOperations[proxy.id] != nil
-            )
-            .accessibilityIdentifier("proxies.inspector.restart")
-          Button(
-            proxy.enabled ? "Stop Proxy" : "Start Proxy",
-            role: proxy.enabled ? .destructive : nil
-          ) {
-            if proxy.enabled {
-              confirmStop = true
-            } else {
-              model.setProxyEnabled(id: proxy.id, enabled: true)
-            }
+          VStack(alignment: .leading) {
+            Text("This proxy listens only on this Mac. Its token isn’t shown.")
+            proxyActions(for: proxy)
           }
-          .disabled(model.isBusy || model.serviceOperations[proxy.id] != nil)
-          .accessibilityIdentifier("proxies.inspector.toggle")
+        }
         }
       } else {
         DesignEmptyState(
@@ -128,6 +110,30 @@ struct ProxyDetailView: View {
   private var shortName: String {
     guard let proxy else { return "Proxy" }
     return nativeProviderName(proxy.provider)
+  }
+
+  private func proxyActions(for proxy: DesignProxy) -> some View {
+    DesignPaneActions {
+      DesignSheetButton(
+        title: "Restart Proxy",
+        enabled: !model.isBusy
+          && canRestartProxy(enabled: proxy.enabled, status: proxy.status)
+          && model.serviceOperations[proxy.id] == nil,
+        identifier: "proxies.inspector.restart"
+      ) { model.restartProxy(id: proxy.id) }
+      DesignSheetButton(
+        title: proxy.enabled ? "Stop Proxy" : "Start Proxy",
+        enabled: !model.isBusy && model.serviceOperations[proxy.id] == nil,
+        destructive: proxy.enabled,
+        identifier: "proxies.inspector.toggle"
+      ) {
+        if proxy.enabled {
+          confirmStop = true
+        } else {
+          model.setProxyEnabled(id: proxy.id, enabled: true)
+        }
+      }
+    }
   }
 
   private var providerName: String {

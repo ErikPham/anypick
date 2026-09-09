@@ -38,9 +38,13 @@ enum DesignHubRouting {
     }
   }
 
+  /// Fixture-only catalogs, keyed by fixture account id. Production never
+  /// reaches here with real ids: ProductionModel overwrites hubCatalogs
+  /// from snapshot HubCatalogs on every sync. Do not add production ids —
+  /// real catalogs arrive from the engine (discovery cache/static policy).
   static func catalogs(from accounts: [DesignAccount]) -> [DesignHubCatalog] {
     accounts.filter(isEligible).compactMap { account in
-      guard let models = models(for: account.id), !models.isEmpty else { return nil }
+      guard let models = fixtureModels(for: account.id), !models.isEmpty else { return nil }
       return DesignHubCatalog(
         accountID: account.id,
         catalogID: catalogID(for: account),
@@ -238,7 +242,7 @@ enum DesignHubRouting {
     }
   }
 
-  private static func models(for accountID: String) -> [String]? {
+  private static func fixtureModels(for accountID: String) -> [String]? {
     switch accountID {
     case "claude-work":
       return claudeShared + ["claude-opus-4-1-thinking"]

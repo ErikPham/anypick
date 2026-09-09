@@ -100,6 +100,13 @@ struct HubPublishedModelSnapshot: Decodable, Identifiable {
   let needsChoice: Bool
 }
 
+/// One account's publishable models, by hub source id. Model ids only.
+struct HubCatalogSnapshot: Decodable {
+  let accountID: String
+  let catalog: String
+  let models: [String]
+}
+
 struct LogSourceSnapshot: Decodable, Identifiable, Equatable {
   let id: String
   let label: String
@@ -260,6 +267,7 @@ struct TraySnapshot: Decodable {
   let hubSources: [HubSourceSnapshot]?
   let hubConflicts: [HubConflictSnapshot]?
   let hubPublishedModels: [HubPublishedModelSnapshot]?
+  let hubCatalogs: [HubCatalogSnapshot]?
   let logSources: [LogSourceSnapshot]?
   let clientModelConfigs: [ClientModelConfigSnapshot]?
   let gateways: [GatewaySnapshot]

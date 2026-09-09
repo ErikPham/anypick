@@ -17,6 +17,28 @@ struct AppDetailView: View {
     app?.routeOptions.contains { $0.kind != .native } == true
   }
 
+  private var showsUsageSection: Bool {
+    guard let app, model.showUsage else { return false }
+    return !app.usageWindows.isEmpty || isAppRouteConfigured(app)
+  }
+
+  @ViewBuilder
+  private var appActions: some View {
+    // Board JC9e8 + System Settings (Displays › Advanced…): pane-level
+    // actions sit under the last group as real bordered controls,
+    // never floating plain text.
+    if supportsManagedRouting {
+      DesignPaneActions {
+        DesignSheetButton(
+          title: "Reset App Settings",
+          enabled: !model.isBusy,
+          destructive: true,
+          identifier: "app.reset"
+        ) { confirmReset = true }
+      }
+    }
+  }
+
   private var showsModelConfiguration: Bool {
     guard let selectedRoute, selectedRoute.kind != .native else { return false }
     return app?.modelRoles.isEmpty == false
@@ -93,37 +115,41 @@ struct AppDetailView: View {
           } header: {
             Text("Models")
           } footer: {
-            if !app.modelEditingAvailable, let reason = app.modelUnavailableReason,
-              !reason.isEmpty
-            {
-              Text(reason)
+            VStack(alignment: .leading) {
+              if !app.modelEditingAvailable, let reason = app.modelUnavailableReason,
+                !reason.isEmpty
+              {
+                Text(reason)
+              }
+              if !showsUsageSection {
+                appActions
+              }
             }
           }
         }
 
         if model.showUsage, !app.usageWindows.isEmpty {
-          Section("Usage") {
+          Section {
             ForEach(app.usageWindows) { window in
               usageRow(window)
             }
+          } header: {
+            Text("Usage")
+          } footer: {
+            appActions
           }
         } else if model.showUsage, isAppRouteConfigured(app) {
           // A10: a configured login with no quota API says so — as a normal
           // boxed row like every other note in this pane.
-          Section("Usage") {
+          Section {
             Text("This login doesn’t report usage.")
               .foregroundStyle(.secondary)
+          } header: {
+            Text("Usage")
+          } footer: {
+            appActions
           }
         }
-      }
-    } actions: {
-      // Board JC9e8 + System Settings (Displays › Advanced…): pane-level
-      // actions sit under the last group, outside the Form — as real bordered
-      // controls, never floating plain text.
-      if supportsManagedRouting {
-        Button("Reset App Settings", role: .destructive) { confirmReset = true }
-          .disabled(model.isBusy)
-          .accessibilityIdentifier("app.reset")
       }
     }
     .sheet(isPresented: $showingRoutes) {

@@ -1106,28 +1106,28 @@ struct AccountInspectSheet: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
-            LabeledContent("Account", value: disambiguatedAccountName(for: account, in: model.accounts))
-            let identityValue = accountIdentityLine(provider: account.provider, detail: account.detail)
-            if !identityValue.isEmpty {
-              LabeledContent("Identity", value: identityValue)
-            }
-            if model.isCurrentAccount(account) {
-              LabeledContent("Status") {
-                Label("Current", systemImage: "checkmark.circle.fill")
-                  .foregroundStyle(.green)
-                  .labelStyle(.titleAndIcon)
+          }
+
+          Section {
+            LabeledContent("Provider", value: account.provider)
+            LabeledContent("Type", value: account.kind == .gateway ? "API Gateway" : "Saved Login")
+            LabeledContent("Status") {
+              if model.isCurrentAccount(account) {
+                Text("Current")
+                  .foregroundStyle(.secondary)
+              } else {
+                DesignStatusLabel(status: account.status)
               }
             }
             Button("Edit…") { editing = true }
               .accessibilityIdentifier("account-inspect.edit")
           }
+
           if !usageWindows.isEmpty {
             Section {
               ForEach(usageWindows) { window in
                 VStack(alignment: .leading, spacing: 6) {
-                  HStack {
-                    Text(window.label)
-                    Spacer()
+                  LabeledContent(window.label) {
                     Text("\(window.remainingPercent)% remaining")
                       .foregroundStyle(.secondary)
                       .monospacedDigit()
