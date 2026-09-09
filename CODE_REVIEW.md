@@ -23,7 +23,7 @@ Read this before copying a review process from a larger project.
 So review happens in **three layers**, in this order. Cheapest first; judgment
 last, and only on what machines cannot decide.
 
-1. **Automated gates** — `make fmt-check`, `make vet`, `make test`, `make gates`.
+1. **Automated gates** — `make ci` (`review` + `lint` + `test-race`).
    Non-negotiable, no discretion, no exceptions.
 2. **Invariant tests** — the project's real safety net. A rule that matters is a
    test that fails the build (§5).
@@ -51,7 +51,7 @@ parallel scale.
 | --- | --- | --- |
 | **P0** | Security hole, credential/data loss or corruption, deadlock, broken published contract, a secret crossing an output boundary. | Blocked. |
 | **P1** | Correctness risk on a reachable path, a bypassed invariant, a missing regression for a behaviour change, user-facing docs that now lie. | Blocked. |
-| **P2** | Missing validation, confusing naming, duplication worth extracting, avoidable allocation or N+1, a test that would not fail if the code were deleted. | Fix, or open a follow-up with an owner. |
+| **P2** | Missing validation, confusing naming, duplication worth extracting, avoidable allocation or N+1, a test that would not fail if the code were deleted. | Fix, or open a follow-up with an owner and a due date. |
 | **P3** | Opinion, style a linter does not cover, future refactoring. | Say it once, then drop it. |
 
 A finding must carry **path, symbol or tight line range, the authority it
@@ -69,7 +69,9 @@ change violates, not their taste.
 
 1. `AGENTS.md` invariants — the highest-precedence statement of what must hold.
 2. Accepted ADRs by number (`adr/`). Accepted records are **superseded, never
-   edited**.
+   edited**. Their decisions remain authoritative, but filenames, language, and
+   test names from before the Go cutover are historical implementation detail;
+   use `AGENTS.md` and the current composition root for today's symbols.
 3. The code itself, for behaviour not covered by an ADR — `src/go/internal/app/app.go`
    is the composition root.
 4. `docs/src/content/docs/` and `README.md` — what users believe. If a change
@@ -87,14 +89,12 @@ Every change, including one-line ones.
 
 **Gates (must be green — paste the output, don't claim it)**
 
-- [ ] `make review` — one command: `fmt-check` + `vet` + `test` + `gates`
-      (paths + protocol-sync + release-check)
-- [ ] `make lint` — staticcheck. CI runs it, so red lint is a red PR. It needs
-      `go install honnef.co/go/tools/cmd/staticcheck@v0.8.1` locally.
-- [ ] `make test-race` — for anything touching concurrency, the coordinator, or
-      the proxy
-- [ ] The affected platform job: `make app-test` / `make tauri-check` /
-      `cd docs && pnpm build`
+- [ ] `make ci` — one command for the universal Go engine checks: `make review`
+      (`fmt-check` + `vet` + `test` + `gates`), `make lint`, and `make test-race`.
+      Use the same pinned staticcheck version as CI.
+- [ ] The affected platform job: `make app-test`; the complete Tauri CI job
+      (typecheck + UI build + Rust check/format/test/clippy/audit); or
+      `make docs-check docs-build`
 
 **Shape**
 
@@ -265,47 +265,92 @@ Apply the universal list, plus the list for every area the diff touches.
 
 ### Change sizes
 
-| Size | Route |
-| --- | --- |
-| **Typo, comment, doc fix** | Universal checklist. Ship. |
-| **Normal change** | Universal + area checklists. Self-review against this file, with gate output pasted into the PR. |
-| **Risky change** — credentials, activation, proxy, locking, schema, protocol, release, or an area you have not touched before | Independent review required (below). Plus an ADR if it is load-bearing. |
+| Class | Trigger | Route |
+| --- | --- | --- |
+| **Low** | Typo, comment, or documentation-only correction with no contract change. | Universal checklist. |
+| **Normal** | Bounded behaviour change in a familiar area outside a trust boundary. | Universal + every affected area checklist; self-review is sufficient. |
+| **High** | Credentials, activation, transfer, proxy/secrets, locking, persistence/schema, protocol, release, a gate/exemption, or an unfamiliar area. | Independent contract review and independent evidence audit are required. One reviewer may do both only if they did not author or repair the change. |
+| **Architectural** | A new trust boundary, persistence owner, protocol/platform commitment, or another decision that constrains future work. | High-risk route plus a new ADR. |
 
-Write an ADR when a decision will constrain future work: a new trust boundary,
-a new persistence owner, a protocol change, a platform support decision. Do not
-edit an accepted one — write a new record and mark the old superseded.
+The author must select exactly one class in the PR and state why. When uncertain,
+choose the higher class. Review can raise but never lower the class without a
+written rationale.
+
+Write an ADR when a decision will constrain future work. Do not edit an accepted
+one — write a new record and mark the old superseded.
+
+### Roles
+
+- **Author** — selects the risk class, names the authorities and failure impact,
+  supplies tests and raw gate evidence, and never approves their own work.
+- **Independent contract reviewer** — reads the diff against the named
+  authorities and reports P0–P3 findings. This context did not author the change.
+- **Independent evidence auditor** — checks that the recorded commands ran on
+  the reviewed commit and that the outputs support the claim. This context does
+  not repair the change it audits.
+
+Low and normal changes need the author role. High and architectural changes need
+all three roles. One independent reviewer may perform both independent roles if
+they did not author or repair the change.
 
 ### Independent review
 
-For a risky change, get a review from a context that did not write the code:
+For a high or architectural change:
 
-1. Hand over the diff and the authority paths (`AGENTS.md` invariants, the
-   relevant ADRs, the command surface).
+1. Record the head commit SHA. Hand over that exact diff and the authority paths
+   (`AGENTS.md` invariants, the relevant ADRs, and the command surface).
 2. Ask for P0–P3 findings with path, authority, failure mode, and required
    regression. Forbid "looks good" and require `no actionable findings` when
    that is the truth.
 3. Require the reviewer to say `gate not run` for any gate whose output is not
    in the evidence it was given. **Do not accept a claim that a gate passed.**
-   Reviewers — human or agent — must treat an unverified gate as failed.
-4. Apply every P0/P1 fix and add the regression. Skip speculative suggestions.
-5. Re-run the affected gates. Review is not done until the output is green, not
-   until someone says it is.
+   Reviewers — human or agent — treat the universal `make ci` as failed when it
+   is unverified; they classify an unverified platform gate explicitly instead
+   of silently accepting it.
+4. Apply every P0/P1 fix and add the regression. Only P2 may be deferred, with a
+   linked follow-up, owner, and due date. Skip speculative suggestions.
+5. If the diff changed after review, record the new head SHA, re-run affected
+   gates, and re-review the changed hunks. Review is not done until the reviewed
+   commit is green, not until someone says it is.
 
 A reusable reviewer prompt lives in §9.
 
-### What the author owes the reviewer
+### Evidence packet
 
-- The gate output, not a summary of it.
-- The risk the change carries, stated by the author: *what breaks if I got this
-  wrong, and how would we know?*
-- The one thing in the diff that deserves the most scrutiny.
+The PR is the durable record. It must contain:
+
+- the selected risk class and rationale;
+- the reviewed head SHA and a link to the independent review for high or
+  architectural changes;
+- the authority paths and the one part of the diff deserving most scrutiny;
+- the risk stated by the author: *what breaks if I got this wrong, and how would
+  we know?*;
+- for every applicable gate: command, exit status, and raw output or CI run URL;
+- red-before/green-after mutation evidence for every behaviour regression;
+- links, owner, and due date for every deferred P2.
+
+Evidence from an earlier SHA is stale. `make ci` is universal and may not be
+omitted. A missing conditional platform command is written as `gate not run`;
+it is never silently treated as not applicable.
 
 ### Before merge
 
-- [ ] Every gate in §4 is green, output attached.
-- [ ] Every P0/P1 closed, or an open follow-up with an owner and a date.
-- [ ] A P0/P1 that was a family, not a one-off, has a new gate (§5).
+- [ ] The PR records exactly one risk class and all required roles.
+- [ ] The evidence packet belongs to the current reviewed head SHA.
+- [ ] `make ci` is green; it is universal and cannot be omitted. Every
+      conditional platform gate in §4 is green or says why it is not applicable.
+- [ ] Every P0/P1 is closed. P0/P1 cannot be deferred.
+- [ ] Every deferred P2 has a linked owner and due date.
+- [ ] A recurring P0/P1 has a new mutation-checked gate (§5).
 - [ ] Commit subjects would make sense to someone reading release notes.
+
+### Emergency path
+
+An emergency shortens coordination; it does not lower the evidence bar. Prefer
+reverting to the last known-good release. Security incidents use the private
+advisory path in `SECURITY.md`. If required CI is unavailable, restore service
+with a known-good artifact and merge only after the gates recover. No emergency
+may bypass a P0/P1 or weaken a gate.
 
 ---
 
@@ -357,7 +402,8 @@ failure mode, and the regression test that would have caught it. A finding
 without a failure mode is P3.
 
 Do not claim a gate passed unless its output is in the evidence you were given.
-Say "gate not run" otherwise.
+Treat missing `make ci` evidence as failed. Say "gate not run" for any missing
+platform evidence and state whether it applies.
 
 Also answer: does this change need a new invariant test or gate rather than
 only a fix? (CODE_REVIEW.md §5)
@@ -502,8 +548,15 @@ completed template was not reviewed, whatever the author remembers doing.
 
 **Monthly, or every ~50 commits — one pass, about thirty minutes:**
 
-1. `make review` and `make lint` from a **clean checkout**, with no shell
-   customisation — a fresh clone, not this working directory. Both must pass
+The maintainer who cuts releases owns this pass. Record each result in one
+GitHub issue labelled `review-health`; §10 remains the durable backlog, not the
+run log. The issue title is `Review health — YYYY-MM-DD` and records these
+metrics: risky PR review coverage, merged P0/P1 count, repeated finding families
+without gates, exemption count, packages without tests, docs drift, and overdue
+P2 follow-ups.
+
+1. `make ci` from a **clean checkout**, with no shell customisation — a fresh
+   clone, not this working directory. It must pass
    without anyone exporting a `PATH` first. If they do not, the gate is
    unrunnable, and §1 applies: a rule that cannot be followed decays, and takes
    the rest of this document with it. Fix the bootstrap, not the reminder.
@@ -513,7 +566,8 @@ completed template was not reviewed, whatever the author remembers doing.
 2. Walk the §8 list: exemption maps, recurrence, untested packages, docs drift.
 3. Re-read §10. An item open across two passes is not open work, it is accepted
    risk. Write that down, or close the item.
-4. Record the result — in §10 or an issue. An unrecorded pass did not happen.
+4. Record the metrics and result in the `review-health` issue. An unrecorded
+   pass did not happen.
 5. Before claiming a guard "can land", prove it against `main` in a throwaway
    worktree, not in this working directory:
 
@@ -528,4 +582,8 @@ completed template was not reviewed, whatever the author remembers doing.
    it lands. This is how the three guards in §10 were found to be
    un-landable — they are not wrong, they are early.
 
-A pass that finds nothing is a real result. Say so, with the date.
+Targets are explicit: 100% of high/architectural PRs independently reviewed;
+zero merged P0/P1; zero repeated P0/P1 families without a gate; every exemption
+has a written reason; no safety-critical package lacks tests; no known docs-path
+drift; every P2 is closed by its due date. A pass that finds nothing is a real
+result. Say so, with the date.

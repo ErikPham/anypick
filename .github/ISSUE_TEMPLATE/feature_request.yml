@@ -15,10 +15,10 @@ body:
     attributes:
       label: Proposed solution
       description: |
-        If you are proposing a new client or account provider, note which
-        transport it would need. Only `claude` and `codex` accept a source from a
-        different provider today — see `transportFor` in
-        `src/sources/account-adapters.ts`.
+        If you are proposing a new client or account provider, state the exact
+        client/source pair and the transport it would need. Support is defined
+        by `TransportFor` in `src/go/internal/transport`; do not infer it from
+        the client or provider registry.
     validations:
       required: true
 
