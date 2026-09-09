@@ -4,17 +4,44 @@
 #   src/go/      the engine: CLI, terminal UI, desktop service, proxy, hub
 #   src/macos/   the macOS app (SwiftUI)
 #   src/tauri/   the Linux and Windows app (Tauri 2 + React)
+#   docs/        the documentation site (a separate pnpm project)
+#
+# Quick start:
+#   make help          # grouped target list (the default goal)
+#   make build         # Go CLI -> src/go/bin/anypick-dev
+#   make review        # CODE_REVIEW.md §4 gates in one command
+#   make ci            # what CI runs, locally (review + lint + race)
+#
+# Conventions:
+#   - Targets are grouped by area; `make help` prints them grouped.
+#   - `check` is the standard aggregate name for `gates`; `build-<x>` /
+#     `test-<x>` namespace platform artifacts (`build-go`, `build-macos`,
+#     `test-macos`, `build-tauri`). The gate names themselves (`paths`,
+#     `protocol-sync`, `release-check`, `artifact-check`) stay canonical —
+#     they are descriptive and cited across CI and docs, so no `check-*`
+#     word-swap aliases.
+#   - User-overridable variables (all `?=`): ARGS, APP, VERSION, PART, ROOT.
+#     Pass them on the command line, e.g. `make run ARGS="providers"`.
 #
 # `make test` is `go test ./...`. Nothing wraps it. The only thing this file
 # adds is GOPATH hygiene, because the ambient GOPATH on this machine points at
 # another project's module cache (see the note on GOPATH below).
 
 SHELL := /bin/bash
+.DEFAULT_GOAL := help
 
 GO_DIR := src/go
 MACOS_DIR := src/macos
 TAURI_DIR := src/tauri
 TAURI_CORE := $(TAURI_DIR)/app
+BIN := $(GO_DIR)/bin/anypick-dev
+
+# User-overridable inputs. Command-line assignment wins over these defaults.
+ARGS ?=
+APP ?=
+VERSION ?=
+PART ?= patch
+ROOT ?=
 
 # The module cache must be writable and must not be shared with another
 # project. When it is shared, tests that shell out to `go build`
@@ -35,9 +62,9 @@ export GOPATH
 # of the standard with it. So search the usual install locations, and when
 # nothing is there say what to install instead of exiting 127.
 GO_SEARCH := $(shell command -v go 2>/dev/null) \
-             $(wildcard $(HOME)/sdk/go*/bin/go) \
-             $(wildcard /usr/local/go/bin/go) \
-             $(wildcard /opt/homebrew/bin/go)
+              $(wildcard $(HOME)/sdk/go*/bin/go) \
+              $(wildcard /usr/local/go/bin/go) \
+              $(wildcard /opt/homebrew/bin/go)
 GO := $(firstword $(GO_SEARCH) go)
 GOFMT := $(patsubst %go,%gofmt,$(GO))
 
@@ -46,17 +73,41 @@ GOFMT := $(patsubst %go,%gofmt,$(GO))
 # looks like a broken change. `?=` so a deliberate override still wins.
 export GOTOOLCHAIN ?= auto
 
-.PHONY: help go-toolchain build test test-race vet fmt fmt-check lint review run sandbox paths \
+.PHONY: help all ci info version go-toolchain build build-go test test-race vet fmt fmt-check lint review run sandbox \
+        gates check paths protocol-sync \
         release-check release-plan release-set release-bump artifact-check \
-        protocol-sync gates \
-        app app-build app-test app-verify \
-        tauri-deps tauri-ui tauri-check tauri-build tauri-dev clean
+        app macos-open app-build macos-build build-macos app-test macos-test test-macos app-verify macos-verify smoke-artifact verify-artifact \
+        tauri-deps tauri-ui tauri-check tauri-build build-tauri tauri-dev \
+	docs-install docs-dev docs-typecheck docs-lint docs-build docs-check \
+	review-metadata-check clean distclean
 
-help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
-	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+##@ General
 
-# ── engine ────────────────────────────────────────────────────────────
+help: ## Show this help, grouped by area
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z0-9_.-]+:.*?##/ { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@echo ""
+
+all: build ## Build the default artifact (Go CLI); platform apps have their own targets
+
+ci: review lint test-race ## Mirror CI locally: review gates + staticcheck + race detector
+	@echo "ci gates green."
+
+review-metadata-check: ## Validate a saved PR body: make review-metadata-check BODY=<file> HEAD_SHA=<sha> [FILES=<file>]
+	@test -n "$(BODY)" && test -n "$(HEAD_SHA)" || { echo "usage: make review-metadata-check BODY=<file> HEAD_SHA=<sha> [FILES=<file>]"; exit 1; }
+	bash .github/review-metadata.sh "$(BODY)" "$(HEAD_SHA)" "$(FILES)"
+
+info: ## Print toolchain versions for bug reports (never fails on a missing tool)
+	@echo "repo: $$(pwd)"
+	@command -v "$(GO)" >/dev/null 2>&1 && "$(GO)" version || echo "go: not found (looked on PATH and in $$HOME/sdk/go*/bin, /usr/local/go/bin, /opt/homebrew/bin)"
+	@command -v xcodebuild >/dev/null 2>&1 && xcodebuild -version || echo "xcodebuild: not found"
+	@command -v cargo >/dev/null 2>&1 && cargo --version || echo "cargo: not found"
+	@command -v node >/dev/null 2>&1 && node --version || echo "node: not found"
+	@test -f VERSION && echo "VERSION: $$(cat VERSION)" || echo "VERSION: file missing"
+
+version: ## Print the canonical version from VERSION
+	@cat VERSION; echo ""
+
+##@ Go engine
 
 # Prerequisite of every target that shells out to Go. It fails with the fix
 # rather than a bare 127, because the cost of an unrunnable gate is not the
@@ -72,13 +123,15 @@ go-toolchain:
 build: go-toolchain ## Build the CLI into src/go/bin/anypick-dev
 	cd $(GO_DIR) && $(GO) build -o bin/anypick-dev ./cmd/anypick
 
+build-go: build ## Alias for `build`
+
 test: go-toolchain ## Run the Go suite
 	cd $(GO_DIR) && $(GO) test ./... -count=1 -timeout 900s
 
 test-race: go-toolchain ## Run the Go suite under the race detector
 	cd $(GO_DIR) && $(GO) test -race ./... -count=1 -timeout 900s
 
-vet: go-toolchain ## go vet
+vet: go-toolchain ## go vet over the engine
 	cd $(GO_DIR) && $(GO) vet ./...
 
 fmt: go-toolchain ## Rewrite Go sources with gofmt
@@ -113,12 +166,20 @@ review: fmt-check vet test gates ## Every gate in CODE_REVIEW.md §4, in one com
 	@echo "review gates green. 'make lint' (staticcheck) also runs in CI."
 
 run: build ## Build, then run a command: make run ARGS="providers"
-	$(GO_DIR)/bin/anypick-dev $(ARGS)
+	$(BIN) $(ARGS)
 
 sandbox: build ## Same, against a throwaway HOME and ANYPICK_HOME
 	@HOME=$${TMPDIR:-/tmp}/anypick-sandbox/home \
 	 ANYPICK_HOME=$${TMPDIR:-/tmp}/anypick-sandbox/data \
-	 sh -c 'mkdir -p "$$HOME" "$$ANYPICK_HOME"; exec $(GO_DIR)/bin/anypick-dev $(ARGS)'
+	 sh -c 'mkdir -p "$$HOME" "$$ANYPICK_HOME"; exec $(BIN) $(ARGS)'
+
+##@ Checks and gates
+
+# Every cheap cross-language gate in one place. CI runs this so a broken
+# assumption fails in seconds instead of as a confusing build error later.
+gates: paths protocol-sync release-check ## Run every cross-language gate
+
+check: gates ## Alias for `gates` (standard name)
 
 # ── path integrity ────────────────────────────────────────────────────
 
@@ -343,11 +404,7 @@ protocol-sync: ## All three front ends declare the same protocol version
 	if [ "$$fail" -ne 0 ]; then echo "protocol check FAILED"; exit 1; fi; \
 	echo "protocol check OK ($$go_v)"
 
-# Every cheap cross-language gate in one place. CI runs this so a broken
-# assumption fails in seconds instead of as a confusing build error later.
-gates: paths protocol-sync release-check ## Run every cross-language gate
-
-# ── release gates ─────────────────────────────────────────────────────
+##@ Release
 
 release-check: go-toolchain ## Every version source agrees with VERSION
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-release check
@@ -355,27 +412,37 @@ release-check: go-toolchain ## Every version source agrees with VERSION
 release-plan: go-toolchain ## Print the release the Conventional Commits imply
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-release plan
 
-release-set: go-toolchain ## make release-set VERSION=1.2.3
+release-set: go-toolchain ## Set every version source: make release-set VERSION=1.2.3
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-release set $(VERSION)
 
-release-bump: go-toolchain ## make release-bump PART=major|minor|patch
+release-bump: go-toolchain ## Bump every version source: make release-bump PART=major|minor|patch
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-release bump $(PART)
 
 artifact-check: go-toolchain ## ADR 0020 §8: a built artifact contains no Node runtime
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-artifact node-free $(ROOT)
 
-# ── macOS app ─────────────────────────────────────────────────────────
+##@ macOS app
 
 app: ## Open the Xcode project
 	open $(MACOS_DIR)/AnyPick.xcodeproj
+
+macos-open: app ## Alias for `app` (standard name)
 
 app-build: ## Build the app unsigned; a build phase bundles the Go helper
 	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPick \
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
 
+macos-build: app-build ## Alias for `app-build` (standard name)
+
+build-macos: app-build ## Alias for `app-build` (standard name)
+
 app-test: ## Build and unit-test the app and the bundled helper contract
 	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPick \
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
+
+macos-test: app-test ## Alias for `app-test` (standard name)
+
+test-macos: app-test ## Alias for `app-test` (standard name)
 
 app-verify: app-build go-toolchain ## Build, then assert ADR 0020 on the built bundle
 	@derived="$${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData}"; \
@@ -383,14 +450,20 @@ app-verify: app-build go-toolchain ## Build, then assert ADR 0020 on the built b
 	test -n "$$app" || { echo "no AnyPick.app under $$derived"; exit 1; }; \
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-artifact node-free "$$app"
 
+macos-verify: app-verify ## Alias for `app-verify` (standard name)
+
 smoke-artifact: ## Smoke-test an installed artifact: make smoke-artifact APP=<AnyPick.app|anypick-core>
 	@test -n "$(APP)" || { echo "usage: make smoke-artifact APP=<AnyPick.app|anypick-core>"; exit 1; }
 	src/macos/scripts/smoke-installed-artifact.sh "$(APP)"
 
-# ── Tauri app (Linux / Windows) ───────────────────────────────────────
+verify-artifact: smoke-artifact ## Alias for `smoke-artifact` (standard name)
 
-tauri-deps: ## Install the Tauri UI dependencies
-	cd $(TAURI_DIR)/ui && npm install
+##@ Tauri app (Linux / Windows)
+
+# `npm ci` (not `npm install`) so the UI build is reproducible from
+# package-lock.json — the same command CI runs.
+tauri-deps: ## Install the Tauri UI dependencies from the lockfile
+	cd $(TAURI_DIR)/ui && npm ci
 
 tauri-ui: ## Build the UI bundle into src/tauri/frontend
 	cd $(TAURI_DIR)/ui && npm run build
@@ -401,11 +474,35 @@ tauri-check: ## Typecheck the UI without emitting output
 tauri-build: tauri-ui ## Build the packaged desktop app for this platform
 	cd $(TAURI_CORE) && cargo tauri build
 
+build-tauri: tauri-build ## Alias for `tauri-build` (standard name)
+
 tauri-dev: ## Run the desktop app against the real Go service
 	cd $(TAURI_DIR)/ui && npm run build
 	cd $(TAURI_CORE) && cargo tauri dev
 
-# ── housekeeping ──────────────────────────────────────────────────────
+##@ Docs site (separate pnpm project)
+
+docs-install: ## Install docs dependencies: cd docs && pnpm install
+	cd docs && pnpm install --frozen-lockfile
+
+docs-dev: ## Serve the docs site locally (localhost:4321)
+	cd docs && pnpm dev
+
+docs-typecheck: ## astro check on the docs site
+	cd docs && pnpm typecheck
+
+docs-lint: ## nimbus-docs lint (frontmatter shape, internal links)
+	cd docs && pnpm lint:docs
+
+docs-build: ## Build the docs site into docs/dist/
+	cd docs && pnpm build
+
+docs-check: docs-typecheck docs-lint ## Typecheck + lint the docs site
+
+##@ Cleanup
 
 clean: ## Remove build output (keeps the module cache)
 	rm -rf $(GO_DIR)/bin
+
+distclean: clean ## Remove all generated output (bin/, docs/dist/, Tauri frontend bundle)
+	rm -rf docs/dist $(TAURI_DIR)/frontend
