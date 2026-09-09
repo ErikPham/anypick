@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/catalog"
+	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/ownership"
+	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/refs"
 )
@@ -118,6 +121,8 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 	}
 	sort.Strings(names)
 
+	pinned := s.hubPinnedCatalogs(ctx, names)
+
 	for _, providerID := range s.Deps.Providers.IDs() {
 		_, err := s.Deps.Providers.Get(providerID)
 		if err != nil || s.Deps.Accounts == nil {
@@ -155,6 +160,7 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 					"hub":        hubName,
 				})
 			}
+			snap.HubCatalogs = append(snap.HubCatalogs, s.hubCatalogRows(ctx, names, pinned, providerID, name, acc.SnapshotDir)...)
 		}
 	}
 
@@ -296,6 +302,166 @@ func (s *Server) hubConfigOrNil(ctx context.Context, hubName string) (*hub.Confi
 	return s.Deps.Hub.GetConfigContext(ctx, hubName)
 }
 
+// hubPinnedCatalogs maps hub source ids to their pinned route models, so
+// catalog rows carry everything publishable (discovery catalogs plus pins)
+// and Swift compiles conflicts and published models from a single input.
+// Best-effort per hub: a route or config read failure drops that hub's pins,
+// never the snapshot.
+func (s *Server) hubPinnedCatalogs(ctx context.Context, hubs []string) map[string][]string {
+	out := map[string][]string{}
+	if s.Deps.Hub == nil {
+		return out
+	}
+	for _, hubName := range hubs {
+		models, err := s.Deps.Hub.RouteModelsContext(ctx, hubName)
+		if err != nil || len(models) == 0 {
+			continue
+		}
+		cfg, err := s.Deps.Hub.GetConfigContext(ctx, hubName)
+		if err != nil || cfg == nil {
+			continue
+		}
+		for _, m := range models {
+			if m.SourceIndex < 0 || m.SourceIndex >= len(cfg.Sources) {
+				continue
+			}
+			src := cfg.Sources[m.SourceIndex]
+			id := "hub/" + hubName + "/" + src.ProviderID + "/" + src.Account
+			out[id] = append(out[id], m.Model)
+		}
+	}
+	return out
+}
+
+// hubCatalogRows returns one HubCatalog row per hub for a saved account:
+// {accountID: hub source id, catalog: catalog provider id, models: [...]}.
+// Only model ids cross the boundary — endpoints and keys never do.
+// Resolution is cache-or-static (discovery NoLive): a cold cache never
+// triggers per-tick egress. Live models warm the cache explicitly on hub
+// start. Accounts whose provider maps to no catalog, and empty results,
+// emit no row: absence reads as "no catalog", never as an error.
+func (s *Server) hubCatalogRows(ctx context.Context, hubs []string, pinned map[string][]string, providerID, name, snapshotDir string) []map[string]any {
+	catalogID := catalog.CatalogProviderFor(providerID)
+	if catalogID == "" {
+		return nil
+	}
+	models := map[string]bool{}
+	if providerID == "opencode" {
+		for _, id := range provider.OpenCodeSnapshotCatalog(snapshotDir) {
+			models[id] = true
+		}
+		for _, service := range provider.OpenCodeSnapshotServices(snapshotDir) {
+			endpoint := provider.OpenCodeServiceEndpoint(service)
+			if endpoint == "" {
+				continue
+			}
+			for _, id := range s.catalogList(ctx, catalogID, endpoint) {
+				models[id] = true
+			}
+		}
+	} else {
+		for _, id := range s.catalogList(ctx, catalogID, "") {
+			models[id] = true
+		}
+	}
+	if len(models) == 0 && len(pinned) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(models))
+	for id := range models {
+		list = append(list, id)
+	}
+	rows := make([]map[string]any, 0, len(hubs))
+	for _, hubName := range hubs {
+		sourceID := "hub/" + hubName + "/" + providerID + "/" + name
+		set := map[string]bool{}
+		for _, id := range list {
+			set[id] = true
+		}
+		for _, id := range pinned[sourceID] {
+			set[id] = true
+		}
+		if len(set) == 0 {
+			continue
+		}
+		union := make([]string, 0, len(set))
+		for id := range set {
+			union = append(union, id)
+		}
+		sort.Strings(union)
+		rows = append(rows, map[string]any{
+			"accountID": sourceID,
+			"catalog":   catalogID,
+			"models":    union,
+		})
+	}
+	return rows
+}
+
+// catalogList resolves one provider/endpoint pair without egress: fresh or
+// stale cache, else the static policy list. A legacy composition without the
+// injected discovery service falls back to static only.
+func (s *Server) catalogList(ctx context.Context, catalogID, endpoint string) []string {
+	if s.Deps.Discovery == nil {
+		return discovery.StaticModels(catalogID)
+	}
+	return s.Deps.Discovery.List(ctx, discovery.Request{ProviderID: catalogID, Endpoint: endpoint, NoLive: true}).Models
+}
+
+// openCodeWarmTimeout bounds one catalog fetch during hub start.
+const openCodeWarmTimeout = 6 * time.Second
+
+// warmOpenCodeCatalogs refreshes the opencode model cache from saved-mirror
+// platform keys. Explicit user action (hub start) only — snapshot ticks stay
+// cache-only, so a cold cache never triggers per-tick egress. Keys stay in
+// Go: only model ids reach the cache. Advisory throughout: failures log and
+// the start proceeds; an unwarmable catalog simply reads empty on the next
+// ticks until a later start warms it.
+func (s *Server) warmOpenCodeCatalogs(ctx context.Context, fetch func(ctx context.Context, endpoint, key string) ([]string, error)) {
+	if s.Deps.Accounts == nil || s.Deps.Discovery == nil {
+		return
+	}
+	accs, err := s.Deps.Accounts.List(ctx, "opencode")
+	if err != nil || len(accs) == 0 {
+		return
+	}
+	type job struct{ endpoint, key string }
+	seen := map[string]bool{}
+	jobs := []job{}
+	for _, acc := range accs {
+		for service, key := range provider.OpenCodeMirrorKeys(acc.SnapshotDir) {
+			endpoint := provider.OpenCodeServiceEndpoint(service)
+			if endpoint == "" || key == "" || seen[endpoint] {
+				continue
+			}
+			seen[endpoint] = true
+			jobs = append(jobs, job{endpoint, key})
+		}
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	for _, j := range jobs {
+		fetchCtx, cancel := context.WithTimeout(ctx, openCodeWarmTimeout)
+		models, err := fetch(fetchCtx, j.endpoint, j.key)
+		cancel()
+		if err != nil || len(models) == 0 {
+			s.logErr(catalogEmptyError(j.endpoint, err))
+			continue
+		}
+		if werr := s.Deps.Discovery.StoreLive(ctx, "opencode", j.endpoint, models); werr != nil {
+			s.logErr(werr)
+		}
+	}
+}
+
+func catalogEmptyError(endpoint string, err error) error {
+	if err != nil {
+		return err
+	}
+	return anyerr.Newf("opencode catalog at "+endpoint+" returned no models", "CATALOG_EMPTY")
+}
+
 func (s *Server) startHub(ctx context.Context, hubName string) error {
 	if s.Deps.Activation == nil || s.Deps.Activation.SpawnHubChild == nil {
 		return anyerr.Newf("hub spawn unavailable in this composition",
@@ -323,6 +489,12 @@ func (s *Server) startHub(ctx context.Context, hubName string) error {
 	if err != nil {
 		return err
 	}
+	// Warm opencode catalogs after spawn: explicit start is the one user
+	// action allowed live egress, so the next snapshot ticks read warmed
+	// cache instead of cold emptiness. Advisory — never fails the start.
+	s.warmOpenCodeCatalogs(ctx, func(c context.Context, endpoint, key string) ([]string, error) {
+		return catalog.FetchLiveModels(c, "openai", &catalog.FetchContext{Endpoint: endpoint, APIKey: key})
+	})
 	return spawnErr
 }
 

@@ -225,6 +225,14 @@ var modelPolicies = map[string]ModelPolicy{
 		SuggestModels: customModels,
 		RoleDefaults:  anthropicRoleDefaults,
 	},
+	// opencode: Zen/Go platform keys speak OpenAI-compatible /models on
+	// per-service bases (provider openCodeZenBaseURL/openCodeGoBaseURL).
+	// Entries carry no endpoint and no vendor-published list, so there is
+	// no static fallback: catalogs arrive via live fetch against the
+	// entry's own base, warmed explicitly — never per snapshot tick.
+	"opencode": {
+		LiveFetch: "openai",
+	},
 }
 
 // Policy returns the model policy for a catalog provider id, or nil when the

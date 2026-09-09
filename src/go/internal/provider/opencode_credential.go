@@ -38,6 +38,47 @@ func openCodeLiveDataDir(home string) string {
 	return filepath.Join(expandHome(home), ".local", "share", "opencode")
 }
 
+// OpenCodeCatalogSource is one live Zen/Go platform key with the base it
+// authenticates against.
+type OpenCodeCatalogSource struct {
+	Endpoint string
+	Key      string
+}
+
+// OpenCodeServiceEndpoint maps a platform service name to its
+// OpenAI-compatible base, mirroring ResolveUpstream: opencode-go rides the
+// Go gateway, everything else Zen. Unknown services map to "".
+func OpenCodeServiceEndpoint(service string) string {
+	if strings.EqualFold(service, "opencode-go") {
+		return openCodeGoBaseURL
+	}
+	switch strings.ToLower(service) {
+	case "opencode", "zen", "opencode-zen":
+		return openCodeZenBaseURL
+	default:
+		return ""
+	}
+}
+
+// OpenCodeCatalogSources lists live Zen/Go platform keys as endpoint+key
+// pairs for model catalog fetches. Server-side only: keys feed the fetch
+// and the cache write; only model ids ever leave Go. Empty when the live
+// store holds nothing usable — never an error.
+func OpenCodeCatalogSources() []OpenCodeCatalogSource {
+	keys := liveOpenCodePlatformKeys()
+	seen := map[string]bool{}
+	out := []OpenCodeCatalogSource{}
+	for _, k := range keys {
+		endpoint := OpenCodeServiceEndpoint(k.Service)
+		if endpoint == "" || k.Key == "" || seen[endpoint] {
+			continue
+		}
+		seen[endpoint] = true
+		out = append(out, OpenCodeCatalogSource{Endpoint: endpoint, Key: k.Key})
+	}
+	return out
+}
+
 // liveOpenCodePlatformKeys lists platform API keys from the live CLI install's
 // credential database (liveOpenCodeDbPath in the TypeScript port).
 func liveOpenCodePlatformKeys() []openCodePlatformKey {
