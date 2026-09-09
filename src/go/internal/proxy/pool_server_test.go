@@ -549,7 +549,7 @@ func TestReverseEgressCaptureMatchesCommit(t *testing.T) {
 			if cw.status != tc.status {
 				t.Fatalf("captured status = %d, want %d", cw.status, tc.status)
 			}
-			if string(cw.body.Bytes()) != rec.Body.String() {
+			if cw.body.String() != rec.Body.String() {
 				t.Fatalf("commit body %q != captured body %q", rec.Body.String(), cw.body.Bytes())
 			}
 			if got := cw.header.Get("Retry-After"); got != tc.retryAfter {

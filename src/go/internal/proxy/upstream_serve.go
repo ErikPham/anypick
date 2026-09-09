@@ -92,7 +92,7 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		return
 	}
 	reverseEgress(r, up, &commitSink{w: w}, reverseOpts{baseURL: up.BaseURL})
-}// flattenedNativeUpstream flattens a native Anthropic target and its parent
+} // flattenedNativeUpstream flattens a native Anthropic target and its parent
 // Upstream into one *Upstream: the target wins, the parent fills whatever the
 // target leaves empty.
 //
