@@ -1,0 +1,115 @@
+#!/bin/sh
+#
+# Commit-message gate for AnyPick.
+#
+# Why this exists: the review standard (CODE_REVIEW.md §7) attaches the risk
+# classification and the independent-review record to a *pull request*. This
+# repository has never used one -- 91 commits, zero merge commits, all direct to
+# main -- so nothing in .github/ has ever executed. The commit is therefore the
+# only reviewable unit that actually exists here, and this hook is the only gate
+# that can fire on it.
+#
+# It enforces three things CODE_REVIEW.md already requires and nothing enforced:
+#   1. Conventional Commits subject (§4) -- subjects ARE the changelog.
+#   2. A risk class on every change (§7) -- Low/Normal/High/Architectural.
+#   3. An independent reviewer for High and Architectural (§1, §7).
+#      Self-review is not independent review; a name is required.
+#
+# No escape hatch is provided on purpose (§5: never weaken a gate).
+# `git commit --no-verify` is a P0 on the committer, not a shortcut.
+
+set -eu
+
+msg_file=${1:?commit-msg hook needs the message file path}
+
+# A blocked commit must not lose the message the author wrote.
+# (`$msg_file` is removed by git only when the hook exits non-zero and git was
+# asked to abort; we never edit it.)
+
+subject_line=$(grep -v '^#' "$msg_file" | grep -m1 '[^[:space:]]' || true)
+
+# Merge commits are not authored here; they carry git's own subject.
+case "$subject_line" in
+  "Merge "*) exit 0 ;;
+esac
+
+fail() {
+  printf '%s\n' "$1" >&2
+  exit 1
+}
+
+if [ -z "$subject_line" ]; then
+  fail "commit-msg: empty subject"
+fi
+
+# ---- 1. Conventional Commits -------------------------------------------------
+# type [(scope)] [!]: description
+# Scopes are lowercase; the description must be non-empty.
+if ! printf '%s' "$subject_line" |
+     grep -Eq '^(feat|fix|perf|refactor|docs|test|chore|build|ci|style|revert)(\([a-z0-9_./-]+\))?!?: [^[:space:]]'; then
+  fail "commit-msg: subject is not a Conventional Commit (CODE_REVIEW.md §4).
+
+  got: $subject_line
+  want: <type>[(<scope>)][!]: <description>
+  types: feat fix perf refactor docs test chore build ci style revert
+
+  Commit subjects are the changelog -- only feat, fix and perf appear in a
+  release (make release-plan). An unparseable subject is a silently dropped
+  release note."
+fi
+
+# ---- 2. Risk class ------------------------------------------------------------
+# One class, chosen by the author, from CODE_REVIEW.md §7.
+risk=$(grep -iE '^Risk:[[:space:]]*(Low|Normal|High|Architectural)[[:space:]]*$' "$msg_file" || true)
+
+if [ -z "$risk" ]; then
+  fail "commit-msg: missing 'Risk:' trailer (CODE_REVIEW.md §7).
+
+  Add exactly one line to the message body:
+
+    Risk: Low             typo, comment, docs-only; no contract change
+    Risk: Normal          bounded change in a familiar area; no trust boundary
+    Risk: High            credentials, activation, transfer, proxy/secrets,
+                          locking, persistence/schema, protocol, release,
+                          a gate or exemption, or an unfamiliar area
+    Risk: Architectural   constrains future work; needs a new ADR
+
+  When uncertain, choose the higher class."
+fi
+
+# grep -c guards against two trailer lines, which is an ambiguous classification.
+risk_count=$(grep -icE '^Risk:[[:space:]]*(Low|Normal|High|Architectural)[[:space:]]*$' "$msg_file" || true)
+if [ "$risk_count" != 1 ]; then
+  fail "commit-msg: expected exactly one 'Risk:' trailer, found $risk_count"
+fi
+
+risk_value=$(printf '%s' "$risk" | sed 's/^[Rr]isk:[[:space:]]*//' | tr '[:upper:]' '[:lower:]')
+
+# ---- 3. Independent review for High and Architectural -------------------------
+case "$risk_value" in
+  high|architectural)
+    if ! grep -qiE '^Reviewed-By:[[:space:]]*[^[:space:]]' "$msg_file"; then
+      fail "commit-msg: Risk: $risk_value requires an independent review (CODE_REVIEW.md §1, §7).
+
+  The author never approves their own work, and an agent that wrote a change
+  and then reported on it produced one artifact, not two. Add:
+
+    Reviewed-By: <named human, or the separate agent context that reviewed it>
+
+  The named context must not be the one that authored or repaired the change."
+    fi
+
+    if [ "$risk_value" = "architectural" ] &&
+       ! grep -qiE '^ADR:[[:space:]]*[^[:space:]]' "$msg_file"; then
+      fail "commit-msg: Risk: architectural requires an ADR (CODE_REVIEW.md §7).
+
+  Add a trailer naming the record, e.g.:
+
+    ADR: adr/0023-<slug>.md
+
+  Accepted ADRs are superseded, never edited."
+    fi
+    ;;
+esac
+
+exit 0
