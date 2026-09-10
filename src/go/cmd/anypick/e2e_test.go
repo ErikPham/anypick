@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,14 +297,7 @@ func openPoolForTest(t *testing.T) (*pools.Pool, error) {
 func TestHubActivationEndToEnd(t *testing.T) {
 	isolateEnv(t)
 	// Detached children must be a real CLI binary, not the test binary.
-	bin := filepath.Join(t.TempDir(), "anypick-test-bin")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/anypick")
-	cmd.Dir = filepath.Join(currentDir(t), "..", "..")
-	out, berr := cmd.CombinedOutput()
-	if berr != nil {
-		t.Fatalf("build helper binary: %v\n%s", berr, out)
-	}
-	t.Setenv("ANYPICK_SELF_EXE", bin)
+	requireBuiltCLI(t)
 	t.Setenv("ANYPICK_SECRET", "sk-test")
 	if code := run([]string{"proxy", "hub", "enable", "test"}); code != 0 {
 		t.Fatalf("hub enable exited %d", code)
@@ -448,12 +442,12 @@ func TestPoolStopReportsFailureForUnknownPool(t *testing.T) {
 	}
 }
 
-// currentDir returns this test file's package directory.
-func currentDir(t *testing.T) string {
-	t.Helper()
+// thisFileDir returns this test file's package directory without needing a
+// *testing.T, so the build helper below can run once outside any single test.
+func thisFileDir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("cannot determine test directory")
+		return ""
 	}
 	return filepath.Dir(file)
 }
@@ -486,17 +480,70 @@ func waitHTTP(t *testing.T, url string) bool {
 	return false
 }
 
+// The helper binary is built once per test binary, not once per test.
+//
+// `go build` relinks even when every package is already cached (measured 5s
+// per call inside this suite, 11s standalone), and ten call sites paid that
+// separately.
+// Under `make test` — ~44 packages compiling at once — that made this the
+// package that hit the 900s timeout, and it did so at a *different* test each
+// run, which reads like a product bug rather than a build-cost one.
+var (
+	builtCLIOnce sync.Once
+	builtCLIPath string
+	builtCLIDir  string
+	builtCLIErr  error
+)
+
+func buildCLI() {
+	dir, err := os.MkdirTemp("", "anypick-cli")
+	if err != nil {
+		builtCLIErr = err
+		return
+	}
+	builtCLIDir = dir
+	bin := filepath.Join(dir, "anypick-cli")
+	cmd := exec.Command("go", "build", "-o", bin, "./cmd/anypick")
+	cmd.Dir = filepath.Join(thisFileDir(), "..", "..")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		builtCLIErr = fmt.Errorf("build helper binary: %v\n%s", err, out)
+		return
+	}
+	builtCLIPath = bin
+}
+
 // requireBuiltCLI returns a real built CLI binary for detached-child spawns.
 func requireBuiltCLI(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "anypick-cli")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/anypick")
-	cmd.Dir = filepath.Join(currentDir(t), "..", "..")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build helper binary: %v\n%s", err, out)
+	builtCLIOnce.Do(buildCLI)
+	if builtCLIErr != nil {
+		t.Fatal(builtCLIErr)
 	}
-	t.Setenv("ANYPICK_SELF_EXE", bin)
-	return bin
+	t.Setenv("ANYPICK_SELF_EXE", builtCLIPath)
+	return builtCLIPath
+}
+
+// The ten call sites have to keep sharing one binary; a per-test relink is what
+// pushed this package past the suite's timeout budget.
+func TestRequireBuiltCLIBuildsOnce(t *testing.T) {
+	first := requireBuiltCLI(t)
+	second := requireBuiltCLI(t)
+	if first != second {
+		t.Fatalf("CLI rebuilt per call: %q then %q", first, second)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("helper binary missing at %q: %v", first, err)
+	}
+}
+
+// TestMain exists only to remove the shared helper binary; without it the
+// os.MkdirTemp above would outlive the test run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if builtCLIDir != "" {
+		_ = os.RemoveAll(builtCLIDir)
+	}
+	os.Exit(code)
 }
 
 func TestSupervisorStartStaysAlive(t *testing.T) {
