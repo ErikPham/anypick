@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,8 +78,40 @@ func envOr(env, fallback string) string {
 	return fallback
 }
 
-// geminiOAuthCredentials ports GeminiOAuthCredentials: the on-disk
+// On-disk OAuth file names, in probe order. gemini-cli writes a single flat
+// oauth_creds.json. Antigravity does not: depending on the build it leaves
+// either antigravity_oauth.json or the standalone Jetski token file in
+// ~/.gemini, and the two names are interchangeable in content. Probing both
+// is what lets an Antigravity login survive a backup without a rename.
+var geminiCliCredentialFiles = []string{"oauth_creds.json"}
+
+var antigravityCredentialFiles = []string{"antigravity_oauth.json", "jetski-standalone-oauth-token"}
+
+// geminiCredentialFilesFor returns the candidate names for a source.
+func geminiCredentialFilesFor(source string) []string {
+	if source == antigravityOAuthSource {
+		return antigravityCredentialFiles
+	}
+	return geminiCliCredentialFiles
+}
+
+// geminiAllCredentialFiles is the live-login and backup set: every name a
+// ~/.gemini login may use, gemini-cli first so an explicit source still wins.
+func geminiAllCredentialFiles() []string {
+	out := make([]string, 0, len(geminiCliCredentialFiles)+len(antigravityCredentialFiles))
+	out = append(out, geminiCliCredentialFiles...)
+	out = append(out, antigravityCredentialFiles...)
+	return out
+}
+
+// geminiOAuthCredentials ports GeminiOAuthCredentials: the flat on-disk
 // oauth_creds.json shape (expiry_date is a millisecond epoch).
+//
+// Antigravity stores the same fields one level down, under `token`, with an
+// RFC3339 `expiry` instead of a millisecond epoch, plus `auth_method` and
+// `email`. `nested` records that envelope when the file was read in that
+// shape so a rewrite keeps the layout the owning app expects rather than
+// silently converting it into a gemini-cli file.
 type geminiOAuthCredentials struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -86,6 +119,20 @@ type geminiOAuthCredentials struct {
 	ExpiryDate   *int64 `json:"expiry_date"`
 	Scope        string `json:"scope"`
 	ClientID     string `json:"client_id,omitempty"`
+
+	nested *geminiAntigravityFile
+}
+
+// geminiAntigravityFile is the Antigravity / Jetski on-disk envelope.
+type geminiAntigravityFile struct {
+	Token struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		Expiry       string `json:"expiry"`
+	} `json:"token"`
+	AuthMethod string `json:"auth_method"`
+	Email      string `json:"email"`
 }
 
 func geminiExpired(c *geminiOAuthCredentials, now time.Time) bool {
@@ -95,14 +142,35 @@ func geminiExpired(c *geminiOAuthCredentials, now time.Time) bool {
 	return *c.ExpiryDate < now.Add(geminiOAuthRefreshSkew).UnixMilli()
 }
 
+// geminiOAuthCredsPath returns the credential file for a source: the first
+// candidate name that exists on disk, else the canonical name so an error
+// points at the file the user would expect to see.
 func geminiOAuthCredsPath(snapshotDir, source string) string {
 	if source == antigravityOAuthSource {
 		if env := os.Getenv("ANTIGRAVITY_OAUTH_FILE"); env != "" {
 			return env
 		}
-		return filepath.Join(snapshotDir, "antigravity_oauth.json")
 	}
-	return filepath.Join(snapshotDir, "oauth_creds.json")
+	names := geminiCredentialFilesFor(source)
+	for _, name := range names {
+		path := filepath.Join(snapshotDir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return filepath.Join(snapshotDir, names[0])
+}
+
+// geminiHasCredentials reports whether a source has any credential file.
+// Existence only: parsing belongs to the loader, and a corrupt file must read
+// as "present but broken", not as "absent".
+func geminiHasCredentials(dir, source string) bool {
+	for _, name := range geminiCredentialFilesFor(source) {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func loadGeminiOAuthCredentials(path, source string) (*geminiOAuthCredentials, error) {
@@ -115,17 +183,89 @@ func loadGeminiOAuthCredentials(path, source string) (*geminiOAuthCredentials, e
 		}
 		return nil, err
 	}
-	var c geminiOAuthCredentials
-	if json.Unmarshal(raw, &c) != nil || (c.RefreshToken == "" && c.AccessToken == "") {
+	c, ok := parseGeminiOAuthCredentials(raw)
+	if !ok {
 		return nil, anyerr.Newf("Invalid Gemini OAuth credentials at "+path+".", "GEMINI_NO_OAUTH")
 	}
-	return &c, nil
+	return c, nil
+}
+
+// parseGeminiOAuthCredentials reads either on-disk shape: the flat
+// gemini-cli file, or the nested Antigravity/Jetski envelope.
+func parseGeminiOAuthCredentials(raw []byte) (*geminiOAuthCredentials, bool) {
+	var c geminiOAuthCredentials
+	if json.Unmarshal(raw, &c) != nil {
+		return nil, false
+	}
+	var env geminiAntigravityFile
+	if json.Unmarshal(raw, &env) == nil &&
+		(env.Token.AccessToken != "" || env.Token.RefreshToken != "") {
+		c.AccessToken = env.Token.AccessToken
+		c.RefreshToken = env.Token.RefreshToken
+		if env.Token.TokenType != "" {
+			c.TokenType = env.Token.TokenType
+		}
+		if c.ExpiryDate == nil {
+			c.ExpiryDate = parseGeminiExpiry(env.Token.Expiry)
+		}
+		nested := env
+		c.nested = &nested
+	}
+	if c.RefreshToken == "" && c.AccessToken == "" {
+		return nil, false
+	}
+	return &c, true
+}
+
+// geminiEmailFromCredentials extracts a display identity from either
+// credential shape: Antigravity stores the address in clear text at the
+// envelope root, gemini-cli hides it inside the id_token.
+func geminiEmailFromCredentials(raw []byte) string {
+	var env geminiAntigravityFile
+	if json.Unmarshal(raw, &env) == nil && strings.Contains(env.Email, "@") {
+		return env.Email
+	}
+	var flat struct {
+		IDToken string `json:"id_token"`
+	}
+	if json.Unmarshal(raw, &flat) == nil && flat.IDToken != "" {
+		return jwtEmail(flat.IDToken)
+	}
+	return ""
+}
+
+// parseGeminiExpiry accepts the expiry forms both writers emit: an RFC3339
+// timestamp (Antigravity) and a millisecond epoch (gemini-cli, when a build
+// inlines it into the nested file). nil means "unknown", which reads as
+// expired unless an access token is present.
+func parseGeminiExpiry(value string) *int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if ts, err := time.Parse(layout, value); err == nil {
+			ms := ts.UnixMilli()
+			return &ms
+		}
+	}
+	if ms, err := strconv.ParseInt(value, 10, 64); err == nil {
+		// Epoch seconds are ~1e9 and milliseconds ~1e12; anything smaller
+		// than 2000-01-01 in ms must be seconds.
+		if ms < 946684800000 {
+			ms *= 1000
+		}
+		return &ms
+	}
+	return nil
 }
 
 // geminiEnsureAccessToken ports currentOAuthToken + refreshOAuthToken: return a
-// valid access token, refreshing the refresh_token grant when expired. gemini-cli
-// refreshes under a file lock and writes the rotated token back to oauth_creds.json;
-// antigravity refreshes in-process only.
+// valid access token, refreshing the refresh_token grant when expired. Both
+// sources refresh under a file lock and write the rotated token back: the
+// credential is a file we own (the snapshot, or ANTIGRAVITY_OAUTH_FILE), and
+// skipping the write would turn every proxied request into an OAuth
+// round-trip — the AuthProvider runs per request, not per process.
 func geminiEnsureAccessToken(snapshotDir, source string) (string, error) {
 	path := geminiOAuthCredsPath(snapshotDir, source)
 	c, err := loadGeminiOAuthCredentials(path, source)
@@ -139,10 +279,6 @@ func geminiEnsureAccessToken(snapshotDir, source string) (string, error) {
 		return "", anyerr.Newf(
 			"Gemini OAuth access token expired and no refresh_token available.", "GEMINI_NO_OAUTH")
 	}
-	if source != geminiCliOAuthSource {
-		return refreshGeminiOAuth(path, source, c)
-	}
-	// gemini-cli: serialize the refresh across processes.
 	fl, lerr := lock.AcquireFileLock(path+".refresh.lock", 30*time.Second)
 	if lerr != nil {
 		return "", anyerr.Wrapf(lerr, "acquire Gemini refresh lock", "GEMINI_OAUTH")
@@ -221,19 +357,74 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 		updated.TokenType = tok.TokenType
 	}
 	updated.ExpiryDate = &expiresAt
-	// gemini-cli persists the rotated session; antigravity is keychain-only.
-	if source == geminiCliOAuthSource {
-		if werr := writeGeminiOAuthCredentials(path, &updated); werr != nil {
-			return "", werr
-		}
+	if werr := writeGeminiOAuthCredentials(path, &updated); werr != nil {
+		return "", werr
 	}
 	return updated.AccessToken, nil
 }
 
-// writeGeminiOAuthCredentials preserves the on-disk oauth_creds.json shape and
-// only rotates the live fields (ports the undefined-key omission of
-// JSON.stringify on the TS raw object).
+// writeGeminiOAuthCredentials preserves the on-disk shape and only rotates the
+// live fields (ports the undefined-key omission of JSON.stringify on the TS raw
+// object). A file that was read as the nested Antigravity envelope is written
+// back as one: converting it to the flat shape would leave the owning app
+// unable to read its own login.
 func writeGeminiOAuthCredentials(path string, c *geminiOAuthCredentials) error {
+	if c.nested != nil {
+		return writeGeminiNestedCredentials(path, c)
+	}
+	return writeGeminiFlatCredentials(path, c)
+}
+
+// writeGeminiNestedCredentials rewrites {"token":{…}} in place, keeping every
+// key this build does not own (auth_method, email, and anything a future
+// version adds).
+func writeGeminiNestedCredentials(path string, c *geminiOAuthCredentials) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var data map[string]json.RawMessage
+	if json.Unmarshal(raw, &data) != nil {
+		data = map[string]json.RawMessage{}
+	}
+	var token map[string]json.RawMessage
+	if existing, ok := data["token"]; ok {
+		_ = json.Unmarshal(existing, &token)
+	}
+	if token == nil {
+		token = map[string]json.RawMessage{}
+	}
+	token["access_token"] = mustJSON(c.AccessToken)
+	if c.RefreshToken != "" {
+		token["refresh_token"] = mustJSON(c.RefreshToken)
+	}
+	if c.TokenType != "" {
+		token["token_type"] = mustJSON(c.TokenType)
+	}
+	if c.ExpiryDate != nil {
+		token["expiry"] = mustJSON(time.UnixMilli(*c.ExpiryDate).Format(time.RFC3339Nano))
+	}
+	body, err := json.Marshal(token)
+	if err != nil {
+		return err
+	}
+	data["token"] = body
+	out, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(out, '\n'), 0o600)
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return b
+}
+
+func writeGeminiFlatCredentials(path string, c *geminiOAuthCredentials) error {
 	var data map[string]json.RawMessage
 	if raw, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(raw, &data)
@@ -323,6 +514,16 @@ func geminiOAuthSourceFromSnapshot(snapshotDir string) string {
 			return antigravityOAuthSource
 		}
 	}
+	// No gemini-cli credential on disk: fall to whichever source actually has
+	// a file. Without this an Antigravity-only snapshot is classified as
+	// gemini-cli and `proxy start` dies looking for the file that is not
+	// there, while the usable credential sits next to it unread.
+	if geminiHasCredentials(snapshotDir, geminiCliOAuthSource) {
+		return geminiCliOAuthSource
+	}
+	if geminiHasCredentials(snapshotDir, antigravityOAuthSource) {
+		return antigravityOAuthSource
+	}
 	return geminiCliOAuthSource
 }
 
@@ -383,9 +584,12 @@ func geminiUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	provider := func(ctx context.Context) (string, error) {
 		return geminiEnsureAccessToken(snapshotDir, source)
 	}
+	profile := geminiOAuthProfileFor(source)
 	target := &proxy.GeminiTarget{
 		APIKeyMode:     false,
 		CodeAssistBase: geminiCodeAssistBase(source),
+		IDEType:        profile.ideType,
+		UserAgent:      profile.userAgent,
 	}
 	// Auto-fallback: when the snapshot also carries the other identity, retry
 	// once through it on 401/403/404 (ports callGeminiWithAutoFallback's
@@ -415,8 +619,11 @@ func geminiAltRouteFromSnapshot(snapshotDir, source string) *proxy.GeminiAltRout
 	if _, err := loadGeminiOAuthCredentials(altPath, altSource); err != nil {
 		return nil
 	}
+	altProfile := geminiOAuthProfileFor(altSource)
 	return &proxy.GeminiAltRoute{
 		CodeAssistBase: geminiCodeAssistBase(altSource),
+		IDEType:        altProfile.ideType,
+		UserAgent:      altProfile.userAgent,
 		AuthProvider: func(ctx context.Context) (string, error) {
 			return geminiEnsureAccessToken(snapshotDir, altSource)
 		},

@@ -63,7 +63,13 @@ func stripEnvAuthKeys(raw string) string {
 // ClearLive drops the Gemini CLI credential files and strips auth keys from
 // .env without touching OS keychain entries or revoking OAuth server-side.
 func (p *gemini) ClearLive() error {
-	removeQuiet(p.livePath("oauth_creds.json"), p.livePath("google_accounts.json"))
+	// Every name a Gemini login may use, not just oauth_creds.json: on an
+	// Antigravity machine that file is absent and clearing only it would
+	// report success while leaving the machine signed in.
+	for _, name := range geminiAllCredentialFiles() {
+		removeQuiet(p.livePath(name))
+	}
+	removeQuiet(p.livePath("google_accounts.json"))
 	envPath := p.livePath(".env")
 	raw, err := os.ReadFile(envPath)
 	if err != nil {

@@ -117,6 +117,14 @@ type GeminiTarget struct {
 	// CodeAssistBase is the OAuth upstream (cloudcode-pa.googleapis.com or
 	// daily-cloudcode-pa.googleapis.com). Ignored in APIKeyMode.
 	CodeAssistBase *url.URL
+	// IDEType is the ClientMetadata.ideType sent to loadCodeAssist, and
+	// UserAgent is the client identity Code Assist gates on. Both come from
+	// the OAuth profile that owns the credential: the endpoint rejects an
+	// ideType that does not match the client (it answers 400 for the
+	// historical "GEMINI"), and without the Antigravity User-Agent the same
+	// credential gets 403 SUBSCRIPTION_REQUIRED on generateContent.
+	IDEType   string
+	UserAgent string
 	// AltRoute, when set on an OAuth target, is the secondary Code Assist
 	// identity retried once on 401/403/404 (ports callGeminiWithAutoFallback's
 	// gemini-cli ↔ antigravity failover). The engine's multi-account pool also
@@ -128,6 +136,10 @@ type GeminiTarget struct {
 type GeminiAltRoute struct {
 	CodeAssistBase *url.URL
 	AuthProvider   func(ctx context.Context) (string, error)
+	// IDEType / UserAgent mirror GeminiTarget: the alternate identity is a
+	// different OAuth client and must present as one.
+	IDEType   string
+	UserAgent string
 }
 
 // UpstreamTarget is one protocol-specific forwarding target.
@@ -701,8 +713,15 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 		UpstreamExtraHeaders:    upstream.ExtraHeaders,
 		TranslateAnthropic:      upstream.TranslateAnthropic,
 		Anthropic:               upstream.Anthropic,
-		OpenAIPath:              upstream.OpenAIPath,
-		SanitizeOpenAIBody:      upstream.SanitizeOpenAIBody,
+		// TranslateGemini + Gemini must travel with the rest: a dropped flag
+		// does not fail loudly, it silently downgrades egressKindFor to
+		// passthrough, so POST /v1/chat/completions is forwarded verbatim to
+		// daily-cloudcode-pa and Google answers an HTML 404 — a Gemini proxy
+		// that starts, answers /health, and serves no traffic.
+		TranslateGemini:    upstream.TranslateGemini,
+		Gemini:             upstream.Gemini,
+		OpenAIPath:         upstream.OpenAIPath,
+		SanitizeOpenAIBody: upstream.SanitizeOpenAIBody,
 	}
 }
 

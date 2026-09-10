@@ -170,7 +170,10 @@ func executeLocked(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOpti
 	}
 	journalID := entry.ID
 
-	actx := &activationContext{journalID: journalID}
+	// Plan-time warnings have to survive into the result or the CLI never
+	// shows them: they are produced before any step runs, and nothing else
+	// carries them. MODEL_UNKNOWN used to be dropped the same way.
+	actx := &activationContext{journalID: journalID, warnings: planWarningsAsStrings(plan)}
 	fail := func(cause error) (*ExecuteResult, error) {
 		rolledBack := runRollback(actx)
 		finalizeJournal(ctx, deps, journalID, rolledBack)
@@ -832,6 +835,19 @@ func explicitModelID(model bindings.ModelSelection) string {
 		return model.ID
 	}
 	return ""
+}
+
+// planWarningsAsStrings flattens plan-time warnings for the CLI. The code is
+// kept because callers match on it (desktop surfaces, tests).
+func planWarningsAsStrings(plan *Plan) []string {
+	if plan == nil || len(plan.Warnings) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(plan.Warnings))
+	for _, w := range plan.Warnings {
+		out = append(out, w.Code+": "+w.Message)
+	}
+	return out
 }
 
 func rolesFromSpec(spec *bindings.Spec) map[string]string {

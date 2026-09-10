@@ -17,12 +17,20 @@ type gemini struct{ home string }
 
 func newGemini(home string) *gemini { return &gemini{home: home} }
 
-var geminiSnapshotFiles = []string{".env", "oauth_creds.json", "google_accounts.json"}
+// geminiSnapshotFiles is the live-login set copied by Backup and restored by
+// Restore. It covers both OAuth writers: gemini-cli's flat oauth_creds.json
+// and Antigravity's two interchangeable nested files (see
+// geminiAllCredentialFiles). Missing names here is why an Antigravity login
+// read as "no live auth" and could not be saved at all.
+var geminiSnapshotFiles = append([]string{".env"}, append(
+	geminiAllCredentialFiles(), "google_accounts.json")...)
 
-func (p *gemini) ID() string          { return "gemini" }
-func (p *gemini) Name() string        { return "Google Gemini" }
-func (p *gemini) Description() string { return "Manages ~/.gemini (oauth_creds.json, .env)" }
-func (p *gemini) CanProxy() bool      { return true }
+func (p *gemini) ID() string   { return "gemini" }
+func (p *gemini) Name() string { return "Google Gemini" }
+func (p *gemini) Description() string {
+	return "Manages ~/.gemini (oauth_creds.json, .env) and the Antigravity IDE login"
+}
+func (p *gemini) CanProxy() bool { return true }
 
 // AccountAdapter keeps invariant #1: direct ONLY for the gemini client; other
 // clients ride the builtin proxy.
@@ -31,6 +39,13 @@ func (p *gemini) AccountAdapter(accountName string, _ bool) transport.Adapter {
 }
 
 func (p *gemini) configDir() string {
+	// Same rule as client.geminiDir, and for the same reason: GEMINI_CLI_HOME
+	// is the variable @google/gemini-cli actually reads and it replaces HOME,
+	// so the config dir is "$GEMINI_CLI_HOME/.gemini". GEMINI_CONFIG_DIR is
+	// AnyPick's own knob and must lose to it — see the note there.
+	if cliHome := os.Getenv("GEMINI_CLI_HOME"); cliHome != "" {
+		return filepath.Join(expandHome(cliHome), ".gemini")
+	}
 	if env := os.Getenv("GEMINI_CONFIG_DIR"); env != "" {
 		return expandHome(env)
 	}
@@ -39,20 +54,41 @@ func (p *gemini) configDir() string {
 
 func (p *gemini) livePath(name string) string { return filepath.Join(p.configDir(), name) }
 
-func (p *gemini) hasOAuth() bool {
-	raw, err := os.ReadFile(p.livePath("oauth_creds.json"))
-	if err != nil {
-		return false
+// oauthCredFile returns the first Gemini OAuth file holding a usable token,
+// or "". It probes every known name rather than assuming oauth_creds.json,
+// because which file exists is a property of the app that wrote the login,
+// not of AnyPick.
+func (p *gemini) oauthCredFile() string {
+	for _, name := range geminiAllCredentialFiles() {
+		raw, err := os.ReadFile(p.livePath(name))
+		if err != nil {
+			continue
+		}
+		if _, ok := parseGeminiOAuthCredentials(raw); ok {
+			return name
+		}
 	}
-	var creds map[string]json.RawMessage
-	if json.Unmarshal(raw, &creds) != nil {
-		return false
+	return ""
+}
+
+func (p *gemini) hasOAuth() bool { return p.oauthCredFile() != "" }
+
+// antigravityStateCredential is the IDE-state login, or nil when Antigravity
+// is not installed or is signed out. Read-only by construction: detecting an
+// account must never touch another product's credential store.
+func (p *gemini) antigravityStateCredential() *geminiAntigravityFile {
+	return antigravityStateCredential(p.home)
+}
+
+// geminiOAuthSourceOfFile maps a credential file name back to the OAuth
+// profile that can refresh it.
+func geminiOAuthSourceOfFile(name string) string {
+	for _, candidate := range antigravityCredentialFiles {
+		if candidate == name {
+			return antigravityOAuthSource
+		}
 	}
-	if _, ok := creds["refresh_token"]; ok {
-		return true
-	}
-	_, ok := creds["access_token"]
-	return ok
+	return geminiCliOAuthSource
 }
 
 func (p *gemini) hasEnvAPIKey() bool {
@@ -75,25 +111,46 @@ func (p *gemini) DetectLive() (LiveAuthStatus, error) {
 		return LiveAuthStatus{
 			Present:  true,
 			Identity: p.oauthEmail(),
-			Details:  "gemini-cli oauth",
+			Details:  geminiOAuthSourceOfFile(p.oauthCredFile()) + " oauth",
 		}, nil
 	case p.hasEnvAPIKey():
 		return LiveAuthStatus{Present: true, Details: "API key (.env GEMINI_API_KEY)"}, nil
 	default:
-		return LiveAuthStatus{}, nil
+		// Last resort: Antigravity keeps its login in the IDE's own state
+		// database and in the OS credential store, never under ~/.gemini.
+		//
+		// "Present" and "identified" are two different answers here. The
+		// keyring probe lists an item's attributes without reading its secret,
+		// so a status poll can see that a login exists without ever raising
+		// the macOS Keychain prompt; the identity comes from the state
+		// database alone and is simply absent when only the keyring mirror
+		// survives. That matches the reference, and it is the safe ordering:
+		// fingerprinting would mean reading the secret.
+		cred := p.antigravityStateCredential()
+		if cred == nil && !antigravityKeyringExists() {
+			return LiveAuthStatus{}, nil
+		}
+		identity := ""
+		if cred != nil {
+			identity = antigravityIdentity(cred.Token.RefreshToken)
+		}
+		return LiveAuthStatus{
+			Present:  true,
+			Identity: identity,
+			Details:  "antigravity oauth",
+		}, nil
 	}
 }
 
 func (p *gemini) oauthEmail() string {
-	raw, err := os.ReadFile(p.livePath("oauth_creds.json"))
-	if err != nil {
-		return ""
-	}
-	var creds struct {
-		IDToken string `json:"id_token"`
-	}
-	if json.Unmarshal(raw, &creds) == nil && creds.IDToken != "" {
-		if email := jwtEmail(creds.IDToken); email != "" {
+	// Antigravity writes the address in clear text; gemini-cli hides it in
+	// the id_token. Probe the OAuth files first for either.
+	for _, name := range geminiAllCredentialFiles() {
+		raw, err := os.ReadFile(p.livePath(name))
+		if err != nil {
+			continue
+		}
+		if email := geminiEmailFromCredentials(raw); email != "" {
 			return email
 		}
 	}
@@ -126,13 +183,44 @@ func (p *gemini) Backup(destDir string) (SnapshotInfo, error) {
 			return SnapshotInfo{}, err
 		}
 	}
+	// An Antigravity login lives in the IDE's state database, so the file loop
+	// above never sees it. Snapshot it into the same portable name the proxy
+	// already reads, otherwise the saved account would have no credential to
+	// serve from even though DetectLive reported it as present.
+	stateIdentity, stateNotes := "", ""
+	if !p.hasOAuth() {
+		cred := p.antigravityStateCredential()
+		notes := "Antigravity login (IDE state)"
+		if cred == nil {
+			// The IDE state has nothing, so fall back to the OS credential
+			// store. This is the one place that reads the secret: the user
+			// asked to save this account, and the snapshot is useless without
+			// the material. DetectLive must never do this.
+			cred = antigravityKeyringCredential()
+			notes = "Antigravity login (OS keyring)"
+		}
+		if cred != nil {
+			out, err := json.Marshal(cred)
+			if err == nil {
+				dest := filepath.Join(destDir, antigravityCredentialFiles[0])
+				if err := os.WriteFile(dest, out, 0o600); err == nil {
+					found = true
+					stateIdentity = antigravityIdentity(cred.Token.RefreshToken)
+					stateNotes = notes
+				}
+			}
+		}
+	}
 	if !found {
 		return SnapshotInfo{}, anyerr.Newf(
 			"No live Gemini CLI auth found under "+p.configDir()+". Log in first, then save.",
 			"NO_LIVE_AUTH",
 			anyerr.WithSuggestions("Run `gemini` and sign in, then try again."))
 	}
-	if p.hasOAuth() {
+	if stateIdentity != "" {
+		info.Identity = stateIdentity
+		info.Notes = stateNotes
+	} else if p.hasOAuth() {
 		info.Identity = p.oauthEmail()
 	} else if p.hasEnvAPIKey() {
 		info.Notes = "API key"

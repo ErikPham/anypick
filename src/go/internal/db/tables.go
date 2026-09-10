@@ -77,4 +77,11 @@ var TableOwners = map[string]TableOwner{
 	"auth_kv":     {Package: "internal/provider", External: true},
 	"credential":  {Package: "internal/provider", External: true},
 	"integration": {Package: "internal/provider", External: true},
+	// ItemTable is the VS Code global-state table inside Antigravity's
+	// state.vscdb, where the IDE keeps its signed-in Google OAuth token.
+	// AnyPick never created it and never writes it: the reader opens it
+	// through db.OpenForeign(path, true), which is read-only and
+	// query_only, precisely so a discovery pass cannot disturb a running
+	// IDE. It is declared here only so the ownership gate can see it.
+	"itemtable": {Package: "internal/provider", External: true},
 }

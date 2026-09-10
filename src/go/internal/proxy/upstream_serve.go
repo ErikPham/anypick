@@ -73,6 +73,16 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		writeJSONError(w, http.StatusBadGateway, "upstream_error", "no upstream")
 		return
 	}
+	// Gemini upstreams answer model enumeration locally. Without this the
+	// request falls through to kindPassthrough and is reverse-proxied to
+	// cloudcode-pa, which answers Google's HTML 404 — markup where the client
+	// expects JSON. Every other upstream keeps the previous behaviour, and the
+	// branch lives in Serve (not in the per-account Handler) so the pool ring
+	// and the hub cannot drift away from it.
+	if up.Gemini != nil && isListModels(r) {
+		serveGeminiModels(w, r, up)
+		return
+	}
 	switch egressKindFor(r, up) {
 	case kindGemini:
 		serveGemini(w, r, up)

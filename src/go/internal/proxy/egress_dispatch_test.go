@@ -99,6 +99,47 @@ func TestEgressKindForCoversEveryUpstreamShape(t *testing.T) {
 	}
 }
 
+// buildServer is the only place an Upstream becomes a Server, and every
+// detached proxy child goes through it. A field it forgets does not fail — it
+// just disappears from the egress decision, and the most dangerous one to lose
+// is TranslateGemini: without it, kindGemini is never selected and
+// /v1/chat/completions is forwarded verbatim to daily-cloudcode-pa, which
+// answers an HTML 404. The proxy still starts, /health still passes, and no
+// request ever reaches generateContent.
+func TestBuildServerCarriesTheGeminiEgressFacts(t *testing.T) {
+	base := mustURLT(t, "https://daily-cloudcode-pa.googleapis.com")
+	up := &Upstream{
+		BaseURL:            base,
+		AuthHeader:         "Authorization",
+		AuthValuePrefix:    "Bearer ",
+		AuthProvider:       func(ctx context.Context) (string, error) { return "tok", nil },
+		TranslateGemini:    true,
+		Gemini:             &GeminiTarget{IDEType: "ANTIGRAVITY", UserAgent: "antigravity/hub/2.3.1 (aidev_client)"},
+		TranslateAnthropic: true,
+		Anthropic:          &UpstreamTarget{BaseURL: base},
+		OpenAIPath:         "/chat/completions",
+	}
+	srv := (&Service{}).buildServer("gemini", "acct", MustNewInstanceID(), "secret", up)
+	got := srv.upstreamValue()
+	if !got.TranslateGemini {
+		t.Fatal("TranslateGemini lost in buildServer: egress would fall through to passthrough")
+	}
+	if got.Gemini != up.Gemini {
+		t.Fatalf("Gemini target lost in buildServer: got %v", got.Gemini)
+	}
+	if got.Gemini.IDEType != "ANTIGRAVITY" || got.Gemini.UserAgent == "" {
+		t.Fatalf("Gemini target lost its client identity: %+v", got.Gemini)
+	}
+	if srv.UpstreamAuthProvider == nil {
+		t.Fatal("AuthProvider lost in buildServer: OAuth tokens would never refresh")
+	}
+	// The point of all of the above: dispatch must actually pick gemini.
+	chat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	if kind := egressKindFor(chat, got); kind != kindGemini {
+		t.Fatalf("egressKindFor = %d, want kindGemini (%d)", kind, kindGemini)
+	}
+}
+
 // A pool member that hits the context limit must be converted exactly like a
 // single account is: the client compacts on the canonical 400, and a raw
 // vendor envelope does not carry that signal.

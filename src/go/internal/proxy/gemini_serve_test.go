@@ -22,12 +22,13 @@ type geminiMock struct {
 }
 
 type geminiMockRequest struct {
-	Path     string
-	Method   string
-	Body     map[string]interface{}
-	APIKey   string
-	Bearer   string
-	Envelope bool // Code Assist envelope present
+	Path      string
+	Method    string
+	Body      map[string]interface{}
+	APIKey    string
+	Bearer    string
+	UserAgent string
+	Envelope  bool // Code Assist envelope present
 }
 
 // geminiMockResponse lets a responder control the HTTP status, headers, and
@@ -46,11 +47,12 @@ func newGeminiMock(t *testing.T, responder func(r geminiMockRequest) geminiMockR
 		var body map[string]interface{}
 		_ = json.Unmarshal(raw, &body)
 		req := geminiMockRequest{
-			Path:   r.URL.Path,
-			Method: r.Method,
-			Body:   body,
-			APIKey: r.Header.Get("x-goog-api-key"),
-			Bearer: strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+			Path:      r.URL.Path,
+			Method:    r.Method,
+			Body:      body,
+			APIKey:    r.Header.Get("x-goog-api-key"),
+			Bearer:    strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+			UserAgent: r.Header.Get("User-Agent"),
 		}
 		_, hasModel := body["model"]
 		_, hasRequest := body["request"]
@@ -354,6 +356,87 @@ func TestGeminiServeOAuthEnvelope(t *testing.T) {
 	}
 	if _, ok := reqObj["session_id"]; !ok {
 		t.Fatalf("envelope request missing session_id: %v", reqObj)
+	}
+}
+
+// Code Assist identifies the caller two ways: the ideType in the
+// loadCodeAssist body, and the User-Agent on generateContent. Get either
+// wrong and the same credential is rejected (400 INVALID_ARGUMENT for the
+// historical "GEMINI" ideType, 403 SUBSCRIPTION_REQUIRED with no
+// User-Agent). The values come from the OAuth profile that owns the
+// credential, so the proxy must forward what the target carries.
+func TestGeminiServeCodeAssistClientIdentity(t *testing.T) {
+	resetGeminiTestState(t)
+	codeAssistProjects.mu.Lock()
+	codeAssistProjects.byToken = map[string]string{}
+	codeAssistProjects.mu.Unlock()
+
+	const wantUA = "antigravity/hub/2.3.1 (aidev_client)"
+	var ideType string
+	var generateUA string
+	mock := newGeminiMock(t, func(r geminiMockRequest) geminiMockResponse {
+		if strings.Contains(r.Path, "loadCodeAssist") {
+			// A consumer account: 200 with no project at all.
+			if md, ok := r.Body["metadata"].(map[string]interface{}); ok {
+				ideType, _ = md["ideType"].(string)
+			}
+			return geminiMockResponse{Body: map[string]interface{}{"allowedTiers": []interface{}{}}}
+		}
+		generateUA = r.UserAgent
+		return geminiMockResponse{Body: map[string]interface{}{"response": geminiTextResponse("antigravity reply")}}
+	})
+	srv := newGeminiServer(t, mock.url(), &GeminiTarget{
+		APIKeyMode:     false,
+		CodeAssistBase: mock.url(),
+		IDEType:        "ANTIGRAVITY",
+		UserAgent:      wantUA,
+	})
+	srv.UpstreamAuthProvider = func(ctx context.Context) (string, error) {
+		return "oauth-token", nil
+	}
+
+	resp := postProxy(t, srv, "/v1/chat/completions",
+		`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}`)
+	raw := readBody(t, resp)
+	var out map[string]interface{}
+	_ = json.Unmarshal(raw, &out)
+	choices, ok := out["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		t.Fatalf("no project must not fail the request; got %s", raw)
+	}
+	if got := choices[0].(map[string]interface{})["message"].(map[string]interface{})["content"]; got != "antigravity reply" {
+		t.Fatalf("content = %v", got)
+	}
+	if ideType != "ANTIGRAVITY" {
+		t.Fatalf("loadCodeAssist ideType = %q, want ANTIGRAVITY", ideType)
+	}
+	if generateUA != wantUA {
+		t.Fatalf("generateContent User-Agent = %q, want %q", generateUA, wantUA)
+	}
+}
+
+// The two Code Assist identities post different ClientMetadata. Ported from
+// the reference implementation (npm anypick: providers/gemini-proxy/server.ts
+// resolveOAuthProject): Antigravity sends {ideType} alone, gemini-cli adds
+// platform + pluginType. Collapsing the two is how an accepted identity turns
+// into a 400 the next time the endpoint tightens its validation.
+func TestGeminiCodeAssistMetadataShapePerIdentity(t *testing.T) {
+	antigravity := geminiCodeAssistMetadata("ANTIGRAVITY")
+	if _, leaked := antigravity["pluginType"]; leaked {
+		t.Fatalf("ANTIGRAVITY metadata must not carry pluginType: %v", antigravity)
+	}
+	if _, leaked := antigravity["platform"]; leaked {
+		t.Fatalf("ANTIGRAVITY metadata must not carry platform: %v", antigravity)
+	}
+	if antigravity["ideType"] != "ANTIGRAVITY" {
+		t.Fatalf("ANTIGRAVITY ideType = %v", antigravity["ideType"])
+	}
+	cli := geminiCodeAssistMetadata("GEMINI_CLI")
+	if cli["pluginType"] != "GEMINI" {
+		t.Fatalf("gemini-cli pluginType = %v, want GEMINI", cli["pluginType"])
+	}
+	if cli["platform"] == "" || cli["platform"] == nil {
+		t.Fatalf("gemini-cli platform must be set: %v", cli)
 	}
 }
 

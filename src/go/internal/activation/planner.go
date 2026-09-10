@@ -556,6 +556,9 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 		}
 	}
 
+	planWarningsFromUnpinnedModel(clientID, resolved, model,
+		firstNonNilMap(req.ModelRoles, opts.ModelRoles), &warnings)
+
 	return &Plan{
 		Mode:           req.Mode,
 		Client:         clientID,
@@ -578,6 +581,53 @@ func planWarningsFromModel(model *bindings.ModelSelection, warnings *[]Warning) 
 			Message: "Migrated binding has unknown model; will not inject a model override.",
 		})
 	}
+}
+
+// clientNativeProvider maps a first-party client to the provider whose model
+// ids it emits when AnyPick does not pin one. Provider ids mirror client ids
+// for these (claude/claude, gemini/gemini, codex/codex); clients with no
+// provider of their own are simply absent, and are never warned about.
+//
+// Binding a client to an account from another provider is the whole point of
+// AnyPick and is never wrong on its own — it only matters when nothing pins a
+// model, because then the client sends its own ids and the upstream account
+// has to serve them.
+var clientNativeProvider = map[string]string{
+	"claude": "claude",
+	"gemini": "gemini",
+	"codex":  "codex",
+}
+
+// planWarningsFromUnpinnedModel warns when a client is bound to an account
+// from a different vendor and no model and no model role is pinned. Without
+// one, the client's own ids reach the upstream verbatim: Claude Code asks for
+// claude-sonnet-4-5 / claude-opus-4-5 / claude-haiku-4-5, and a Gemini
+// account answers the first two by intent but has no Haiku tier at all.
+//
+// AnyPick deliberately does not invent a default here. The static catalog's
+// Gemini entries (gemini-3.1-pro-preview, gemini-3.6-flash) are not ids Google
+// actually serves — checked against a live Code Assist catalog — and live
+// Gemini discovery speaks Generative Language with an API key, which the OAuth
+// (Antigravity / gemini-cli) accounts do not have. So the honest answer is to
+// say the model is missing rather than to write one that will 404.
+func planWarningsFromUnpinnedModel(clientID string, resolved *ResolvedSource, model bindings.ModelSelection, roles map[string]string, warnings *[]Warning) {
+	if resolved == nil || resolved.Kind != string(refs.KindAccount) {
+		return
+	}
+	provider := resolved.Ref.Provider
+	if provider == "" || explicitModelID(model) != "" || len(roles) > 0 {
+		return
+	}
+	native, ok := clientNativeProvider[clientID]
+	if !ok || native == provider {
+		return
+	}
+	*warnings = append(*warnings, Warning{
+		Code: "MODEL_NOT_PINNED",
+		Message: fmt.Sprintf(
+			"%s is bound to a %s account with no model pinned; %s will send its own model ids and this account may not serve them. Re-run with --model <id>.",
+			clientID, provider, clientID),
+	})
 }
 
 func loadProfileName(ref refs.Ref) string {

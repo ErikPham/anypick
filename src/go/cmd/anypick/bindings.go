@@ -327,6 +327,11 @@ func cmdRun(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
+	// Ephemeral runs used to drop every warning on the floor: `run` has no
+	// "activated …" summary, so a silent plan warning was simply never seen.
+	for _, w := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
 	binary := plan.Client
 	env := map[string]string(nil)
 	if result.Isolated != nil {

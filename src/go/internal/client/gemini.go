@@ -33,11 +33,57 @@ func (a *geminiAdapter) Capabilities() *Capabilities {
 	}
 }
 
+// geminiDir resolves ~/.gemini the way the real CLI does.
+//
+// GEMINI_CLI_HOME is what @google/gemini-cli actually reads (verified against
+// the 0.59.0 npm bundle): its homedir() returns that variable and it replaces
+// HOME, so the config dir is "$GEMINI_CLI_HOME/.gemini" — not the variable
+// itself.
+//
+// GEMINI_CONFIG_DIR does not exist in the CLI (zero hits in that bundle). It
+// survives here only as AnyPick's own knob for tests and explicit overrides,
+// and it MUST lose to GEMINI_CLI_HOME: when both are set the CLI follows
+// GEMINI_CLI_HOME, so AnyPick has to as well, or it writes a file the CLI
+// never opens. In an isolated home that is worse than a wrong path — it means
+// writing into the sandbox while the CLI reads the real ~/.gemini.
 func geminiDir(home string) string {
-	if env := os.Getenv("GEMINI_CONFIG_DIR"); env != "" && home == liveHome() {
-		return env
+	if home == liveHome() {
+		if cliHome := os.Getenv("GEMINI_CLI_HOME"); cliHome != "" {
+			return filepath.Join(cliHome, ".gemini")
+		}
+		if env := os.Getenv("GEMINI_CONFIG_DIR"); env != "" {
+			return env
+		}
 	}
 	return filepath.Join(home, ".gemini")
+}
+
+// geminiCredentialFiles are the OAuth files a Gemini login may leave behind.
+// Which one exists is a property of the app that wrote the login, not of
+// AnyPick: gemini-cli writes oauth_creds.json, Antigravity writes
+// antigravity_oauth.json or the standalone Jetski token. Gemini CLI and
+// Antigravity are one identity, so any of them is a usable login — read it
+// wherever it happens to be.
+//
+// This duplicates provider/gemini_credential.go on purpose: client stays
+// importable by provider, not the other way round, so the two packages cannot
+// share one constant. That file is the authority — update both together.
+var geminiCredentialFiles = []string{
+	"oauth_creds.json",
+	"antigravity_oauth.json",
+	"jetski-standalone-oauth-token",
+}
+
+// geminiRestoredCredential returns the first OAuth file present in the
+// client's config dir, or "" when the login has not been restored.
+func geminiRestoredCredential(home string) string {
+	dir := geminiDir(home)
+	for _, name := range geminiCredentialFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return name
+		}
+	}
+	return ""
 }
 
 func geminiEnvPath(home string) string      { return filepath.Join(geminiDir(home), ".env") }
@@ -62,9 +108,20 @@ func (a *geminiAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 		env["GEMINI_API_KEY"] = ctx.APIKey
 	}
 	if ctx.Endpoint != "" {
-		// Best-effort: some forks / gateways honor a base URL override.
+		// GOOGLE_GEMINI_BASE_URL is real and documented: @google/gemini-cli
+		// 0.59.0 (docs/reference/configuration.md) honours it for
+		// gemini-api-key auth, flips the CLI to AuthType.GATEWAY, and allows
+		// plain http for localhost. It is still not a way to aim the CLI at
+		// AnyPick's proxy: with it set the CLI speaks Generative Language
+		// (POST /v1beta/models/<model>:generateContent), while the proxy
+		// serves OpenAI/Anthropic (/v1/chat/completions, /v1/responses,
+		// /v1/messages). Kept for gateway profiles that do speak Generative
+		// Language.
+		//
+		// GEMINI_API_BASE_URL was written next to it once. The CLI has never
+		// read it — zero hits in the 0.59.0 bundle. It belongs to the Google
+		// GenAI SDK, not to the CLI.
 		env["GOOGLE_GEMINI_BASE_URL"] = ctx.Endpoint
-		env["GEMINI_API_BASE_URL"] = ctx.Endpoint
 	}
 	if defaultModel := firstNonEmpty(ctx.ModelRoles["default"], ctx.DefaultModel); defaultModel != "" {
 		env["GEMINI_MODEL"] = defaultModel
@@ -151,6 +208,8 @@ func (a *geminiAdapter) Reset() error {
 	keys, _ := readManagedMarkerKeys(geminiSettingsPath(a.home))
 	if len(keys) == 0 {
 		// Fall back to the keys this adapter owns by construction.
+		// GEMINI_API_BASE_URL is no longer written (see Apply) but stays here
+		// so a reset still scrubs it out of .env files written by older builds.
 		keys = []string{"GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GEMINI_API_BASE_URL", "GEMINI_MODEL"}
 	}
 	if _, err := os.Stat(liveEnv); err == nil {
@@ -176,15 +235,26 @@ func (a *geminiAdapter) Inspect() (*InspectResult, error) {
 	_, setErr := os.Stat(geminiSettingsPath(a.home))
 	present := envErr == nil || setErr == nil
 	res := &InspectResult{Present: present}
+	// A direct activation restores the OAuth file and writes neither .env nor
+	// settings.json, so the two paths above are blind to it and every direct
+	// gemini activation ended with "gemini reports no anypick-managed
+	// configuration after activation" even though the login had been
+	// restored. Any OAuth file counts, whichever app wrote it.
+	if name := geminiRestoredCredential(a.home); name != "" {
+		res.Present = true
+		res.Summary = "restored " + name
+	}
 	if setErr == nil {
 		keys, err := readManagedMarkerKeys(geminiSettingsPath(a.home))
 		if err != nil {
 			res.Issues = []string{"settings.json unreadable"}
 			return res, nil
 		}
-		if len(keys) > 0 {
+		switch {
+		case len(keys) > 0:
 			res.Summary = fmt.Sprintf("anypick-managed env keys: %d", len(keys))
-		} else {
+		case res.Summary == "":
+			// A restored credential already set a more useful summary.
 			res.Summary = "settings present"
 		}
 	}

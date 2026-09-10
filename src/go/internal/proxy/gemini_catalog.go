@@ -56,11 +56,19 @@ func geminiCatalogKey(up *Upstream) string {
 	return "oauth:" + base
 }
 
-// liveGeminiCatalog returns the account-scoped model catalog, fetching it once
-// (best-effort) and caching by upstream base. A failed fetch returns nil, which
-// callers treat as the empty-catalog passthrough fallback (resolveGeminiModel
-// still passes concrete ids through). Ports liveModelCatalog (server.ts).
+// liveGeminiCatalog is the best-effort accessor used by model resolution: a
+// failed fetch yields nil, which callers treat as the empty-catalog fallback
+// (resolveGeminiModel still passes concrete ids through).
 func liveGeminiCatalog(ctx context.Context, up *Upstream) *gemini.GeminiModelCatalog {
+	cat, _ := liveGeminiCatalogWithError(ctx, up)
+	return cat
+}
+
+// liveGeminiCatalogWithError is the same cache with the failure reason
+// attached. GET /v1/models needs it: the reference answers 502 rather than an
+// empty list, because a client that enumerates models would rather see an
+// honest failure than a list we made up. Ports liveModelCatalog (server.ts).
+func liveGeminiCatalogWithError(ctx context.Context, up *Upstream) (*gemini.GeminiModelCatalog, error) {
 	key := geminiCatalogKey(up)
 	now := time.Now()
 	geminiCatalogMu.Lock()
@@ -68,11 +76,12 @@ func liveGeminiCatalog(ctx context.Context, up *Upstream) *gemini.GeminiModelCat
 		if e.err == nil && now.Sub(e.fetchedAt) < geminiCatalogTTL {
 			v := e.value
 			geminiCatalogMu.Unlock()
-			return v
+			return v, nil
 		}
 		if e.err != nil && now.Sub(e.errAt) < geminiCatalogFailTTL {
+			err := e.err
 			geminiCatalogMu.Unlock()
-			return nil
+			return nil, err
 		}
 	}
 	geminiCatalogMu.Unlock()
@@ -86,9 +95,70 @@ func liveGeminiCatalog(ctx context.Context, up *Upstream) *gemini.GeminiModelCat
 	}
 	geminiCatalogMu.Unlock()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return cat
+	return cat, nil
+}
+
+// isListModels matches the OpenAI model-enumeration route.
+//
+// A Gemini upstream must answer it locally. Left to the passthrough branch the
+// request is reverse-proxied to cloudcode-pa, which answers Google's HTML 404
+// page: a client enumerating models gets markup where it expects JSON. The TS
+// reference served this route (gemini-proxy/server.ts, handleListModels).
+func isListModels(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		(r.URL.Path == "/v1/models" || r.URL.Path == "/models")
+}
+
+// serveGeminiModels answers GET /v1/models for a Gemini-backed upstream. Ports
+// handleListModels: ids are de-duplicated, and a catalog miss is a 502 — never
+// an invented list.
+func serveGeminiModels(w http.ResponseWriter, r *http.Request, up *Upstream) {
+	cat, err := liveGeminiCatalogWithError(r.Context(), up)
+	if cat == nil {
+		msg := "no Gemini model catalog available"
+		if err != nil {
+			msg = err.Error()
+		}
+		writeJSONError(w, http.StatusBadGateway, "proxy_error",
+			"Failed to list Gemini models from Google: "+msg)
+		return
+	}
+	// The TS reference labels API-key catalogs 'google' and OAuth catalogs
+	// 'google-code-assist'; keep the distinction so clients can tell them apart.
+	ownedBy := "google-code-assist"
+	if up.Gemini != nil && up.Gemini.APIKeyMode {
+		ownedBy = "google"
+	}
+	type modelEntry struct {
+		ID          string `json:"id"`
+		Object      string `json:"object"`
+		OwnedBy     string `json:"owned_by"`
+		DisplayName string `json:"display_name,omitempty"`
+	}
+	data := make([]modelEntry, 0, len(cat.Models))
+	seen := make(map[string]struct{}, len(cat.Models))
+	for _, m := range cat.Models {
+		if m.ID == "" {
+			continue
+		}
+		if _, dup := seen[m.ID]; dup {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		data = append(data, modelEntry{
+			ID: m.ID, Object: "model", OwnedBy: ownedBy, DisplayName: m.DisplayName,
+		})
+	}
+	body, merr := json.Marshal(map[string]interface{}{"object": "list", "data": data})
+	if merr != nil {
+		writeJSONError(w, http.StatusInternalServerError, "proxy_error", "Failed to encode model list")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // refreshGeminiModelCatalog performs one live catalog fetch for the upstream's
@@ -127,11 +197,11 @@ func refreshGeminiModelCatalog(ctx context.Context, up *Upstream) (*gemini.Gemin
 	if up.Gemini.CodeAssistBase != nil {
 		base = strings.TrimSuffix(up.Gemini.CodeAssistBase.String(), "/")
 	}
-	project, perr := resolveCodeAssistProject(ctx, base, token)
+	project, perr := resolveCodeAssistProject(ctx, base, token, up.Gemini.IDEType)
 	if perr != nil {
 		return nil, fmt.Errorf("gemini code assist project: %w", perr)
 	}
-	return fetchGeminiCatalogFromCodeAssist(ctx, base, token, project, "")
+	return fetchGeminiCatalogFromCodeAssist(ctx, base, token, project, up.Gemini.UserAgent)
 }
 
 // fetchGeminiCatalogFromGoogle pages through Google Generative Language

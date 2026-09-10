@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,11 @@ import (
 
 // geminiUpstreamGoogle is the API-key upstream (translate-types.ts DEFAULT_UPSTREAM).
 const geminiUpstreamGoogle = "https://generativelanguage.googleapis.com"
+
+// geminiIDETypeDefault is the ClientMetadata.ideType used when a target does
+// not name one. The historical "GEMINI" is no longer an accepted value — the
+// endpoint answers 400 INVALID_ARGUMENT for it.
+const geminiIDETypeDefault = "GEMINI_CLI"
 
 // codeAssistProjectCache caches the resolved Code Assist project per auth token
 // so each request does not re-call loadCodeAssist (mirrors the TS in-process
@@ -278,11 +284,12 @@ func callGeminiOAuth(ctx context.Context, up *Upstream, model string, geminiReq 
 	if up.Gemini != nil && up.Gemini.CodeAssistBase != nil {
 		base = strings.TrimSuffix(up.Gemini.CodeAssistBase.String(), "/")
 	}
-	project, perr := resolveCodeAssistProject(ctx, base, token)
+	project, perr := resolveCodeAssistProject(ctx, base, token, geminiString(up.Gemini, func(t *GeminiTarget) string { return t.IDEType }))
 	if perr != nil {
 		return nil, perr
 	}
-	status, header, raw, rerr := doCodeAssistRequest(ctx, base, token, model, geminiReq, project)
+	status, header, raw, rerr := doCodeAssistRequest(ctx, base, token, model, geminiReq, project,
+		geminiString(up.Gemini, func(t *GeminiTarget) string { return t.UserAgent }))
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -303,8 +310,8 @@ func callGeminiOAuth(ctx context.Context, up *Upstream, model string, geminiReq 
 				if alt.CodeAssistBase != nil {
 					altBase = strings.TrimSuffix(alt.CodeAssistBase.String(), "/")
 				}
-				if altProject, perr := resolveCodeAssistProject(ctx, altBase, altToken); perr == nil {
-					if s2, _, r2, e2 := doCodeAssistRequest(ctx, altBase, altToken, model, geminiReq, altProject); e2 == nil && s2 >= 200 && s2 < 300 {
+				if altProject, perr := resolveCodeAssistProject(ctx, altBase, altToken, alt.IDEType); perr == nil {
+					if s2, _, r2, e2 := doCodeAssistRequest(ctx, altBase, altToken, model, geminiReq, altProject, alt.UserAgent); e2 == nil && s2 >= 200 && s2 < 300 {
 						return unwrapCodeAssist(r2, s2)
 					}
 				}
@@ -319,7 +326,15 @@ func callGeminiOAuth(ctx context.Context, up *Upstream, model string, geminiReq 
 	return unwrapCodeAssist(raw, status)
 }
 
-func doCodeAssistRequest(ctx context.Context, base, token, model string, geminiReq *gemini.GeminiGenerateRequest, project string) (int, http.Header, []byte, error) {
+// geminiString reads one string field off a possibly-nil Gemini target.
+func geminiString(t *GeminiTarget, pick func(*GeminiTarget) string) string {
+	if t == nil {
+		return ""
+	}
+	return pick(t)
+}
+
+func doCodeAssistRequest(ctx context.Context, base, token, model string, geminiReq *gemini.GeminiGenerateRequest, project, userAgent string) (int, http.Header, []byte, error) {
 	geminiReq.SessionID = geminiSessionID
 	envelope := &gemini.GeminiCodeAssistEnvelope{
 		Model:        model,
@@ -338,6 +353,12 @@ func doCodeAssistRequest(ctx context.Context, base, token, model string, geminiR
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
+	// Code Assist gates generateContent on the client identity: the same
+	// credential answers 403 SUBSCRIPTION_REQUIRED without the User-Agent
+	// its OAuth client is registered under.
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
 	client := egress.StreamClient()
 	resp, err := client.Do(req)
 	if err != nil {
@@ -451,19 +472,39 @@ func geminiErrorStatusMessage(err error) (int, string) {
 	return http.StatusBadGateway, err.Error()
 }
 
+// geminiCodeAssistMetadata builds the ClientMetadata for loadCodeAssist. The
+// two identities do not take the same shape: Antigravity's endpoint is sent
+// {ideType} alone, while gemini-cli additionally carries platform +
+// pluginType (npm anypick, providers/gemini-proxy/server.ts). Sending the
+// gemini-cli shape to the Antigravity upstream is the kind of extra field the
+// endpoint later rejects, so the shapes stay separate.
+func geminiCodeAssistMetadata(ideType string) map[string]interface{} {
+	if ideType == "ANTIGRAVITY" {
+		return map[string]interface{}{"ideType": ideType}
+	}
+	platform := "PLATFORM_UNSPECIFIED"
+	if runtime.GOOS == "darwin" {
+		platform = "DARWIN_ARM64"
+	}
+	return map[string]interface{}{
+		"ideType":    ideType,
+		"platform":   platform,
+		"pluginType": "GEMINI",
+	}
+}
+
 // resolveCodeAssistProject calls loadCodeAssist to discover the project for the
 // OAuth account, caching by token (mirrors oauthState.project).
-func resolveCodeAssistProject(ctx context.Context, base, token string) (string, error) {
+func resolveCodeAssistProject(ctx context.Context, base, token, ideType string) (string, error) {
 	if p, ok := codeAssistProjects.get(token); ok {
 		return p, nil
 	}
+	if ideType == "" {
+		ideType = geminiIDETypeDefault
+	}
 	target := fmt.Sprintf("%s/v1internal:loadCodeAssist", base)
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"ideType":    "GEMINI",
-			"pluginType": "GEMINI",
-			"platform":   "DARWIN_ARM64",
-		},
+		"metadata": geminiCodeAssistMetadata(ideType),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
@@ -487,7 +528,12 @@ func resolveCodeAssistProject(ctx context.Context, base, token string) (string, 
 	_ = json.Unmarshal(raw, &parsed)
 	project := parsed.CloiudCompanionProject
 	if project == "" {
-		return "", anyerr.Newf("loadCodeAssist returned no project", "GEMINI_OAUTH")
+		// A consumer account has no Cloud project to bind, and Code Assist
+		// answers loadCodeAssist 200 without one. Rejecting here broke every
+		// request for those accounts even though generateContent accepts an
+		// empty project; the empty value is cached so the call is not repeated.
+		codeAssistProjects.set(token, "")
+		return "", nil
 	}
 	codeAssistProjects.set(token, project)
 	return project, nil
