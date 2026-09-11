@@ -29,8 +29,21 @@ msg_file=${1:?commit-msg hook needs the message file path}
 subject_line=$(grep -v '^#' "$msg_file" | grep -m1 '[^[:space:]]' || true)
 
 # Merge commits are not authored here; they carry git's own subject.
+#
+# `fixup!`/`squash!` are the same kind of thing: git writes them and
+# `git rebase --autosquash` rewrites them away before the branch is shared, so
+# there is no landing message to classify. Blocking them would block a normal
+# workflow with no escape hatch -- and `--no-verify` is a P0 (§5) -- which is the
+# "a rule that cannot be followed decays" failure this file exists to avoid.
+#
+# `Revert "..."` is deliberately NOT exempt. A revert is a real commit that lands
+# and belongs in the changelog, and git's generated subject cannot be parsed into
+# a release note. `revert:` is already an accepted type, so a correct path exists;
+# the case below says so, rather than failing with a type list that already
+# contains `revert` while rejecting the form `git revert` actually produces.
 case "$subject_line" in
   "Merge "*) exit 0 ;;
+  "fixup! "*|"squash! "*) exit 0 ;;
 esac
 
 fail() {
@@ -41,6 +54,24 @@ fail() {
 if [ -z "$subject_line" ]; then
   fail "commit-msg: empty subject"
 fi
+
+# git's own revert subject, named explicitly so the failure teaches the fix.
+case "$subject_line" in
+  'Revert "'*)
+    fail "commit-msg: this is git's generated revert subject, and it is not a
+  Conventional Commit (CODE_REVIEW.md §4).
+
+  got: $subject_line
+
+  A revert lands on main like any other change, so its subject has to be
+  parseable -- only feat, fix and perf appear in a release. Write one:
+
+    git revert --edit <sha>       # then use:  revert: <the reverted subject>
+
+  The type 'revert:' is valid; 'Revert \"...\"' is not. The Risk: trailer is
+  still required, so the revert is classified like any other change."
+    ;;
+esac
 
 # ---- 1. Conventional Commits -------------------------------------------------
 # type [(scope)] [!]: description
@@ -60,7 +91,30 @@ fi
 
 # ---- 2. Risk class ------------------------------------------------------------
 # One class, chosen by the author, from CODE_REVIEW.md §7.
-risk=$(grep -iE '^Risk:[[:space:]]*(Low|Normal|High|Architectural)[[:space:]]*$' "$msg_file" || true)
+#
+# Read the trailers through git's own parser, never by grepping the message text.
+# A line is only a trailer when it sits in the message's final paragraph; a
+# `Risk: High` written above a closing paragraph is body prose. Grepping the raw
+# file accepts it -- and then `git log --format='%(trailers:key=Risk)'`, which is
+# how this repository reads a commit's classification, returns nothing. The gate
+# would be enforcing a record nobody can retrieve, including a `Reviewed-By:`
+# that git cannot see. Verified before this was changed: a message with a
+# trailing paragraph exited 0 under the old check and parsed to zero trailers.
+#
+# `git interpret-trailers` is plumbing over stdin and needs no repository
+# (checked outside one), so the mutation suite still runs from any directory.
+trailers=$(git interpret-trailers --parse < "$msg_file" || true)
+
+# Trailer KEYS are case-insensitive to git: `RISK: High` is a trailer, and
+# `%(trailers:key=Risk)` returns it. Matching the value case-insensitively while
+# extracting it case-sensitively is therefore a bypass, not a style nit: the
+# existence check accepted `RISK: High`, the extraction did not recognise it, the
+# High branch never ran, and the independent-review requirement was dropped.
+# Verified before this was fixed -- `RISK: High` with no `Reviewed-By` exited 0,
+# and `REVIEWED-BY: <the author>` exited 0. Normalise once, then match once.
+trailers_lc=$(printf '%s\n' "$trailers" | tr '[:upper:]' '[:lower:]')
+
+risk=$(printf '%s\n' "$trailers_lc" | grep -E '^risk:[[:space:]]*(low|normal|high|architectural)[[:space:]]*$' || true)
 
 if [ -z "$risk" ]; then
   fail "commit-msg: missing 'Risk:' trailer (CODE_REVIEW.md §7).
@@ -78,17 +132,17 @@ if [ -z "$risk" ]; then
 fi
 
 # grep -c guards against two trailer lines, which is an ambiguous classification.
-risk_count=$(grep -icE '^Risk:[[:space:]]*(Low|Normal|High|Architectural)[[:space:]]*$' "$msg_file" || true)
+risk_count=$(printf '%s\n' "$trailers_lc" | grep -cE '^risk:[[:space:]]*(low|normal|high|architectural)[[:space:]]*$' || true)
 if [ "$risk_count" != 1 ]; then
   fail "commit-msg: expected exactly one 'Risk:' trailer, found $risk_count"
 fi
 
-risk_value=$(printf '%s' "$risk" | sed 's/^[Rr]isk:[[:space:]]*//' | tr '[:upper:]' '[:lower:]')
+risk_value=$(printf '%s' "$risk" | sed 's/^risk:[[:space:]]*//')
 
 # ---- 3. Independent review for High and Architectural -------------------------
 case "$risk_value" in
   high|architectural)
-    if ! grep -qiE '^Reviewed-By:[[:space:]]*[^[:space:]]' "$msg_file"; then
+    if ! printf '%s\n' "$trailers_lc" | grep -qE '^reviewed-by:[[:space:]]*[^[:space:]]'; then
       fail "commit-msg: Risk: $risk_value requires an independent review (CODE_REVIEW.md §1, §7).
 
   The author never approves their own work, and an agent that wrote a change
@@ -99,8 +153,37 @@ case "$risk_value" in
   The named context must not be the one that authored or repaired the change."
     fi
 
+    # A name is not a second context. The one case a machine can actually decide
+    # is "the reviewer is the author", so decide it: CODE_REVIEW.md §1 calls
+    # independent review the single most important rule in this document, and
+    # `Reviewed-By: <my own name>` is the trivial way to satisfy its letter while
+    # breaking it. Case-insensitive, and matched against both the name and the
+    # address, because either is a plausible thing to write. An empty identity
+    # cannot match a non-empty reviewer, so a machine without git config is not
+    # blocked by this.
+    author_name=$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed 's/ <.*//' || true)
+    author_mail=$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -n 's/.*<\(.*\)>.*/\1/p' || true)
+    reviewer=$(printf '%s\n' "$trailers_lc" | sed -n 's/^reviewed-by:[[:space:]]*//p' | head -1)
+    author_lc=$(printf '%s' "$author_name" | tr '[:upper:]' '[:lower:]')
+    mail_lc=$(printf '%s' "$author_mail" | tr '[:upper:]' '[:lower:]')
+
+    if [ -n "$reviewer" ]; then
+      case "$reviewer" in
+        "$author_lc"|"$mail_lc")
+          fail "commit-msg: Reviewed-By names the author (CODE_REVIEW.md §1).
+
+  Reviewed-By: $reviewer
+  author:      $author_name <$author_mail>
+
+  Self-review is not independent review. An agent that wrote a change and then
+  reported on it produced one artifact, not two. Name the separate context that
+  reviewed it -- a different agent session, or a human."
+          ;;
+      esac
+    fi
+
     if [ "$risk_value" = "architectural" ] &&
-       ! grep -qiE '^ADR:[[:space:]]*[^[:space:]]' "$msg_file"; then
+       ! printf '%s\n' "$trailers_lc" | grep -qE '^adr:[[:space:]]*[^[:space:]]'; then
       fail "commit-msg: Risk: architectural requires an ADR (CODE_REVIEW.md §7).
 
   Add a trailer naming the record, e.g.:
