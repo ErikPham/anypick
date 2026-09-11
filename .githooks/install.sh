@@ -19,7 +19,11 @@ if [ ! -d .githooks ]; then
   exit 1
 fi
 
-chmod +x .githooks/commit-msg .githooks/pre-push .githooks/install.sh
+# A glob, not a list. The previous version named three files and silently
+# skipped test.sh -- so the file you are most likely to edit while changing a
+# gate was the one file never chmod'ed and never checked. A hook added later is
+# now covered automatically instead of being the one nobody remembers to add.
+chmod +x .githooks/*
 
 git config core.hooksPath .githooks
 
@@ -28,11 +32,11 @@ printf '%s\n' "install: core.hooksPath -> $configured"
 
 # A hook that is not in the repository is a hook nobody else runs. `git
 # check-ignore` skips tracked paths, so ask about the pattern, not the index.
-for f in .githooks/commit-msg .githooks/pre-push .githooks/install.sh; do
+for f in .githooks/*; do
   if git check-ignore --no-index -q "$f"; then
     printf '%s\n' "install: WARNING $f is excluded by .gitignore -- it will never reach another clone" >&2
   fi
 done
 
 printf '%s\n' "install: done. Verify with:"
-printf '%s\n' "  printf 'bad subject\n' > /tmp/m && .githooks/commit-msg /tmp/m; echo \"exit=\$?\""
+printf '%s\n' "  sh .githooks/test.sh && git config --get core.hooksPath"

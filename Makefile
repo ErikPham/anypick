@@ -74,7 +74,7 @@ GOFMT := $(patsubst %go,%gofmt,$(GO))
 export GOTOOLCHAIN ?= auto
 
 .PHONY: help all ci info version go-toolchain build build-go test test-race vet fmt fmt-check lint review run sandbox \
-        gates check paths protocol-sync \
+        gates check paths hooks protocol-sync \
         release-check release-plan release-set release-bump artifact-check \
         app macos-open app-build macos-build build-macos app-test macos-test test-macos app-verify macos-verify smoke-artifact verify-artifact \
         tauri-deps tauri-ui tauri-check tauri-build build-tauri tauri-dev \
@@ -377,8 +377,36 @@ paths: ## Verify every script still resolves the repository root
 	    echo "       document that a clean checkout does not have"; fail=1; \
 	  fi; \
 	done; \
+	echo "checking the local review gates are tracked"; \
+	hooklist="$$(mktemp)"; \
+	ls .githooks/* > "$$hooklist" 2>/dev/null || true; \
+	if [ ! -s "$$hooklist" ]; then \
+	  echo "  FAIL .githooks/ listed no file, so this check proved nothing"; \
+	  echo "       either the directory is empty or the listing broke. A check"; \
+	  echo "       over zero entries is not a pass."; fail=1; \
+	else \
+	  while read -r h; do \
+	    if git ls-files --error-unmatch "$$h" >/dev/null 2>&1; then \
+	      echo "  OK   $$h"; \
+	    else \
+	      echo "  FAIL $$h is not tracked, so a clean clone has no such gate"; \
+	      echo "       an untracked hook is a gate only this working copy runs --"; \
+	      echo "       the same silence that once swallowed internal/refs"; fail=1; \
+	    fi; \
+	  done < "$$hooklist"; \
+	fi; \
+	rm -f "$$hooklist"; \
 	if [ "$$fail" -ne 0 ]; then echo "path check FAILED"; exit 1; fi; \
 	echo "path check OK"
+
+# Point core.hooksPath at the tracked .githooks/ directory. The hooks enforce
+# CODE_REVIEW.md §4 (Conventional Commits) and §7 (risk class, plus an
+# independent reviewer for High/Architectural) at commit time -- which is the
+# only point they can fire here, because this repository pushes straight to main
+# and the PR-shaped machinery in .github/ therefore never executes. One command
+# per clone, idempotent. Verify with `sh .githooks/test.sh`.
+hooks: ## Install the tracked local review gates (.githooks/) into this clone
+	@sh .githooks/install.sh
 
 # The desktop stdio protocol version is declared once per language. Nothing
 # links them, so bumping one and missing the others produces an app that
