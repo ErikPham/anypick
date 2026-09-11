@@ -37,8 +37,17 @@ The corollary is the single most important rule in this document:
 > enough to need a second opinion, that opinion must come from a context that
 > did not write the code.
 
-This is already the operating rule in `.pi/APPEND_SYSTEM.md` (auditor →
-implementer → auditor → test-auditor). It applies to hand-written changes too.
+The operating rule here is **auditor → implementer → auditor → test-auditor**:
+an independent context audits the change, the author implements it, the audit is
+repeated on the result, and a further context audits the tests. It applies to
+hand-written changes too.
+
+This rule used to live only in `.pi/APPEND_SYSTEM.md`, which `.gitignore`
+excludes — so a clean clone, CI, and every agent session starting from `main`
+were reviewing against a rule they could not read. The copy there had also gone
+stale: it named pre-`src/` paths and still called TypeScript the behavioural
+authority, which ADR 0020 replaced. A rule that lives in the standard is
+followed; a rule in an ignored file is not.
 
 ---
 
@@ -105,6 +114,23 @@ Every change, including one-line ones.
 - [ ] Comments explain *why*. Cite an ADR number when the constraint is
       load-bearing. No comments narrating the current task.
 - [ ] No dead code, no commented-out blocks, no `TODO` without an owner or issue.
+
+**Commit record** — the commit is the reviewable unit here. This repository has
+no pull requests, so nothing in `.github/` executes; the commit trailer is the
+durable record of the risk class and the review (§12).
+
+- [ ] Install the gate once per clone: `make hooks`. An uninstalled gate has
+      caught nothing, and reads exactly like a passing one.
+- [ ] Exactly one `Risk:` trailer — `Low`, `Normal`, `High` or `Architectural`
+      (§7) — **in the message's final paragraph**. Above a closing paragraph it
+      is body prose: the gate once accepted that while
+      `git log --format='%(trailers:key=Risk)'` returned nothing, so the
+      classification existed only in the author's head.
+- [ ] `Risk: High` and `Risk: Architectural` carry `Reviewed-By:` naming a
+      context that is not the author; Architectural also carries `ADR:`.
+- [ ] `fixup!`/`squash!` subjects are exempt because `--autosquash` rewrites
+      them away. A `Revert "..."` subject is not: a revert lands, so give it a
+      `revert:` subject (`git revert --edit`).
 
 **Tests**
 
@@ -543,8 +569,11 @@ Open:
 §8 names the health signals. Nothing schedules anyone to read them, which is
 how a signal becomes a surprise instead of a decision. Two rhythms:
 
-**Per change** — the PR template. It *is* the mechanism. A change with no
-completed template was not reviewed, whatever the author remembers doing.
+**Per change** — the commit record (§4). Where a repository uses pull requests
+that is the PR template; here every commit goes to `main`, so it is the
+`Risk:` / `Reviewed-By:` / `ADR:` trailers plus the gate that enforces them
+(§12). Either way the record *is* the mechanism: a change with no record was not
+reviewed, whatever the author remembers doing.
 
 **Monthly, or every ~50 commits — one pass, about thirty minutes:**
 
@@ -587,3 +616,43 @@ zero merged P0/P1; zero repeated P0/P1 families without a gate; every exemption
 has a written reason; no safety-critical package lacks tests; no known docs-path
 drift; every P2 is closed by its due date. A pass that finds nothing is a real
 result. Say so, with the date.
+
+---
+
+## 12. Where this standard is enforced
+
+§1 states the order. This table says *where each layer is wired*, so a rule is
+never assumed to be running because it is written down.
+
+| Layer | Fires on | Mechanism | Catches |
+| --- | --- | --- | --- |
+| **L0 — commit** | every `git commit` | `.githooks/commit-msg` | subject shape, exactly one risk class, a named non-author reviewer for High/Architectural, an ADR for Architectural |
+| **L0 — push** | every `git push` | `.githooks/pre-push` → `make fmt-check vet gates` | formatting, vet, and the path/parity/ownership gates. The test suite is deliberately **not** duplicated here: CI runs it on the same push, and a ten-minute local gate is a gate people learn to skip (§5) |
+| **L1 — CI** | a push or a pull request | `.github/workflows/` | the full suite, race detector, staticcheck, the platform builds, PR metadata validation |
+| **L2 — judgment** | any change that needs it | a human, or a separate agent context (§7) | everything a machine cannot decide |
+
+The local layers are inert until you install them, once per clone:
+
+```bash
+make hooks             # points core.hooksPath at .githooks/
+sh .githooks/test.sh   # the mutation cases; a gate you have never seen fail is unproven (§5)
+```
+
+The suite's count is deliberately not written down here. It said "25" for one
+afternoon while the file held 28, which is the same drift that made a debt list
+cite lines that had already moved — run the command and read the number.
+
+Three facts worth keeping in view, because each has already been true here:
+
+- **A gate written down but not installed has caught nothing.** The hooks sat
+  committed, executable and green for two days while `core.hooksPath` was unset
+  — the same failure as a rule nobody can read, wearing a passing test suite.
+- **L1 only executes if a pull request exists.** This repository has none: every
+  commit goes to `main`. So the commit trailer, not the PR template, is the
+  durable record of the risk class and the review. `make paths` fails if any file
+  in `.githooks/` is untracked, so a clone cannot silently lose the layer that is
+  actually doing the work.
+- **A gate and its reader must agree on what a fact is.** `commit-msg` once
+  accepted a `Risk:` line that `git log --format='%(trailers:key=Risk)'` could
+  not see. Both were "working". Read trailers through
+  `git interpret-trailers --parse`, never by grepping the message text.
