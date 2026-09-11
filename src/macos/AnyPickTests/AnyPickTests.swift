@@ -1111,4 +1111,60 @@ final class PaneRenderTests: XCTestCase {
     model.proxyHubEnabled = true
     render(ProxyHubView(model: model))
   }
+
+  // MARK: - Model step in the connection flow
+
+  private func modelConfigApp(
+    roles: [DesignModelRole],
+    options: [String],
+    editable: Bool = true
+  ) -> DesignApp {
+    DesignApp(
+      id: "claude",
+      name: "Claude Code",
+      detail: "Uses Work",
+      symbol: "s",
+      status: .ready,
+      accountCount: 1,
+      selectedRouteID: "r1",
+      routeOptions: [
+        DesignRoute(
+          id: "r1", name: "Work", detail: "work@example.com", symbol: "person",
+          kind: .account, providerID: "codex")
+      ],
+      fastModel: "",
+      reasoningModel: "",
+      useCompatibleFallback: true,
+      modelRoles: roles,
+      modelOptions: options,
+      modelEditingAvailable: editable
+    )
+  }
+
+  func testConnectionSheetOffersModelStepOnlyWhenTheRoutePublishesModels() {
+    let roles = [DesignModelRole(id: "default", label: "Default", modelID: "")]
+    // No options, no roles, or a route that manages its own picker: all three
+    // would render a dead control.
+    XCTAssertFalse(appRouteOffersModelStep(modelConfigApp(roles: roles, options: [])))
+    XCTAssertFalse(appRouteOffersModelStep(modelConfigApp(roles: [], options: ["m1"])))
+    XCTAssertFalse(
+      appRouteOffersModelStep(modelConfigApp(roles: roles, options: ["m1"], editable: false)))
+    XCTAssertTrue(appRouteOffersModelStep(modelConfigApp(roles: roles, options: ["m1"])))
+  }
+
+  func testConnectionSheetNudgesOnlyWhenNoDefaultIsPinned() {
+    let empty = [DesignModelRole(id: "default", label: "Default", modelID: "")]
+    let pinned = [DesignModelRole(id: "default", label: "Default", modelID: "m1")]
+    XCTAssertTrue(appRouteNeedsModelChoice(modelConfigApp(roles: empty, options: ["m1"])))
+    XCTAssertFalse(appRouteNeedsModelChoice(modelConfigApp(roles: pinned, options: ["m1"])))
+  }
+
+  @MainActor
+  func testConnectionSheetRendersEveryStage() {
+    let model = MacOSDesignModel.fromEnvironment(["ANYPICK_MACOS_FIXTURE": "ready"])
+    for app in model.apps {
+      render(AppRouteSheet(model: model, appID: app.id))
+      render(AppModelsSheet(model: model, appID: app.id))
+    }
+  }
 }

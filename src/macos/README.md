@@ -238,6 +238,13 @@ Create / choose / inspect flows (`Add Subscription`, `Add API Gateway`,
 - Cancel + default sit **under the last group**, same Displays
   pattern. Disable the default until the form is valid.
 - Files use `NSSavePanel` / `NSOpenPanel`. Do not draw a fake file-name row.
+- **Change Connection** runs connection → review → apply → models. The model
+  picker comes *after* the switch on purpose: the engine publishes model
+  options per live connection, so a picker offered before the switch would
+  list models the new route cannot serve. The step only appears when the
+  engine published options for that connection, and it is skipped when a
+  default model is already pinned (`appRouteOffersModelStep`,
+  `appRouteNeedsModelChoice`).
 
 ## Menu bar extra
 

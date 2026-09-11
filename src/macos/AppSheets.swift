@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// Model options are published per connection, so the connection sheet can
+/// only offer a picker for the route that is live right now — never for one
+/// the user has merely selected. Without options, or without roles to fill,
+/// a picker would be a dead control.
+func appRouteOffersModelStep(_ app: DesignApp) -> Bool {
+  app.modelEditingAvailable && !app.modelOptions.isEmpty && !app.modelRoles.isEmpty
+}
+
+/// Whether the sheet should nudge the user into the picker: an app that
+/// already has a default model pinned must not be forced through it to
+/// finish.
+func appRouteNeedsModelChoice(_ app: DesignApp) -> Bool {
+  guard appRouteOffersModelStep(app) else { return false }
+  return (app.modelRoles.first { $0.id == "default" }?.modelID ?? "").isEmpty
+}
+
 struct AppRouteSheet: View {
   private enum Stage {
     case connection
@@ -15,8 +31,18 @@ struct AppRouteSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var routeID = ""
   @State private var stage: Stage = .connection
+  @State private var modelValues: [String: String] = [:]
+  @State private var modelSaveError: String?
+  @State private var awaitingModelSave = false
 
   private var app: DesignApp? { model.apps.first { $0.id == appID } }
+
+  private var showsModelStep: Bool { app.map(appRouteOffersModelStep) ?? false }
+
+  private var needsModelChoice: Bool {
+    guard let app else { return false }
+    return appRouteNeedsModelChoice(app)
+  }
 
   private var accountRoutes: [DesignRoute] {
     guard let app else { return [] }
@@ -41,10 +67,11 @@ struct AppRouteSheet: View {
 
   private var primaryTitle: String {
     switch stage {
-    case .connection, .models: "Continue"
+    case .connection: "Continue"
+    case .models: "Save Models"
     case .review: "Apply Changes"
     case .applying: "Applying…"
-    case .success: "Done"
+    case .success: needsModelChoice ? "Choose Models" : "Done"
     case .recovery: "Try Again"
     }
   }
@@ -54,7 +81,7 @@ struct AppRouteSheet: View {
       title: app.map { "Change \($0.name) Connection" } ?? "Choose a Connection",
       width: 480,
       primaryTitle: primaryTitle,
-      primaryDisabled: routeID.isEmpty || stage == .applying,
+      primaryDisabled: routeID.isEmpty || stage == .applying || awaitingModelSave,
       primaryIdentifier: "app-route.primary.\(stageIdentifier)",
       showsCancel: stage != .applying && stage != .success,
       onCancel: { dismiss() },
@@ -65,7 +92,7 @@ struct AppRouteSheet: View {
         case .connection:
           connectionForm
         case .models:
-          modelImpactForm
+          modelForm
         case .review:
           reviewForm
         case .applying:
@@ -86,6 +113,17 @@ struct AppRouteSheet: View {
           stage = .recovery
         default:
           break
+        }
+      }
+      .onChange(of: model.operationResult) { _, result in
+        guard awaitingModelSave, result?.operation == "app-model-roles" else { return }
+        awaitingModelSave = false
+        if result?.succeeded == true {
+          dismiss()
+        } else if let message = result?.message, !message.isEmpty {
+          modelSaveError = message
+        } else {
+          modelSaveError = "Couldn’t save those models. Try again."
         }
       }
     }
@@ -155,20 +193,37 @@ struct AppRouteSheet: View {
     }
   }
 
+  /// The editable model step. It runs after the connection is live because
+  /// the catalog is per-connection: options published for the previous route
+  /// would let the user pick a model the new one cannot serve.
   @ViewBuilder
-  private var modelImpactForm: some View {
-    Section("Models") {
-      if let app, app.modelRoles.isEmpty {
-        LabeledContent("Selection", value: "Managed by the app")
-      } else if let app {
+  private var modelForm: some View {
+    if let app {
+      Section {
         ForEach(app.modelRoles) { role in
-          LabeledContent(role.label, value: role.modelID.isEmpty ? "Automatic" : role.modelID)
+          Picker(
+            role.label,
+            selection: Binding(
+              get: { modelValues[role.id] ?? role.modelID },
+              set: { modelValues[role.id] = $0 }
+            )
+          ) {
+            if role.id != "default" { Text("Same as Default").tag("") }
+            ForEach(app.modelOptions, id: \.self) { Text($0).tag($0) }
+          }
         }
+      } header: {
+        Text("Models")
+      } footer: {
+        Text("Published by \(selectedRoute?.name ?? "the current connection"). Changing models doesn’t switch the account.")
       }
     }
-    Section {
-      Text("Compatible model choices are preserved. Choices unavailable on the new connection return to Automatic; you can configure them after the catalog refreshes.")
-        .foregroundStyle(.secondary)
+    if let modelSaveError {
+      Section {
+        Text(modelSaveError)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("app-route.models.error")
+      }
     }
   }
 
@@ -182,6 +237,10 @@ struct AppRouteSheet: View {
       Label("Back up the app’s current settings", systemImage: "externaldrive.badge.timemachine")
       Label("Start a required local proxy", systemImage: "server.rack")
       Label("Write the new app settings atomically", systemImage: "checkmark.shield")
+    }
+    Section {
+      Text("Compatible model choices are preserved. You choose the models for the new connection on the next step.")
+        .foregroundStyle(.secondary)
     }
   }
 
@@ -240,22 +299,63 @@ struct AppRouteSheet: View {
   private func advance() {
     switch stage {
     case .connection:
-      stage = .models
-    case .models:
       stage = .review
     case .review:
       guard routeID != app?.selectedRouteID else {
-        dismiss()
+        // Nothing to switch: this is a "change the model on the current
+        // connection" run, so go straight to the picker when it exists.
+        if showsModelStep {
+          seedModelValues()
+          stage = .models
+        } else {
+          dismiss()
+        }
         return
       }
       stage = .applying
       model.setRoute(appID: appID, routeID: routeID)
+    case .success:
+      if showsModelStep {
+        seedModelValues()
+        stage = .models
+      } else {
+        dismiss()
+      }
+    case .models:
+      saveModels()
     case .applying:
       break
-    case .success:
-      dismiss()
     case .recovery:
       stage = .review
+    }
+  }
+
+  private func seedModelValues() {
+    modelSaveError = nil
+    modelValues = Dictionary(
+      uniqueKeysWithValues: app?.modelRoles.map { ($0.id, $0.modelID) } ?? []
+    )
+  }
+
+  private func saveModels() {
+    guard let app else { return }
+    guard !model.isBusy else {
+      modelSaveError = "Another change is in progress. Try again in a moment."
+      return
+    }
+    modelSaveError = nil
+    if model.updateAppModelRoles(
+      appID: appID,
+      routeID: app.selectedRouteID,
+      modelRoles: modelValues
+    ) {
+      if model.isProduction {
+        awaitingModelSave = true
+      } else {
+        dismiss()
+      }
+    } else {
+      modelSaveError = "Another change is in progress. Try again in a moment."
     }
   }
 }
