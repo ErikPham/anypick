@@ -581,6 +581,10 @@
     {
       "path": "_supervise",
       "reason": "hidden detached helper (ADR 0003)"
+    },
+    {
+      "path": "models",
+      "reason": "Go-only: list the model ids a bound source serves. TS answers this in the tray Configure Models picker, never on the command line; the MODEL_NOT_PINNED warning tells the user to re-run with --model <id> and this is the only place that lists them"
     }
   ]
 }

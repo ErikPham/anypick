@@ -162,6 +162,8 @@ func run(args []string) int {
 		code = cmdReset(ctx, a, args[1:])
 	case "run":
 		code = cmdRun(ctx, a, args[1:])
+	case "models":
+		code = cmdModels(ctx, a, args[1:])
 	case "providers":
 		code = cmdProviders(ctx, a, args[1:])
 	case "clients":
@@ -241,6 +243,7 @@ Usage:
   anypick use <client> --with <source> [--model <id>] [--transport auto|direct|proxy]
   anypick run <client> --with <source> -- <args…>   ephemeral isolated launch
   anypick current <provider>
+  anypick models <client> [--with <source>]   ids this connection can serve
   anypick list providers | accounts [<provider>]
   anypick link|unlink <client> --with <source> [--project]
   anypick reset <client>

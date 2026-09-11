@@ -349,6 +349,7 @@ func TestJSONStdoutPurityMatrix(t *testing.T) {
 		{"current", []string{"current", "deepseek"}},
 		{"proxy status", []string{"proxy", "status", "deepseek", "ds"}},
 		{"use dry-run", []string{"use", "claude", "--with", "or", "--dry-run"}},
+		{"models", []string{"models", "claude", "--with", "gateway/or"}},
 		{"supervisor status", []string{"status"}},
 		{"supervisor stop", []string{"stop"}},
 		{"preset list", []string{"preset", "list"}},
