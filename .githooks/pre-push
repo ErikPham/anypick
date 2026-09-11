@@ -1,15 +1,23 @@
 #!/bin/sh
 #
-# Pre-push gate for AnyPick: make review (CODE_REVIEW.md §4).
+# Pre-push gate for AnyPick: the mechanical half of make review (CODE_REVIEW.md §4).
 #
 # CI runs on push, which is too late -- the change is already on the shared
-# branch and the cost of a red gate is paid by everyone who pulls. This runs
-# the universal gate locally, before the push goes out.
+# branch and the cost of a red gate is paid by everyone who pulls. This runs the
+# fast, deterministic gates locally, before the push goes out.
 #
-# make review = fmt-check + vet + test + gates. Measured at ~10 minutes on this
-# tree (TEAM_QUALITY_BASELINE_2026-09-08.md); that is the price of the standard,
-# not a bug in the hook. If it becomes unbearable, split it (fmt-check/vet/gates
-# on pre-commit, tests here) -- do not delete a step.
+# Scope, decided 2026-09-11: `make fmt-check vet gates`, not the whole
+# `make review`. The test suite is the expensive part -- `make review` measured
+# 10m02s on this tree (TEAM_QUALITY_BASELINE_2026-09-08.md) -- and it is already
+# CI's job on the same push, so running it here bought a local duplicate of a
+# gate that fires minutes later, at the cost of ten minutes per push. A gate
+# that costs more than it is worth is a gate people learn to skip, and
+# `git push --no-verify` is a P0 on the pusher (§5). The cheap gates below are
+# the ones where a local catch is worth real money: formatting, vet, and the
+# path/parity/ownership gates.
+#
+# Nothing was deleted. `make ci` and CI still run the full suite; `make review`
+# is unchanged and still the complete local gate for anyone who wants it.
 #
 # No escape hatch. `git push --no-verify` is a P0 on the pusher (§5).
 
@@ -25,14 +33,14 @@ if ! command -v make > /dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' "pre-push: make review (fmt-check + vet + test + gates)"
+printf '%s\n' "pre-push: make fmt-check vet gates (the test suite is CI's job)"
 
-if make review; then
-  printf '%s\n' "pre-push: make review green"
+if make fmt-check vet gates; then
+  printf '%s\n' "pre-push: gates green"
   exit 0
 fi
 
 printf '%s\n' "" >&2
-printf '%s\n' "pre-push: make review FAILED -- push refused." >&2
+printf '%s\n' "pre-push: gates FAILED -- push refused." >&2
 printf '%s\n' "Fix the change. Do not weaken the gate, delete a test, or loosen a fixture (§5)." >&2
 exit 1
