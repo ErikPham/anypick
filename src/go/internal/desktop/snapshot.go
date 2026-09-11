@@ -222,8 +222,13 @@ type snapshotBuilder struct {
 	srv      *Server
 	snap     *Snapshot
 	registry map[string]func(context.Context) error
-	rev      int
-	seq      int
+	// modelRoles is this revision's model-option registry: every published
+	// option id resolves to the (client, source, model) it was published for.
+	// Stored on the Server alongside `actions` so applyModelRoles can resolve
+	// an id without trusting any value the host sends (see modelRoleTarget).
+	modelRoles map[string]modelRoleTarget
+	rev        int
+	seq        int
 }
 
 func (b *snapshotBuilder) actionID() string {
@@ -750,10 +755,11 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		DegradedConditions: []DegradedCondition{},
 	}
 	b := &snapshotBuilder{
-		srv:      s,
-		snap:     snap,
-		registry: map[string]func(context.Context) error{},
-		rev:      rev,
+		srv:        s,
+		snap:       snap,
+		registry:   map[string]func(context.Context) error{},
+		modelRoles: map[string]modelRoleTarget{},
+		rev:        rev,
 	}
 
 	b.settings(ctx)
@@ -796,13 +802,24 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 		s.logErr(err)
 	}
 
+	// Model configuration runs last: a hub-bound app's options are the hub's
+	// published models, which buildHubSections fills.
+	b.clientModelConfigs(ctx, appIDs)
+	s.publishActions(snap, b)
+	return snap, nil
+}
+
+// publishActions installs one revision's indexes — action handlers, rows and
+// model-option targets — under a single lock, so a command can never resolve
+// an id against a half-installed revision.
+func (s *Server) publishActions(snap *Snapshot, b *snapshotBuilder) {
 	s.actionsMu.Lock()
+	defer s.actionsMu.Unlock()
 	s.prevActions = s.actions
 	s.actions = b.registry
 	s.actionRows = snapActionsIndex(snap)
 	s.actionOrder = snapActionsOrder(snap)
-	s.actionsMu.Unlock()
-	return snap, nil
+	s.modelRoleTargets = b.modelRoles
 }
 
 // buildActivity maps the operation journal to the Activity snapshot section.
@@ -1068,12 +1085,7 @@ func primaryModelOf(spec bindings.Spec) string {
 	if spec.Model.Mode == "explicit" {
 		return spec.Model.ID
 	}
-	if roles, ok := spec.ClientOptions["modelRoles"].(map[string]interface{}); ok {
-		if def, ok := roles["default"].(string); ok && def != "" {
-			return def
-		}
-	}
-	return ""
+	return modelRolesFromSpec(spec)["default"]
 }
 
 func providerNameOf(s *Server, providerID string) string {

@@ -275,6 +275,205 @@ func TestDesktopServiceGeminiGatewayCreate(t *testing.T) {
 	}
 }
 
+// TestDesktopServicePublishesModelConfigForAGatewayRoute drives the model
+// configuration path over the real protocol: create a gateway, point a client
+// at it, then read back the snapshot the macOS Models pane consumes and apply
+// a model role through the option id it published.
+//
+// The unit tests cover the builder and the resolver in-process; this one
+// proves the wiring survives the binary, the frame codec and a real
+// activation, which is where "the UI never appeared" actually happened.
+func TestDesktopServicePublishesModelConfigForAGatewayRoute(t *testing.T) {
+	isolateEnv(t)
+	bin := requireBuiltCLI(t)
+	p := spawnDesktopService(t, bin)
+	_ = awaitServiceFrame(t, p, "hello")
+	host := desktop.HostHello{
+		ProtocolVersion: desktop.ServiceProtocolVersion,
+		AppVersion:      "(devel)",
+		Platform:        "test",
+		Capabilities: []string{
+			"cancel-v1", "command-dto-v1", "explicit-refresh",
+			"host-effects-v1", "post-mutation-events", "snapshot-dto-v1",
+			"usage-events-v1",
+		},
+	}
+	writeServiceLine(t, p.stdin, desktop.FrameHostHello(host))
+	_ = awaitServiceFrame(t, p, "ready")
+	_ = awaitServiceFrame(t, p, "snapshot")
+
+	drain := &serviceDrain{t: t, p: p}
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
+		"version": 1, "requestId": "gw-models-1", "operation": "gateway-create",
+		"providerId": "custom", "name": "models-gw", "label": "Models GW",
+		"endpoint": "https://example.invalid/v1", "apiKey": "models-gw-key",
+	})
+	if got := drain.result("gw-models-1"); got["status"] != "success" {
+		t.Fatalf("gateway-create result = %#v", got)
+	}
+	inner := drain.snapshot()
+
+	actionID := ""
+	for _, row := range serviceRows(inner, "actions") {
+		if row["clientId"] == "claude" && row["kind"] == "gateway" && row["label"] == "models-gw" {
+			actionID, _ = row["id"].(string)
+			break
+		}
+	}
+	if actionID == "" {
+		t.Fatalf("no claude gateway action in snapshot: %#v", inner["actions"])
+	}
+	writeServicePayload(t, p.stdin, "invoke", map[string]any{
+		"version": 1, "requestId": "gw-models-invoke", "revision": serviceRevision(inner),
+		"actionId": actionID,
+	})
+	if got := drain.result("gw-models-invoke"); got["status"] != "success" {
+		t.Fatalf("invoke result = %#v", got)
+	}
+	bound := drain.snapshot()
+
+	config := map[string]any(nil)
+	for _, row := range serviceRows(bound, "clientModelConfigs") {
+		if row["clientId"] == "claude" {
+			config = row
+			break
+		}
+	}
+	if config == nil {
+		t.Fatalf("no clientModelConfigs row for claude: %#v", bound["clientModelConfigs"])
+	}
+	roles, _ := config["roles"].([]any)
+	options, _ := config["options"].([]any)
+	if len(roles) == 0 || len(options) == 0 {
+		t.Fatalf("model config incomplete: %#v", config)
+	}
+	if editable, _ := config["editable"].(bool); !editable {
+		t.Fatalf("a bound gateway route must be editable: %#v", config)
+	}
+
+	// Apply the published default option — the exact request the macOS sheet
+	// sends. An unpublished id must not be needed here.
+	defaultAction := ""
+	for _, raw := range options {
+		option, _ := raw.(map[string]any)
+		if model, _ := option["modelId"].(string); model != "" {
+			defaultAction, _ = option["actionId"].(string)
+			break
+		}
+	}
+	writeServicePayload(t, p.stdin, "model-roles", map[string]any{
+		"version": 1, "requestId": "gw-models-roles", "revision": serviceRevision(bound),
+		"clientId": "claude", "roleActionIds": map[string]string{"default": defaultAction},
+	})
+	if got := drain.result("gw-models-roles"); got["status"] != "success" {
+		t.Fatalf("model-roles with a published option failed: %#v", got)
+	}
+
+	writeServicePayload(t, p.stdin, "mutate", map[string]any{
+		"version": 1, "requestId": "gw-models-remove", "operation": "gateway-remove",
+		"name": "models-gw",
+	})
+	_ = drain.result("gw-models-remove")
+
+	writeServiceLine(t, p.stdin, "quit")
+	_ = p.stdin.Close()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("desktop-service exited with error: %v\nstderr: %s", err, p.stderr.String())
+		}
+	case <-time.After(serviceDeadline):
+		t.Fatalf("desktop-service did not stop after the model-config test\nstderr: %s", p.stderr.String())
+	}
+}
+
+// serviceDrain reads frames until the one it wants arrives, remembering the
+// newest snapshot it passed on the way.
+//
+// Snapshot events and result frames are independent emissions — a refresh
+// that lands before a result is normal, not a protocol error — so a test that
+// insists on frame order desyncs the first time one arrives early.
+type serviceDrain struct {
+	t      *testing.T
+	p      *serviceProc
+	latest map[string]any
+}
+
+func (d *serviceDrain) result(requestID string) map[string]any {
+	d.t.Helper()
+	for {
+		line := nextServiceFrame(d.t, d.p)
+		switch {
+		case strings.HasPrefix(line, "snapshot-event\t"):
+			d.latest = serviceSnapshot(d.t, line)
+		case strings.HasPrefix(line, "result\t"):
+			got := decodeServicePayload(d.t, line)
+			if got["requestId"] == requestID {
+				return got
+			}
+		}
+	}
+}
+
+func (d *serviceDrain) snapshot() map[string]any {
+	d.t.Helper()
+	if d.latest != nil {
+		snap := d.latest
+		d.latest = nil
+		return snap
+	}
+	for {
+		line := nextServiceFrame(d.t, d.p)
+		if strings.HasPrefix(line, "snapshot-event\t") {
+			return serviceSnapshot(d.t, line)
+		}
+	}
+}
+
+func nextServiceFrame(t *testing.T, p *serviceProc) string {
+	t.Helper()
+	timer := time.NewTimer(serviceDeadline)
+	defer timer.Stop()
+	select {
+	case line, ok := <-p.frames:
+		if !ok {
+			p.fatalf(t, "service stdout closed")
+		}
+		return line
+	case <-timer.C:
+		p.fatalf(t, "timeout after %s waiting for a service frame", serviceDeadline)
+	}
+	return ""
+}
+
+func serviceSnapshot(t *testing.T, frame string) map[string]any {
+	t.Helper()
+	event := decodeServicePayload(t, frame)
+	inner, ok := event["snapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot-event carried no snapshot: %#v", event)
+	}
+	return inner
+}
+
+func serviceRows(snapshot map[string]any, key string) []map[string]any {
+	raw, _ := snapshot[key].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if row, ok := item.(map[string]any); ok {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func serviceRevision(snapshot map[string]any) int {
+	value, _ := snapshot["revision"].(float64)
+	return int(value)
+}
+
 func writeServiceLine(t *testing.T, stdin interface{ Write([]byte) (int, error) }, line string) {
 	t.Helper()
 	if _, err := stdin.Write([]byte(line + "\n")); err != nil {

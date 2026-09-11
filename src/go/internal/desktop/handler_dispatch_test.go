@@ -117,8 +117,21 @@ func TestHandleInvokeBranches(t *testing.T) {
 	_ = srv.handle(ctx, &Command{Kind: "model-roles", Payload: roleRaw})
 	decoded = decodeFramePayload(t, firstFrameLine(out.String()))
 	_ = json.Unmarshal(decoded, &res)
-	if !strings.Contains(res.Message, "no active binding") {
-		t.Fatalf("model-roles without binding must be rejected: %#v", res)
+	// Roles resolve through published option ids, so a request without the
+	// required Default slot is rejected before any activation is planned.
+	if !strings.Contains(res.Message, "Default model") {
+		t.Fatalf("model-roles without a default role must be rejected: %#v", res)
+	}
+	out.Reset()
+	staleRoleRaw, _ := json.Marshal(modelRolesPayload{
+		Version: 1, RequestID: "r-roles-stale", Revision: 1, ClientID: "claude",
+		RoleActionIDs: map[string]string{"default": "act-9-999"},
+	})
+	_ = srv.handle(ctx, &Command{Kind: "model-roles", Payload: staleRoleRaw})
+	decoded = decodeFramePayload(t, firstFrameLine(out.String()))
+	_ = json.Unmarshal(decoded, &res)
+	if !strings.Contains(res.Message, "model list changed") {
+		t.Fatalf("model-roles with an unpublished option id must be rejected: %#v", res)
 	}
 	inspectRaw, _ := json.Marshal(backupInspectPayload{Version: 1, RequestID: "r-ins", Path: "/tmp/anypick-missing-backup"})
 	out.Reset()

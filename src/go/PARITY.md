@@ -409,8 +409,19 @@ TestInvokeCurrentRouteReappliesBinding (internal/desktop/route_actions_test.go).
 Gateway refresh now uses the stored profile secret without echoing it across
 the desktop boundary (TestDesktopGatewayRefreshUsesStoredSecretWithoutEchoingIt).
 Still unsupported/incomplete: snapshot completeness vs TS (activity,
-hubSources/hubConflicts, clientModelConfigs and degraded conditions remain
-empty/partial) and Codex live-route sync after Hub changes.
+hubSources/hubConflicts and degraded conditions remain empty/partial) and
+Codex live-route sync after Hub changes.
+
+`clientModelConfigs` is now populated (internal/desktop/client_model_configs.go):
+one row per app with the roles it declares (internal/client.RolesFor), the
+roles it currently stores, and the model ids its live connection publishes.
+Model options come from the hub's published catalog for hub routes and from the
+discovery cache/static catalog otherwise — never from a live vendor fetch on a
+snapshot tick. `model-roles` resolves the submitted role→actionId map through
+that same snapshot's registry (TestSnapshotPublishesModelConfigForBoundClient,
+TestApplyModelRolesRejectsMixedConnections). Known divergence: TS gives codex
+the five Codex Desktop list slots; Go's codex adapter writes one `model = …`
+line, so only the default slot is published.
 
 Settings mutations are now implemented: `setting-launch-at-login`,
 `setting-auto-start-proxies`, `setting-show-quota`, `setting-quota-guard`

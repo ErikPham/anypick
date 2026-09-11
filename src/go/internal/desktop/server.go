@@ -103,6 +103,11 @@ type Server struct {
 	actionOrder []string
 	actionsMu   sync.Mutex
 	inspections *InspectionManager
+	// modelRoleTargets is the current revision's model-option registry,
+	// published by buildSnapshot and read by applyModelRoles. Guarded by
+	// actionsMu: it is swapped with `actions` so a resolution can never mix
+	// two revisions.
+	modelRoleTargets map[string]modelRoleTarget
 
 	// In-flight cancellable mutations (account-login) keyed by requestId.
 	cancelMu     sync.Mutex
@@ -1507,22 +1512,63 @@ func orString(a, b string) string {
 	return b
 }
 
-// applyModelRoles re-activates the client's persistent binding with explicit
-// per-role models (the Go counterpart of supervisor model-role actions).
-func (s *Server) applyModelRoles(ctx context.Context, clientID string, roles map[string]string) error {
-	binding, err := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
-	if err != nil {
-		return err
+// snapshotModelRoleTargets copies the current revision's model-option
+// registry. Resolution reads a copy so a concurrent snapshot swap cannot
+// half-apply two revisions' ids.
+func (s *Server) snapshotModelRoleTargets() map[string]modelRoleTarget {
+	s.actionsMu.Lock()
+	defer s.actionsMu.Unlock()
+	out := make(map[string]modelRoleTarget, len(s.modelRoleTargets))
+	for id, target := range s.modelRoleTargets {
+		out[id] = target
 	}
-	if binding == nil {
-		return anyerr.Newf("client "+clientID+" has no active binding to apply roles to",
-			"BINDING_NOT_FOUND")
+	return out
+}
+
+// applyModelRoles re-activates a client's persistent binding with explicit
+// per-role models (the Go counterpart of supervisor model-role actions).
+//
+// The submitted map is role id → *action id*, never a model id: every model
+// the host may choose was published as an opaque id in the snapshot, and this
+// resolves those ids back to (client, source, model) before planning — the
+// same rule as src/tray/model-role-actions.ts. Nothing the host sends is
+// trusted past the id, so a hand-written model id cannot reach activation.
+func (s *Server) applyModelRoles(ctx context.Context, clientID string, roleActionIDs map[string]string) error {
+	if roleActionIDs["default"] == "" {
+		return anyerr.Newf("choose a Default model before applying model settings",
+			"INVALID_SELECTION")
+	}
+	allowed := client.AllowedRoleIDs(clientID)
+	targets := s.snapshotModelRoleTargets()
+	modelRoles := map[string]string{}
+	var source *refs.Ref
+	for role, actionID := range roleActionIDs {
+		if !allowed[role] {
+			return anyerr.Newf("that model role is not supported by this app",
+				"INVALID_SELECTION")
+		}
+		target, ok := targets[actionID]
+		if !ok || target.ClientID != clientID {
+			return anyerr.Newf(
+				"the model list changed; refresh AnyPick and choose the models again",
+				"INVALID_SELECTION")
+		}
+		switch {
+		case source == nil:
+			src := target.Source
+			source = &src
+		case *source != target.Source:
+			// One journalled activation covers one source; mixing models from
+			// two connections would silently re-bind the client.
+			return anyerr.Newf("choose models from one connection", "INVALID_SELECTION")
+		}
+		modelRoles[role] = target.ModelID
 	}
 	plan, err := activation.PlanActivation(ctx, activation.Request{
 		Mode:       activation.ModePersistent,
 		Client:     clientID,
-		Source:     &binding.Spec.Source,
-		ModelRoles: roles,
+		Source:     source,
+		ModelRoles: modelRoles,
 	}, s.Deps.Activation, activation.Options{})
 	if err != nil {
 		return err
