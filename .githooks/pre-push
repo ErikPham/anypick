@@ -4,10 +4,12 @@
 #
 # CI runs on push, which is too late -- the change is already on the shared
 # branch and the cost of a red gate is paid by everyone who pulls. This runs the
-# fast, deterministic gates locally, before the push goes out.
+# fast, deterministic gates locally, before the push goes out. `make check` is
+# exactly that set: fmt-check, vet and the cross-language gates, no tests and no
+# tool beyond Go and git.
 #
-# Scope, decided 2026-09-11: `make fmt-check vet gates`, not the whole
-# `make review`. The test suite is the expensive part -- `make review` measured
+# Scope, decided 2026-09-11: `make check`, not the whole `make review`. The
+# test suite is the expensive part -- `make review` measured
 # 10m02s on this tree (TEAM_QUALITY_BASELINE_2026-09-08.md) -- and it is already
 # CI's job on the same push, so running it here bought a local duplicate of a
 # gate that fires minutes later, at the cost of ten minutes per push. A gate
@@ -33,9 +35,9 @@ if ! command -v make > /dev/null 2>&1; then
   exit 1
 fi
 
-printf '%s\n' "pre-push: make fmt-check vet gates (the test suite is CI's job)"
+printf '%s\n' "pre-push: make check (the test suite is CI's job)"
 
-if make fmt-check vet gates; then
+if make check; then
   printf '%s\n' "pre-push: gates green"
   exit 0
 fi

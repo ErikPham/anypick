@@ -85,7 +85,7 @@ if ! printf '%s' "$subject_line" |
   types: feat fix perf refactor docs test chore build ci style revert
 
   Commit subjects are the changelog -- only feat, fix and perf appear in a
-  release (make release-plan). An unparseable subject is a silently dropped
+  release (make plan-release). An unparseable subject is a silently dropped
   release note."
 fi
 
