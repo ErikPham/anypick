@@ -30,7 +30,7 @@ func newPoolTestEnv(t *testing.T, upstreamURL string) *testEnv {
 	t.Helper()
 	env := newTestEnv(t)
 	ctx := context.Background()
-	env.Px.Pools = env.Deps.Pools.Store
+	env.Px.Pools = env.Deps.Pools.Svc.Store
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -84,7 +84,7 @@ func newPoolTestEnv(t *testing.T, upstreamURL string) *testEnv {
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Pools.Store.SetMultiContext(ctx, "vendorx",
+	if err := env.Deps.Pools.Svc.Store.SetMultiContext(ctx, "vendorx",
 		[]pools.Member{{Account: "a", Enabled: true}, {Account: "b", Enabled: true}},
 		"127.0.0.1", port); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestPlanAdvertisesEffectivePoolPortAndExecutorBindsIt(t *testing.T) {
 		t.Fatalf("pool row missing: %+v err=%v", pool, err)
 	}
 	pool.Port = port
-	if err := env.Deps.Pools.Store.Set(ctx, *pool); err != nil {
+	if err := env.Deps.Pools.Svc.Store.Set(ctx, *pool); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +176,7 @@ func TestPlannedPoolPortDefaults(t *testing.T) {
 		t.Fatalf("pool row missing: %+v err=%v", pool, err)
 	}
 	pool.Port = 0
-	if err := env.Deps.Pools.Store.Set(ctx, *pool); err != nil {
+	if err := env.Deps.Pools.Svc.Store.Set(ctx, *pool); err != nil {
 		t.Fatal(err)
 	}
 	got, err := plannedPoolPort(ctx, "vendorx", env.Deps)
@@ -199,7 +199,7 @@ func TestPlannedPoolPortDefaults(t *testing.T) {
 	if err := env.Deps.Providers.Register(cp); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.Deps.Pools.Store.SetMultiContext(ctx, "porty",
+	if err := env.Deps.Pools.Svc.Store.SetMultiContext(ctx, "porty",
 		[]pools.Member{{Account: "a", Enabled: true}}, "127.0.0.1", 0); err != nil {
 		t.Fatal(err)
 	}

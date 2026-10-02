@@ -504,7 +504,7 @@ func TestHubSourceToggleLeavesAStoppedHubAlone(t *testing.T) {
 func hubRotateEnv(t *testing.T) *trayEnv {
 	t.Helper()
 	env := hubTestEnv(t)
-	env.Deps.Pools = pools.NewService(&pools.Store{DB: env.Deps.Store.DB.DB})
+	env.Deps.Pools = pools.NewService(&pools.Store{Root: env.Root, DB: env.Deps.Store.DB.DB})
 	return env
 }
 

@@ -17,7 +17,7 @@ func providerDefaultsDeps(t *testing.T) *Deps {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return &Deps{Root: root, Bindings: &bindings.Store{Root: root, DB: database.DB}}
+	return &Deps{Root: root, Bindings: bindings.NewService(&bindings.Store{Root: root, DB: database.DB})}
 }
 
 // Stored provider defaults fill roles the connection left unset, filtered to

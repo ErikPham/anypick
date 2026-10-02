@@ -87,11 +87,16 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	env.UpstreamURL = nil
 	env.UpstreamAuth = "upstream-secret"
+	profileStore := &profile.Store{Root: root, DB: database.DB}
+	presetsStore := &presets.Store{Root: root, DB: database.DB}
+	poolsStore := &pools.Store{Root: root, DB: database.DB}
+	bindingsStore := &bindings.Store{Root: root, DB: database.DB}
+	hubStore := &hub.Store{DB: database.DB, Root: root}
 	rt := &runtime.Service{
 		Root:     root,
 		Home:     home,
 		Clients:  clientReg,
-		Profiles: &profile.Store{DB: database.DB},
+		Profiles: profileStore,
 	}
 	clientProfiles := &client.ProfileStore{Root: root, DB: database.DB}
 	leases := &proxy.LeaseStore{DB: database.DB}
@@ -104,15 +109,15 @@ func newTestEnv(t *testing.T) *testEnv {
 		Providers:      provReg,
 		Clients:        clientReg,
 		ClientProfiles: clientProfiles,
-		Bindings:       &bindings.Store{Root: root, DB: database.DB},
-		Presets:        &presetsView{Store: &presets.Store{DB: database.DB}},
-		Profiles:       &profile.Store{DB: database.DB},
-		Pools:          &poolsView{Store: &pools.Store{DB: database.DB}},
+		Bindings:       bindings.NewService(bindingsStore),
+		Presets:        NewPresetsView(presets.NewService(presetsStore)),
+		Profiles:       profile.NewService(profileStore),
+		Pools:          NewPoolsView(pools.NewService(poolsStore)),
 		Journal:        &journal.OperationJournal{DB: database.DB},
 		Runtime:        rt,
 		Proxy:          px,
 		Catalog:        NewCatalogIndex(map[string]CatalogEntry{}),
-		Hub:            &hub.Store{DB: database.DB, Root: root},
+		Hub:            hub.NewService(hubStore),
 		// Unit tests have no detached child to spawn; hub activations fail at
 		// the spawn step, which is exactly the rollback seam they exercise.
 		SpawnHubChild: func(string) (int, error) { return 0, errors.New("no live hub child in unit tests") },

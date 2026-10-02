@@ -15,8 +15,8 @@ func TestDepsViewsGet(t *testing.T) {
 	ctx := context.Background()
 
 	av := NewAccountsView(env.Svc)
-	pv := NewPresetsView(env.Deps.Presets.Store)
-	plv := NewPoolsView(env.Deps.Pools.Store)
+	pv := NewPresetsView(env.Deps.Presets.Svc)
+	plv := NewPoolsView(env.Deps.Pools.Svc)
 
 	// AccountsView missing -> nil, nil
 	if got, err := av.Get(ctx, "codex", "ghost"); err != nil || got != nil {
@@ -36,7 +36,7 @@ func TestDepsViewsGet(t *testing.T) {
 	}
 	// create preset then fetch
 	spec := bindings.Spec{Client: "codex", Source: refs.AccountRef("codex", "a"), Model: bindings.OmittedModel()}
-	if _, err := pv.Store.UpsertContext(context.Background(), "p1", spec); err != nil {
+	if _, err := pv.Svc.UpsertContext(context.Background(), "p1", spec); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := pv.GetByName("p1"); err != nil || got == nil || got.Name != "p1" {
@@ -124,7 +124,7 @@ func TestExpandPresetErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := bindings.Spec{Client: "codex", Source: refs.AccountRef("codex", "ep-a"), Model: bindings.OmittedModel()}
-	if _, err := env.Deps.Presets.Store.UpsertContext(context.Background(), "ep-p", spec); err != nil {
+	if _, err := env.Deps.Presets.Svc.UpsertContext(context.Background(), "ep-p", spec); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ExpandPreset(ctx, "ep-p", "claude", env.Deps); err == nil || !strings.Contains(err.Error(), "PRESET_CLIENT_MISMATCH") && !strings.Contains(err.Error(), "not") {
@@ -132,7 +132,7 @@ func TestExpandPresetErrors(t *testing.T) {
 	}
 	// Nested preset source
 	nested := bindings.Spec{Client: "codex", Source: refs.PresetRef("ep-p"), Model: bindings.OmittedModel()}
-	if _, err := env.Deps.Presets.Store.UpsertContext(context.Background(), "nested-p", nested); err != nil {
+	if _, err := env.Deps.Presets.Svc.UpsertContext(context.Background(), "nested-p", nested); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ExpandPreset(ctx, "nested-p", "codex", env.Deps); err == nil || !strings.Contains(err.Error(), "Nested") {

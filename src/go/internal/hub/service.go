@@ -101,3 +101,13 @@ func (s *Service) EnsureHubTokenContext(ctx context.Context, hubName string) (st
 func (s *Service) RotateHubTokenContext(ctx context.Context, hubName string) (string, error) {
 	return s.Store.RotateHubTokenContext(ctx, hubName)
 }
+
+// SnapshotRouteContext reads the raw stored row for routeID; nil when absent.
+func (s *Service) SnapshotRouteContext(ctx context.Context, routeID string) (*RouteRowSnapshot, error) {
+	return s.Store.SnapshotRouteContext(ctx, routeID)
+}
+
+// RestoreRouteRowContext reinstates a snapshotted route row byte-for-byte.
+func (s *Service) RestoreRouteRowContext(ctx context.Context, snap *RouteRowSnapshot) error {
+	return s.Store.RestoreRouteRowContext(ctx, snap)
+}

@@ -18,12 +18,12 @@ func NewAccountsView(svc *accounts.Service) *accountsView {
 	return &accountsView{Svc: svc}
 }
 
-func NewPresetsView(s *presets.Store) *presetsView {
-	return &presetsView{Store: s}
+func NewPresetsView(svc *presets.Service) *presetsView {
+	return &presetsView{Svc: svc}
 }
 
-func NewPoolsView(s *pools.Store) *poolsView {
-	return &poolsView{Store: s}
+func NewPoolsView(svc *pools.Service) *poolsView {
+	return &poolsView{Svc: svc}
 }
 
 type accountLike struct {
@@ -57,9 +57,7 @@ func (v *accountsView) loadForRef(ctx context.Context, ref refs.Ref) (*accountLi
 	return v.Get(ctx, ref.Provider, ref.Name)
 }
 
-type bindingsStore = bindings.Store
-
-type presetsView struct{ Store *presets.Store }
+type presetsView struct{ Svc *presets.Service }
 
 type presetExpansion struct {
 	presetID       string
@@ -71,21 +69,21 @@ type presetExpansion struct {
 }
 
 func (v *presetsView) GetByName(name string) (*presets.Saved, error) {
-	return v.Store.GetByName(name)
+	return v.Svc.GetByNameContext(context.Background(), name)
 }
 
 func (v *presetsView) GetContext(ctx context.Context, name string) (*presets.Saved, error) {
-	return v.Store.GetByNameContext(ctx, name)
+	return v.Svc.GetByNameContext(ctx, name)
 }
 
-type poolsView struct{ Store *pools.Store }
+type poolsView struct{ Svc *pools.Service }
 
 func (v *poolsView) Get(providerID string) (*pools.Pool, error) {
-	return v.Store.Get(providerID)
+	return v.Svc.GetContext(context.Background(), providerID)
 }
 
 func (v *poolsView) GetContext(ctx context.Context, providerID string) (*pools.Pool, error) {
-	return v.Store.GetContext(ctx, providerID)
+	return v.Svc.GetContext(ctx, providerID)
 }
 
 // restoreCheckpoint / discardCheckpoint adapt a journal-decoded checkpoint

@@ -28,11 +28,12 @@ func testService(t *testing.T) *Service {
 		t.Fatal(err)
 	}
 	t.Setenv("ANYPICK_CLAUDE_NO_KEYCHAIN", "1")
+	root := t.TempDir()
 	return &Service{
-		Root:     t.TempDir(),
+		Root:     root,
 		Home:     home,
 		Clients:  reg,
-		Profiles: &profile.Store{DB: database.DB},
+		Profiles: &profile.Store{Root: root, DB: database.DB},
 		Catalog:  catalog.NewIndex(catalog.Builtin()),
 	}
 }

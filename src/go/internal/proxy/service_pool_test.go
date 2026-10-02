@@ -24,9 +24,10 @@ import (
 // The pool row starts on port 0 so each test picks its own port strategy.
 func newPoolTestService(t *testing.T, database *db.DB, resolver UpstreamResolver) *Service {
 	t.Helper()
-	svc := New(store.New(t.TempDir(), database), &LeaseStore{DB: database.DB})
+	root := t.TempDir()
+	svc := New(store.New(root, database), &LeaseStore{DB: database.DB})
 	svc.Resolver = resolver
-	svc.Pools = &pools.Store{DB: database.DB}
+	svc.Pools = &pools.Store{Root: root, DB: database.DB}
 	for _, name := range []string{"a", "b"} {
 		seedPoolAccount(t, svc, name)
 	}

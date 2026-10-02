@@ -36,32 +36,39 @@ import (
 func wireActivation(t *testing.T, env *trayEnv) {
 	t.Helper()
 	database := env.Deps.Store.DB.DB
+	profileStore := env.Deps.Profiles.Store
+	if profileStore.Root == "" {
+		profileStore.Root = env.Root
+	}
 	rt := &runtime.Service{
 		Root:     env.Root,
 		Home:     env.Home,
 		Clients:  env.Deps.Clients,
-		Profiles: env.Deps.Profiles.Store,
+		Profiles: profileStore,
 		Catalog:  catalog.NewIndex(catalog.Builtin()),
 	}
 	catalogEntries := map[string]activation.CatalogEntry{}
 	for id, p := range catalog.Builtin() {
 		catalogEntries[id] = activation.CatalogEntry{Name: p.Name, APIStyle: string(p.APIStyle), Protocols: p.Protocols}
 	}
-	env.Deps.Hub = hub.NewService(&hub.Store{DB: database, Root: env.Root})
+	presetsStore := &presets.Store{Root: env.Root, DB: database}
+	poolsStore := &pools.Store{Root: env.Root, DB: database}
+	hubStore := &hub.Store{DB: database, Root: env.Root}
+	env.Deps.Hub = hub.NewService(hubStore)
 	env.Deps.Activation = &activation.Deps{
 		Root:      env.Root,
 		Accounts:  activation.NewAccountsView(env.Svc),
 		Providers: env.Deps.Providers,
 		Clients:   env.Deps.Clients,
-		Bindings:  env.Deps.Bindings.Store,
-		Presets:   activation.NewPresetsView(&presets.Store{DB: database}),
-		Profiles:  rt.Profiles,
-		Pools:     activation.NewPoolsView(&pools.Store{DB: database}),
+		Bindings:  env.Deps.Bindings,
+		Presets:   activation.NewPresetsView(presets.NewService(presetsStore)),
+		Profiles:  env.Deps.Profiles,
+		Pools:     activation.NewPoolsView(pools.NewService(poolsStore)),
 		Journal:   &journal.OperationJournal{DB: database},
 		Runtime:   rt,
 		Proxy:     env.Deps.Proxy,
 		Catalog:   activation.NewCatalogIndex(catalogEntries),
-		Hub:       &hub.Store{DB: database, Root: env.Root},
+		Hub:       env.Deps.Hub,
 	}
 }
 

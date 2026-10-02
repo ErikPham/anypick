@@ -85,7 +85,7 @@ func TestSnapshotResolverResolvesGeminiGatewayProfile(t *testing.T) {
 	if err := provider.RegisterBuiltin(reg, home); err != nil {
 		t.Fatal(err)
 	}
-	profiles := &profile.Store{DB: database.DB}
+	profiles := &profile.Store{Root: root, DB: database.DB}
 	if _, err := profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta:    profile.Meta{Name: "prod", Provider: "gemini"},
 		Secrets: profile.Secrets{APIKey: "AIza-gemini-gateway-key"},
@@ -195,7 +195,7 @@ func TestSnapshotResolverResolvesCloudflareGatewayProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	ep := "https://api.cloudflare.com/client/v4/accounts/f4b3c2a1e5d647a8b9c0d1e2f3a4b5c6/ai/v1"
-	profiles := &profile.Store{DB: database.DB}
+	profiles := &profile.Store{Root: root, DB: database.DB}
 	if _, err := profiles.UpsertContext(context.Background(), profile.Runtime{
 		Meta: profile.Meta{
 			Name: "cf-prod", Provider: "cloudflare-aigateway", Endpoint: ep,

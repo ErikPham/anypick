@@ -38,9 +38,9 @@ type Deps struct {
 	// ClientProfiles owns named native route mappings. It is separate from the
 	// one-row-per-client global binding.
 	ClientProfiles *client.ProfileStore
-	Bindings       *bindingsStore
+	Bindings       *bindings.Service
 	Presets        *presetsView
-	Profiles       *profile.Store
+	Profiles       *profile.Service
 	Pools          *poolsView
 	Journal        *journal.OperationJournal
 	Runtime        *runtime.Service // optional; nil degrades proxy/gateway applies
@@ -48,7 +48,7 @@ type Deps struct {
 	Catalog        *CatalogIndex
 	// Hub enables Proxy Hub sources; SpawnHubChild launches the detached
 	// `_serve-hub <name>` helper during execution. nil → hub sources fail closed.
-	Hub           *hub.Store
+	Hub           *hub.Service
 	SpawnHubChild func(hubName string) (int, error)
 }
 

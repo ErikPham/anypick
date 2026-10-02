@@ -60,11 +60,11 @@ type App struct {
 	// contain it (the "a.PoolsSvc" prefix trap would have kept counting it).
 	PoolSvc *pools.Service
 	Hub     *hub.Store
-	// ProxyHub is what outer layers should use. Hub stays because
-	// activation.Deps takes the store itself, and that wiring is not ours to
-	// change here. The name deliberately does not start with "Hub": the facade
-	// ratchet counts the literal "a.Hub", and "a.HubService" matched it — the
-	// same substring trap that already fooled the "s.Deps.Store" pattern.
+	// ProxyHub is what outer layers should use. Hub stays for a few engine
+	// paths that still need the table-owning store (e2e route snapshot helpers).
+	// The name deliberately does not start with "Hub": the facade ratchet
+	// counts the literal "a.Hub", and "a.HubService" matched it — the same
+	// substring trap that already fooled the "s.Deps.Store" pattern.
 	ProxyHub *hub.Service
 	Journal  *journal.OperationJournal // PresetSvc is the service boundary outer layers talk to; the raw store
 	// stays inside internal/presets. The name is deliberate: the facade
@@ -176,7 +176,10 @@ func (a *App) compose() error {
 	px := proxy.New(st, leases)
 	svc.Proxy = px
 
-	poolsStore := &pools.Store{DB: a.DB.DB}
+	poolsStore := &pools.Store{Root: a.Root, DB: a.DB.DB}
+	presetsStore := &presets.Store{Root: a.Root, DB: a.DB.DB}
+	profileStore := &profile.Store{Root: a.Root, DB: a.DB.DB}
+	bindingsStore := &bindings.Store{Root: a.Root, DB: a.DB.DB}
 	hubStore := &hub.Store{DB: a.DB.DB, Root: a.Root}
 	jrnl := &journal.OperationJournal{DB: a.DB.DB}
 
@@ -195,24 +198,29 @@ func (a *App) compose() error {
 		Root:     a.Root,
 		Home:     homeDir(),
 		Clients:  clientReg,
-		Profiles: &profile.Store{DB: a.DB.DB},
+		Profiles: profileStore,
 		Catalog:  catalogRegistry,
 	}
+	presetSvc := presets.NewService(presetsStore)
+	bindingSvc := bindings.NewService(bindingsStore)
+	profileSvc := profile.NewService(profileStore)
+	poolSvc := pools.NewService(poolsStore)
+	hubSvc := hub.NewService(hubStore)
 	deps := &activation.Deps{
 		Root:           a.Root,
 		Accounts:       activation.NewAccountsView(svc),
 		Providers:      provReg,
 		Clients:        clientReg,
 		ClientProfiles: clientProfileStore,
-		Bindings:       &bindings.Store{Root: a.Root, DB: a.DB.DB},
-		Presets:        activation.NewPresetsView(&presets.Store{DB: a.DB.DB}),
-		Profiles:       rt.Profiles,
-		Pools:          activation.NewPoolsView(poolsStore),
+		Bindings:       bindingSvc,
+		Presets:        activation.NewPresetsView(presetSvc),
+		Profiles:       profileSvc,
+		Pools:          activation.NewPoolsView(poolSvc),
 		Journal:        jrnl,
 		Runtime:        rt,
 		Proxy:          px,
 		Catalog:        depCatalog,
-		Hub:            hubStore,
+		Hub:            hubSvc,
 		SpawnHubChild: func(hubName string) (int, error) {
 			selfExe, exeErr := selfExecutable()
 			if exeErr != nil {
@@ -307,17 +315,17 @@ func (a *App) compose() error {
 	a.Accounts = svc
 	a.Inspections = desktop.NewInspectionManager(st)
 	a.Proxy = px
-	a.PoolSvc = pools.NewService(poolsStore)
+	a.PoolSvc = poolSvc
 	a.Hub = hubStore
-	a.ProxyHub = hub.NewService(hubStore)
+	a.ProxyHub = hubSvc
 	a.Journal = jrnl
-	a.PresetSvc = presets.NewService(&presets.Store{DB: a.DB.DB})
-	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
+	a.PresetSvc = presetSvc
+	a.BindingSvc = bindingSvc
 	a.CodexProfileSvc = client.NewProfileService(clientProfileStore)
 	svc.SetAfterSwitch(a.BindingSvc.RealignNativeClientBinding)
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,
-		ProfileSvc: profile.NewService(rt.Profiles), Catalog: catalogRegistry,
+		ProfileSvc: profileSvc, Catalog: catalogRegistry,
 	}
 	a.Deps = deps
 	a.pluginSup = newPluginSupervisor(a)

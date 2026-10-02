@@ -12,7 +12,7 @@ import (
 func TestRestartRunningPoolsRestartsOnlyPoolLeases(t *testing.T) {
 	env := newTrayEnv(t)
 	ctx := context.Background()
-	poolStore := &pools.Store{DB: env.Deps.Store.DB.DB}
+	poolStore := &pools.Store{Root: env.Root, DB: env.Deps.Store.DB.DB}
 	env.Deps.Proxy.Pools = poolStore
 	t.Cleanup(env.Deps.Proxy.Close)
 
@@ -83,7 +83,7 @@ func TestRestartRunningPoolsRestartsOnlyPoolLeases(t *testing.T) {
 
 func TestRestartRunningPoolsReturnsInspectionErrors(t *testing.T) {
 	env := newTrayEnv(t)
-	env.Deps.Proxy.Pools = &pools.Store{DB: env.Deps.Store.DB.DB}
+	env.Deps.Proxy.Pools = &pools.Store{Root: env.Root, DB: env.Deps.Store.DB.DB}
 	if err := env.Deps.Store.DB.Close(); err != nil {
 		t.Fatal(err)
 	}
