@@ -25,6 +25,10 @@ authoritative sources are, in order:
 | `FRAMEWORK-IMPROVEMENT-PLAN.md` | Proposed framework hardening work. | Partly done, partly obsolete. A proposal, never a description. |
 | `OPENCODE-GATEWAY-IMPLEMENTATION-PLAN.md` | Plan for the OpenCode gateway/proxy. | Implemented. |
 | `anypick-feature-map.md` | Early feature inventory. | Historical. |
+| `ARCHITECTURE_AND_ROADMAP_2026-09-08.md` | Joint architecture assessment and roadmap snapshot from the native cutover. | Historical; the roadmap items were absorbed into the cutover tracker and ADRs. |
+| `AUDIT_2026-09-03.md` | Pre-release audit snapshot. | Historical; its findings were folded into `CODE_REVIEW.md` and the release-readiness records. |
+| `CODE_REVIEW_2026-09-03.md` | Dated review of the tree as of 2026-09-03. | Historical; the living standard is [`../../CODE_REVIEW.md`](../../CODE_REVIEW.md). |
+| `PROPOSED_POOL_PIPELINE_UNIFICATION.md` | Spike plan for folding the pool capture leaves into the committing egress leaves via a sink parameter. | Not started; the duplication today is structural, not a live behavioral bug. |
 
 ## If you are adding a code comment
 
