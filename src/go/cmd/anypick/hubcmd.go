@@ -239,7 +239,7 @@ func cmdHubEnable(ctx context.Context, a *appView, usage func() int, fs *flag.Fl
 		}
 		printDryRunFields("proxy.hub.enable", "Would enable the unified Proxy Hub",
 			kv{Key: "host", Value: *host},
-			kv{Key: "port", Value: portVal}, // Go never invents a default port (see PARITY.md)
+			kv{Key: "port", Value: portVal}, // Go never invents a default port (ADR 0020; retired PARITY.md)
 			kv{Key: "start", Value: false})  // Go hub enable has no --start flag yet
 		return int(anyerr.Success)
 	}
