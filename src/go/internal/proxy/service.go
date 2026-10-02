@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/egress"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/paths"
@@ -32,6 +33,10 @@ type StartResult struct {
 	InstanceID string
 	Port       int
 	StartedNow bool
+	// PortMovedFrom is the configured port this start could not bind because
+	// another process held it; the proxy moved to Port and the persisted config
+	// follows. 0 means the configured port was used.
+	PortMovedFrom int
 }
 
 // Status mirrors ProxyStatus.
@@ -54,6 +59,14 @@ type Status struct {
 type Upstream struct {
 	BaseURL *url.URL
 	Auth    string // credential injected into forwarded requests
+	// ModelDiscovery is an optional provider-owned live catalog operation. It
+	// keeps model-list wire formats next to the upstream that understands them;
+	// the proxy service only coordinates the account-scoped refresh.
+	ModelDiscovery func(context.Context) ([]string, error)
+	// CatalogScope separates in-memory discovery caches for accounts that share
+	// an upstream origin. It is an opaque, non-secret identity supplied by the
+	// service and never crosses an output boundary.
+	CatalogScope string
 	// AuthHeader / AuthValuePrefix present the credential per the vendor's
 	// scheme; empty = Authorization: Bearer.
 	AuthHeader      string
@@ -64,8 +77,13 @@ type Upstream struct {
 	// call concurrently and may block on a token refresh.
 	AuthProvider func(ctx context.Context) (string, error)
 	// ExtraHeaders are injected into every forwarded request (vendor probes,
-	// client-version pins). They never carry the credential.
+	// client-version pins). They never carry the credential. DynamicHeaders
+	// covers provider-owned request metadata that must be fresh per request.
 	ExtraHeaders []ExtraHeader
+	// DynamicHeaders lets a provider add non-secret request metadata such as
+	// correlation IDs. It runs once per outbound request and must not return
+	// credentials.
+	DynamicHeaders func(context.Context) ([]ExtraHeader, error)
 	// Anthropic: native /v1/messages target. When nil and TranslateAnthropic
 	// is set, messages requests are translated into chat completions instead.
 	Anthropic *UpstreamTarget
@@ -92,6 +110,12 @@ type Upstream struct {
 	// request body before egress (e.g. stripping Anthropic billing metadata
 	// the vendor's filter rejects). Nil passes the body through untouched.
 	SanitizeOpenAIBody func([]byte) []byte
+	// SanitizeAnthropicBody, when set, rewrites a verbatim-forwarded native
+	// Anthropic body (POST /v1/messages, /messages) before egress. Grok's
+	// subscription endpoint validates strictly where Claude Code is loose
+	// (e.g. `"required": null` in a tool schema where the spec wants an
+	// array). Nil passes the body through untouched.
+	SanitizeAnthropicBody func([]byte) []byte
 	// Gemini carries the mode-specific egress facts (api-key vs OAuth/code
 	// assist) used by the serveGemini branch.
 	Gemini *GeminiTarget
@@ -100,6 +124,10 @@ type Upstream struct {
 	// definition.quotaErrorPatterns branch). Empty → classification falls back
 	// to the built-in 401/402/balance/credential-quota rules only.
 	QuotaErrorPatterns []string
+	// MapModel, when set, translates an inbound client model name (such as
+	// a native Codex alias slug like gpt-5.6-sol) into the upstream provider's
+	// concrete model identifier.
+	MapModel func(string) string
 }
 
 // GeminiTarget holds the Gemini-specific egress facts consumed by serveGemini.
@@ -157,9 +185,14 @@ type UpstreamTarget struct {
 
 // ExtraHeader is a static header forwarded to the upstream on every request
 // (vendor probes, client-version pins). It must never carry the credential.
+// Drop removes an inbound header of the same name instead of setting one:
+// WorkBuddy's custom-model client already sends X-Agent-Intent: craft, and
+// forwarding that (or overwriting it with craft) puts the subscription API
+// into its write-agent loop.
 type ExtraHeader struct {
 	Name  string
 	Value string
+	Drop  bool
 }
 
 // UpstreamResolver lets each provider own its forwarding target without the
@@ -279,8 +312,9 @@ type Service struct {
 	// in-process (tests/library).
 	PoolSpawner PoolSpawner
 	// QuotaGuardPolicy reads the validated quota-guard settings; nil → the
-	// TS defaults (disabled, 60-minute cooldown).
-	QuotaGuardPolicy func(ctx context.Context) (enabled bool, cooldownMs int64)
+	// TS defaults (disabled, 60-minute cooldown, keep serving when every
+	// member is cooling).
+	QuotaGuardPolicy func(ctx context.Context) config.QuotaGuardPolicy
 	// DefaultPort returns a provider's advertised default proxy port
 	// (CompatibleProviderDefinition.defaultProxyPort); 0 when unknown or
 	// unwired. Composition-root wiring only — core proxy never imports
@@ -307,11 +341,82 @@ func (s *Service) ProxyConfig(ctx context.Context, providerID, name string) (sto
 	return s.Store.GetProxyConfig(ctx, providerID, name)
 }
 
+// accountCatalogScope names one account's provider-local catalog so two
+// accounts on the same upstream origin cannot serve each other's entitlements.
+func accountCatalogScope(providerID, accountName string) string {
+	return "account/" + providerID + "/" + accountName
+}
+
+// AccountCatalogScope names one account so two accounts that share an
+// upstream origin do not share a Gemini cooldown or a catalog cache.
+func AccountCatalogScope(providerID, accountName string) string {
+	return accountCatalogScope(providerID, accountName)
+}
+
+// DiscoverModels resolves one saved account and asks its provider-owned
+// upstream for the current model ids. Credentials stay inside the resolver
+// and callback; callers receive model ids only. The scope prevents Gemini's
+// process-local catalog from leaking entitlements between two accounts that
+// use the same Code Assist origin.
+func (s *Service) DiscoverModels(ctx context.Context, providerID, accountName string) ([]string, error) {
+	if s == nil || s.Resolver == nil {
+		return nil, errors.New("proxy upstream resolver unavailable")
+	}
+	up, err := s.Resolver.ResolveUpstream(ctx, providerID, accountName)
+	if err != nil {
+		return nil, err
+	}
+	if up == nil {
+		return nil, errors.New("proxy upstream unavailable")
+	}
+	up.CatalogScope = accountCatalogScope(providerID, accountName)
+	return DiscoverModels(ctx, up)
+}
+
 // RuntimeState reads the persisted runtime state of a running proxy, nil when
 // nothing is recorded. Same boundary as ProxyConfig: a caller that wants to
 // know what a proxy is doing asks the service, not the table.
 func (s *Service) RuntimeState(ctx context.Context, providerID, name string) (*store.ProxyRuntimeState, error) {
 	return s.Store.ReadProxyState(ctx, providerID, name)
+}
+
+// RotateToken replaces the proxy's authentication token with a freshly minted
+// secret. If the proxy is currently running, it is stopped and restarted so the
+// new secret takes effect immediately.
+func (s *Service) RotateToken(ctx context.Context, providerID, accountName string) (string, error) {
+	acc, err := s.Store.Get(ctx, providerID, accountName)
+	if err != nil {
+		return "", err
+	}
+	if acc == nil {
+		return "", anyerr.Newf("Account "+providerID+"/"+accountName+" does not exist", "ACCOUNT_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound))
+	}
+	newToken, err := NewToken()
+	if err != nil {
+		return "", anyerr.Wrapf(err, "generate proxy token", "PROXY_ROTATE_FAILED")
+	}
+	st, serr := s.StatusContext(ctx, providerID, accountName)
+	wasRunning := serr == nil && st != nil && st.Running
+	if wasRunning {
+		if err := s.Stop(ctx, providerID, accountName); err != nil {
+			return "", err
+		}
+	}
+	prior, _ := s.Store.ReadProxyState(ctx, providerID, accountName)
+	state := store.ProxyRuntimeState{AccountName: accountName}
+	if prior != nil {
+		state = *prior
+	}
+	state.Token = newToken
+	if err := s.Store.WriteProxyStateContext(ctx, providerID, accountName, state); err != nil {
+		return "", err
+	}
+	if wasRunning {
+		if _, err := s.StartProxy(ctx, providerID, accountName); err != nil {
+			return "", err
+		}
+	}
+	return newToken, nil
 }
 
 // GetPoolContext returns the pool config for a provider, nil when none is
@@ -520,7 +625,26 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 	if host == "" {
 		host = "127.0.0.1"
 	}
+	if err := AssertLoopbackHost(host); err != nil {
+		return nil, err
+	}
 	port := cfg.Port
+	// A configured port can be held by another process — most often a proxy
+	// child that survived a force-killed app, since detached children are
+	// setsid and outlive their parent. Refusing to start would strand the
+	// account and every client pointed at it; moving to a free port keeps the
+	// account usable, and the activation that follows rewrites bound client
+	// configs with the new endpoint.
+	movedFrom := 0
+	if !portBindable(host, port) {
+		movedFrom = port
+		picked, perr := PickFreePort()
+		if perr != nil {
+			return nil, anyerr.Wrapf(perr, "pick port", "PROXY_START_FAILED")
+		}
+		cfg.Port = picked
+		port = picked
+	}
 
 	upstream, err := s.Resolver.ResolveUpstream(ctx, providerID, accountName)
 	if err != nil {
@@ -624,6 +748,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		Endpoint: endpoint, Token: token,
 		LeaseID: leaseID, InstanceID: instanceID,
 		Port: portOf(endpoint), StartedNow: true,
+		PortMovedFrom: movedFrom,
 	}, nil
 }
 
@@ -711,6 +836,9 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 		UpstreamAuthValuePrefix: upstream.AuthValuePrefix,
 		UpstreamAuthProvider:    upstream.AuthProvider,
 		UpstreamExtraHeaders:    upstream.ExtraHeaders,
+		UpstreamDynamicHeaders:  upstream.DynamicHeaders,
+		UpstreamModelDiscovery:  upstream.ModelDiscovery,
+		CatalogScope:            accountCatalogScope(providerID, accountName),
 		TranslateAnthropic:      upstream.TranslateAnthropic,
 		Anthropic:               upstream.Anthropic,
 		// TranslateGemini + Gemini must travel with the rest: a dropped flag
@@ -718,10 +846,12 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 		// passthrough, so POST /v1/chat/completions is forwarded verbatim to
 		// daily-cloudcode-pa and Google answers an HTML 404 — a Gemini proxy
 		// that starts, answers /health, and serves no traffic.
-		TranslateGemini:    upstream.TranslateGemini,
-		Gemini:             upstream.Gemini,
-		OpenAIPath:         upstream.OpenAIPath,
-		SanitizeOpenAIBody: upstream.SanitizeOpenAIBody,
+		TranslateGemini:       upstream.TranslateGemini,
+		Gemini:                upstream.Gemini,
+		OpenAIPath:            upstream.OpenAIPath,
+		SanitizeOpenAIBody:    upstream.SanitizeOpenAIBody,
+		SanitizeAnthropicBody: upstream.SanitizeAnthropicBody,
+		MapModel:              upstream.MapModel,
 	}
 }
 
@@ -734,6 +864,54 @@ func (s *Service) Stop(ctx context.Context, providerID, accountName string) erro
 	}, func(c context.Context) error {
 		return s.stopLocked(c, providerID, accountName)
 	}, 0)
+}
+
+// ProxyRunning reports the verified liveness of one account proxy without
+// exposing its token. It is deliberately a small adapter-facing method so
+// accounts.Use can coordinate a switch without importing this package.
+func (s *Service) ProxyRunning(ctx context.Context, providerID, accountName string) (bool, error) {
+	status, err := s.StatusContext(ctx, providerID, accountName)
+	if err != nil {
+		return false, err
+	}
+	return status != nil && status.Running, nil
+}
+
+// StopProxyForSwitch stops an account proxy but preserves its enabled config.
+// Manual Stop intentionally persists Enabled=false so auto-start will not
+// resurrect it; account switching has different semantics and must be able to
+// restore the previous account's listener during rollback or a later switch.
+func (s *Service) StopProxyForSwitch(ctx context.Context, providerID, accountName string) error {
+	return lock.WithMutationLocks(ctx, s.Store.Root, []string{
+		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
+	}, func(c context.Context) error {
+		cfg, err := s.Store.GetProxyConfig(c, providerID, accountName)
+		if err != nil {
+			return err
+		}
+		if err := s.stopLocked(c, providerID, accountName); err != nil {
+			return err
+		}
+		if !cfg.Enabled {
+			return nil
+		}
+		return s.Store.SetProxyConfigContext(c, providerID, accountName, cfg)
+	}, 0)
+}
+
+// StartProxyIfEnabled is the account-switch counterpart of StartProxy. A
+// saved account can exist with its proxy disabled; switching native auth must
+// not silently turn that setting on just because another account was running.
+func (s *Service) StartProxyIfEnabled(ctx context.Context, providerID, accountName string) error {
+	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	_, err = s.StartProxy(ctx, providerID, accountName)
+	return err
 }
 
 func (s *Service) stopLocked(ctx context.Context, providerID, accountName string) error {

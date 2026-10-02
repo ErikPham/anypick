@@ -30,7 +30,7 @@ func TestServerNativeAnthropicPassthrough(t *testing.T) {
 
 	s := &Server{
 		ProviderID: "zai", AccountName: "plan",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream:     mustURLT(t, "https://api.z.ai/api/coding/paas/v4"),
 		UpstreamAuth: "sk-openai",
 		Anthropic: &UpstreamTarget{
@@ -69,6 +69,52 @@ func TestServerNativeAnthropicPassthrough(t *testing.T) {
 	}
 }
 
+// A provider-owned Anthropic sanitizer runs on the native forward: strict
+// vendors (Grok) reject bodies Claude Code emits as-is (`"required": null`
+// in a tool schema). The OpenAI sanitizer must not touch this path.
+func TestServerNativeAnthropicAppliesSanitizer(t *testing.T) {
+	var gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","content":[]}`))
+	}))
+	defer upstream.Close()
+	u := mustURLT(t, upstream.URL)
+
+	s := &Server{
+		ProviderID: "grok", AccountName: "plan",
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
+		Upstream: u, UpstreamAuth: "sk-grok",
+		Anthropic:             &UpstreamTarget{BaseURL: u},
+		SanitizeAnthropicBody: func(body []byte) []byte { return []byte(`{"sanitized":true}`) },
+		SanitizeOpenAIBody:    func(body []byte) []byte { return []byte(`{"wrong-surface":true}`) },
+	}
+	if err := s.Listen("127.0.0.1", 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.WaitReady(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest("POST", s.Endpoint+"/v1/messages",
+		strings.NewReader(`{"model":"grok-4.5","max_tokens":16,"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+s.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if gotBody != `{"sanitized":true}` {
+		t.Errorf("upstream body = %s, want the Anthropic sanitizer output", gotBody)
+	}
+}
+
 // Translation fallback still applies when there is no native target.
 func TestServerTranslatedMessagesWhenNoNativeTarget(t *testing.T) {
 	var gotPath string
@@ -83,7 +129,7 @@ func TestServerTranslatedMessagesWhenNoNativeTarget(t *testing.T) {
 
 	s := &Server{
 		ProviderID: "deepseek", AccountName: "w",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream: u, UpstreamAuth: "sk-ds",
 		TranslateAnthropic: true,
 	}

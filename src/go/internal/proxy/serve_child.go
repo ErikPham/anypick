@@ -43,8 +43,21 @@ func (s *Service) ServeExisting(ctx context.Context, providerID, accountName str
 	s.startInstanceHeartbeat(state.InstanceID, ownPID())
 	defer s.stopInstanceHeartbeat(state.InstanceID)
 
-	proxyLogf("%s/%s listening on %s", providerID, accountName,
-		strings.TrimPrefix(state.Endpoint, "http://"))
+	// Name the resolved upstream in the start line: which vendor host a proxy
+	// forwards to is the first question when a client sees vendor 5xx, and the
+	// host is decided per install (WorkBuddy vs CodeBuddy, China vs
+	// international), so reading it from the log beats guessing.
+	upstreamHost := ""
+	if upstream != nil && upstream.BaseURL != nil {
+		upstreamHost = upstream.BaseURL.Host + upstream.BaseURL.Path
+	}
+	if upstreamHost != "" {
+		proxyLogf("%s/%s listening on %s → %s", providerID, accountName,
+			strings.TrimPrefix(state.Endpoint, "http://"), upstreamHost)
+	} else {
+		proxyLogf("%s/%s listening on %s", providerID, accountName,
+			strings.TrimPrefix(state.Endpoint, "http://"))
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

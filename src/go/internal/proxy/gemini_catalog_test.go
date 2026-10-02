@@ -79,8 +79,14 @@ func TestRefreshGeminiCatalogFromGoogle(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if r.URL.Query().Get("key") != "test-key" {
+		if r.Header.Get("x-goog-api-key") != "test-key" {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.RawQuery != "" && strings.Contains(r.URL.RawQuery, "key=") {
+			// A key in the URL would leak through *url.Error into user-visible
+			// diagnostics; the transport must always use the header.
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

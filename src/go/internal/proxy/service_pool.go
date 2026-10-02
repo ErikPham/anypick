@@ -323,10 +323,11 @@ func (s *Service) guardOptions(providerID string, members []string) upstream.Gua
 		ProviderID: providerID,
 	}
 	if s.QuotaGuardPolicy != nil {
-		enabled, cooldownMs := s.QuotaGuardPolicy(context.Background())
-		opts.Enabled = enabled
-		if cooldownMs > 0 {
-			opts.CooldownMs = cooldownMs
+		policy := s.QuotaGuardPolicy(context.Background())
+		opts.Enabled = policy.Enabled
+		opts.ServeWhenAllCooling = policy.ServeWhenAllCooling
+		if policy.CooldownMinutes > 0 {
+			opts.CooldownMs = int64(policy.CooldownMinutes) * 60_000
 		}
 	}
 	return opts

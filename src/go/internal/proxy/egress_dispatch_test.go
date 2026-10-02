@@ -32,6 +32,9 @@ func TestEgressKindForCoversEveryUpstreamShape(t *testing.T) {
 	get := func() *http.Request {
 		return httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	}
+	responses := func() *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	}
 	target := &UpstreamTarget{BaseURL: mustURLT(t, "https://vendor.test/anthropic")}
 	base := mustURLT(t, "https://vendor.test/v1")
 
@@ -78,6 +81,18 @@ func TestEgressKindForCoversEveryUpstreamShape(t *testing.T) {
 			want: kindPassthrough,
 		},
 		{
+			name: "responses route gets kindOpenAIPath even without openai path",
+			req:  responses(),
+			up:   &Upstream{BaseURL: base},
+			want: kindOpenAIPath,
+		},
+		{
+			name: "gemini claims responses requests when translate gemini is set",
+			req:  responses(),
+			up:   &Upstream{BaseURL: base, TranslateGemini: true},
+			want: kindGemini,
+		},
+		{
 			name: "a non-messages request never reaches the anthropic branches",
 			req:  get(),
 			up:   &Upstream{BaseURL: base, Anthropic: target, TranslateAnthropic: true},
@@ -119,7 +134,7 @@ func TestBuildServerCarriesTheGeminiEgressFacts(t *testing.T) {
 		Anthropic:          &UpstreamTarget{BaseURL: base},
 		OpenAIPath:         "/chat/completions",
 	}
-	srv := (&Service{}).buildServer("gemini", "acct", MustNewInstanceID(), "secret", up)
+	srv := (&Service{}).buildServer("gemini", "acct", mustNewInstanceID(t), "secret", up)
 	got := srv.upstreamValue()
 	if !got.TranslateGemini {
 		t.Fatal("TranslateGemini lost in buildServer: egress would fall through to passthrough")
@@ -147,7 +162,7 @@ func TestPoolTranslatedMemberContextWindowIsConverted(t *testing.T) {
 	up := newStubUpstream(t, 400)
 	up.body = `{"error":{"message":"prompt is too long: 9000 tokens > 4096 maximum"}}`
 
-	server, token := newTestPool(t, MustNewInstanceID(), []string{"a"},
+	server, token := newTestPool(t, mustNewInstanceID(t), []string{"a"},
 		mapResolver{"a": {BaseURL: up.url, Auth: "sk-a", TranslateAnthropic: true}},
 		filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
 
@@ -181,7 +196,7 @@ func TestPoolNativeAnthropicMemberUsesTheSharedMerge(t *testing.T) {
 	defer target.Close()
 	targetURL := mustURLT(t, target.URL)
 
-	server, token := newTestPool(t, MustNewInstanceID(), []string{"a"},
+	server, token := newTestPool(t, mustNewInstanceID(t), []string{"a"},
 		mapResolver{"a": {
 			BaseURL: mustURLT(t, "https://parent.invalid/v1"),
 			Auth:    "sk-parent",
@@ -282,7 +297,7 @@ func TestPoolPassthroughMemberContextWindowIsRewritten(t *testing.T) {
 	up := newStubUpstream(t, 400)
 	up.body = `{"error":{"code":"context_length_exceeded"}}`
 
-	server, token := newTestPool(t, MustNewInstanceID(), []string{"a"},
+	server, token := newTestPool(t, mustNewInstanceID(t), []string{"a"},
 		mapResolver{"a": {BaseURL: up.url, Auth: "sk-a"}},
 		filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
 

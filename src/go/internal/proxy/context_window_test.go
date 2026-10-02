@@ -272,7 +272,7 @@ func TestServeRewritesContextOverflowOnPassthrough(t *testing.T) {
 	}
 	s := startContextTestServer(t, &Server{
 		ProviderID: "opencode-go", AccountName: "work",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream: u, UpstreamAuth: "sk-go",
 	})
 
@@ -316,7 +316,7 @@ func TestServeRewritesContextOverflowOnNativeAnthropic(t *testing.T) {
 	}
 	s := startContextTestServer(t, &Server{
 		ProviderID: "zai", AccountName: "plan",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream:     mustURLT(t, up.URL+"/openai"),
 		UpstreamAuth: "sk-openai",
 		Anthropic:    &UpstreamTarget{BaseURL: aURL, AuthHeader: "x-api-key"},
@@ -363,7 +363,7 @@ func TestServeRewritesContextOverflowOnTranslatedMessages(t *testing.T) {
 	up := newOverflowUpstream(t)
 	s := startContextTestServer(t, &Server{
 		ProviderID: "deepseek", AccountName: "w",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream:           mustURLT(t, up.URL),
 		UpstreamAuth:       "sk-ds",
 		TranslateAnthropic: true,
@@ -396,7 +396,7 @@ func TestServeLeavesNonContextErrorsAlone(t *testing.T) {
 	defer srv.Close()
 	s := startContextTestServer(t, &Server{
 		ProviderID: "p", AccountName: "a",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream: mustURLT(t, srv.URL), UpstreamAuth: "k",
 	})
 
@@ -422,7 +422,7 @@ func TestServeRewritesContextOverflowToResponsesSSE(t *testing.T) {
 	up := newOverflowUpstream(t)
 	s := startContextTestServer(t, &Server{
 		ProviderID: "p", AccountName: "a",
-		InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Upstream: mustURLT(t, up.URL), UpstreamAuth: "k",
 	})
 

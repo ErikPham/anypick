@@ -135,7 +135,7 @@ func TestPoolRingCountsFailovers(t *testing.T) {
 	upA.status.Store(429)
 	upA.body = `{"error":{"message":"Your account has run out of quota"}}`
 
-	server, token := newTestPool(t, MustNewInstanceID(), []string{"a", "b"},
+	server, token := newTestPool(t, mustNewInstanceID(t), []string{"a", "b"},
 		mapResolver{
 			"a": {BaseURL: upA.url, Auth: "upstream-secret-a"},
 			"b": {BaseURL: upB.url, Auth: "upstream-secret-b"},
@@ -160,7 +160,7 @@ func TestPoolRingCountsFailovers(t *testing.T) {
 
 func TestPoolHealthReportsCounters(t *testing.T) {
 	upA := newStubUpstream(t, 200)
-	server, token := newTestPool(t, MustNewInstanceID(), []string{"a"},
+	server, token := newTestPool(t, mustNewInstanceID(t), []string{"a"},
 		mapResolver{"a": {BaseURL: upA.url, Auth: "upstream-secret-a"}},
 		filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
 	_ = poolGet(t, server.Endpoint(), token, "/v1/chat/completions")
@@ -179,7 +179,7 @@ func TestPoolHealthReportsCounters(t *testing.T) {
 
 func TestServeAuthorizedCountsOnItsOwnRoute(t *testing.T) {
 	upA := newStubUpstream(t, 200)
-	server, _ := newTestPool(t, MustNewInstanceID(), []string{"a"},
+	server, _ := newTestPool(t, mustNewInstanceID(t), []string{"a"},
 		mapResolver{"a": {BaseURL: upA.url, Auth: "upstream-secret-a"}},
 		filepath.Join(t.TempDir(), "quota-guard.json"), "failover")
 

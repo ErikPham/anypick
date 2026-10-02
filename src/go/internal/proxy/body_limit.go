@@ -11,8 +11,9 @@ import (
 // Every egress path here has to read the whole body — to discover the model,
 // to translate Anthropic into chat completions, or to replay it per ring
 // member — so the cap is a memory bound, not a protocol limit. It is enforced
-// per request and there is no concurrency semaphore yet (see
-// BACKEND_ARCHITECTURE_2026-09-07.md §6).
+// per request and there is no concurrency semaphore yet — an open gap the
+// retired backend plan recorded
+// (docs/history/ARCHITECTURE_AND_ROADMAP_2026-09-08.md).
 const MaxBodyBytes = 64 << 20
 
 // ErrBodyTooLarge reports a body past the cap.

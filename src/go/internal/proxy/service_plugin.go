@@ -1214,6 +1214,12 @@ func (s *Service) statusForwarded(
 // engine's own log file, like src/core/proxy-service.ts proxyLogs. Provider
 // text is untrusted: the exact persisted runtime token plus generic
 // credential patterns are redacted before anything crosses an output boundary.
+// ScreenProxyLog applies the same secret screening ProxyLogs uses so
+// `--follow` cannot bypass redaction by reading the raw file.
+func (s *Service) ScreenProxyLog(providerID, accountName, text string) string {
+	return RedactSecrets(text, s.accountSecrets(providerID, accountName))
+}
+
 func (s *Service) ProxyLogs(ctx context.Context, providerID, accountName string, lines int) (string, error) {
 	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
 	if err != nil {

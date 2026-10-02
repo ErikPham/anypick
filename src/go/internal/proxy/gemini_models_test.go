@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,8 +32,12 @@ func TestGeminiServeAnswersListModelsLocally(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if r.URL.Query().Get("key") != "test-key" {
+		if r.Header.Get("x-goog-api-key") != "test-key" {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.Contains(r.URL.RawQuery, "key=") {
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -54,8 +55,9 @@ func egressKindFor(r *http.Request, up *Upstream) egressKind {
 		return kindNativeAnthropic
 	case isMessages && up.TranslateAnthropic:
 		return kindTranslatedMessages
-	case r.Method == http.MethodPost && up.OpenAIPath != "" &&
-		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions"):
+	case r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/responses" ||
+			(up.OpenAIPath != "" && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions"))):
 		return kindOpenAIPath
 	default:
 		return kindPassthrough
@@ -73,15 +75,23 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		writeJSONError(w, http.StatusBadGateway, "upstream_error", "no upstream")
 		return
 	}
-	// Gemini upstreams answer model enumeration locally. Without this the
-	// request falls through to kindPassthrough and is reverse-proxied to
-	// cloudcode-pa, which answers Google's HTML 404 — markup where the client
-	// expects JSON. Every other upstream keeps the previous behaviour, and the
-	// branch lives in Serve (not in the per-account Handler) so the pool ring
-	// and the hub cannot drift away from it.
-	if up.Gemini != nil && isListModels(r) {
-		serveGeminiModels(w, r, up)
-		return
+	// Model enumeration is answered locally for every upstream whose provider
+	// owns a catalog (Gemini's live Google list, WorkBuddy's product
+	// catalogue), so a client that asks the proxy sees exactly the ids the
+	// proxy can serve. Left to passthrough the request reaches the vendor,
+	// which answers an HTML or plain-text 404 where the client expects JSON.
+	// Every other upstream keeps the previous behaviour, and the branch lives
+	// in Serve (not in the per-account Handler) so the pool ring and the hub
+	// cannot drift away from it.
+	if isListModels(r) {
+		if up.Gemini != nil {
+			serveGeminiModels(w, r, up)
+			return
+		}
+		if up.ModelDiscovery != nil {
+			serveDiscoveredModels(w, r, up)
+			return
+		}
 	}
 	switch egressKindFor(r, up) {
 	case kindGemini:
@@ -94,6 +104,10 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		serveTranslatedMessagesWith(w, r, up)
 		return
 	case kindOpenAIPath:
+		if r.URL.Path == "/v1/responses" {
+			serveOpenAIResponsesWith(w, r, up)
+			return
+		}
 		reverseEgress(r, up, &commitSink{w: w}, reverseOpts{
 			baseURL:   up.BaseURL,
 			chatPath:  up.OpenAIPath,
@@ -101,7 +115,10 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		})
 		return
 	}
-	reverseEgress(r, up, &commitSink{w: w}, reverseOpts{baseURL: up.BaseURL})
+	reverseEgress(r, up, &commitSink{w: w}, reverseOpts{
+		baseURL:   up.BaseURL,
+		sanitizer: up.SanitizeOpenAIBody,
+	})
 } // flattenedNativeUpstream flattens a native Anthropic target and its parent
 // Upstream into one *Upstream: the target wins, the parent fills whatever the
 // target leaves empty.
@@ -137,6 +154,12 @@ func flattenedNativeUpstream(up *Upstream) *Upstream {
 		AuthValuePrefix: prefix,
 		AuthProvider:    provider,
 		ExtraHeaders:    headers,
+		DynamicHeaders:  up.DynamicHeaders,
+		// The native target carries no body sanitizer of its own; the
+		// provider-owned Anthropic rewrite rides on the parent. Dropping it
+		// here would silently turn strict-vendor validation failures (Grok's
+		// `"required": null` rejection) back on for every native forward.
+		SanitizeAnthropicBody: up.SanitizeAnthropicBody,
 	}
 }
 
@@ -147,7 +170,7 @@ func flattenedNativeUpstream(up *Upstream) *Upstream {
 // the resolved auth + headers, handed to the shared reverse egress.
 func serveNativeAnthropic(w http.ResponseWriter, r *http.Request, up *Upstream) {
 	flat := flattenedNativeUpstream(up)
-	reverseEgress(r, flat, &commitSink{w: w}, reverseOpts{baseURL: flat.BaseURL, sanitizer: flat.SanitizeOpenAIBody})
+	reverseEgress(r, flat, &commitSink{w: w}, reverseOpts{baseURL: flat.BaseURL, sanitizer: flat.SanitizeOpenAIBody, anthropicSanitizer: flat.SanitizeAnthropicBody})
 }
 
 // translatedBuildError carries the exact (status, type, message) a leaf must
@@ -327,10 +350,33 @@ func resolveUpstreamAuth(ctx context.Context, up *Upstream) (header, prefix, tok
 
 func applyExtraHeaders(out *http.Request, headers []ExtraHeader) {
 	for _, h := range headers {
-		if h.Name != "" {
-			out.Header.Set(h.Name, h.Value)
+		if h.Name == "" {
+			continue
 		}
+		if h.Drop {
+			out.Header.Del(h.Name)
+			continue
+		}
+		out.Header.Set(h.Name, h.Value)
 	}
+}
+
+func requestExtraHeaders(ctx context.Context, up *Upstream) ([]ExtraHeader, error) {
+	headers := append([]ExtraHeader(nil), up.ExtraHeaders...)
+	if up.DynamicHeaders == nil {
+		return headers, nil
+	}
+	dynamic, err := up.DynamicHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(headers, dynamic...), nil
+}
+
+func clearUpstreamAuthHeaders(out *http.Request) {
+	out.Header.Del("Authorization")
+	out.Header.Del("x-api-key")
+	out.Header.Del("api-key")
 }
 
 func injectUpstreamAuthFields(ctx context.Context, out *http.Request, up *Upstream) error {
@@ -338,11 +384,13 @@ func injectUpstreamAuthFields(ctx context.Context, out *http.Request, up *Upstre
 	if err != nil {
 		return err
 	}
-	out.Header.Del("Authorization")
-	out.Header.Del("x-api-key")
-	out.Header.Del("api-key")
+	extraHeaders, err := requestExtraHeaders(ctx, up)
+	if err != nil {
+		return err
+	}
+	clearUpstreamAuthHeaders(out)
 	out.Header.Set(header, prefix+token)
-	applyExtraHeaders(out, up.ExtraHeaders)
+	applyExtraHeaders(out, extraHeaders)
 	return nil
 }
 
@@ -535,7 +583,8 @@ func describeSanitizedOpenAI(body []byte) string {
 	raw := strings.ToLower(string(body))
 	for _, p := range []string{
 		"official cli", "x-anthropic-billing-header", "github.com/anthropics",
-		"claude-haiku", "claude-sonnet", "claude-opus",
+		"claude-haiku", "claude-sonnet", "claude-opus", "codex", "openai",
+		"mcp",
 	} {
 		if strings.Contains(raw, p) {
 			sb.WriteString("has=" + strings.ReplaceAll(p, " ", "_") + " ")
@@ -566,6 +615,11 @@ func describeVendorError(raw string, status int) string {
 		RequestID string `json:"requestId"`
 	}
 	if json.Unmarshal([]byte(raw), &env) != nil || (env.Code == 0 && env.RequestID == "") {
+		// Vendor edges (APISIX/openresty) answer 502/504 with HTML; the title
+		// is the only part that says who failed, and it is vendor-authored.
+		if title := htmlTitle(raw); title != "" {
+			return "html title=" + strconv.Quote(title)
+		}
 		return "unparseable status=" + strconv.Itoa(status) + " len=" + strconv.Itoa(len(raw))
 	}
 	out := "code=" + strconv.Itoa(env.Code)
@@ -573,6 +627,63 @@ func describeVendorError(raw string, status int) string {
 		out += " req=" + env.RequestID
 	}
 	return out
+}
+
+// htmlTitle extracts a short <title> from a gateway error page. Bounded: the
+// log must not carry bulk vendor HTML.
+func htmlTitle(raw string) string {
+	lower := strings.ToLower(raw)
+	start := strings.Index(lower, "<title>")
+	if start < 0 {
+		return ""
+	}
+	rest := lower[start+len("<title>"):]
+	end := strings.Index(rest, "</title>")
+	if end < 0 {
+		return ""
+	}
+	title := strings.TrimSpace(raw[start+len("<title>") : start+len("<title>")+end])
+	if len(title) > 120 {
+		title = title[:120]
+	}
+	return title
+}
+
+// nullLeafPaths lists JSON paths whose value is null, for vendor-rejection
+// diagnostics. Paths and key names only — never values — so no prompt,
+// history, or secret can cross into the log. Bounded to 20 paths.
+func nullLeafPaths(body []byte) string {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "unparseable"
+	}
+	var out []string
+	var walk func(v any, path string)
+	walk = func(v any, path string) {
+		if len(out) >= 20 {
+			return
+		}
+		switch node := v.(type) {
+		case map[string]any:
+			for k, val := range node {
+				p := path + "/" + k
+				if val == nil {
+					out = append(out, p)
+					continue
+				}
+				walk(val, p)
+			}
+		case []any:
+			for i, item := range node {
+				walk(item, path+"["+strconv.Itoa(i)+"]")
+			}
+		}
+	}
+	walk(payload, "")
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, ",")
 }
 
 func translateRequestBody(body []byte) ([]byte, error) { return protocol.TranslateRequest(body) }
@@ -600,15 +711,25 @@ type egressSink interface {
 	asResponseWriter() http.ResponseWriter
 }
 
+// peekedBody replays a body prefix read for diagnostics while still closing
+// the original stream, so ReverseProxy's Close reaches the vendor connection.
+type peekedBody struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (b *peekedBody) Close() error { return b.closer.Close() }
+
 // reverseOpts selects the ReverseProxy target and request shaping for one
 // reverse egress. chatPath pins the OpenAI chat surface onto a non-default
-// path; sanitizer rewrites an OpenAI chat body (only applied when chatPath is
-// set, matching the prior per-leaf behavior — a generic passthrough never
-// sanitized).
+// path; sanitizer rewrites an OpenAI chat body for either that path or the
+// vendor's default /v1/chat/completions passthrough; anthropicSanitizer
+// rewrites a native Anthropic messages body for the same passthrough.
 type reverseOpts struct {
-	baseURL   *url.URL
-	chatPath  string
-	sanitizer func([]byte) []byte
+	baseURL            *url.URL
+	chatPath           string
+	sanitizer          func([]byte) []byte
+	anthropicSanitizer func([]byte) []byte
 }
 
 // commitSink is the committing egressSink: bytes go straight to the client.
@@ -657,10 +778,20 @@ func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseO
 	}
 	var sanitized []byte
 	sanitizing := false
-	if opts.chatPath != "" && opts.sanitizer != nil && r.Method == http.MethodPost &&
+	if opts.sanitizer != nil && r.Method == http.MethodPost &&
 		(r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/completions") {
 		sanitized = opts.sanitizer(body)
 		sanitizing = true
+	}
+	if opts.anthropicSanitizer != nil && r.Method == http.MethodPost &&
+		(r.URL.Path == "/v1/messages" || r.URL.Path == "/messages") {
+		before := len(body)
+		sanitized = opts.anthropicSanitizer(body)
+		sanitizing = true
+		if os.Getenv("ANYPICK_DEBUG_GROK_BODY") == "1" {
+			proxyLogf("anthropic-sanitize changed=%v inlen=%d outlen=%d nullpaths=%s",
+				string(sanitized) != string(body), before, len(sanitized), nullLeafPaths(body))
+		}
 	}
 	// Re-feed the (capped, possibly sanitized) body so ReverseProxy streams the
 	// right bytes. ReverseProxy drains r.Body, so this single read is the one
@@ -677,6 +808,12 @@ func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseO
 	}
 
 	header, prefix, token, aerr := resolveUpstreamAuth(r.Context(), up)
+	if aerr != nil {
+		sink.reject(http.StatusBadGateway, jsonErrorHeader(),
+			[]byte(jsonErrorBody("proxy_error", "credential refresh failed")))
+		return
+	}
+	extraHeaders, aerr := requestExtraHeaders(r.Context(), up)
 	if aerr != nil {
 		sink.reject(http.StatusBadGateway, jsonErrorHeader(),
 			[]byte(jsonErrorBody("proxy_error", "credential refresh failed")))
@@ -702,19 +839,20 @@ func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseO
 					return io.NopCloser(bytes.NewReader(sanitized)), nil
 				}
 			}
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("x-api-key")
-			pr.Out.Header.Del("api-key")
+			clearUpstreamAuthHeaders(pr.Out)
 			pr.Out.Header.Set(header, prefix+token)
-			applyExtraHeaders(pr.Out, up.ExtraHeaders)
+			applyExtraHeaders(pr.Out, extraHeaders)
 		},
 		Transport:     egress.Transport(),
 		FlushInterval: 10 * time.Millisecond,
-		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, _ error) {
+		ErrorLog:      ErrorLogger(),
+		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, err error) {
 			// Transport errors surface as a verbatim 502; the transient class
 			// never triggers failover. For the capture sink rw is the
 			// captureWriter, so the ring sees the 502; for the committing sink
-			// it is the real client writer.
+			// it is the real client writer. The cause goes to the log or the
+			// user only ever sees "upstream unavailable".
+			proxyLogf("upstream transport error: %s", redactAuthError(err))
 			rw.Header().Set("Content-Type", "application/json")
 			rw.WriteHeader(http.StatusBadGateway)
 			_, _ = rw.Write([]byte(`{"error":{"type":"upstream_error","message":"upstream unavailable"}}`))
@@ -723,6 +861,19 @@ func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseO
 			if err := rewriteContextWindowResponse(resp, r); err != nil {
 				return err
 			}
+			if resp.StatusCode >= 500 {
+				// A vendor edge failure (APISIX/openresty 502/504) is passed
+				// through verbatim, which reads as "the local proxy broke".
+				// Log the vendor's own status line so proxy.log names the
+				// failing side; the response body keeps flowing untouched.
+				peek, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+				resp.Body = &peekedBody{
+					Reader: io.MultiReader(bytes.NewReader(peek), resp.Body),
+					closer: resp.Body,
+				}
+				proxyLogf("upstream %d; vendor says: %s", resp.StatusCode,
+					describeVendorError(string(peek), resp.StatusCode))
+			}
 			if resp.StatusCode < 400 {
 				sink.commit()
 				return nil
@@ -730,5 +881,13 @@ func reverseEgress(r *http.Request, up *Upstream, sink egressSink, opts reverseO
 			return sink.onNon2xx(resp)
 		},
 	}
-	rp.ServeHTTP(sink.asResponseWriter(), r)
+	// Log-only degenerate-stream tripwire. Aborting the TCP connection and
+	// injecting stop+[DONE] were both observed to kill the client turn
+	// (STREAM_CLOSED / WorkBuddy dropping the task). The bytes originate
+	// upstream; this tap only fingerprints them.
+	rw := sink.asResponseWriter()
+	if shouldInspectStream(r) {
+		rw = newDegenerateTap(rw)
+	}
+	rp.ServeHTTP(rw, r)
 }

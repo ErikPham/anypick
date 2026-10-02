@@ -39,21 +39,25 @@ var (
 )
 
 func geminiCatalogKey(up *Upstream) string {
-	if up.Gemini == nil {
+	if up == nil || up.Gemini == nil {
 		return "unknown"
+	}
+	scope := strings.TrimSpace(up.CatalogScope)
+	if scope != "" {
+		scope += "|"
 	}
 	if up.Gemini.APIKeyMode {
 		base := geminiUpstreamGoogle
 		if up.Gemini.APIKeyBase != nil {
 			base = strings.TrimSuffix(up.Gemini.APIKeyBase.String(), "/")
 		}
-		return "api-key:" + base
+		return scope + "api-key:" + base
 	}
 	base := geminiUpstreamGoogle
 	if up.Gemini.CodeAssistBase != nil {
 		base = strings.TrimSuffix(up.Gemini.CodeAssistBase.String(), "/")
 	}
-	return "oauth:" + base
+	return scope + "oauth:" + base
 }
 
 // liveGeminiCatalog is the best-effort accessor used by model resolution: a
@@ -197,11 +201,39 @@ func refreshGeminiModelCatalog(ctx context.Context, up *Upstream) (*gemini.Gemin
 	if up.Gemini.CodeAssistBase != nil {
 		base = strings.TrimSuffix(up.Gemini.CodeAssistBase.String(), "/")
 	}
-	project, perr := resolveCodeAssistProject(ctx, base, token, up.Gemini.IDEType)
-	if perr != nil {
-		return nil, fmt.Errorf("gemini code assist project: %w", perr)
+	cat, primaryErr := fetchGeminiOAuthCatalog(ctx, base, token, up.Gemini.IDEType, up.Gemini.UserAgent)
+	if primaryErr == nil {
+		return cat, nil
 	}
-	return fetchGeminiCatalogFromCodeAssist(ctx, base, token, project, up.Gemini.UserAgent)
+	// Gemini CLI and Antigravity can share one saved account while Google
+	// accepts only one client identity for a given request. Use the same
+	// alternate identity as generateContent when the primary catalog probe is
+	// rejected, so a provider rollout or stale primary route cannot erase the
+	// account's model options.
+	if alt := up.Gemini.AltRoute; alt != nil && alt.AuthProvider != nil {
+		altToken, altErr := alt.AuthProvider(ctx)
+		if altErr == nil {
+			altBase := geminiUpstreamGoogle
+			if alt.CodeAssistBase != nil {
+				altBase = strings.TrimSuffix(alt.CodeAssistBase.String(), "/")
+			}
+			if altCat, fetchErr := fetchGeminiOAuthCatalog(
+				ctx, altBase, altToken, alt.IDEType, alt.UserAgent); fetchErr == nil {
+				return altCat, nil
+			} else {
+				return nil, fmt.Errorf("gemini code assist catalog: primary: %v; fallback: %w", primaryErr, fetchErr)
+			}
+		}
+	}
+	return nil, fmt.Errorf("gemini code assist catalog: %w", primaryErr)
+}
+
+func fetchGeminiOAuthCatalog(ctx context.Context, base, token, ideType, userAgent string) (*gemini.GeminiModelCatalog, error) {
+	project, err := resolveCodeAssistProject(ctx, base, token, ideType)
+	if err != nil {
+		return nil, fmt.Errorf("gemini code assist project: %w", err)
+	}
+	return fetchGeminiCatalogFromCodeAssist(ctx, base, token, project, userAgent)
 }
 
 // fetchGeminiCatalogFromGoogle pages through Google Generative Language
@@ -217,7 +249,6 @@ func fetchGeminiCatalogFromGoogle(ctx context.Context, base, apiKey string) (*ge
 	for {
 		u := base + "/v1beta/models"
 		q := url.Values{}
-		q.Set("key", apiKey)
 		q.Set("pageSize", "100")
 		if pageToken != "" {
 			q.Set("pageToken", pageToken)
@@ -226,6 +257,10 @@ func fetchGeminiCatalogFromGoogle(ctx context.Context, base, apiKey string) (*ge
 		if err != nil {
 			return nil, err
 		}
+		// The key travels as a header only. Built into the URL it would appear
+		// verbatim in every *url.Error this call can return, and those errors
+		// reach user-visible boundaries (MODEL_REQUIRED, `anypick models`,
+		// desktop logs, the /v1/models 502 body).
 		req.Header.Set("x-goog-api-key", apiKey)
 		req.Header.Set("accept", "application/json")
 		resp, err := client.Do(req)
@@ -331,7 +366,8 @@ func fetchGeminiCatalogFromCodeAssist(ctx context.Context, base, token, project,
 }
 
 func parseCodeAssistCatalog(body codeAssistCatalogResponse) *gemini.GeminiModelCatalog {
-	models := make([]gemini.GeminiModelDescriptor, 0)
+	byID := map[string]gemini.GeminiModelDescriptor{}
+	rawToCanonical := map[string]string{}
 	available := map[string]bool{}
 	for rawID, details := range body.Models {
 		id := strings.TrimPrefix(strings.TrimSpace(rawID), "models/")
@@ -344,25 +380,38 @@ func parseCodeAssistCatalog(body codeAssistCatalogResponse) *gemini.GeminiModelC
 		if s, ok := details.ModelProvider.(string); ok && s != "" && s != "MODEL_PROVIDER_GOOGLE" {
 			continue
 		}
-		d := gemini.GeminiModelDescriptor{ID: id}
+		canonicalID := codeAssistPublicModelID(id)
+		d := gemini.GeminiModelDescriptor{ID: canonicalID, UpstreamID: id}
 		if s, ok := details.DisplayName.(string); ok && s != "" {
-			d.DisplayName = s
+			d.DisplayName = codeAssistPublicDisplayName(s)
 		}
 		if isTrue(details.Recommended) {
 			d.Recommended = true
 		}
-		models = append(models, d)
-		available[id] = true
+		if existing, ok := byID[canonicalID]; !ok || preferCodeAssistModel(d, existing) {
+			byID[canonicalID] = d
+		}
+		rawToCanonical[id] = canonicalID
+		available[canonicalID] = true
 	}
-	if len(models) == 0 {
+	if len(byID) == 0 {
 		return &gemini.GeminiModelCatalog{}
 	}
+	models := make([]gemini.GeminiModelDescriptor, 0, len(byID))
+	for _, model := range byID {
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	preferred := make([]string, 0)
 	for _, sort := range body.AgentModelSorts {
 		for _, group := range sort.Groups {
 			for _, mid := range group.ModelIDs {
 				if s, ok := mid.(string); ok {
-					id := strings.TrimPrefix(s, "models/")
+					raw := strings.TrimPrefix(strings.TrimSpace(s), "models/")
+					id := rawToCanonical[raw]
+					if id == "" {
+						id = codeAssistPublicModelID(raw)
+					}
 					if id != "" && available[id] && !containsString(preferred, id) {
 						preferred = append(preferred, id)
 					}
@@ -371,10 +420,49 @@ func parseCodeAssistCatalog(body codeAssistCatalogResponse) *gemini.GeminiModelC
 		}
 	}
 	out := &gemini.GeminiModelCatalog{Models: models, PreferredModelIDs: preferred}
-	if id := strings.TrimPrefix(body.DefaultAgentModelID, "models/"); id != "" && available[id] {
-		out.DefaultModelID = id
+	defaultRaw := strings.TrimPrefix(strings.TrimSpace(body.DefaultAgentModelID), "models/")
+	defaultID := rawToCanonical[defaultRaw]
+	if defaultID == "" {
+		defaultID = codeAssistPublicModelID(defaultRaw)
+	}
+	if defaultID != "" && available[defaultID] {
+		out.DefaultModelID = defaultID
 	}
 	return out
+}
+
+// codeAssistPublicModelID hides the Code Assist-only "-tiered" route suffix
+// from clients while descriptors keep the original as UpstreamID for egress.
+func codeAssistPublicModelID(id string) string {
+	id = strings.TrimSpace(id)
+	lower := strings.ToLower(id)
+	if strings.HasPrefix(lower, "gemini-") && strings.HasSuffix(lower, "-tiered") {
+		return id[:len(id)-len("-tiered")]
+	}
+	return id
+}
+
+func codeAssistPublicDisplayName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	lower := strings.ToLower(trimmed)
+	for _, suffix := range []string{" (tiered)", " tiered"} {
+		if strings.HasSuffix(lower, suffix) {
+			return strings.TrimSpace(trimmed[:len(trimmed)-len(suffix)])
+		}
+	}
+	return trimmed
+}
+
+func preferCodeAssistModel(candidate, existing gemini.GeminiModelDescriptor) bool {
+	// An exact public ID should win over an internal tiered alias when both
+	// are advertised. Otherwise the tiered route keeps its internal ID solely
+	// for the upstream request while clients see the canonical family name.
+	candidateCanonical := candidate.ID == candidate.UpstreamID
+	existingCanonical := existing.ID == existing.UpstreamID
+	if candidateCanonical != existingCanonical {
+		return candidateCanonical
+	}
+	return candidate.Recommended && !existing.Recommended
 }
 
 // fetchGeminiCatalogFromCodeAssistQuota is the partial fallback when
@@ -382,7 +470,7 @@ func parseCodeAssistCatalog(body codeAssistCatalogResponse) *gemini.GeminiModelC
 // proves another explicit id is unavailable. Ports listGeminiModelsFromCodeAssistQuota.
 func fetchGeminiCatalogFromCodeAssistQuota(ctx context.Context, client *http.Client, base, token, project, catalogError string) (*gemini.GeminiModelCatalog, error) {
 	u := base + "/v1internal:retrieveUserQuota"
-	payload, _ := json.Marshal(map[string]string{"project": project, "userAgent": "hotplug-gemini-proxy"})
+	payload, _ := json.Marshal(map[string]string{"project": project, "userAgent": "anypick-gemini-proxy"})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -421,7 +509,7 @@ func fetchGeminiCatalogFromCodeAssistQuota(ctx context.Context, client *http.Cli
 			return
 		}
 		seen[id] = true
-		models = append(models, gemini.GeminiModelDescriptor{ID: id})
+		models = append(models, gemini.GeminiModelDescriptor{ID: id, UpstreamID: id})
 	}
 	for _, b := range body.Buckets {
 		add(b.ModelID)
@@ -435,7 +523,32 @@ func fetchGeminiCatalogFromCodeAssistQuota(ctx context.Context, client *http.Cli
 			add(v["name"])
 		}
 	}
-	return &gemini.GeminiModelCatalog{Models: models}, nil
+	return &gemini.GeminiModelCatalog{Models: normalizeCodeAssistCatalogModels(models)}, nil
+}
+
+func normalizeCodeAssistCatalogModels(rawModels []gemini.GeminiModelDescriptor) []gemini.GeminiModelDescriptor {
+	byID := make(map[string]gemini.GeminiModelDescriptor, len(rawModels))
+	for _, raw := range rawModels {
+		id := strings.TrimSpace(raw.ID)
+		if id == "" {
+			continue
+		}
+		canonicalID := codeAssistPublicModelID(id)
+		raw.ID = canonicalID
+		if strings.TrimSpace(raw.UpstreamID) == "" {
+			raw.UpstreamID = id
+		}
+		raw.DisplayName = codeAssistPublicDisplayName(raw.DisplayName)
+		if existing, ok := byID[canonicalID]; !ok || preferCodeAssistModel(raw, existing) {
+			byID[canonicalID] = raw
+		}
+	}
+	out := make([]gemini.GeminiModelDescriptor, 0, len(byID))
+	for _, model := range byID {
+		out = append(out, model)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func containsString(xs []string, s string) bool {

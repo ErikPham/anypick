@@ -64,6 +64,19 @@ func TestDiagnosticsLogOnlyAllowlistedFields(t *testing.T) {
 	}
 }
 
+// A vendor edge failure (APISIX/openresty 502/504) must be identifiable in the
+// log without copying page bodies: only the bounded <title> is allowlisted.
+func TestDescribeVendorErrorReadsGatewayTitleOnly(t *testing.T) {
+	page := "<html><head><title>502 Bad Gateway</title></head><body>canary-body-secret</body></html>"
+	got := describeVendorError(page, 502)
+	if !strings.Contains(got, `html title="502 Bad Gateway"`) {
+		t.Fatalf("gateway title missing: %q", got)
+	}
+	if strings.Contains(got, "canary-body-secret") {
+		t.Fatalf("page body leaked into diagnostics: %q", got)
+	}
+}
+
 // Regression for the P0 raw dump: serving a translated request that hits
 // 11128 must never write inbound/sanitized bodies to disk. The canary stands
 // in for prompt text, history, or pasted secrets.

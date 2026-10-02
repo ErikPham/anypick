@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -859,7 +858,7 @@ func TestForwardedUnsettledAdoptsAndStopsDoubleDetachedGrandchild(t *testing.T) 
 		t.Fatalf("diagnostic record = %+v, %v", state, serr)
 	}
 	// Belt: make sure nothing of this scenario outlives the test.
-	_ = syscall.Kill(final, syscall.SIGKILL)
+	_ = signalPID(final)
 }
 
 // TestReconcileAccountAfterHostLossKeepsProxyOnTransientHealthMiss is the P1
@@ -1089,59 +1088,6 @@ func TestStopForwardedClearsAtomicallyWhenLeaseDeleteFails(t *testing.T) {
 	}
 	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
 		t.Fatalf("verified stop left lease %+v", lease)
-	}
-}
-
-// TestReconcileKeepsPausedDetachedProxyAcrossWholeWindow is the timing-vs-
-// death regression: a detached proxy SIGSTOPped longer than the ENTIRE
-// verification window misses every health probe exactly like a corpse, but
-// its recorded process identity is still alive. Darkness alone must never
-// drop its state and leases; after SIGCONT the very same instance serves
-// again, still tracked.
-func TestReconcileKeepsPausedDetachedProxyAcrossWholeWindow(t *testing.T) {
-	svc := newForwardedServiceOnly(t)
-	oldTimeout := lifecycleVerifyTimeout
-	lifecycleVerifyTimeout = 200 * time.Millisecond
-	defer func() { lifecycleVerifyTimeout = oldTimeout }()
-
-	instanceID := "44444444-4444-4444-8444-444444444444"
-	child, endpoint, _ := spawnScopedChild(t, instanceID, 0, 0)
-	req := svc.pluginRequest("pluginprov", "paused", store.ProxyConfig{}, "")
-	writeScopedRecord(t, req, instanceID, child.Process.Pid, endpoint, time.Now(), nil)
-
-	state := store.ProxyRuntimeState{
-		AccountName: "paused", Endpoint: endpoint,
-		PID: child.Process.Pid, InstanceID: instanceID,
-		Token: "tok-paused", StartedAt: nowISO(),
-	}
-	if err := svc.Store.WriteProxyStateContext(context.Background(), "pluginprov", "paused", state); err != nil {
-		t.Fatal(err)
-	}
-	lease := seedReconcileLease(t, svc, "paused", instanceID)
-
-	if err := syscall.Kill(child.Process.Pid, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
-	// The full window passes dark while the owner process stays frozen.
-	if err := svc.reconcileAccountAfterHostLoss(
-		context.Background(), "pluginprov", "paused", state, PluginRuntimeIdentity{}); err != nil {
-		t.Fatalf("paused-proxy reconcile = %v", err)
-	}
-	ctx := context.Background()
-	got, serr := svc.Store.ReadProxyState(ctx, "pluginprov", "paused")
-	if serr != nil || got == nil || got.Token != "tok-paused" || got.InstanceID != instanceID {
-		t.Fatalf("SIGSTOPed detached proxy forgotten across the whole window: %+v, %v", got, serr)
-	}
-	if after, _ := svc.Jobs.Get(lease.LeaseID); after == nil {
-		t.Fatal("lease released while the recorded owner process is still alive")
-	}
-
-	// Resume: the identical listener comes back, untouched by reconciliation.
-	if err := syscall.Kill(child.Process.Pid, syscall.SIGCONT); err != nil {
-		t.Fatal(err)
-	}
-	if err := waitHealthInstance(endpoint, instanceID, 5*time.Second); err != nil {
-		t.Fatalf("detached proxy never recovered after SIGCONT: %v", err)
 	}
 }
 

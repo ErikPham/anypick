@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,6 +23,24 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/store"
 )
+
+func mustNewToken(t testing.TB) string {
+	t.Helper()
+	tok, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+func mustNewInstanceID(t testing.TB) string {
+	t.Helper()
+	id, err := NewInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
 
 // ---- primitive security helpers ----
 
@@ -51,7 +70,7 @@ func TestSafeEqualFailsClosed(t *testing.T) {
 }
 
 func TestNewTokenShape(t *testing.T) {
-	a, b := MustNewToken(), MustNewToken()
+	a, b := mustNewToken(t), mustNewToken(t)
 	if len(a) != 64 || len(b) != 64 {
 		t.Fatalf("token length = %d/%d, want 64 hex chars", len(a), len(b))
 	}
@@ -61,7 +80,7 @@ func TestNewTokenShape(t *testing.T) {
 }
 
 func TestNewInstanceIDIsUUIDv4(t *testing.T) {
-	id := MustNewInstanceID()
+	id := mustNewInstanceID(t)
 	if len(id) != 36 ||
 		id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' ||
 		id[14] != '4' {
@@ -164,8 +183,8 @@ func newTestServer(t testing.TB, upstream *url.URL) *Server {
 	s := &Server{
 		ProviderID:   "codex",
 		AccountName:  "work",
-		InstanceID:   MustNewInstanceID(),
-		Token:        MustNewToken(),
+		InstanceID:   mustNewInstanceID(t),
+		Token:        mustNewToken(t),
 		Upstream:     upstream,
 		UpstreamAuth: "upstream-secret",
 	}
@@ -380,8 +399,8 @@ func TestPickFreePortUsable(t *testing.T) {
 	if port <= 0 {
 		t.Fatalf("port = %d", port)
 	}
-	s := &Server{ProviderID: "p", AccountName: "a", InstanceID: MustNewInstanceID(),
-		Token: MustNewToken()}
+	s := &Server{ProviderID: "p", AccountName: "a", InstanceID: mustNewInstanceID(t),
+		Token: mustNewToken(t)}
 	if err := s.Listen("127.0.0.1", port); err != nil {
 		t.Fatalf("listen on picked port: %v", err)
 	}
@@ -707,6 +726,47 @@ func seedAccount(t *testing.T, svc *Service, name string, enabled bool) {
 	_ = svc.Store.DiscardPreparedSnapshot(staging)
 }
 
+// A configured port that another process holds must not strand the account:
+// the start moves to a free port, persists it, and reports the move so the
+// activation can warn and rewrite client configs.
+func TestStartProxyMovesOffABusyConfiguredPort(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "busy", true)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	busy := ln.Addr().(*net.TCPAddr).Port
+	if err := ts.Service.Store.SetProxyConfigContext(ctx, "codex", "busy",
+		store.ProxyConfig{Enabled: true, Port: busy}); err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := ts.Service.StartProxy(ctx, "codex", "busy")
+	if err != nil {
+		t.Fatalf("StartProxy with a busy configured port: %v", err)
+	}
+	if started.Port == busy || started.Port == 0 {
+		t.Fatalf("started on the busy port: %+v", started)
+	}
+	if started.PortMovedFrom != busy {
+		t.Fatalf("PortMovedFrom = %d, want %d", started.PortMovedFrom, busy)
+	}
+	cfg, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Port != started.Port {
+		t.Fatalf("persisted port = %d, want the moved %d", cfg.Port, started.Port)
+	}
+	if err := ts.Service.Stop(ctx, "codex", "busy"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStartReusesLiveInstance(t *testing.T) {
 	ts := newTestServices(t)
 	ctx := context.Background()
@@ -735,6 +795,33 @@ func TestStartReusesLiveInstance(t *testing.T) {
 	status, _ := ts.Service.Status("codex", "work")
 	if status.Running {
 		t.Error("proxy still running after Stop")
+	}
+}
+
+func TestStopProxyForSwitchPreservesEnabledConfig(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "switchable", true)
+
+	if _, err := ts.Service.StartProxy(ctx, "codex", "switchable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Service.StopProxyForSwitch(ctx, "codex", "switchable"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ts.Service.Store.GetProxyConfig(ctx, "codex", "switchable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Enabled {
+		t.Fatalf("switch stop disabled the account config: %+v", cfg)
+	}
+	status, err := ts.Service.StatusContext(ctx, "codex", "switchable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Running {
+		t.Fatalf("proxy still running after switch stop: %+v", status)
 	}
 }
 
@@ -989,4 +1076,44 @@ func TestConfigureValidatesAndPersistsUnderServiceBoundary(t *testing.T) {
 	if disabled.Enabled || disabled.Port != cfg.Port {
 		t.Fatalf("disabled config = %+v, want preserved port %d", disabled, cfg.Port)
 	}
+}
+
+func TestRotateToken(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "rotateme", true)
+
+	// Rotate while stopped
+	tok1, err := ts.Service.RotateToken(ctx, "codex", "rotateme")
+	if err != nil {
+		t.Fatalf("rotate while stopped: %v", err)
+	}
+	if len(tok1) < 32 {
+		t.Fatalf("token too short: %q", tok1)
+	}
+	state, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotateme")
+	if err != nil || state == nil || state.Token != tok1 {
+		t.Fatalf("persisted token = %v, want %q", state, tok1)
+	}
+
+	// Rotate again while running
+	if _, err := ts.Service.StartProxy(ctx, "codex", "rotateme"); err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	tok2, err := ts.Service.RotateToken(ctx, "codex", "rotateme")
+	if err != nil {
+		t.Fatalf("rotate while running: %v", err)
+	}
+	if tok2 == tok1 {
+		t.Fatalf("expected different token after rotate: %q", tok2)
+	}
+	state2, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotateme")
+	if err != nil || state2 == nil || state2.Token != tok2 {
+		t.Fatalf("persisted token after second rotate = %v, want %q", state2, tok2)
+	}
+	status, _ := ts.Service.StatusContext(ctx, "codex", "rotateme")
+	if status == nil || !status.Running {
+		t.Fatal("expected proxy to be restarted and running after rotate")
+	}
+	_ = ts.Service.Stop(ctx, "codex", "rotateme")
 }

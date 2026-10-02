@@ -42,7 +42,7 @@ func TestSignalPIDErrorsOnBadPIDAndStopsChild(t *testing.T) {
 }
 
 func TestServerErrChannelQuietWhileServing(t *testing.T) {
-	srv := &Server{Token: MustNewToken()}
+	srv := &Server{Token: mustNewToken(t)}
 	port, err := PickFreePort()
 	if err != nil {
 		t.Fatal(err)

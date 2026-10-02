@@ -87,15 +87,15 @@ func (e *geminiBuildError) Error() string { return e.message }
 // leaves cannot diverge; the caller maps the result to its own sink (write vs
 // capture), including the credential-error vs upstream-error type split.
 func geminiEgress(r *http.Request, up *Upstream, body []byte) (resp *gemini.GeminiGenerateResponse, resolvedModel string, stream bool, berr *geminiBuildError, cerr error) {
-	geminiReq, resolvedModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
+	geminiReq, resolvedModel, upstreamModel, stream, terr := translateToGemini(up, r.Context(), r.URL.Path, body)
 	if terr != nil {
 		return nil, "", false, &geminiBuildError{http.StatusBadGateway, "upstream_error", terr.Error()}, nil
 	}
-	if resolvedModel == "" {
+	if resolvedModel == "" || upstreamModel == "" {
 		return nil, "", false, &geminiBuildError{http.StatusBadRequest, "invalid_request_error",
 			"model is required and no model could be discovered for this account"}, nil
 	}
-	resp, cerr = callGemini(r.Context(), up, resolvedModel, geminiReq)
+	resp, cerr = callGemini(r.Context(), up, upstreamModel, geminiReq)
 	if cerr != nil {
 		return nil, "", false, nil, cerr
 	}
@@ -132,40 +132,40 @@ func serveGemini(w http.ResponseWriter, r *http.Request, up *Upstream) {
 // streaming. Model resolution mirrors resolveRequestModel: it consults the live
 // account catalog (liveGeminiCatalog) and falls back to the empty-catalog
 // passthrough for unknown concrete ids.
-func translateToGemini(up *Upstream, ctx context.Context, path string, body []byte) (*gemini.GeminiGenerateRequest, string, bool, error) {
+func translateToGemini(up *Upstream, ctx context.Context, path string, body []byte) (*gemini.GeminiGenerateRequest, string, string, bool, error) {
 	catalog := liveGeminiCatalog(ctx, up)
 	switch path {
 	case "/v1/chat/completions":
 		var req gemini.OpenAIChatRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, "", false, fmt.Errorf("invalid OpenAI chat body: %w", err)
+			return nil, "", "", false, fmt.Errorf("invalid OpenAI chat body: %w", err)
 		}
-		model := gemini.ResolveGeminiModel(req.Model, catalog, stringFromEffort(req)).ID
-		return gemini.OpenAIToGemini(req, model), model, req.Stream, nil
+		model := gemini.ResolveGeminiModel(req.Model, catalog, stringFromEffort(req))
+		return gemini.OpenAIToGemini(req, model.ID), model.ID, model.UpstreamID, req.Stream, nil
 	case "/v1/responses":
 		var req gemini.OpenAIResponsesRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, "", false, fmt.Errorf("invalid OpenAI responses body: %w", err)
+			return nil, "", "", false, fmt.Errorf("invalid OpenAI responses body: %w", err)
 		}
-		model := gemini.ResolveGeminiModel(req.Model, catalog, "").ID
-		return gemini.OpenAIResponsesToGemini(req, model), model, req.Stream, nil
+		model := gemini.ResolveGeminiModel(req.Model, catalog, "")
+		return gemini.OpenAIResponsesToGemini(req, model.ID), model.ID, model.UpstreamID, req.Stream, nil
 	case "/v1/messages":
 		var req gemini.AnthropicMessageRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, "", false, fmt.Errorf("invalid Anthropic messages body: %w", err)
+			return nil, "", "", false, fmt.Errorf("invalid Anthropic messages body: %w", err)
 		}
 		if req.Model == "" {
-			return nil, "", false, fmt.Errorf("model is required")
+			return nil, "", "", false, fmt.Errorf("model is required")
 		}
-		model := gemini.ResolveGeminiModel(req.Model, catalog, stringFromAnthropicEffort(req)).ID
-		g, m, err := gemini.AnthropicToGemini(body, model)
+		model := gemini.ResolveGeminiModel(req.Model, catalog, stringFromAnthropicEffort(req))
+		g, _, err := gemini.AnthropicToGemini(body, model.ID)
 		if err != nil {
-			return nil, "", false, err
+			return nil, "", "", false, err
 		}
 		stream := req.Stream
-		return g, m, stream, nil
+		return g, model.ID, model.UpstreamID, stream, nil
 	default:
-		return nil, "", false, fmt.Errorf("unsupported gemini route %s", path)
+		return nil, "", "", false, fmt.Errorf("unsupported gemini route %s", path)
 	}
 }
 
@@ -196,7 +196,7 @@ func stringFromAnthropicEffort(req gemini.AnthropicMessageRequest) string {
 // 429 cooldown and gemini-cli ↔ antigravity auto-fallback on 401/403/404.
 func callGemini(ctx context.Context, up *Upstream, model string, geminiReq *gemini.GeminiGenerateRequest) (*gemini.GeminiGenerateResponse, error) {
 	keyMode := up.Gemini != nil && up.Gemini.APIKeyMode
-	routeKey := "gemini:" + map[bool]string{true: "api-key", false: "oauth"}[keyMode] + ":" + model
+	routeKey := geminiCooldownKey(up, model)
 	if cooling := geminiCooldowns.remainingMs(routeKey); cooling > 0 {
 		return nil, &geminiUpstreamError{
 			status:  429,
@@ -414,6 +414,21 @@ func retryAfterMs(header string) int64 {
 // proxySessionId (one value for the server's lifetime).
 var geminiSessionID = gemini.RandomID()
 
+// geminiCooldownKey includes the account scope. A key of only mode and model
+// parks every same-mode account in the process after one 429, so a pool or
+// hub never reaches the next account.
+func geminiCooldownKey(up *Upstream, model string) string {
+	mode := "oauth"
+	scope := ""
+	if up != nil {
+		scope = up.CatalogScope
+		if up.Gemini != nil && up.Gemini.APIKeyMode {
+			mode = "api-key"
+		}
+	}
+	return "gemini:" + mode + ":" + scope + ":" + model
+}
+
 // geminiCooldowns ports the TS CooldownRegistry: a 429 from any route parks
 // that route's key for the Retry-After window so the next call fails fast
 // instead of hammering the upstream.
@@ -472,13 +487,15 @@ func geminiErrorStatusMessage(err error) (int, string) {
 	return http.StatusBadGateway, err.Error()
 }
 
-// geminiCodeAssistMetadata builds the ClientMetadata for loadCodeAssist. The
+// GeminiCodeAssistMetadata builds the ClientMetadata for loadCodeAssist. The
 // two identities do not take the same shape: Antigravity's endpoint is sent
 // {ideType} alone, while gemini-cli additionally carries platform +
 // pluginType (npm anypick, providers/gemini-proxy/server.ts). Sending the
 // gemini-cli shape to the Antigravity upstream is the kind of extra field the
-// endpoint later rejects, so the shapes stay separate.
-func geminiCodeAssistMetadata(ideType string) map[string]interface{} {
+// endpoint later rejects, so the shapes stay separate. Provider-owned quota
+// reads in internal/provider/usage_gemini.go call this too, so the wire shape
+// lives in one place.
+func GeminiCodeAssistMetadata(ideType string) map[string]interface{} {
 	if ideType == "ANTIGRAVITY" {
 		return map[string]interface{}{"ideType": ideType}
 	}
@@ -504,7 +521,7 @@ func resolveCodeAssistProject(ctx context.Context, base, token, ideType string) 
 	}
 	target := fmt.Sprintf("%s/v1internal:loadCodeAssist", base)
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"metadata": geminiCodeAssistMetadata(ideType),
+		"metadata": GeminiCodeAssistMetadata(ideType),
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
@@ -916,6 +933,13 @@ func writeOpenAIResponsesStream(w http.ResponseWriter, response *gemini.OpenAIRe
 		}
 		// Emit the real (completed) item so the client sees final content.
 		emit("response.output_item.done", map[string]interface{}{"output_index": outputIndex, "item": item})
+	}
+	// A 200 from the vendor can still carry an error payload (e.g. WorkBuddy
+	// error codes). Codex reads the terminal event as the outcome, so a failed
+	// response must be reported as response.failed — never as completed.
+	if response.Status == "failed" {
+		emit("response.failed", map[string]interface{}{"response": response})
+		return
 	}
 	emit("response.completed", map[string]interface{}{"response": response})
 }

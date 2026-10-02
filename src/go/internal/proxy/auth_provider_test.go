@@ -73,6 +73,34 @@ func TestUpstreamAuthProviderOverridesStatic(t *testing.T) {
 	}
 }
 
+func TestApplyExtraHeadersDropRemovesInbound(t *testing.T) {
+	var gotIntent string
+	var sawIntent bool
+	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawIntent = r.Header["X-Agent-Intent"]
+		gotIntent = r.Header.Get("X-Agent-Intent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upSrv.Close)
+	base, err := url.Parse(upSrv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &Upstream{
+		BaseURL: base,
+		Auth:    "tok",
+		DynamicHeaders: func(context.Context) ([]ExtraHeader, error) {
+			return []ExtraHeader{{Name: "X-Agent-Intent", Drop: true}}, nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
+	req.Header.Set("X-Agent-Intent", "craft")
+	Serve(httptest.NewRecorder(), req, up)
+	if sawIntent || gotIntent != "" {
+		t.Fatalf("X-Agent-Intent leaked to upstream: present=%v value=%q", sawIntent, gotIntent)
+	}
+}
+
 func TestUpstreamAuthProviderErrorFailsClosed(t *testing.T) {
 	upSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("upstream must not be reached when refresh fails (auth=%q)", r.Header.Get("Authorization"))

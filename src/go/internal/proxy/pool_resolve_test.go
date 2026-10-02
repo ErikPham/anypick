@@ -100,7 +100,7 @@ func TestPoolRingStopsWhenTheClientHasGone(t *testing.T) {
 		"b": {BaseURL: upB.url},
 	}}
 	server := &PoolServer{
-		ProviderID: "deepseek", InstanceID: MustNewInstanceID(), Token: MustNewToken(),
+		ProviderID: "deepseek", InstanceID: mustNewInstanceID(t), Token: mustNewToken(t),
 		Members:  []string{"a", "b"},
 		Resolver: res,
 		Guard: upstream.NewGuard(upstream.GuardOptions{

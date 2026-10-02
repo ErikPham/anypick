@@ -130,6 +130,50 @@ func newGeminiServer(t *testing.T, base *url.URL, gemini *GeminiTarget) *Server 
 // resetGeminiTestState isolates the package-level cooldown + catalog caches so
 // tests do not leak shared state into one another (e.g. a 429 cooldown set by
 // one test blocking another's first generateContent call).
+func TestGeminiCooldownDoesNotParkADifferentAccount(t *testing.T) {
+	resetGeminiTestState(t)
+	var hitsA, hitsB int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("x-goog-api-key") {
+		case "key-a":
+			hitsA++
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case "key-b":
+			hitsB++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"candidates":[]}`))
+		default:
+			t.Errorf("unexpected key %q", r.Header.Get("x-goog-api-key"))
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := func(key, scope string) *Upstream {
+		return &Upstream{
+			Auth:         key,
+			CatalogScope: scope,
+			Gemini:       &GeminiTarget{APIKeyMode: true, APIKeyBase: base},
+		}
+	}
+	if _, err := callGemini(context.Background(), up("key-a", "account/gemini/a"), "gemini-2.5-flash", nil); err == nil {
+		t.Fatal("account A should surface the 429")
+	}
+	if _, err := callGemini(context.Background(), up("key-b", "account/gemini/b"), "gemini-2.5-flash", nil); err != nil {
+		t.Fatalf("account B was parked by A's cooldown: %v", err)
+	}
+	if _, err := callGemini(context.Background(), up("key-a", "account/gemini/a"), "gemini-2.5-flash", nil); err == nil {
+		t.Fatal("account A should still be cooling")
+	}
+	if hitsA != 1 || hitsB != 1 {
+		t.Fatalf("hits A=%d B=%d, want 1 and 1", hitsA, hitsB)
+	}
+}
+
 func resetGeminiTestState(t *testing.T) {
 	t.Helper()
 	geminiCooldowns.mu.Lock()
@@ -421,7 +465,7 @@ func TestGeminiServeCodeAssistClientIdentity(t *testing.T) {
 // platform + pluginType. Collapsing the two is how an accepted identity turns
 // into a 400 the next time the endpoint tightens its validation.
 func TestGeminiCodeAssistMetadataShapePerIdentity(t *testing.T) {
-	antigravity := geminiCodeAssistMetadata("ANTIGRAVITY")
+	antigravity := GeminiCodeAssistMetadata("ANTIGRAVITY")
 	if _, leaked := antigravity["pluginType"]; leaked {
 		t.Fatalf("ANTIGRAVITY metadata must not carry pluginType: %v", antigravity)
 	}
@@ -431,7 +475,7 @@ func TestGeminiCodeAssistMetadataShapePerIdentity(t *testing.T) {
 	if antigravity["ideType"] != "ANTIGRAVITY" {
 		t.Fatalf("ANTIGRAVITY ideType = %v", antigravity["ideType"])
 	}
-	cli := geminiCodeAssistMetadata("GEMINI_CLI")
+	cli := GeminiCodeAssistMetadata("GEMINI_CLI")
 	if cli["pluginType"] != "GEMINI" {
 		t.Fatalf("gemini-cli pluginType = %v, want GEMINI", cli["pluginType"])
 	}

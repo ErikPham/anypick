@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -100,15 +101,6 @@ func NewToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// MustNewToken is the panic-on-failure helper for tests and non-critical paths.
-func MustNewToken() string {
-	tok, err := NewToken()
-	if err != nil {
-		panic(err)
-	}
-	return tok
-}
-
 // NewInstanceID mirrors instanceId = randomUUID().
 func NewInstanceID() (string, error) {
 	b := make([]byte, 16)
@@ -126,15 +118,6 @@ func NewInstanceID() (string, error) {
 		out = append(out, h[v>>4], h[v&0x0f])
 	}
 	return string(out), nil
-}
-
-// MustNewInstanceID panics on failure; for tests.
-func MustNewInstanceID() string {
-	id, err := NewInstanceID()
-	if err != nil {
-		panic(err)
-	}
-	return id
 }
 
 // SafeEqual compares secrets in constant time; an empty expected value fails
@@ -221,6 +204,10 @@ type Server struct {
 	Endpoint     string // http://127.0.0.1:<port>
 	Upstream     *url.URL
 	UpstreamAuth string // credential injected into forwarded requests
+	// CatalogScope names this account's provider-local model catalog so two
+	// accounts sharing an upstream origin cannot serve each other's
+	// entitlements (see accountCatalogScope).
+	CatalogScope string
 	// Upstream auth presentation; empty = Authorization: Bearer.
 	UpstreamAuthHeader      string
 	UpstreamAuthValuePrefix string
@@ -229,6 +216,14 @@ type Server struct {
 	UpstreamAuthProvider func(ctx context.Context) (string, error)
 	// UpstreamExtraHeaders are injected into every forwarded request.
 	UpstreamExtraHeaders []ExtraHeader
+	// UpstreamDynamicHeaders supplies provider-owned metadata per request.
+	UpstreamDynamicHeaders func(context.Context) ([]ExtraHeader, error)
+	// UpstreamModelDiscovery is the provider-owned model-catalog operation
+	// (WorkBuddy's product catalogue). It must travel like every other egress
+	// fact: a dropped copy silently turns GET /v1/models into vendor
+	// passthrough, so clients enumerate models from a 404 instead of the ids
+	// this proxy can serve (see the TranslateGemini warning in buildServer).
+	UpstreamModelDiscovery func(context.Context) ([]string, error)
 	// TranslateAnthropic: upstream is OpenAI-only, so /v1/messages requests
 	// are translated into chat completions (body + response + SSE stream).
 	TranslateAnthropic bool
@@ -246,6 +241,12 @@ type Server struct {
 	// SanitizeOpenAIBody rewrites verbatim-forwarded OpenAI bodies before
 	// egress. Composed into the egress by upstreamValue().
 	SanitizeOpenAIBody func([]byte) []byte
+	// SanitizeAnthropicBody rewrites verbatim-forwarded native Anthropic
+	// bodies before egress. Composed into the egress by upstreamValue().
+	SanitizeAnthropicBody func([]byte) []byte
+	// MapModel translates an inbound client model name into the upstream
+	// provider's model identifier.
+	MapModel func(string) string
 
 	srv   *http.Server
 	errCh chan error
@@ -266,6 +267,7 @@ func (s *Server) injectUpstreamAuth(out *http.Request) error {
 		AuthValuePrefix: s.UpstreamAuthValuePrefix,
 		AuthProvider:    s.UpstreamAuthProvider,
 		ExtraHeaders:    s.UpstreamExtraHeaders,
+		DynamicHeaders:  s.UpstreamDynamicHeaders,
 	})
 }
 
@@ -371,6 +373,46 @@ func proxyLogf(format string, args ...any) {
 	_, _ = io.WriteString(proxyLogSink, line)
 }
 
+// LogProxyLine logs an incoming HTTP request in design format (`HH:MM:SS  METHOD PATH → STATUS in X ms`).
+func LogProxyLine(r *http.Request, status int, latency time.Duration) {
+	logProxyLine(r, status, latency)
+}
+
+// Logf writes one design-shaped console line (`HH:MM:SS  <message>`) to the child log.
+func Logf(format string, args ...any) {
+	proxyLogf(format, args...)
+}
+
+type logWriterFunc func([]byte) (int, error)
+
+func (f logWriterFunc) Write(p []byte) (int, error) { return f(p) }
+
+// ErrorLogger returns a *log.Logger that routes lines to the proxy child log
+// in design format without double timestamping.
+func ErrorLogger() *log.Logger {
+	return log.New(logWriterFunc(func(p []byte) (int, error) {
+		msg := strings.TrimSpace(string(p))
+		if msg != "" {
+			proxyLogf("%s", msg)
+		}
+		return len(p), nil
+	}), "", 0)
+}
+
+// SetLogSinkForTest redirects proxy child output to w for tests and returns
+// a restore function.
+func SetLogSinkForTest(w io.Writer) func() {
+	proxyLogMu.Lock()
+	old := proxyLogSink
+	proxyLogSink = w
+	proxyLogMu.Unlock()
+	return func() {
+		proxyLogMu.Lock()
+		proxyLogSink = old
+		proxyLogMu.Unlock()
+	}
+}
+
 // upstreamValue composes the single egress description consumed by Serve.
 // It must carry AuthProvider + ExtraHeaders — buildServer sets them on the
 // Server, and the per-request path needs them to refresh short-lived tokens
@@ -379,18 +421,23 @@ func proxyLogf(format string, args ...any) {
 // egress fact lives only in the Upstream upstreamValue() returns.
 func (s *Server) upstreamValue() *Upstream {
 	return &Upstream{
-		BaseURL:            s.Upstream,
-		Auth:               s.UpstreamAuth,
-		AuthHeader:         s.UpstreamAuthHeader,
-		AuthValuePrefix:    s.UpstreamAuthValuePrefix,
-		AuthProvider:       s.UpstreamAuthProvider,
-		ExtraHeaders:       s.UpstreamExtraHeaders,
-		Anthropic:          s.Anthropic,
-		TranslateAnthropic: s.TranslateAnthropic,
-		TranslateGemini:    s.TranslateGemini,
-		Gemini:             s.Gemini,
-		OpenAIPath:         s.OpenAIPath,
-		SanitizeOpenAIBody: s.SanitizeOpenAIBody,
+		BaseURL:               s.Upstream,
+		Auth:                  s.UpstreamAuth,
+		AuthHeader:            s.UpstreamAuthHeader,
+		AuthValuePrefix:       s.UpstreamAuthValuePrefix,
+		AuthProvider:          s.UpstreamAuthProvider,
+		ExtraHeaders:          s.UpstreamExtraHeaders,
+		DynamicHeaders:        s.UpstreamDynamicHeaders,
+		ModelDiscovery:        s.UpstreamModelDiscovery,
+		CatalogScope:          s.CatalogScope,
+		Anthropic:             s.Anthropic,
+		TranslateAnthropic:    s.TranslateAnthropic,
+		TranslateGemini:       s.TranslateGemini,
+		Gemini:                s.Gemini,
+		OpenAIPath:            s.OpenAIPath,
+		SanitizeOpenAIBody:    s.SanitizeOpenAIBody,
+		SanitizeAnthropicBody: s.SanitizeAnthropicBody,
+		MapModel:              s.MapModel,
 	}
 }
 
@@ -483,6 +530,26 @@ func PickFreePort() (int, error) {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port, nil
+}
+
+// portBindable reports whether host:port can be bound right now. It is a
+// pre-flight probe only: the listener closes immediately, so a racing bind
+// still fails later and surfaces as a normal start failure.
+func portBindable(host string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	// The probe listens for real. Refuse before that bind so a configured
+	// public host is never opened, even briefly (ADR 0006 §5).
+	if err := AssertLoopbackHost(host); err != nil {
+		return false
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }
 
 // registry tracks running servers keyed by provider/account.

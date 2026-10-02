@@ -19,10 +19,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -56,7 +56,12 @@ type PoolServer struct {
 	Token      string
 	Members    []string
 	// Strategy mirrors the persisted pool row ('failover' | 'round-robin').
-	// Recorded for diagnostics only — no rotation is implemented, matching TS.
+	//
+	// failover: the guard keeps the account that last served at the head of the
+	// ring, so every request is sticky until an account is cooled down.
+	// round-robin: requests rotate through the eligible members in ring order.
+	// Both skip cooling accounts and both fail over inside one request when the
+	// member that answered is quota-class exhausted.
 	Strategy string
 	// RingDeadline is an aggregate pre-commit budget. Zero uses
 	// DefaultPoolRingDeadline; it never cuts a stream after commit.
@@ -67,6 +72,11 @@ type PoolServer struct {
 	endpoint string
 	srv      *http.Server
 	errCh    chan error
+
+	// rrCursor is the round-robin position. It lives in memory: StartPoolProxy
+	// rebuilds the server on every start, so a restart begins at the first
+	// member, which is the same place a fresh ring should begin.
+	rrCursor atomic.Uint64
 
 	resolvedMu sync.Mutex
 	resolved   map[string]*Upstream
@@ -131,6 +141,54 @@ func (s *PoolServer) ServeAuthorized(w http.ResponseWriter, r *http.Request) {
 	s.servePoolRequest(rec, r, req)
 }
 
+// ringOrder resolves the members this request may use, in the order it will try
+// them, and reports whether the ring is running on cooling members only.
+func (s *PoolServer) ringOrder(candidates []upstream.Candidate) (ordered []upstream.Candidate, fromCooling bool, err error) {
+	if strings.EqualFold(strings.TrimSpace(s.Strategy), "round-robin") {
+		eligible, eerr := s.Guard.Eligible(candidates)
+		if eerr != nil {
+			return nil, false, eerr
+		}
+		if len(eligible) == 0 {
+			return s.coolingOrder(candidates)
+		}
+		if len(eligible) > 1 {
+			// Advance once per request, then start the walk there: a rotation
+			// that reused the same start would be the sticky policy with extra
+			// steps, and one that advanced per attempt would skip a member for
+			// every failover.
+			start := int(s.rrCursor.Add(1)-1) % len(eligible)
+			rotated := make([]upstream.Candidate, 0, len(eligible))
+			rotated = append(rotated, eligible[start:]...)
+			rotated = append(rotated, eligible[:start]...)
+			eligible = rotated
+		}
+		return eligible, false, nil
+	}
+	ordered, oerr := s.Guard.Ordered(candidates)
+	if oerr != nil {
+		return nil, false, oerr
+	}
+	if len(ordered) > 0 {
+		return ordered, false, nil
+	}
+	return s.coolingOrder(candidates)
+}
+
+// coolingOrder is the last resort: every member is cooling, so the ring may
+// either attempt the one that recovers soonest or refuse. The caller decides
+// through the guard's policy.
+func (s *PoolServer) coolingOrder(candidates []upstream.Candidate) ([]upstream.Candidate, bool, error) {
+	if !s.Guard.ServesWhenAllCooling() {
+		return nil, false, nil
+	}
+	cooling, err := s.Guard.Cooling(candidates)
+	if err != nil {
+		return nil, false, err
+	}
+	return cooling, true, nil
+}
+
 // servePoolRequest walks the guard-ordered member ring. Statuses pass through
 // verbatim unless the failure is quota-class AND a next candidate exists AND
 // the guard is enabled — exactly backend.ts fetch().
@@ -168,7 +226,7 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request, ob
 	for i, m := range s.Members {
 		candidates[i] = poolCandidate{account: m}
 	}
-	ordered, err := s.Guard.Ordered(candidates)
+	ordered, fromCooling, err := s.ringOrder(candidates)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "upstream_error", "quota guard state unreadable")
 		return
@@ -234,7 +292,11 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request, ob
 			return
 		}
 		// TS: `if (!next || !guard.enabled || !isExhausted(...)) return last;`
-		if i+1 >= len(ordered) || !s.Guard.Enabled() ||
+		//
+		// fromCooling stops after the one attempt: every member is cooling, so
+		// walking the rest would spend the request's whole budget repeating a
+		// verdict the caller can already read.
+		if i+1 >= len(ordered) || fromCooling || !s.Guard.Enabled() ||
 			!isQuotaClassFailure(cw.status, cw.headerValue, cw.body.String(),
 				quotaErrorPatterns(up)) {
 			cw.flushCaptured()
@@ -312,6 +374,9 @@ func (s *PoolServer) upstreamFor(r *http.Request, account string) *Upstream {
 	if err != nil || up == nil {
 		return nil
 	}
+	if strings.TrimSpace(up.CatalogScope) == "" {
+		up.CatalogScope = accountCatalogScope(s.ProviderID, account)
+	}
 	s.resolvedMu.Lock()
 	if s.resolved == nil {
 		s.resolved = map[string]*Upstream{}
@@ -342,11 +407,21 @@ func (s *PoolServer) serveMember(w *captureWriter, r *http.Request, up *Upstream
 		// for the ring — serveNativeAnthropic commits unconditionally and
 		// would stream a 4xx past the failover decision.
 		flat := flattenedNativeUpstream(up)
-		s.reverseWithCapture(w, r, flat.BaseURL, flat)
+		s.reverseWithCapture(w, r, flat.BaseURL, flat, "")
 	case kindTranslatedMessages:
 		s.translatedWithCapture(w, r, up)
+	case kindOpenAIPath:
+		// The bridge buffers internally, so letting it write into the
+		// capture writer keeps the ring's failover decision intact. Without
+		// this leaf a pool member forwarded /v1/responses to the vendor's
+		// own path (the one OpenAIPath exists to avoid, e.g. WorkBuddy 11128).
+		if r.URL.Path == "/v1/responses" {
+			serveOpenAIResponsesWith(w, r, up)
+			return
+		}
+		s.reverseWithCapture(w, r, up.BaseURL, up, up.OpenAIPath)
 	default:
-		s.reverseWithCapture(w, r, up.BaseURL, up)
+		s.reverseWithCapture(w, r, up.BaseURL, up, "")
 	}
 }
 
@@ -389,8 +464,9 @@ func (s *PoolServer) geminiWithCapture(w *captureWriter, r *http.Request, up *Up
 // itself implements egressSink, so the single shared ReverseProxy in
 // reverseEgress drives the capturing behavior without a second copy of the proxy
 // logic (and without the context-window rewrite the old copy silently dropped).
-func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseURL *url.URL, up *Upstream) {
-	reverseEgress(r, up, w, reverseOpts{baseURL: baseURL, sanitizer: up.SanitizeOpenAIBody})
+// A non-empty chatPath rewrites the upstream path like Serve's kindOpenAIPath.
+func (s *PoolServer) reverseWithCapture(w *captureWriter, r *http.Request, baseURL *url.URL, up *Upstream, chatPath string) {
+	reverseEgress(r, up, w, reverseOpts{baseURL: baseURL, chatPath: chatPath, sanitizer: up.SanitizeOpenAIBody, anthropicSanitizer: up.SanitizeAnthropicBody})
 }
 
 // translatedWithCapture ports serveTranslatedMessagesWith's manual egress with
@@ -479,28 +555,8 @@ func isQuotaClassFailure(status int, headerValue func(string) string, bodyPrevie
 	return matchesQuotaErrorPattern(patterns, bodyPreview)
 }
 
-// matchesQuotaErrorPattern ports the definition.quotaErrorPatterns branch of
-// backend.ts isExhausted: each provider-declared regex probes the first 4000
-// body bytes. Invalid patterns are skipped — the TS catalog validator rejects
-// them at registration, so a bad pattern must never widen classification.
 func matchesQuotaErrorPattern(patterns []string, body string) bool {
-	if len(patterns) == 0 {
-		return false
-	}
-	preview := body
-	if len(preview) > 4000 {
-		preview = preview[:4000]
-	}
-	for _, pattern := range patterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue
-		}
-		if re.MatchString(preview) {
-			return true
-		}
-	}
-	return false
+	return upstream.MatchesQuotaErrorPattern(patterns, body)
 }
 
 // quotaErrorPatterns surfaces the resolved member's provider-declared quota

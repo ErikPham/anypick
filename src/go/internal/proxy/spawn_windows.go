@@ -14,13 +14,12 @@ func ExecSpawner(selfExe string) Spawner {
 	return func(providerID, accountName string, _ store.ProxyRuntimeState, logPath string) (int, error) {
 		cmd := exec.Command(selfExe, "_serve-proxy", providerID, accountName)
 		cmd.Env = append(os.Environ(), "ANYPICK_PROXY_CHILD=1")
-		if logPath != "" {
-			file, err := openProxyLogFile(logPath)
-			if err == nil {
-				cmd.Stdout, cmd.Stderr = file, file
-				defer file.Close()
-			}
+		output, err := openProxyChildOutput(logPath)
+		if err != nil {
+			return 0, err
 		}
+		defer output.Close()
+		cmd.Stdout, cmd.Stderr = output, output
 		cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 		if err := cmd.Start(); err != nil {
 			return 0, err
