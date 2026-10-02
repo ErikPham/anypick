@@ -152,7 +152,7 @@ func TestExecuteManagedProxyActivation(t *testing.T) {
 	if entry == nil || entry.State != journal.StateCommitted {
 		t.Fatalf("journal = %+v", entry)
 	}
-	leases, err := env.Px.Jobs.ListByAccount("codex", "px")
+	leases, err := env.Px.Jobs.ListByAccountContext(ctx, "codex", "px")
 	if err != nil || len(leases) == 0 {
 		t.Fatalf("leases = %+v err=%v", leases, err)
 	}
@@ -230,7 +230,7 @@ func TestExecuteProxyRollbackStopsProxy(t *testing.T) {
 	if status.Running {
 		t.Error("proxy still running after rollback")
 	}
-	leases, _ := env.Px.Jobs.ListByAccount("codex", "rb")
+	leases, _ := env.Px.Jobs.ListByAccountContext(ctx, "codex", "rb")
 	if len(leases) != 0 {
 		t.Errorf("leases survived rollback: %+v", leases)
 	}

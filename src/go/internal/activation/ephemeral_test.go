@@ -111,7 +111,7 @@ func TestExecuteEphemeralRunWithIsolatedHome(t *testing.T) {
 	if status.Running {
 		t.Error("proxy still running after cleanup")
 	}
-	leases, _ := env.Px.Jobs.ListByAccount("codex", "run")
+	leases, _ := env.Px.Jobs.ListByAccountContext(ctx, "codex", "run")
 	if len(leases) != 0 {
 		t.Errorf("leases survived cleanup: %+v", leases)
 	}

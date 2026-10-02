@@ -275,7 +275,7 @@ func proxyRowLabel(ctx context.Context, b *snapshotBuilder, providerID, name str
 
 func (b *snapshotBuilder) addProxyRow(ctx context.Context, pv provider.Provider, providerID, name, rowID string) {
 	cfg, _ := b.srv.Deps.Proxy.ProxyConfig(ctx, providerID, name)
-	st, statusErr := b.srv.Deps.Proxy.Status(providerID, name)
+	st, statusErr := b.srv.Deps.Proxy.StatusContext(ctx, providerID, name)
 	toggleID := b.actionID()
 	restartID := b.actionID()
 	rotateID := b.actionID()

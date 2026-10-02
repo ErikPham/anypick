@@ -59,7 +59,7 @@ func TestReconcileKeepsPausedDetachedProxyAcrossWholeWindow(t *testing.T) {
 	if serr != nil || got == nil || got.Token != "tok-paused" || got.InstanceID != instanceID {
 		t.Fatalf("SIGSTOPed detached proxy forgotten across the whole window: %+v, %v", got, serr)
 	}
-	if after, _ := svc.Jobs.Get(lease.LeaseID); after == nil {
+	if after, _ := svc.Jobs.GetContext(context.Background(), lease.LeaseID); after == nil {
 		t.Fatal("lease released while the recorded owner process is still alive")
 	}
 

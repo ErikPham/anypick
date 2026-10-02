@@ -95,7 +95,7 @@ func TestRestartRunningPoolsReturnsInspectionErrors(t *testing.T) {
 
 func requireOnePoolLease(t *testing.T, svc *proxy.Service, providerID string) *proxy.Lease {
 	t.Helper()
-	leases, err := svc.Jobs.ListPoolLeases(providerID)
+	leases, err := svc.Jobs.ListPoolLeasesContext(context.Background(), providerID)
 	if err != nil || len(leases) != 1 {
 		t.Fatalf("pool leases for %s = %#v, %v; want one", providerID, leases, err)
 	}
@@ -104,7 +104,7 @@ func requireOnePoolLease(t *testing.T, svc *proxy.Service, providerID string) *p
 
 func requireOneAccountLease(t *testing.T, svc *proxy.Service, providerID, account string) *proxy.Lease {
 	t.Helper()
-	leases, err := svc.Jobs.ListByAccount(providerID, account)
+	leases, err := svc.Jobs.ListByAccountContext(context.Background(), providerID, account)
 	if err != nil || len(leases) != 1 {
 		t.Fatalf("account leases for %s/%s = %#v, %v; want one",
 			providerID, account, leases, err)

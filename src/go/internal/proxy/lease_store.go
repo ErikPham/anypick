@@ -61,6 +61,9 @@ func scanLease(row rowScanner) (*Lease, error) {
 }
 
 // Create inserts a new lease.
+//
+// Deprecated: prefer CreateContext when the caller has a context. Kept until
+// remaining in-tree callers migrate (ADR-style Background wrappers).
 func (s *LeaseStore) Create(l Lease) error {
 	return s.CreateContext(context.Background(), l)
 }
@@ -81,6 +84,8 @@ func (s *LeaseStore) CreateContext(ctx context.Context, l Lease) error {
 }
 
 // Get returns a lease by id.
+//
+// Deprecated: prefer GetContext when the caller has a context.
 func (s *LeaseStore) Get(leaseID string) (*Lease, error) {
 	return s.GetContext(context.Background(), leaseID)
 }
@@ -95,6 +100,8 @@ func (s *LeaseStore) GetContext(ctx context.Context, leaseID string) (*Lease, er
 }
 
 // Delete removes a released lease.
+//
+// Deprecated: prefer DeleteContext when the caller has a context.
 func (s *LeaseStore) Delete(leaseID string) error {
 	return s.DeleteContext(context.Background(), leaseID)
 }
@@ -133,12 +140,16 @@ func (s *LeaseStore) HeartbeatInstanceContext(ctx context.Context, instanceID st
 }
 
 // ListByAccount returns live leases for an account.
+//
+// Deprecated: prefer ListByAccountContext when the caller has a context.
 func (s *LeaseStore) ListByAccount(providerID, accountName string) ([]*Lease, error) {
 	return s.ListByAccountContext(context.Background(), providerID, accountName)
 }
 
 // ListPoolLeases returns live pool leases — keyed (provider, ""), persisted
 // with a NULL account column, so the per-account query cannot see them.
+//
+// Deprecated: prefer ListPoolLeasesContext when the caller has a context.
 func (s *LeaseStore) ListPoolLeases(providerID string) ([]*Lease, error) {
 	return s.ListPoolLeasesContext(context.Background(), providerID)
 }
@@ -183,6 +194,8 @@ func (s *LeaseStore) ListByAccountContext(ctx context.Context, providerID, accou
 
 // ReapStale removes leases whose owner process is gone (owner_pid = this pid
 // marks in-process servers; after a crash the pid no longer exists).
+//
+// Deprecated: prefer ReapStaleContext when the caller has a context.
 func (s *LeaseStore) ReapStale() (int, error) {
 	return s.ReapStaleContext(context.Background())
 }

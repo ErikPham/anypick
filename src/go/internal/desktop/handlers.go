@@ -113,7 +113,7 @@ func (s *Server) startEnabledProxies(ctx context.Context) {
 			if !cfg.Enabled {
 				continue
 			}
-			if st, serr := s.Deps.Proxy.Status(providerID, acc.Meta.Name); serr == nil && st != nil && st.Running {
+			if st, serr := s.Deps.Proxy.StatusContext(ctx, providerID, acc.Meta.Name); serr == nil && st != nil && st.Running {
 				continue
 			}
 			_, _ = s.Deps.Proxy.StartProxy(ctx, providerID, acc.Meta.Name)

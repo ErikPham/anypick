@@ -256,7 +256,7 @@ func TestExecutePoolActivationFillsManagedProxy(t *testing.T) {
 	}
 
 	// Pool lease is keyed (provider, "") — never per-account scopes.
-	leases, lerr := env.Px.Jobs.ListPoolLeases("vendorx")
+	leases, lerr := env.Px.Jobs.ListPoolLeasesContext(ctx, "vendorx")
 	if lerr != nil || len(leases) != 1 || leases[0].LeaseID != mp.LeaseID {
 		t.Fatalf("pool leases = %+v err=%v want one matching lease", leases, lerr)
 	}
@@ -301,7 +301,7 @@ func TestExecutePoolActivationFillsManagedProxy(t *testing.T) {
 		t.Fatalf("stop pool: %v", err)
 	}
 	waitPoolDown(t, result.ProxyEndpoint)
-	if remaining, _ := env.Px.Jobs.ListPoolLeases("vendorx"); len(remaining) != 0 {
+	if remaining, _ := env.Px.Jobs.ListPoolLeasesContext(ctx, "vendorx"); len(remaining) != 0 {
 		t.Errorf("pool leases survived stop: %+v", remaining)
 	}
 }
@@ -349,7 +349,7 @@ func TestExecutePoolRollbackStopsPool(t *testing.T) {
 		t.Fatal("endpoint was not filled before the fault injected")
 	}
 	waitPoolDown(t, endpoint)
-	if remaining, _ := env.Px.Jobs.ListPoolLeases("vendorx"); len(remaining) != 0 {
+	if remaining, _ := env.Px.Jobs.ListPoolLeasesContext(ctx, "vendorx"); len(remaining) != 0 {
 		t.Errorf("pool leases survived rollback: %+v", remaining)
 	}
 	if state, _ := env.Px.Store.ReadProxyState(context.Background(), "vendorx", "a"); state != nil {

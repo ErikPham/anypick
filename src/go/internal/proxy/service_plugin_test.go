@@ -184,7 +184,7 @@ func TestForwardedStartPersistsEngineOwnedLifecycle(t *testing.T) {
 	if state.Token != res.Token || state.InstanceID != res.InstanceID {
 		t.Fatalf("persisted state = %+v does not match result %+v", state, res)
 	}
-	lease, err := svc.Jobs.Get(res.LeaseID)
+	lease, err := svc.Jobs.GetContext(context.Background(), res.LeaseID)
 	if err != nil || lease == nil {
 		t.Fatalf("lease %q = %+v, %v", res.LeaseID, lease, err)
 	}
@@ -311,7 +311,7 @@ func TestForwardedStopVerifiesTerminationAndFailsClosed(t *testing.T) {
 	if state == nil || state.Token != res.Token {
 		t.Fatalf("unverified stop erased runtime state: %+v", state)
 	}
-	if lease, _ := svc.Jobs.Get(res.LeaseID); lease == nil {
+	if lease, _ := svc.Jobs.GetContext(context.Background(), res.LeaseID); lease == nil {
 		t.Fatal("unverified stop released the lease")
 	}
 
@@ -322,7 +322,7 @@ func TestForwardedStopVerifiesTerminationAndFailsClosed(t *testing.T) {
 	if state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "work"); state != nil {
 		t.Fatalf("verified stop left runtime state: %+v", state)
 	}
-	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
+	if lease, _ := svc.Jobs.GetContext(context.Background(), res.LeaseID); lease != nil {
 		t.Fatalf("verified stop left lease %+v", lease)
 	}
 	// Zero surviving listeners.
@@ -374,7 +374,7 @@ func TestForwardedStopWithoutStopMethodFailsClosedThenDropsStale(t *testing.T) {
 	if state, _ := svc.Store.ReadProxyState(context.Background(), "pluginprov", "nostop"); state != nil {
 		t.Fatal("stale runtime state survived")
 	}
-	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
+	if lease, _ := svc.Jobs.GetContext(context.Background(), res.LeaseID); lease != nil {
 		t.Fatalf("stale lease survived: %+v", lease)
 	}
 }
@@ -908,7 +908,7 @@ func TestReconcileAccountAfterHostLossKeepsProxyOnTransientHealthMiss(t *testing
 	if serr != nil || got == nil || got.Token != "tok-b" {
 		t.Fatalf("live detached proxy forgotten after one missed probe: %+v, %v", got, serr)
 	}
-	if _, err := svc.Jobs.Get(lease.LeaseID); err != nil || lease == nil {
+	if _, err := svc.Jobs.GetContext(context.Background(), lease.LeaseID); err != nil || lease == nil {
 		t.Fatalf("lease released despite the proxy answering again: %v", err)
 	}
 }
@@ -1072,7 +1072,7 @@ func TestStopForwardedClearsAtomicallyWhenLeaseDeleteFails(t *testing.T) {
 	if serr != nil || state == nil || state.Token != res.Token {
 		t.Fatalf("stop-path half-failure lost the proxy_state row: %+v, %v", state, serr)
 	}
-	if lease, lerr := svc.Jobs.Get(res.LeaseID); lerr != nil || lease == nil {
+	if lease, lerr := svc.Jobs.GetContext(context.Background(), res.LeaseID); lerr != nil || lease == nil {
 		t.Fatalf("stop-path half-failure lost the lease: %+v, %v", lease, lerr)
 	}
 
@@ -1086,7 +1086,7 @@ func TestStopForwardedClearsAtomicallyWhenLeaseDeleteFails(t *testing.T) {
 	if state, _ := svc.Store.ReadProxyState(ctx, "pluginprov", "work"); state != nil {
 		t.Fatalf("verified stop left runtime state: %+v", state)
 	}
-	if lease, _ := svc.Jobs.Get(res.LeaseID); lease != nil {
+	if lease, _ := svc.Jobs.GetContext(context.Background(), res.LeaseID); lease != nil {
 		t.Fatalf("verified stop left lease %+v", lease)
 	}
 }
@@ -1139,7 +1139,7 @@ func TestReconcileKeepsLateBindingGrandchildAfterRecordedOwnerDies(t *testing.T)
 	if serr != nil || got == nil || got.Token != "tok-lategrand" || got.InstanceID != instanceID {
 		t.Fatalf("detached row dropped although tree containment is unprovable: %+v, %v", got, serr)
 	}
-	if after, _ := svc.Jobs.Get(lease.LeaseID); after == nil {
+	if after, _ := svc.Jobs.GetContext(context.Background(), lease.LeaseID); after == nil {
 		t.Fatal("lease dropped alongside an unprovable tree")
 	}
 

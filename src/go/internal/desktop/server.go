@@ -1596,7 +1596,7 @@ func (s *Server) handleLogs(ctx context.Context, payload json.RawMessage) error 
 		}
 		running, _ = s.hubLive(p.Name, port, host)
 	} else {
-		st, err := s.Deps.Proxy.Status(p.ProviderID, p.Name)
+		st, err := s.Deps.Proxy.StatusContext(ctx, p.ProviderID, p.Name)
 		running = err == nil && st != nil && st.Running
 	}
 	if running {

@@ -161,7 +161,7 @@ func TestToggleStartStopRoundTrip(t *testing.T) {
 	if res := invoke(rev, toggleID, "start-1"); res.Status != "success" {
 		t.Fatalf("start: %+v", res)
 	}
-	st, _ := env.Deps.Proxy.Status("workbuddy", "main")
+	st, _ := env.Deps.Proxy.StatusContext(ctx, "workbuddy", "main")
 	t.Logf("after start: running=%v", st.Running)
 
 	// Fresh snapshot like the UI would hold after refresh.
@@ -178,7 +178,7 @@ func TestToggleStartStopRoundTrip(t *testing.T) {
 	if res := invoke(snap2.Revision, toggleID2, "stop-1"); res.Status != "success" {
 		t.Fatalf("stop: %+v", res)
 	}
-	st, _ = env.Deps.Proxy.Status("workbuddy", "main")
+	st, _ = env.Deps.Proxy.StatusContext(ctx, "workbuddy", "main")
 	if st.Running {
 		t.Fatal("proxy still running after stop via app invoke path")
 	}
@@ -304,7 +304,7 @@ func TestToggleReusesFreshLivenessNotSnapshotTime(t *testing.T) {
 	if res := invokeAndAwait(t, srv, &out, snap.Revision, toggleID, "stop-1"); res.Status != "success" {
 		t.Fatalf("stop: %+v", res)
 	}
-	st, _ := env.Deps.Proxy.Status("workbuddy", "main")
+	st, _ := env.Deps.Proxy.StatusContext(ctx, "workbuddy", "main")
 	if st.Running {
 		t.Fatal("proxy still running: the toggle branched on the snapshot's captured liveness instead of re-checking")
 	}
