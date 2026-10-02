@@ -128,6 +128,7 @@ func (a *zcodeAdapter) Capabilities() *Capabilities {
 		// nothing of the user's real ~/.zcode.
 		SupportsIsolatedHome:     true,
 		SupportsPersistentConfig: true,
+		RequiresDefaultModel:     true,
 		ProtocolPreference:       transport.Anthropic,
 	}
 }
@@ -194,7 +195,12 @@ func zcodeModelEntry(flavor zcodeFlavor, modelID string) map[string]interface{} 
 // the proxy serves both /v1/messages and /v1/chat/completions, and the
 // Anthropic surface is the one ZCode exercises for its own built-ins, so it is
 // the best-tested path.
-func zcodeProviderEntry(flavor zcodeFlavor, endpoint, apiKey, modelID string) (json.RawMessage, error) {
+
+func zcodeProviderEntry(flavor zcodeFlavor, endpoint, apiKey string, modelIDs []string) (json.RawMessage, error) {
+	models := map[string]interface{}{}
+	for _, modelID := range modelIDs {
+		models[modelID] = zcodeModelEntry(flavor, modelID)
+	}
 	entry := map[string]interface{}{
 		"name": "AnyPick",
 		"kind": "anthropic",
@@ -203,7 +209,7 @@ func zcodeProviderEntry(flavor zcodeFlavor, endpoint, apiKey, modelID string) (j
 			"baseURL":        endpoint,
 			"apiKeyRequired": true,
 		},
-		"models": map[string]interface{}{modelID: zcodeModelEntry(flavor, modelID)},
+		"models": models,
 	}
 	switch flavor {
 	case zcodeFlavorCLI:
@@ -245,8 +251,9 @@ func (a *zcodeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 
 	// ZCode will not start a turn against a model it does not know, and the
 	// CLI has no --model flag at all, so a default model is not optional here.
-	modelID := firstNonEmpty(ctx.ModelRoles["default"], ctx.DefaultModel)
-	if ctx.Endpoint == "" || modelID == "" {
+	modelID := selectedDefaultModel(ctx)
+	modelIDs := sourceModelIDs(ctx)
+	if ctx.Endpoint == "" || modelID == "" || len(modelIDs) == 0 {
 		return nil, anyerr.Newf(
 			"ZCode routing needs an endpoint and a selected default model.",
 			"CLIENT_CONFIG_INVALID")
@@ -293,7 +300,7 @@ func (a *zcodeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 			})
 		}
 
-		entry, err := zcodeProviderEntry(t.flavor, endpoint, apiKey, modelID)
+		entry, err := zcodeProviderEntry(t.flavor, endpoint, apiKey, modelIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -337,7 +344,8 @@ func (a *zcodeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 			state := zcodeRestoreState{Version: 1, Files: checkpoints}
 			if rj, merr := json.MarshalIndent(state, "", "  "); merr == nil {
 				if mkErr := os.MkdirAll(filepath.Dir(restorePath), 0o700); mkErr == nil {
-					_ = os.WriteFile(restorePath, append(rj, '\n'), 0o600)
+					// Checkpoint under our own root; atomic like every write.
+					_ = atomicfile.Write(restorePath, append(rj, '\n'), 0o600)
 				}
 			}
 		}
@@ -386,6 +394,7 @@ func verifyZCodeEntry(path, endpoint string) error {
 func (a *zcodeAdapter) Reset() error {
 	restorePath := filepath.Join(anyPickRootFallback(), "clients", "zcode", zcodeRestoreFile)
 
+	restored := map[string]bool{}
 	if raw, err := os.ReadFile(restorePath); err == nil {
 		var state zcodeRestoreState
 		if json.Unmarshal(raw, &state) == nil {
@@ -393,45 +402,63 @@ func (a *zcodeAdapter) Reset() error {
 				if err := resetZCodeFile(file); err != nil {
 					return err
 				}
+				restored[file.Path] = true
 			}
 			_ = os.Remove(restorePath)
-			return nil
 		}
 	}
 
-	// No usable checkpoint: fall back to removing only what AnyPick recognises,
-	// leaving every other provider and model the user configured alone.
+	// Config files that appeared after the checkpoint (a later desktop
+	// install adds the v2 flavour) are not listed in it: sweep their managed
+	// provider so no proxy routing survives Reset.
 	for _, t := range zcodeTargets(a.home) {
-		if _, err := os.Stat(t.path); err != nil {
+		if restored[t.path] {
 			continue
 		}
-		doc, err := readZCodeConfig(t.path)
-		if err != nil {
-			return err
-		}
-		providers, err := zcodeProviders(doc)
-		if err != nil {
-			return err
-		}
-		delete(providers, zcodeManagedProviderID)
-		if len(providers) > 0 {
-			pj, _ := json.Marshal(providers)
-			doc["provider"] = pj
-		} else {
-			delete(doc, "provider")
-		}
-		if zcodeModelPointsAtProvider(doc) {
-			delete(doc, "model")
-		}
-		out, err := json.MarshalIndent(doc, "", "  ")
-		if err != nil {
-			return err
-		}
-		if err := atomicfile.Write(t.path, append(out, '\n'), 0o600); err != nil {
+		if err := sweepZCodeManagedEntry(t); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sweepZCodeManagedEntry removes only what AnyPick recognises from one config
+// file, leaving every other provider and model the user configured alone.
+func sweepZCodeManagedEntry(t zcodeTarget) error {
+	if _, err := os.Stat(t.path); err != nil {
+		return nil
+	}
+	doc, err := readZCodeConfig(t.path)
+	if err != nil {
+		return err
+	}
+	providers, err := zcodeProviders(doc)
+	if err != nil {
+		return err
+	}
+	managed := false
+	if _, ok := providers[zcodeManagedProviderID]; ok {
+		delete(providers, zcodeManagedProviderID)
+		managed = true
+	}
+	if len(providers) > 0 {
+		pj, _ := json.Marshal(providers)
+		doc["provider"] = pj
+	} else {
+		delete(doc, "provider")
+	}
+	if zcodeModelPointsAtProvider(doc) {
+		delete(doc, "model")
+		managed = true
+	}
+	if !managed {
+		return nil
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(t.path, append(out, '\n'), 0o600)
 }
 
 // zcodeModelPointsAtProvider reports whether the top-level model selection

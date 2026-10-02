@@ -34,8 +34,8 @@ const (
 	dshPatchEnd   = "# anypick:dsh:end"
 
 	// dsh's default-model plugin id and the route its DeepSeek adapter owns.
-	dshDefaultModelPlugin = "@deepseek-ai/dsh-agent-default-model"
-	dshProviderRoute      = "deepseek-official"
+	dshDefaultModelID = "agent-default-model"
+	dshProviderRoute  = "deepseek-official"
 
 	// AnyPick-owned block markers inside the user's settings.yaml. Unlike
 	// cordis patch rows (whole-config replace), a user-settings section
@@ -53,10 +53,14 @@ func (a *dshAdapter) ShortName() string {
 
 func (a *dshAdapter) Capabilities() *Capabilities {
 	return &Capabilities{
-		ID:                         "dsh",
-		AcceptedProtocols:          []transport.Protocol{transport.OpenAI},
-		SupportsIsolatedHome:       true,
-		SupportsPersistentConfig:   true,
+		ID:                       "dsh",
+		AcceptedProtocols:        []transport.Protocol{transport.OpenAI},
+		SupportsIsolatedHome:     true,
+		SupportsPersistentConfig: true,
+		// dsh ships with a provider-specific placeholder model. It must be
+		// replaced with a model from the selected source before it can use a
+		// subscription proxy; otherwise WorkBuddy rejects `deepseek-flash`.
+		RequiresDefaultModel:       true,
 		SupportsEnvironmentOverlay: true,
 		ProtocolPreference:         transport.OpenAI,
 	}
@@ -82,6 +86,12 @@ func dshSettingsPath(home string) string {
 	return filepath.Join(dshHome(home), "settings.yaml")
 }
 
+// DshConfigPaths reports the live harness files Apply may write.
+// Shared with the runtime recovery journal so backup and apply cannot drift.
+func DshConfigPaths(home string) []string {
+	return []string{dshEnvPath(home), dshPatchPath(home), dshSettingsPath(home)}
+}
+
 func (a *dshAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	targetHome := ctx.Home
 	if ctx.IsolatedHome != "" {
@@ -103,6 +113,7 @@ func (a *dshAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 		launcherEnv[dshEnvKeyBase] = baseURL
 	}
 	model := firstNonEmpty(ctx.ModelRoles["default"], ctx.DefaultModel)
+	modelCatalog := dshModelCatalog(ctx.ModelCatalog, model)
 	managedEnvKeys := sortedKeys(launcherEnv)
 
 	if ctx.DryRun {
@@ -118,37 +129,11 @@ func (a *dshAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 		}, nil
 	}
 
-	// .env: dsh loads $DSH_HOME/.env as environment layers.
-	if err := os.MkdirAll(dshHome(targetHome), 0o700); err != nil {
+	managedPaths, err := applyDshHomeConfig(
+		targetHome, dotEnv, ctx.Endpoint, baseURL, model, modelCatalog,
+	)
+	if err != nil {
 		return nil, err
-	}
-	if err := upsertEnvFile(dshEnvPath(targetHome), dotEnv); err != nil {
-		return nil, err
-	}
-	// upsertEnvFile only merges: strip any base URL older AnyPick versions
-	// wrote, or every dsh invocation keeps aborting on the stale line.
-	if err := stripKeysFromEnv(dshEnvPath(targetHome), []string{dshEnvKeyBase}); err != nil {
-		return nil, err
-	}
-	managedPaths := []string{dshEnvPath(targetHome)}
-
-	// cordis patch: pin the default model so the harness routes the chosen
-	// account's model instead of its own bundled default.
-	if model != "" {
-		if err := mergeDshCordisPatch(dshPatchPath(targetHome), model); err != nil {
-			return nil, err
-		}
-		managedPaths = append(managedPaths, dshPatchPath(targetHome))
-	}
-
-	// User settings: pin the adapter endpoint so plain `dsh` runs ride the
-	// managed proxy with no exports. The llm-deepseek section overrides per
-	// field and hot-reloads — no restart, no launch environment needed.
-	if ctx.Endpoint != "" {
-		if err := mergeDshSettingsEndpoint(dshSettingsPath(targetHome), baseURL); err != nil {
-			return nil, err
-		}
-		managedPaths = append(managedPaths, dshSettingsPath(targetHome))
 	}
 
 	// Persistent (non-isolated) also emits launcher env files the desktop app
@@ -161,18 +146,58 @@ func (a *dshAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	return &ApplyResult{ManagedPaths: managedPaths, ManagedEnvKeys: managedEnvKeys}, nil
 }
 
+func applyDshHomeConfig(
+	targetHome string,
+	dotEnv map[string]string,
+	endpoint, baseURL, model string,
+	modelCatalog []string,
+) ([]string, error) {
+	if err := os.MkdirAll(dshHome(targetHome), 0o700); err != nil {
+		return nil, err
+	}
+	if err := upsertEnvFile(dshEnvPath(targetHome), dotEnv); err != nil {
+		return nil, err
+	}
+	// Newer dsh rejects a base URL in .env; heal files written by old builds.
+	if err := stripKeysFromEnv(dshEnvPath(targetHome), []string{dshEnvKeyBase}); err != nil {
+		return nil, err
+	}
+	managedPaths := []string{dshEnvPath(targetHome)}
+	if model != "" {
+		if err := mergeDshCordisPatch(dshPatchPath(targetHome), model); err != nil {
+			return nil, err
+		}
+		managedPaths = append(managedPaths, dshPatchPath(targetHome))
+	}
+	// DSH's settings layer overrides the composition patch and the last web
+	// selection, so keep endpoint, catalog, and default model together.
+	if endpoint != "" || model != "" || len(modelCatalog) > 0 {
+		if err := mergeDshSettings(dshSettingsPath(targetHome), baseURL, model, modelCatalog); err != nil {
+			return nil, err
+		}
+		managedPaths = append(managedPaths, dshSettingsPath(targetHome))
+	}
+	return managedPaths, nil
+}
+
 func dshCordisPatchBlock(model string) string {
 	var b strings.Builder
 	b.WriteString(dshPatchBegin)
-	b.WriteString("\n- name: '")
-	b.WriteString(dshDefaultModelPlugin)
-	b.WriteString("'\n")
+	// Home-level patches target an existing composition row by id. A `name`
+	// only row is an insertion in older Cordis versions, and current dsh
+	// rejects it before boot with "id is required"; keep the target id aligned
+	// with the row shipped by dsh-base.
+	b.WriteString("\n- id: ")
+	b.WriteString(dshDefaultModelID)
+	b.WriteString("\n")
 	b.WriteString("  config:\n")
 	b.WriteString("    provider: ")
 	b.WriteString(dshProviderRoute)
 	b.WriteString("\n")
 	b.WriteString("    model: ")
-	b.WriteString(model)
+	// Model ids come from a provider response; quoting keeps a value that
+	// contains YAML punctuation from changing the row's shape.
+	b.WriteString(dshYAMLScalar(model))
 	b.WriteString("\n")
 	b.WriteString(dshPatchEnd)
 	b.WriteString("\n")
@@ -291,14 +316,71 @@ func mergeDshSettingsEndpoint(path, baseURL string) error {
 	return writeDshFile(path, []byte(out))
 }
 
-func dshSettingsBlock(baseURL string) string {
-	return dshSettingsBegin + "\nllm-deepseek:\n  baseURL: " + baseURL + "\n" + dshSettingsEnd + "\n"
+func dshSettingsBlockWithModel(baseURL, model string, modelCatalog []string) string {
+	var b strings.Builder
+	b.WriteString(dshSettingsBegin)
+	b.WriteString("\n")
+	if baseURL != "" || len(modelCatalog) > 0 {
+		b.WriteString("llm-deepseek:\n")
+		if baseURL != "" {
+			b.WriteString("  baseURL: ")
+			// The endpoint is produced by AnyPick, not a provider response;
+			// keeping it plain also preserves the existing native YAML shape.
+			b.WriteString(baseURL)
+			b.WriteString("\n")
+		}
+		if len(modelCatalog) > 0 {
+			b.WriteString("  models:\n")
+			for _, id := range modelCatalog {
+				b.WriteString("    - id: ")
+				b.WriteString(dshYAMLScalar(id))
+				b.WriteString("\n      name: ")
+				b.WriteString(dshYAMLScalar(id))
+				b.WriteString("\n")
+			}
+		}
+	}
+	if model != "" {
+		b.WriteString("agent-default-model:\n")
+		b.WriteString("  provider: ")
+		b.WriteString(dshYAMLScalar(dshProviderRoute))
+		b.WriteString("\n  model: ")
+		b.WriteString(dshYAMLScalar(model))
+		b.WriteString("\n")
+	}
+	b.WriteString(dshSettingsEnd)
+	b.WriteString("\n")
+	return b.String()
 }
 
-func dshSettingsKeyLine(line string) bool {
+func dshYAMLScalar(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func dshModelCatalog(models []string, selected string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(models)+1)
+	push := func(value string) {
+		value = strings.TrimSpace(value)
+		// Model ids come from a provider response. Reject line breaks before
+		// serializing them into YAML so an upstream cannot inject settings.
+		if value == "" || strings.ContainsAny(value, "\r\n") || seen[value] {
+			return
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	for _, value := range models {
+		push(value)
+	}
+	push(selected)
+	return out
+}
+
+func dshSettingsKeyLine(line, key string) bool {
 	trimmed := strings.TrimSpace(line)
 	for _, quote := range []string{"", `"`, `'`} {
-		prefix := quote + "llm-deepseek" + quote + ":"
+		prefix := quote + key + quote + ":"
 		if strings.HasPrefix(trimmed, prefix) {
 			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 			if rest == "" || strings.HasPrefix(rest, "#") {
@@ -309,18 +391,30 @@ func dshSettingsKeyLine(line string) bool {
 	return false
 }
 
-func dshSettingsWithEndpoint(existing, baseURL string) (string, error) {
+func dshSettingsWithConfig(
+	existing, baseURL, model string, modelCatalog []string,
+) (string, error) {
 	stripped, err := stripMarkedBlock(existing, dshSettingsBegin, dshSettingsEnd, "settings.yaml")
 	if err != nil {
 		return "", err
 	}
 	lines := strings.Split(stripped, "\n")
+	if model != "" {
+		// DSH's own model picker persists its selection as a top-level
+		// agent-default-model section. AnyPick must carry that key inside its
+		// managed block: two top-level copies would make the YAML document
+		// ambiguous and break the next harness boot, so the existing section
+		// is taken over — the activation is about to set the same selection
+		// anyway. An llm-deepseek section stays refused: that is deliberate
+		// endpoint configuration, not harness-owned state.
+		lines = takeDshDefaultModelSection(lines)
+	}
 	var out []string
 	for _, line := range lines {
-		if dshSettingsKeyLine(line) {
+		if dshSettingsKeyLine(line, "llm-deepseek") {
 			return "", anyerr.Newf(
 				"Your settings.yaml already has its own llm-deepseek: section; "+
-					"remove it or point it at the proxy before AnyPick manages the endpoint.",
+					"remove it or point it at the proxy before AnyPick manages the connection.",
 				"CLIENT_CONFIG_INVALID")
 		}
 		out = append(out, line)
@@ -329,7 +423,73 @@ func dshSettingsWithEndpoint(existing, baseURL string) (string, error) {
 	if cleaned != "" {
 		cleaned += "\n"
 	}
-	return cleaned + dshSettingsBlock(baseURL), nil
+	return cleaned + dshSettingsBlockWithModel(
+		baseURL, model, dshModelCatalog(modelCatalog, model),
+	), nil
+}
+
+// dshTopLevelKeyLine reports whether the line declares key at the document's
+// top level, in section (`key:`) or inline (`key: {…}`) form. Indented lines
+// are children of another key and never match, so adoption cannot delete a
+// nested section that merely happens to share the name.
+func dshTopLevelKeyLine(line, key string) bool {
+	if len(line) != len(strings.TrimLeft(line, " \t")) {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	for _, quote := range []string{"", `"`, `'`} {
+		if strings.HasPrefix(trimmed, quote+key+quote+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// takeDshDefaultModelSection removes a top-level agent-default-model mapping —
+// the section DSH's own model picker writes — while preserving every other
+// line. The key line plus its indented continuation (and blank separators
+// inside it) are dropped; the document's remaining keys keep their order.
+func takeDshDefaultModelSection(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	inSection := false
+	for _, line := range lines {
+		if inSection {
+			trimmed := strings.TrimSpace(line)
+			indented := len(line) != len(strings.TrimLeft(line, " \t"))
+			if trimmed == "" || indented {
+				continue
+			}
+			inSection = false
+		}
+		if dshTopLevelKeyLine(line, "agent-default-model") {
+			inSection = true
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func dshSettingsWithEndpoint(existing, baseURL string) (string, error) {
+	return dshSettingsWithConfig(existing, baseURL, "", nil)
+}
+
+func mergeDshSettings(path, baseURL, model string, modelCatalog []string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	out, err := dshSettingsWithConfig(string(raw), baseURL, model, modelCatalog)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeDshFile(path, []byte(out))
 }
 
 // stripDshSettingsBlock removes the AnyPick-managed settings section,

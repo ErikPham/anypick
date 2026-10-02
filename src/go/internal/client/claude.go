@@ -3,6 +3,8 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,6 +57,29 @@ func isOfficialAnthropicEndpoint(endpoint string) bool {
 	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
 }
 
+// isLoopbackEndpoint reports whether a URL can only be the machine itself.
+// AnyPick's proxies are loopback-only (ADR 0006), which is what makes a
+// loopback value in a client config AnyPick's own.
+func isLoopbackEndpoint(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	// Hostname strips the port and the IPv6 brackets.
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 func hostOf(rawURL string) string {
 	s := rawURL
 	s = strings.TrimPrefix(s, "https://")
@@ -71,13 +96,74 @@ func hostOf(rawURL string) string {
 	return strings.ToLower(s)
 }
 
-func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
-	targetHome := ctx.Home
-	if ctx.IsolatedHome != "" {
-		targetHome = ctx.IsolatedHome
+func (a *claudeAdapter) Preflight(ctx *ApplyContext) (*ConfigInspection, error) {
+	settings := settingsPath(a.targetHome(ctx))
+	doc := map[string]json.RawMessage{}
+	if raw, err := os.ReadFile(settings); err == nil {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, anyerr.Newf(
+				fmt.Sprintf("Refusing to overwrite unreadable Claude settings at %s: %v", settings, err),
+				"CLIENT_CONFIG_INVALID")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
-	settings := settingsPath(targetHome)
+	var existingEnv map[string]interface{}
+	if raw, ok := doc["env"]; ok {
+		_ = json.Unmarshal(raw, &existingEnv)
+	}
+	intended := a.intendedEnv(ctx)
+	owned := &OwnershipEvidence{Owned: map[string]map[string]bool{}}
+	ownedSet := map[string]bool{}
+	// A managed route always points Claude Code at a loopback proxy, so a
+	// loopback ANTHROPIC_BASE_URL is AnyPick's own value even when the marker
+	// is gone — the user may have rewritten settings.json, or a crash landed
+	// between the write and the marker. The token, model and slot keys are
+	// written together with it and mean nothing without it, so they are owned
+	// as one unit.
+	//
+	// Any other base URL is the user's own configuration: it stays foreign and
+	// AnyPick refuses to replace it without confirmation. That is the whole
+	// point of this check — a client the user pointed at their own login must
+	// survive an AnyPick start untouched.
+	if existing, ok := existingEnv["ANTHROPIC_BASE_URL"].(string); ok && isLoopbackEndpoint(existing) {
+		for key := range intended {
+			ownedSet["env."+key] = true
+		}
+	}
+	var present []ConfigMutation
+	for _, key := range sortedKeys(intended) {
+		if _, exists := existingEnv[key]; !exists {
+			continue
+		}
+		present = append(present, ConfigMutation{Path: settings, Selector: "env." + key})
+	}
+	// A managed marker owns exactly the keys it names.
+	var prevManaged struct {
+		Keys []string `json:"keys"`
+	}
+	if raw, ok := doc[anypickManagedKey]; ok {
+		_ = json.Unmarshal(raw, &prevManaged)
+		for _, key := range prevManaged.Keys {
+			ownedSet["env."+key] = true
+		}
+	}
+	owned.Owned[settings] = ownedSet
+	return &ConfigInspection{
+		Conflicts: CheckOwnership(a.ID(), present, owned),
+	}, nil
+}
 
+func (a *claudeAdapter) targetHome(ctx *ApplyContext) string {
+	if ctx.IsolatedHome != "" {
+		return ctx.IsolatedHome
+	}
+	return ctx.Home
+}
+
+// intendedEnv is the env map Apply would write for this context, shared with
+// Preflight so both reason over the same mutation set.
+func (a *claudeAdapter) intendedEnv(ctx *ApplyContext) map[string]string {
 	env := map[string]string{}
 	official := isOfficialAnthropicEndpoint(ctx.Endpoint)
 	env["ANTHROPIC_BASE_URL"] = ctx.Endpoint
@@ -114,6 +200,15 @@ func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 			env[k] = v
 		}
 	}
+	return env
+}
+
+func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
+	targetHome := a.targetHome(ctx)
+	settings := settingsPath(targetHome)
+
+	env := a.intendedEnv(ctx)
+	official := isOfficialAnthropicEndpoint(ctx.Endpoint)
 
 	managedPaths := []string{settings}
 	managedEnvKeys := sortedKeys(env)
@@ -139,6 +234,19 @@ func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	if raw, ok := doc["env"]; ok {
 		_ = json.Unmarshal(raw, &existingEnv)
 	}
+
+	// Foreign takeover gate: values present but not owned by the managed
+	// marker need explicit consent before AnyPick replaces them.
+	if !ctx.AllowForeignConfig {
+		inspection, err := a.Preflight(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(inspection.Conflicts) > 0 {
+			return nil, ForeignConfigError(inspection.Conflicts)
+		}
+	}
+
 	cleanEnv := map[string]string{}
 	for k, v := range existingEnv {
 		if s, ok := v.(string); ok {
@@ -200,7 +308,9 @@ func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 				_ = os.MkdirAll(backupDir, 0o700)
 				data, readErr := os.ReadFile(settings)
 				if readErr == nil {
-					_ = os.WriteFile(backupFile, data, 0o600)
+					// One-time pre-AnyPick backup under our own root (ADR 0004):
+					// still replace by rename — same helper, no second shape.
+					_ = atomicfile.Write(backupFile, data, 0o600)
 				}
 			}
 		}
@@ -248,9 +358,128 @@ func (a *claudeAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 }
 
 func (a *claudeAdapter) Reset() error {
-	// Restore the pre-AnyPick backup when one exists; otherwise leave live
-	// config untouched (removing it would log the user out of their client).
+	settings := settingsPath(a.home)
+	root := anyPickRootFallback()
+	backupFile := filepath.Join(root, "clients", "claude", "backup", "settings.json")
+	if raw, err := os.ReadFile(backupFile); err == nil {
+		if claudeBackupStillOwnsLive(settings) {
+			var doc map[string]json.RawMessage
+			if json.Unmarshal(raw, &doc) == nil && jsonLooksObject(raw) {
+				// The pre-AnyPick file is the exact native state: put it back
+				// byte-for-byte, then consume the backup so a later Reset cannot
+				// resurrect it over newer user edits.
+				if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+					return err
+				}
+				if err := atomicfile.Write(settings, raw, 0o600); err != nil {
+					return err
+				}
+				_ = os.Remove(backupFile)
+				removeClientEnvFiles(root, "claude")
+				return nil
+			}
+			// An unreadable backup must never be written into the live file;
+			// fall through to the managed-strip below so Reset still unroutes.
+		}
+		// The live file no longer carries AnyPick's marker, so it may hold user
+		// edits made after Apply. Restoring the backup byte-for-byte would
+		// delete them; strip only the managed keys and leave the one-time
+		// backup in place for a later Reset.
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := stripClaudeManagedKeys(settings); err != nil {
+		return err
+	}
+	removeClientEnvFiles(root, "claude")
 	return nil
+}
+
+// claudeBackupStillOwnsLive reports whether the live settings.json is still
+// the file Apply wrote (or absent entirely). Only then is byte-for-byte
+// restore from the one-time pre-AnyPick backup safe.
+func claudeBackupStillOwnsLive(settings string) bool {
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		// Missing file: nothing newer to protect.
+		return os.IsNotExist(err)
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil || !jsonLooksObject(raw) {
+		return false
+	}
+	_, managed := doc[anypickManagedKey]
+	return managed
+}
+
+// RestoreNative unroutes a proxy binding when activation switches back to a
+// native account. The native credential lives outside settings.json, so only
+// the managed env block is removed: user keys are never touched, and the
+// pre-AnyPick backup stays untouched for a later Reset.
+func (a *claudeAdapter) RestoreNative() error {
+	if err := stripClaudeManagedKeys(settingsPath(a.home)); err != nil {
+		return err
+	}
+	removeClientEnvFiles(anyPickRootFallback(), "claude")
+	return nil
+}
+
+// stripClaudeManagedKeys removes exactly the keys the managed marker names,
+// preserving every user key. Without a marker there is nothing provably
+// AnyPick-owned to remove, so the file is left untouched — a hardcoded
+// fallback would delete user-set values.
+func stripClaudeManagedKeys(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil || !jsonLooksObject(raw) {
+		return nil
+	}
+	var keys []string
+	if rawMarker, ok := doc[anypickManagedKey]; ok {
+		var marker struct {
+			Keys []string `json:"keys"`
+		}
+		if json.Unmarshal(rawMarker, &marker) == nil {
+			keys = marker.Keys
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	var env map[string]interface{}
+	if rawEnv, ok := doc["env"]; ok {
+		_ = json.Unmarshal(rawEnv, &env)
+	}
+	if env == nil {
+		env = map[string]interface{}{}
+	}
+	changed := false
+	for _, k := range keys {
+		if _, ok := env[k]; ok {
+			delete(env, k)
+			changed = true
+		}
+	}
+	if _, ok := doc[anypickManagedKey]; ok {
+		delete(doc, anypickManagedKey)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	envJSON, _ := json.Marshal(env)
+	doc["env"] = envJSON
+	out, err := json.MarshalIndent(map[string]json.RawMessage(doc), "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(path, append(out, '\n'), 0o600)
 }
 
 func (a *claudeAdapter) Inspect() (*InspectResult, error) {
@@ -285,7 +514,9 @@ func writeClientEnvFiles(root, clientID string, env map[string]string) []string 
 		b.WriteString(fmt.Sprintf("export %s=%q\n", k, env[k]))
 	}
 	path := filepath.Join(dir, "env.sh")
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	// Generated mirror under our own root; atomic all the same — a half-written
+	// env.sh is still a broken source target.
+	if err := atomicfile.Write(path, []byte(b.String()), 0o600); err != nil {
 		return nil
 	}
 	return []string{path}
@@ -334,3 +565,6 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *claudeAdapter) ShortName() string { return "Claude" }
+
+// Compile-time: the direct-account unroute path above must keep working.
+var _ NativeRestorer = (*claudeAdapter)(nil)

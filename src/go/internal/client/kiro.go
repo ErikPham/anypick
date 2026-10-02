@@ -3,10 +3,10 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
@@ -73,7 +73,8 @@ func (a *kiroAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 			v, _ := json.Marshal(env[k])
 			b.WriteString(fmt.Sprintf("%s=%s\n", k, string(v)))
 		}
-		if err := os.WriteFile(dotenv, []byte(b.String()), 0o600); err != nil {
+		// Isolated-tree mirror: atomic like every other write — one shape.
+		if err := atomicfile.Write(dotenv, []byte(b.String()), 0o600); err != nil {
 			return nil, err
 		}
 		return &ApplyResult{ManagedPaths: append(envPaths, dotenv), ManagedEnvKeys: keys}, nil
@@ -83,7 +84,12 @@ func (a *kiroAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	return &ApplyResult{ManagedPaths: envPaths, ManagedEnvKeys: keys}, nil
 }
 
-func (a *kiroAdapter) Reset() error {
+func (a *kiroAdapter) Reset() error { return a.RestoreNative() }
+
+// RestoreNative unroutes a proxy binding when activation switches back to a
+// native account. Kiro writes no live client files — only the generated env
+// files — so removing those is the complete unroute.
+func (a *kiroAdapter) RestoreNative() error {
 	removeClientEnvFiles(anyPickRootFallback(), "kiro")
 	return nil
 }
@@ -94,3 +100,6 @@ func (a *kiroAdapter) Inspect() (*InspectResult, error) {
 		Summary: "Kiro runtime uses anypick env files (account auth separate)",
 	}, nil
 }
+
+// Compile-time: the direct-account unroute path above must keep working.
+var _ NativeRestorer = (*kiroAdapter)(nil)

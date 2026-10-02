@@ -19,17 +19,26 @@ type Capabilities struct {
 	SupportsEnvironmentOverlay bool
 	SupportsIsolatedHome       bool
 	SupportsPersistentConfig   bool
-	ProtocolPreference         transport.Protocol // empty = none declared
+	// RequiresDefaultModel marks clients whose native config is invalid until
+	// a default model is selected. Catalog-backed clients with a native model
+	// registry still need one active default; their other models are published
+	// alongside it. Env-only clients may defer to their own native defaults.
+	RequiresDefaultModel bool
+	ProtocolPreference   transport.Protocol // empty = none declared
 }
 
 // ApplyContext carries everything an adapter needs to write config. It is the
 // flattened form of TS ApplyContext.profile + flags (the Go profile store is
 // resolved by callers before Apply).
 type ApplyContext struct {
-	Endpoint      string
-	APIKey        string
-	DefaultModel  string
-	ModelRoles    map[string]string // role id → model id
+	Endpoint     string
+	APIKey       string
+	DefaultModel string
+	ModelRoles   map[string]string // role id → model id
+	// ModelCatalog is the source-scoped list published by the selected
+	// account, gateway, or hub. It is intentionally opaque: each proxy owns
+	// its model ids, and adapters must pass those ids through unchanged.
+	ModelCatalog  []string
 	ExtraEnv      map[string]string // overlay env filtered per adapter
 	DryRun        bool
 	Verbose       bool
@@ -45,6 +54,20 @@ type ApplyContext struct {
 	SourceName          string
 	TransportCapability transport.Capability
 	Mode                string
+	// ProfileName selects a native named route. It is currently used by the
+	// Codex adapter; other adapters leave their existing single-route behavior
+	// unchanged.
+	ProfileName string
+	// NativeAuthSnapshotDir is the AnyPick account snapshot to materialize into
+	// a named Codex home. It is a directory rather than a raw credential value
+	// so auth material never travels through plans or command output.
+	NativeAuthSnapshotDir string
+	// AllowForeignConfig records explicit user consent to replace client
+	// settings AnyPick does not own (CLIENT_CONFIG_FOREIGN). It is request-
+	// scoped: callers set it from a CLI flag or a confirmed app action and it
+	// is never inferred or persisted. Adapters must consult it via Preflight
+	// before their first foreign overwrite.
+	AllowForeignConfig bool
 }
 
 // ApplyResult mirrors {managedPaths, managedEnvKeys}.
@@ -72,17 +95,20 @@ type IsolatablePath struct {
 // EphemeralContext is the JSON-safe subset of ResolvedClientPlan needed by an
 // arbitrary plugin client to construct its isolated home or env overlay.
 type EphemeralContext struct {
-	ClientID            string
-	Endpoint            string
-	APIKey              string
-	DefaultModel        string
-	ModelRoles          map[string]string
-	AnyPickRoot         string
-	Home                string
-	SourceKind          string
-	SourceProvider      string
-	SourceName          string
-	TransportCapability transport.Capability
+	ClientID              string
+	Endpoint              string
+	APIKey                string
+	DefaultModel          string
+	ModelRoles            map[string]string
+	ModelCatalog          []string
+	AnyPickRoot           string
+	Home                  string
+	SourceKind            string
+	SourceProvider        string
+	SourceName            string
+	TransportCapability   transport.Capability
+	ProfileName           string
+	NativeAuthSnapshotDir string
 }
 
 // IsolatedRuntime is an owner-only runtime handle. Cleanup is guarded here so
@@ -148,6 +174,48 @@ type Adapter interface {
 	// Reset removes AnyPick-managed configuration, restoring backups where kept.
 	Reset() error
 	Inspect() (*InspectResult, error)
+}
+
+// NativeRestorer is implemented by client adapters that can drop AnyPick
+// managed config so the client returns to its native login. The persistent
+// direct-account path calls it instead of Apply: without it a native switch
+// would leave a stale proxy endpoint behind.
+type NativeRestorer interface {
+	RestoreNative() error
+}
+
+// ProfileInspector lets activation verify a named native profile without
+// confusing it with the client's one global config file.
+type ProfileInspector interface {
+	InspectProfile(name string) (*InspectResult, error)
+}
+
+// ProfileResetter removes one named native profile while leaving the client's
+// global config and native authentication untouched.
+type ProfileResetter interface {
+	ResetProfile(name string) error
+}
+
+// ExecutableAdapter overrides the client id when launching an ephemeral run.
+// Most clients use the same name for their binary; clients whose published
+// product name differs (Command Code ships the `cmd` binary) opt in here.
+type ExecutableAdapter interface {
+	Executable() string
+}
+
+// ConfigInspection reports foreign regions an apply would overwrite.
+type ConfigInspection struct {
+	Conflicts []ConfigConflict
+}
+
+// ConfigPreflighter is implemented by adapters that can detect settings they
+// do not own before writing. Preflight reads the live files and returns the
+// conflicts Apply would cause; with AllowForeignConfig consent it may return
+// them anyway for journaled reporting, but Apply itself must still refuse
+// when consent is absent. Malformed config keeps failing closed with
+// CLIENT_CONFIG_INVALID regardless of consent.
+type ConfigPreflighter interface {
+	Preflight(ctx *ApplyContext) (*ConfigInspection, error)
 }
 
 // Registry mirrors ClientRegistry. Registration happens only during
@@ -274,18 +342,24 @@ func (r *Registry) IDs() []string {
 	return out
 }
 
-// RegisterBuiltin wires claude and codex clients.
 // RegisterBuiltin wires every built-in client adapter.
-func RegisterBuiltin(r *Registry, home string) error {
+func RegisterBuiltin(r *Registry, home string, anyPickRoots ...string) error {
+	anyPickRoot := ""
+	if len(anyPickRoots) > 0 {
+		anyPickRoot = anyPickRoots[0]
+	}
 	for _, a := range []Adapter{
 		newClaude(home),
-		newCodex(home),
+		newCodex(home, anyPickRoot),
 		newGemini(home),
 		newKiro(home),
 		newOpenCode(home),
 		newWorkBuddy(home),
 		newZCode(home),
 		newDsh(home),
+		newCommandCode(home),
+		newPi(home),
+		newOmp(home),
 	} {
 		if err := r.Register(a); err != nil {
 			return err

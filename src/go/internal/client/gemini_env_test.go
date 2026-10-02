@@ -103,3 +103,68 @@ func TestGeminiInspectCountsARestoredCredential(t *testing.T) {
 		}
 	}
 }
+
+// TestGeminiRestoreNativeStripsProxyKeys covers the unroute half of a proxy
+// binding: .env carries the loopback endpoint and the proxy token, and the
+// managed marker lists exactly those keys. Restoration must remove them —
+// otherwise the CLI keeps talking to a stopped proxy and DetectLive reports
+// "API key" for a proxy token.
+func TestGeminiRestoreNativeStripsProxyKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("ANYPICK_HOME", t.TempDir())
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"),
+		[]byte("GEMINI_API_KEY=proxy-token\nGOOGLE_GEMINI_BASE_URL=http://127.0.0.1:9\nKEEP=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"),
+		[]byte(`{"theme":"dark","_anypickManaged":{"keys":["GEMINI_API_KEY","GOOGLE_GEMINI_BASE_URL"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newGemini(home)
+	if err := a.RestoreNative(); err != nil {
+		t.Fatalf("RestoreNative: %v", err)
+	}
+	env := string(mustRead(t, filepath.Join(dir, ".env")))
+	if strings.Contains(env, "GEMINI_API_KEY") || strings.Contains(env, "GOOGLE_GEMINI_BASE_URL") {
+		t.Fatalf("proxy keys survived RestoreNative:\n%s", env)
+	}
+	if !strings.Contains(env, "KEEP=1") {
+		t.Fatalf("unmanaged key was dropped:\n%s", env)
+	}
+	settings := string(mustRead(t, filepath.Join(dir, "settings.json")))
+	if strings.Contains(settings, "_anypickManaged") {
+		t.Fatalf("managed marker survived:\n%s", settings)
+	}
+}
+
+// TestGeminiRestoreNativeKeepsUnlistedKeys: without a marker there is nothing
+// that proves a key came from AnyPick, so a user's GEMINI_API_KEY must survive.
+func TestGeminiRestoreNativeKeepsUnlistedKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("ANYPICK_HOME", t.TempDir())
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("GEMINI_API_KEY=user-own-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newGemini(home)
+	if err := a.RestoreNative(); err != nil {
+		t.Fatalf("RestoreNative: %v", err)
+	}
+	env := string(mustRead(t, filepath.Join(dir, ".env")))
+	if !strings.Contains(env, "GEMINI_API_KEY=user-own-key") {
+		t.Fatalf("user key was destroyed:\n%s", env)
+	}
+}

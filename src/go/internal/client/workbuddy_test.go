@@ -9,10 +9,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// clearWorkBuddyEnv makes path resolution hermetic. Both variables are set for
-// any process the WorkBuddy app spawns — including a `go test` run inside it —
-// so without this every assertion below would resolve to the developer's real
-// ~/.workbuddy-ai instead of the temp home.
+// clearWorkBuddyEnv makes path resolution hermetic. Both product variables
+// can select the runtime's models.json root.
 func clearWorkBuddyEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("WORKBUDDY_CONFIG_DIR", "")
@@ -21,8 +19,8 @@ func clearWorkBuddyEnv(t *testing.T) {
 
 // workbuddyPaths resolves the target files with the ambient overrides cleared.
 // Every test must go through this rather than workbuddyModelsPaths directly:
-// resolving first and clearing later writes the fixture into the developer's
-// real ~/.workbuddy-ai, which is exactly what happened once already.
+// resolving first and clearing later can write the fixture into the
+// developer's real config directory.
 func workbuddyPaths(t *testing.T, home string) []string {
 	t.Helper()
 	clearWorkBuddyEnv(t)
@@ -92,12 +90,66 @@ func TestWorkBuddyApplyWritesManagedEntry(t *testing.T) {
 		t.Fatalf("entries = %+v, want 1", entries)
 	}
 	e := entries[0]
-	if e.ID != "gpt-5" || e.Vendor != workbuddyVendorID || e.APIKey != "proxy-secret" {
+	if e.ID != "custom-local:gpt-5" || e.Vendor != workbuddyVendorID || e.APIKey != "proxy-secret" {
 		t.Fatalf("entry = %+v", e)
 	}
-	// The proxy exposes an OpenAI-compatible surface under /v1.
-	if e.URL != "http://127.0.0.1:8787/v1" {
+	// CodeBuddy expects the complete chat-completions path.
+	if e.URL != "http://127.0.0.1:8787/v1/chat/completions" {
 		t.Fatalf("entry url = %q", e.URL)
+	}
+	if e.MaxInputTokens != workbuddyDefaultMaxInputTokens || e.MaxOutputTokens != workbuddyDefaultMaxOutputTokens {
+		t.Fatalf("token limits = %d/%d", e.MaxInputTokens, e.MaxOutputTokens)
+	}
+	if e.SupportsToolCall == nil || !*e.SupportsToolCall ||
+		e.SupportsImages == nil || !*e.SupportsImages ||
+		e.SupportsReasoning == nil || !*e.SupportsReasoning {
+		t.Fatalf("capability flags = tool=%v images=%v reasoning=%v",
+			e.SupportsToolCall, e.SupportsImages, e.SupportsReasoning)
+	}
+}
+
+func TestWorkBuddyApplySkipsRouterAliases(t *testing.T) {
+	home := t.TempDir()
+	a := newWorkBuddy(home)
+	ctx := workbuddyApplyContext(t, home)
+	ctx.DefaultModel = "fast-model"
+	ctx.ModelCatalog = []string{"fast-model", "default-model", "hy3", "balanced-model"}
+
+	if _, err := a.Apply(ctx); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	entries := workbuddyEntries(readWorkBuddyFile(t, workbuddyPaths(t, home)[0]))
+	if len(entries) != 1 || entries[0].ID != "custom-local:hy3" {
+		t.Fatalf("entries = %+v, want only hy3", entries)
+	}
+}
+
+func TestWorkBuddyApplyRejectsOnlyRouterModels(t *testing.T) {
+	home := t.TempDir()
+	a := newWorkBuddy(home)
+	ctx := workbuddyApplyContext(t, home)
+	ctx.DefaultModel = "fast-model"
+	ctx.ModelCatalog = []string{"fast-model", "default-model"}
+	if _, err := a.Apply(ctx); err == nil {
+		t.Fatal("Apply of only WorkBuddy router aliases should fail")
+	}
+}
+
+func TestWorkBuddyApplyShowsSelectedAccountInManagedModelName(t *testing.T) {
+	home := t.TempDir()
+	a := newWorkBuddy(home)
+	ctx := workbuddyApplyContext(t, home)
+	ctx.SourceName = "outof0"
+
+	if _, err := a.Apply(ctx); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	entries := workbuddyEntries(readWorkBuddyFile(t, workbuddyPaths(t, home)[0]))
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	if entries[0].Name != "AnyPick · outof0 · gpt-5" {
+		t.Fatalf("managed model name = %q", entries[0].Name)
 	}
 }
 
@@ -165,6 +217,33 @@ func TestWorkBuddyApplyRefusesUnreadableFile(t *testing.T) {
 	}
 	if _, err := a.Apply(workbuddyApplyContext(t, home)); err == nil {
 		t.Fatal("Apply should refuse to overwrite an unreadable models.json")
+	}
+}
+
+// The WorkBuddy app's own model sync can leave a bare `[]` behind. That is an
+// empty list, not user data: Apply must repair it instead of refusing forever.
+func TestWorkBuddyApplyRepairsEmptyArrayFile(t *testing.T) {
+	home := t.TempDir()
+	a := newWorkBuddy(home)
+	path := workbuddyPaths(t, home)[0]
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Apply(workbuddyApplyContext(t, home)); err != nil {
+		t.Fatalf("Apply over an empty array: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Models []json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Models) == 0 {
+		t.Fatalf("models.json was not repaired: %v\n%s", err, raw)
 	}
 }
 
@@ -299,46 +378,38 @@ func TestWorkBuddyInspect(t *testing.T) {
 	}
 }
 
-// TestWorkBuddyModelsPathsCoversEveryProductDir pins the rule that keeps this
-// from failing silently: an override settles it, otherwise every product
-// directory that exists gets a file, because which one the app reads depends on
-// how it was launched.
-func TestWorkBuddyModelsPathsCoversEveryProductDir(t *testing.T) {
+// TestWorkBuddyModelsPathsMatchesCodeBuddyRuntime pins both supported runtime
+// roots and the explicit environment overrides used by desktop and CLI.
+func TestWorkBuddyModelsPathsMatchesCodeBuddyRuntime(t *testing.T) {
 	home := t.TempDir()
 	clearWorkBuddyEnv(t)
 
-	// Nothing installed yet: target the current product's directory only.
+	// WorkBuddy desktop is the installed product and uses this root by default.
 	if got := workbuddyPaths(t, home); len(got) != 1 ||
 		got[0] != filepath.Join(home, ".workbuddy-ai", "models.json") {
 		t.Fatalf("default paths = %v", got)
 	}
 
-	if err := os.MkdirAll(filepath.Join(home, ".codebuddy"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if got := workbuddyPaths(t, home); len(got) != 1 ||
-		got[0] != filepath.Join(home, ".codebuddy", "models.json") {
-		t.Fatalf("paths with .codebuddy only = %v", got)
-	}
-
-	if err := os.MkdirAll(filepath.Join(home, ".workbuddy"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(home, ".workbuddy-ai"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := workbuddyPaths(t, home); len(got) != 3 {
-		t.Fatalf("paths with all three product dirs = %v, want 3", got)
+	if err := os.MkdirAll(filepath.Join(home, ".codebuddy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := workbuddyPaths(t, home); len(got) != 2 ||
+		got[0] != filepath.Join(home, ".workbuddy-ai", "models.json") ||
+		got[1] != filepath.Join(home, ".codebuddy", "models.json") {
+		t.Fatalf("paths with both product dirs = %v", got)
 	}
 
-	// An explicit override wins and collapses to a single path. Resolve
-	// directly here: workbuddyPaths would clear the override under test.
+	// Either product can explicitly select one root; CodeBuddy wins when both
+	// variables are present because that is the runtime's model resolver.
 	t.Setenv("WORKBUDDY_CONFIG_DIR", "/tmp/wb-override")
 	if got := workbuddyModelsPaths(home); len(got) != 1 ||
 		got[0] != filepath.Join("/tmp/wb-override", "models.json") {
-		t.Fatalf("override paths = %v", got)
+		t.Fatalf("desktop override paths = %v", got)
 	}
-	t.Setenv("WORKBUDDY_CONFIG_DIR", "")
+
 	t.Setenv("CODEBUDDY_CONFIG_DIR", "/tmp/cb-override")
 	if got := workbuddyModelsPaths(home); len(got) != 1 ||
 		got[0] != filepath.Join("/tmp/cb-override", "models.json") {

@@ -7,15 +7,15 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// workbuddyAdapter makes WorkBuddy AI / CodeBuddy a *client*: both apps read a
-// user-level models.json and treat every entry in it as an extra
-// OpenAI-compatible provider. It is Tencent's own extension mechanism
-// (documented for the CodeBuddy IDE and CLI, and implemented for the WorkBuddy
-// product in its own binary), so this writes a supported file instead of
-// patching application internals.
+// workbuddyAdapter makes WorkBuddy AI / CodeBuddy a *client*: the bundled
+// CodeBuddy runtime reads a user-level models.json and treats every entry in it
+// as an extra OpenAI-compatible provider. It is Tencent's own extension
+// mechanism, so this writes a supported file instead of patching application
+// internals.
 //
 // The entry points at AnyPick's loopback proxy, which is what actually holds
 // the borrowed account.
@@ -24,23 +24,32 @@ type workbuddyAdapter struct{ home string }
 func newWorkBuddy(home string) *workbuddyAdapter { return &workbuddyAdapter{home: home} }
 
 const (
-	workbuddyModelsFile  = "models.json"
-	workbuddyVendorID    = "anypick"
-	workbuddyRestoreFile = "restore.json"
-)
+	workbuddyModelsFile             = "models.json"
+	workbuddyVendorID               = "anypick"
+	workbuddyRestoreFile            = "restore.json"
+	workbuddyCustomLocalModelPrefix = "custom-local:"
 
-// workbuddyCandidateDirs are the per-product home directories that can hold a
-// user-level models.json, in the order AnyPick prefers them.
-var workbuddyCandidateDirs = []string{".workbuddy-ai", ".workbuddy", ".codebuddy"}
+	// WorkBuddy's agent loop reads these to decide whether the custom model
+	// can drive tools and where thinking tokens belong. Official models.json
+	// examples always set them; omitting them is how a reasoning slug dumps
+	// "Let me write." / "OK." into the visible answer instead of calling tools.
+	workbuddyDefaultMaxInputTokens  = 200000
+	workbuddyDefaultMaxOutputTokens = 32000
+)
 
 // workbuddyModelEntry mirrors one models.json entry. Fields are the documented
 // ones; unknown fields on entries AnyPick keeps are preserved as raw JSON.
 type workbuddyModelEntry struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Vendor string `json:"vendor,omitempty"`
-	APIKey string `json:"apiKey,omitempty"`
-	URL    string `json:"url,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Vendor            string `json:"vendor,omitempty"`
+	APIKey            string `json:"apiKey,omitempty"`
+	URL               string `json:"url,omitempty"`
+	MaxInputTokens    int    `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens   int    `json:"maxOutputTokens,omitempty"`
+	SupportsToolCall  *bool  `json:"supportsToolCall,omitempty"`
+	SupportsImages    *bool  `json:"supportsImages,omitempty"`
+	SupportsReasoning *bool  `json:"supportsReasoning,omitempty"`
 
 	raw map[string]json.RawMessage
 }
@@ -54,39 +63,44 @@ func (a *workbuddyAdapter) Capabilities() *Capabilities {
 		ID:                       "workbuddy",
 		AcceptedProtocols:        []transport.Protocol{transport.OpenAI},
 		SupportsPersistentConfig: true,
+		RequiresDefaultModel:     true,
 		ProtocolPreference:       transport.OpenAI,
 	}
 }
 
-// workbuddyModelsPaths returns every models.json AnyPick should write.
-//
-// Which directory the app really reads depends on how it was launched: the
-// WorkBuddy desktop app exports WORKBUDDY_CONFIG_DIR to itself and its
-// children, so a session started from the app resolves to ~/.workbuddy-ai while
-// the same app started from Finder — and AnyPick started from a plain Terminal,
-// which inherits neither — resolves to ~/.workbuddy. Picking one is a coin
-// flip that fails silently. An explicit override settles it; otherwise AnyPick
-// writes to every candidate that exists, which costs at most two small files
-// and always lands in the one the app is reading.
+// workbuddyModelsPaths returns the models.json paths used by the bundled
+// CodeBuddy runtime. WorkBuddy desktop sets CODEBUDDY_CONFIG_DIR to its own
+// ~/.workbuddy-ai root, while standalone CodeBuddy defaults to ~/.codebuddy.
+// When both product roots exist, keep both integrations in sync: they are the
+// two supported clients represented by this adapter, not guessed legacy paths.
 func workbuddyModelsPaths(home string) []string {
-	if dir := workbuddyConfigDirOverride(); dir != "" {
+	if dir := workbuddyModelConfigDirOverride(); dir != "" {
 		return []string{filepath.Join(dir, workbuddyModelsFile)}
 	}
-	var out []string
-	for _, dir := range workbuddyCandidateDirs {
+
+	paths := make([]string, 0, 2)
+	for _, dir := range []string{".workbuddy-ai", ".codebuddy"} {
 		if st, err := os.Stat(filepath.Join(home, dir)); err == nil && st.IsDir() {
-			out = append(out, filepath.Join(home, dir, workbuddyModelsFile))
+			paths = append(paths, filepath.Join(home, dir, workbuddyModelsFile))
 		}
 	}
-	if len(out) == 0 {
-		// No product has run here yet; target the current one's directory.
-		out = append(out, filepath.Join(home, workbuddyCandidateDirs[0], workbuddyModelsFile))
+	if len(paths) == 0 {
+		// WorkBuddy desktop is the installed product and its documented
+		// process environment uses this root. Creating the file here also
+		// lets the app discover the models on its first Apply.
+		paths = append(paths, filepath.Join(home, ".workbuddy-ai", workbuddyModelsFile))
 	}
-	return out
+	return paths
 }
 
-func workbuddyConfigDirOverride() string {
-	for _, key := range []string{"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR"} {
+// WorkBuddyModelsPaths reports every models.json file Apply may write.
+// Shared with the runtime recovery journal so backup and apply cannot drift.
+func WorkBuddyModelsPaths(home string) []string {
+	return workbuddyModelsPaths(home)
+}
+
+func workbuddyModelConfigDirOverride() string {
+	for _, key := range []string{"CODEBUDDY_CONFIG_DIR", "WORKBUDDY_CONFIG_DIR"} {
 		v := strings.TrimSpace(os.Getenv(key))
 		if v == "" {
 			continue
@@ -101,6 +115,13 @@ func workbuddyConfigDirOverride() string {
 
 // readWorkBuddyModels loads one file, refusing to touch it if it is not a JSON
 // object — a models.json we cannot parse belongs to the user, not to us.
+//
+// One shape is accepted as empty rather than foreign: a bare `[]`. The
+// WorkBuddy desktop app's model sync rewrites the file to that when its own
+// list resolves empty, and refusing it would strand routing forever — the app
+// would keep no models and AnyPick would keep declining to write. An empty
+// array carries no user entries, so replacing it with the documented object
+// loses nothing. Any other non-object shape still refuses.
 func readWorkBuddyModels(path string) (map[string]json.RawMessage, error) {
 	doc := map[string]json.RawMessage{}
 	raw, err := os.ReadFile(path)
@@ -111,6 +132,10 @@ func readWorkBuddyModels(path string) (map[string]json.RawMessage, error) {
 		return nil, err
 	}
 	if json.Unmarshal(raw, &doc) != nil || !jsonLooksObject(raw) {
+		var empty []json.RawMessage
+		if json.Unmarshal(raw, &empty) == nil && len(empty) == 0 {
+			return map[string]json.RawMessage{}, nil
+		}
 		return nil, anyerr.Newf(
 			"Refusing to overwrite unreadable WorkBuddy models file at "+path+".",
 			"CLIENT_CONFIG_INVALID")
@@ -181,7 +206,108 @@ func writeWorkBuddyModels(path string, doc map[string]json.RawMessage, entries [
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(out, '\n'), 0o600)
+	// path is the user's live models.json (ADR 0004): rename, not truncate.
+	return atomicfile.Write(path, append(out, '\n'), 0o600)
+}
+
+func workbuddyManagedEntries(
+	doc map[string]json.RawMessage,
+	template workbuddyModelEntry,
+	modelIDs []string,
+	accountName string,
+) []workbuddyModelEntry {
+	kept := make([]workbuddyModelEntry, 0, len(workbuddyEntries(doc))+len(modelIDs))
+	for _, existing := range workbuddyEntries(doc) {
+		// AnyPick owns exactly its own entries; the user's stay untouched.
+		if strings.EqualFold(existing.Vendor, workbuddyVendorID) {
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	for _, id := range modelIDs {
+		id = trimModelID(id)
+		if !workbuddyPublishableModelID(id) {
+			continue
+		}
+		managed := template
+		// WorkBuddy 5.5 enables its custom-model namespace. It prefixes
+		// every unqualified custom id in memory before sending requests, and
+		// strips that prefix again on the wire. Writing the namespaced id
+		// ourselves avoids the hot-reload path materialising a second copy of
+		// every AnyPick model in models.json.
+		managed.ID = workbuddyConfigModelID(id)
+		managed.Name = workbuddyDisplayName(id, accountName)
+		kept = append(kept, managed)
+	}
+	return kept
+}
+
+// workbuddyPublishableModelID drops WorkBuddy's own UI routing aliases.
+// Publishing those as custom-local entries makes the desktop treat a
+// thinking-only router (onlyReasoning) as a raw OpenAI model, which is the
+// "Let me write." / "OK." / "Writing." collapse on the custom-model path.
+func workbuddyPublishableModelID(id string) bool {
+	id = strings.TrimPrefix(trimModelID(id), workbuddyCustomLocalModelPrefix)
+	if id == "" {
+		return false
+	}
+	switch strings.ToLower(id) {
+	case "default-model", "fast-model", "balanced-model", "primary-model", "deep-model", "auto-chat":
+		return false
+	}
+	return true
+}
+
+// workbuddyDisplayName makes the selected AnyPick account visible in
+// WorkBuddy's model picker. WorkBuddy keeps its native account identity in a
+// separate daemon/Keychain session, so the model entry is the only honest
+// place to show which saved AnyPick subscription the proxy will use.
+func workbuddyDisplayName(id, accountName string) string {
+	model := strings.TrimPrefix(trimModelID(id), workbuddyCustomLocalModelPrefix)
+	accountName = strings.TrimSpace(accountName)
+	if accountName == "" {
+		return "AnyPick " + model
+	}
+	return "AnyPick · " + accountName + " · " + model
+}
+
+func workbuddyConfigModelID(id string) string {
+	if strings.HasPrefix(id, workbuddyCustomLocalModelPrefix) {
+		return id
+	}
+	return workbuddyCustomLocalModelPrefix + id
+}
+
+func workbuddyBool(v bool) *bool { return &v }
+
+func workbuddyPublishableIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if workbuddyPublishableModelID(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func workbuddyProxyEntry(endpoint, apiKey, modelID string) workbuddyModelEntry {
+	if apiKey == "" {
+		apiKey = "anypick-proxy"
+	}
+	return workbuddyModelEntry{
+		ID:     modelID,
+		Name:   "AnyPick " + modelID,
+		Vendor: workbuddyVendorID,
+		APIKey: apiKey,
+		// CodeBuddy's models.json contract wants the complete chat-completions
+		// path, not only the OpenAI /v1 base.
+		URL:               strings.TrimSuffix(endpoint, "/") + "/v1/chat/completions",
+		MaxInputTokens:    workbuddyDefaultMaxInputTokens,
+		MaxOutputTokens:   workbuddyDefaultMaxOutputTokens,
+		SupportsToolCall:  workbuddyBool(true),
+		SupportsImages:    workbuddyBool(true),
+		SupportsReasoning: workbuddyBool(true),
+	}
 }
 
 // workbuddyFileCheckpoint is what Reset needs to put one file back exactly as
@@ -205,8 +331,9 @@ func (a *workbuddyAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	modelsPaths := workbuddyModelsPaths(targetHome)
 	restorePath := filepath.Join(ctx.AnyPickRoot, "clients", "workbuddy", workbuddyRestoreFile)
 
-	modelID := firstNonEmpty(ctx.ModelRoles["default"], ctx.DefaultModel)
-	if ctx.Endpoint == "" || modelID == "" {
+	modelID := selectedDefaultModel(ctx)
+	publishable := workbuddyPublishableIDs(sourceModelIDs(ctx))
+	if ctx.Endpoint == "" || len(publishable) == 0 {
 		return nil, anyerr.Newf(
 			"WorkBuddy routing needs an endpoint and a selected default model.",
 			"CLIENT_CONFIG_INVALID")
@@ -219,18 +346,7 @@ func (a *workbuddyAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 		return &ApplyResult{ManagedPaths: managed}, nil
 	}
 
-	apiKey := ctx.APIKey
-	if apiKey == "" {
-		apiKey = "anypick-proxy"
-	}
-	entry := workbuddyModelEntry{
-		ID:     modelID,
-		Name:   "AnyPick " + modelID,
-		Vendor: workbuddyVendorID,
-		APIKey: apiKey,
-		// The proxy serves an OpenAI-compatible surface under /v1.
-		URL: strings.TrimSuffix(ctx.Endpoint, "/") + "/v1",
-	}
+	entry := workbuddyProxyEntry(ctx.Endpoint, ctx.APIKey, modelID)
 
 	checkpoints := make([]workbuddyFileCheckpoint, 0, len(modelsPaths))
 	for _, path := range modelsPaths {
@@ -245,15 +361,7 @@ func (a *workbuddyAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 				Path: path, Present: doc["models"] != nil, ModelsValue: doc["models"],
 			})
 		}
-		kept := make([]workbuddyModelEntry, 0, len(workbuddyEntries(doc))+1)
-		for _, existing := range workbuddyEntries(doc) {
-			// AnyPick owns exactly its own entries; the user's stay untouched.
-			if strings.EqualFold(existing.Vendor, workbuddyVendorID) {
-				continue
-			}
-			kept = append(kept, existing)
-		}
-		kept = append(kept, entry)
+		kept := workbuddyManagedEntries(doc, entry, publishable, ctx.SourceName)
 		if err := writeWorkBuddyModels(path, doc, kept); err != nil {
 			return nil, err
 		}
@@ -264,51 +372,94 @@ func (a *workbuddyAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	if ctx.IsolatedHome == "" {
 		if _, statErr := os.Stat(restorePath); os.IsNotExist(statErr) {
 			state := workbuddyRestoreState{Version: 1, Files: checkpoints}
-			if rj, merr := json.MarshalIndent(state, "", "  "); merr == nil {
-				if mkErr := os.MkdirAll(filepath.Dir(restorePath), 0o700); mkErr == nil {
-					_ = os.WriteFile(restorePath, append(rj, '\n'), 0o600)
-				}
+			rj, merr := json.MarshalIndent(state, "", "  ")
+			if merr != nil {
+				return nil, merr
+			}
+			if mkErr := os.MkdirAll(filepath.Dir(restorePath), 0o700); mkErr != nil {
+				return nil, mkErr
+			}
+			// A checkpoint write that fails must fail the apply: a silent
+			// failure leaves an AnyPick-created models.json behind with no
+			// record for Reset to restore.
+			if werr := atomicfile.Write(restorePath, append(rj, '\n'), 0o600); werr != nil {
+				return nil, werr
 			}
 		}
 	}
 	return &ApplyResult{ManagedPaths: managed}, nil
 }
 
+// RestoreNative drops AnyPick-managed proxy entries so the app returns to
+// its native login. The executor calls it for direct bindings (which never
+// route through the loopback proxy) instead of Apply: without it a direct
+// bind would leave stale proxy entries behind.
+func (a *workbuddyAdapter) RestoreNative() error {
+	for _, path := range workbuddyModelsPaths(a.home) {
+		if err := sweepWorkBuddyManagedEntries(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *workbuddyAdapter) Reset() error {
 	restorePath := filepath.Join(anyPickRootFallback(), "clients", "workbuddy", workbuddyRestoreFile)
 
-	raw, rerr := os.ReadFile(restorePath)
-	if rerr == nil {
+	restored := map[string]bool{}
+	if raw, rerr := os.ReadFile(restorePath); rerr == nil {
 		var state workbuddyRestoreState
 		if json.Unmarshal(raw, &state) == nil {
 			for _, file := range state.Files {
 				if rerr := resetWorkBuddyFile(file); rerr != nil {
 					return rerr
 				}
+				restored[file.Path] = true
 			}
 			_ = os.Remove(restorePath)
-			return nil
 		}
 	}
-	// No usable checkpoint: fall back to removing only the entries AnyPick
-	// recognises, leaving every file the user had alone.
+	// Product roots that appeared after the checkpoint are not listed in
+	// it: sweep their managed entries so no proxy routing survives Reset.
+	// Restored files keep their exact prior content and are skipped.
 	for _, path := range workbuddyModelsPaths(a.home) {
-		doc, err := readWorkBuddyModels(path)
-		if err != nil {
-			return err
+		if restored[path] {
+			continue
 		}
-		kept := make([]workbuddyModelEntry, 0, len(workbuddyEntries(doc)))
-		for _, entry := range workbuddyEntries(doc) {
-			if strings.EqualFold(entry.Vendor, workbuddyVendorID) {
-				continue
-			}
-			kept = append(kept, entry)
-		}
-		if err := writeWorkBuddyModels(path, doc, kept); err != nil {
+		if err := sweepWorkBuddyManagedEntries(path); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sweepWorkBuddyManagedEntries removes exactly the AnyPick-owned entries from
+// one models file, preserving everything of the user's. A missing file is
+// not an error: nothing records AnyPick ever creating it.
+func sweepWorkBuddyManagedEntries(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	doc, err := readWorkBuddyModels(path)
+	if err != nil {
+		return err
+	}
+	kept := make([]workbuddyModelEntry, 0, len(workbuddyEntries(doc)))
+	managed := false
+	for _, entry := range workbuddyEntries(doc) {
+		if strings.EqualFold(entry.Vendor, workbuddyVendorID) {
+			managed = true
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if !managed {
+		return nil
+	}
+	return writeWorkBuddyModels(path, doc, kept)
 }
 
 func resetWorkBuddyFile(file workbuddyFileCheckpoint) error {
@@ -332,7 +483,8 @@ func resetWorkBuddyFile(file workbuddyFileCheckpoint) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file.Path, append(out, '\n'), 0o600)
+	// Reset rewrites the user's live models file (ADR 0004): rename, not truncate.
+	return atomicfile.Write(file.Path, append(out, '\n'), 0o600)
 }
 
 func (a *workbuddyAdapter) Inspect() (*InspectResult, error) {

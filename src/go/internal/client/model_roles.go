@@ -31,14 +31,14 @@ var defaultRoles = []ModelRole{
 // RolesFor returns the model roles a client can be configured with.
 //
 // Known divergence from TypeScript (src/clients/model-roles.ts): TS gives
-// codex CODEX_DESKTOP_MODEL_ROLES (default + list2…list5) because it writes a
-// Codex Desktop model catalog. Go's codex adapter writes a single
-// `model = …` line, so publishing list2…list5 here would offer five controls
-// where four of them have no effect. Codex therefore reports one slot until
-// the adapter learns the Desktop catalog.
+// codex CODEX_DESKTOP_MODEL_ROLES (default + list2…list5) because the desktop
+// adapter exposes several independently editable slots. Go publishes the
+// complete source catalog to Codex's model_catalog_json, but its native
+// config has one active root `model` slot, so exposing list2…list5 here would
+// offer controls that have no corresponding Go setting.
 //
 // Every other current adapter — codex, gemini, kiro, opencode, workbuddy,
-// zcode, dsh — consumes ModelRoles["default"] only.
+// zcode, dsh, commandcode — consumes ModelRoles["default"] only.
 func RolesFor(clientID string) []ModelRole {
 	switch strings.ToLower(strings.TrimSpace(clientID)) {
 	case "claude":

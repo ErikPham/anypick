@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
@@ -88,6 +89,13 @@ func geminiRestoredCredential(home string) string {
 
 func geminiEnvPath(home string) string      { return filepath.Join(geminiDir(home), ".env") }
 func geminiSettingsPath(home string) string { return filepath.Join(geminiDir(home), "settings.json") }
+
+// GeminiConfigPaths reports the live Gemini files Apply may write:
+// the layered .env plus the managed marker in settings.json.
+// Shared with the runtime recovery journal so backup and apply cannot drift.
+func GeminiConfigPaths(home string) []string {
+	return []string{geminiEnvPath(home), geminiSettingsPath(home)}
+}
 
 func liveHome() string {
 	home, _ := os.UserHomeDir()
@@ -181,7 +189,8 @@ func (a *geminiAdapter) Apply(ctx *ApplyContext) (*ApplyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(targetSettings, append(out, '\n'), 0o600); err != nil {
+	// targetSettings is the user's live Gemini settings (ADR 0004): rename, not truncate.
+	if err := atomicfile.Write(targetSettings, append(out, '\n'), 0o600); err != nil {
 		return nil, err
 	}
 	managedPaths = append(managedPaths, envPaths...)
@@ -222,7 +231,37 @@ func (a *geminiAdapter) Reset() error {
 		if json.Unmarshal(raw, &doc) == nil {
 			delete(doc, anypickManagedKey)
 			if out, merr := json.MarshalIndent(map[string]json.RawMessage(doc), "", "  "); merr == nil {
-				_ = os.WriteFile(geminiSettingsPath(a.home), append(out, '\n'), 0o600)
+				_ = atomicfile.Write(geminiSettingsPath(a.home), append(out, '\n'), 0o600)
+			}
+		}
+	}
+	removeClientEnvFiles(anyPickRootFallback(), "gemini")
+	return nil
+}
+
+// RestoreNative unroutes a proxy binding when activation switches back to a
+// native account. The live .env may still carry the keys Apply wrote for the
+// proxy (GEMINI_API_KEY = proxy token, GOOGLE_GEMINI_BASE_URL = loopback
+// endpoint); leaving them behind points the CLI at a stopped proxy. Only keys
+// the managed marker lists are removed — a user key Apply never overwrote is
+// not in that list and survives.
+func (a *geminiAdapter) RestoreNative() error {
+	liveEnv := geminiEnvPath(a.home)
+	if keys, _ := readManagedMarkerKeys(geminiSettingsPath(a.home)); len(keys) > 0 {
+		if _, err := os.Stat(liveEnv); err == nil {
+			if err := stripKeysFromEnv(liveEnv, keys); err != nil {
+				return err
+			}
+		}
+	}
+	if raw, err := os.ReadFile(geminiSettingsPath(a.home)); err == nil {
+		var doc map[string]json.RawMessage
+		if json.Unmarshal(raw, &doc) == nil {
+			if _, ok := doc[anypickManagedKey]; ok {
+				delete(doc, anypickManagedKey)
+				if out, merr := json.MarshalIndent(map[string]json.RawMessage(doc), "", "  "); merr == nil {
+					_ = atomicfile.Write(geminiSettingsPath(a.home), append(out, '\n'), 0o600)
+				}
 			}
 		}
 	}
@@ -260,6 +299,9 @@ func (a *geminiAdapter) Inspect() (*InspectResult, error) {
 	}
 	return res, nil
 }
+
+// Compile-time: the direct-account unroute path above must keep working.
+var _ NativeRestorer = (*geminiAdapter)(nil)
 
 // readManagedMarkerKeys extracts _anypickManaged.keys from a settings file.
 func readManagedMarkerKeys(path string) ([]string, error) {
@@ -304,7 +346,7 @@ func upsertEnvFile(path string, env map[string]string) error {
 		}
 	}
 	out := strings.TrimRight(strings.Join(lines, "\n"), "\n")
-	return os.WriteFile(path, []byte(out+"\n"), 0o600)
+	return atomicfile.Write(path, []byte(out+"\n"), 0o600)
 }
 
 func quoteEnvValue(v string) string {
@@ -345,7 +387,8 @@ func stripKeysFromEnv(path string, keys []string) error {
 		}
 		out = append(out, line)
 	}
-	return os.WriteFile(path, []byte(strings.TrimRight(strings.Join(out, "\n"), "\n")+"\n"), 0o600)
+	// Reset rewrites the user's live .env (ADR 0004): rename, not truncate.
+	return atomicfile.Write(path, []byte(strings.TrimRight(strings.Join(out, "\n"), "\n")+"\n"), 0o600)
 }
 
 func removeClientEnvFiles(root, clientID string) {

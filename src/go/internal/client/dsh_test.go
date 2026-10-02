@@ -52,9 +52,9 @@ func TestDshApplyWritesEnvAndPatch(t *testing.T) {
 	patchText := string(patchRaw)
 	for _, want := range []string{
 		dshPatchBegin,
-		"name: '" + dshDefaultModelPlugin + "'",
+		"- id: " + dshDefaultModelID,
 		"provider: " + dshProviderRoute,
-		"model: deepseek-chat",
+		"model: 'deepseek-chat'",
 		dshPatchEnd,
 	} {
 		if !strings.Contains(patchText, want) {
@@ -83,6 +83,12 @@ func TestDshApplyWritesEnvAndPatch(t *testing.T) {
 	}
 	if _, err := os.Stat(dshPatchPath(home)); !os.IsNotExist(err) {
 		t.Fatalf("reset left cordis patch at %s", dshPatchPath(home))
+	}
+}
+
+func TestDshRequiresASelectedModel(t *testing.T) {
+	if !newDsh(t.TempDir()).Capabilities().RequiresDefaultModel {
+		t.Fatal("dsh must require a source model before activation")
 	}
 }
 
@@ -118,6 +124,11 @@ func TestDshApplyWritesSettingsEndpoint(t *testing.T) {
 		dshSettingsBegin,
 		"llm-deepseek:",
 		"baseURL: http://127.0.0.1:9000/v1",
+		"models:",
+		"id: 'deepseek-chat'",
+		"agent-default-model:",
+		"provider: 'deepseek-official'",
+		"model: 'deepseek-chat'",
 		dshSettingsEnd,
 	} {
 		if !strings.Contains(settings, want) {
@@ -187,6 +198,100 @@ func TestDshApplyWritesSettingsEndpoint(t *testing.T) {
 	}
 	if _, err := os.Stat(dshSettingsPath(fresh)); !os.IsNotExist(err) {
 		t.Fatalf("reset left sole-managed settings at %s", dshSettingsPath(fresh))
+	}
+}
+
+func TestDshApplyWritesSourceModelCatalogAndSelectedModel(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	if _, err := newDsh(home).Apply(&ApplyContext{
+		Endpoint:     "http://127.0.0.1:9000",
+		APIKey:       "sk-test",
+		DefaultModel: "deepseek-v4.1-flash",
+		ModelCatalog: []string{"deepseek-v4.1-flash", "gemini-3.8-flash", "deepseek-v4.1-flash"},
+		AnyPickRoot:  root,
+		Home:         home,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settings := string(mustRead(t, dshSettingsPath(home)))
+	for _, want := range []string{
+		"id: 'deepseek-v4.1-flash'",
+		"id: 'gemini-3.8-flash'",
+		"model: 'deepseek-v4.1-flash'",
+	} {
+		if strings.Count(settings, want) != 1 {
+			t.Fatalf("settings should contain one %q, got:\n%s", want, settings)
+		}
+	}
+	if strings.Contains(settings, "deepseek-flash") {
+		t.Fatalf("bundled model alias leaked into managed settings:\n%s", settings)
+	}
+}
+
+// DSH's own model picker persists its selection as a top-level
+// agent-default-model section. AnyPick takes that key over instead of refusing
+// — two top-level copies would break the YAML document — while unrelated
+// sections survive untouched.
+func TestDshAdoptsHarnessWrittenDefaultModelSection(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	settings := dshSettingsPath(home)
+	if err := os.MkdirAll(dshHome(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	own := "ui-theme:\n  preference: dark\nagent-default-model:\n  provider: deepseek-official\n  model: deepseek-v4-pro\n"
+	if err := os.WriteFile(settings, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDsh(home).Apply(&ApplyContext{
+		Endpoint:     "http://127.0.0.1:9000",
+		APIKey:       "sk-test",
+		DefaultModel: "deepseek-v4.1-flash",
+		AnyPickRoot:  root,
+		Home:         home,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	merged := string(mustRead(t, settings))
+	if got := strings.Count(merged, "agent-default-model:"); got != 1 {
+		t.Fatalf("expected exactly one default-model section, got %d:\n%s", got, merged)
+	}
+	if strings.Contains(merged, "deepseek-v4-pro") {
+		t.Fatalf("stale harness selection survived adoption:\n%s", merged)
+	}
+	for _, want := range []string{"ui-theme:", "preference: dark", "model: 'deepseek-v4.1-flash'"} {
+		if !strings.Contains(merged, want) {
+			t.Fatalf("adoption lost %q:\n%s", want, merged)
+		}
+	}
+}
+
+// A section named agent-default-model that is nested under another key is not
+// DSH's own state and must never be deleted by adoption.
+func TestDshAdoptionLeavesNestedSectionsAlone(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	settings := dshSettingsPath(home)
+	if err := os.MkdirAll(dshHome(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	own := "plugins:\n  agent-default-model:\n    provider: keep\n"
+	if err := os.WriteFile(settings, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDsh(home).Apply(&ApplyContext{
+		Endpoint:     "http://127.0.0.1:9000",
+		APIKey:       "sk-test",
+		DefaultModel: "deepseek-v4.1-flash",
+		AnyPickRoot:  root,
+		Home:         home,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	merged := string(mustRead(t, settings))
+	if !strings.Contains(merged, "plugins:") || !strings.Contains(merged, "provider: keep") {
+		t.Fatalf("adoption deleted a nested key:\n%s", merged)
 	}
 }
 

@@ -22,20 +22,135 @@ func TestClaudeAdapterIdentityAndReset(t *testing.T) {
 		t.Fatalf("capabilities: %+v", caps)
 	}
 
-	// Reset is intentionally conservative: it must never touch live config.
+	// Reset without a managed marker touches nothing: values without the
+	// marker are not provably AnyPick's, so an explicit unroute must not
+	// delete user-set settings. The stale endpoint here was never written by
+	// AnyPick, so it stays.
+	t.Setenv("ANYPICK_HOME", t.TempDir())
 	settings := settingsPath(home)
 	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(settings, []byte(`{"env":{}}`), 0o600); err != nil {
+	const userContent = `{"env":{"USER_KEY":"keep","ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"}}`
+	if err := os.WriteFile(settings, []byte(userContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
 	raw, err := os.ReadFile(settings)
-	if err != nil || string(raw) != `{"env":{}}` {
-		t.Fatalf("Reset mutated live config: %q %v", raw, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != userContent {
+		t.Fatalf("Reset modified unmanaged settings: %s", raw)
+	}
+}
+
+func TestClaudeResetRestoresPreAnyPickBackup(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
+	a := newClaude(home)
+
+	settings := settingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managed := `{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"},"` + anypickManagedKey + `":{"keys":["ANTHROPIC_BASE_URL"]}}`
+	if err := os.WriteFile(settings, []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(root, "clients", "claude", "backup")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const preAnyPick = `{"env":{"USER_KEY":"orig"}}`
+	if err := os.WriteFile(filepath.Join(backupDir, "settings.json"), []byte(preAnyPick), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	raw, err := os.ReadFile(settings)
+	if err != nil || string(raw) != preAnyPick {
+		t.Fatalf("Reset did not restore backup: %q %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("backup was not consumed: %v", err)
+	}
+}
+
+// TestClaudeResetKeepsUserEditsOnceTheMarkerIsGone: the one-time backup must
+// not overwrite a settings.json the user has since edited (the marker is how
+// we know AnyPick still owns the file). Reset strips the managed keys and
+// leaves the backup for the next call.
+func TestClaudeResetKeepsUserEditsOnceTheMarkerIsGone(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
+	a := newClaude(home)
+
+	settings := settingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"env":{"USER_ADDED_LATER":"keep"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(root, "clients", "claude", "backup")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "settings.json"), []byte(`{"env":{"USER_KEY":"orig"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	raw, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"USER_ADDED_LATER":"keep"`) {
+		t.Fatalf("Reset destroyed user edits: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(backupDir, "settings.json")); err != nil {
+		t.Fatalf("backup must survive a gated Reset: %v", err)
+	}
+}
+
+func TestClaudeRestoreNativeKeepsBackupForReset(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
+	a := newClaude(home)
+
+	settings := settingsPath(home)
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managed := `{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9999"},"` + anypickManagedKey + `":{"keys":["ANTHROPIC_BASE_URL"]}}`
+	if err := os.WriteFile(settings, []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(root, "clients", "claude", "backup", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backupPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RestoreNative(); err != nil {
+		t.Fatalf("RestoreNative: %v", err)
+	}
+	raw, _ := os.ReadFile(settings)
+	if strings.Contains(string(raw), "127.0.0.1:9999") {
+		t.Fatalf("RestoreNative left proxy endpoint: %s", raw)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("RestoreNative must not consume the Reset backup: %v", err)
 	}
 }
 

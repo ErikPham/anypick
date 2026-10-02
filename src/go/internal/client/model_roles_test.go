@@ -17,7 +17,8 @@ var wantClaudeRoles = []ModelRole{
 // ModelRoles["default"] and nothing else.
 var defaultOnlyClients = map[string]bool{
 	"codex": true, "gemini": true, "kiro": true, "opencode": true,
-	"workbuddy": true, "zcode": true, "dsh": true,
+	"workbuddy": true, "zcode": true, "dsh": true, "commandcode": true,
+	"pi": true, "omp": true,
 }
 
 func TestRolesForCoversEveryRegisteredClient(t *testing.T) {
@@ -57,7 +58,7 @@ func TestRolesForClaudeExposesTheFourEnvSlots(t *testing.T) {
 }
 
 func TestRolesForDefaultsToOneSlot(t *testing.T) {
-	for _, id := range []string{"", "  ", "codex", "gemini", "kiro", "opencode", "workbuddy", "zcode", "dsh", "plugin-x"} {
+	for _, id := range []string{"", "  ", "codex", "gemini", "kiro", "opencode", "workbuddy", "zcode", "dsh", "commandcode", "pi", "omp", "plugin-x"} {
 		got := RolesFor(id)
 		if len(got) != 1 || got[0].ID != "default" {
 			t.Errorf("RolesFor(%q) = %#v want exactly the default slot", id, got)
