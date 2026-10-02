@@ -13,11 +13,11 @@ local protocol translators, pools, and Proxy Hub from one native application or
 from the terminal.
 
 > [!IMPORTANT]
-> This repository is a development preview. It does not currently publish a
-> signed/notarized macOS app, DMG, Homebrew package, Windows/Linux installer, or
-> another production-ready desktop artifact. The platform and distribution
-> matrix in [ADR 0020](adr/0020-node-free-native-app-distribution.md) is a target,
-> not a statement of current release support.
+> Releases are produced by the signed GitHub Actions workflow. A public release
+> is only download-ready after the required signing/notarization and target-OS
+> smoke gates pass; package-manager channels are opt-in deployment targets. See
+> [Installing AnyPick](#installing-anypick) and the release workflow for the
+> exact channels configured for this repository.
 
 ## Architecture
 
@@ -47,9 +47,59 @@ cutover decision and [the macOS source contract](src/macos/README.md) for the UI
 and lifecycle implementation.
 
 AnyPick is one Go engine. The macOS app is Swift, the CLI and the terminal UI
-are Go. There is no second runtime and no npm package: the repository ships no
-TypeScript engine and no installable npm launcher (ADR 0020) — run from source
-or take the GitHub Release assets.
+are Go. There is no second runtime: the npm package is only a thin launcher
+that downloads the matching checksum-verified Go CLI (ADR 0020).
+
+## Installing AnyPick
+
+The GitHub Release is the canonical download source. It contains the signed
+macOS DMG/app archive, the Tauri Linux/Windows installers, and checksum-verified
+CLI archives for all supported CPU targets. Every desktop payload is
+smoke-tested on its own OS before staging: the Linux deb/AppImage/rpm and the
+Windows MSI are extracted and the bundled Go helper must answer with the planned
+version. The GUI is not launched on hosted runners. The workflow also emits
+WinGet/Scoop metadata (submission to `winget-pkgs` is manual) and can update a
+configured Homebrew tap.
+
+```bash
+# Native macOS app, Linux/Windows installers, and CLI archives:
+# https://github.com/outof0/anypick/releases/latest
+
+# npm is an opt-in launcher for this Go CLI. Leave it off until a release
+# enables `publish-npm`; `npm install -g anypick` currently resolves to the
+# older JavaScript 1.0.0 package.
+```
+
+When the external taps are configured and the corresponding publish switch is
+enabled, the package-manager commands are:
+
+```bash
+brew tap outof0/tap
+brew install outof0/tap/anypick
+brew install --cask outof0/tap/anypick
+
+winget install outof0.AnyPick   # after the manifest is accepted into winget-pkgs
+scoop bucket add outof0 https://github.com/outof0/scoop-bucket
+scoop install anypick
+```
+
+The npm launcher and native bundles do not share a Node service. Desktop
+artifacts remain Node-free; npm is a distribution adapter only.
+
+### Uninstall and rollback
+
+- **npm CLI**: `npm uninstall --global anypick`, then delete the downloaded
+  binary cache (`~/.cache/anypick` on macOS/Linux,
+  `%LOCALAPPDATA%\\AnyPick` on Windows).
+- **Homebrew**: `brew uninstall anypick` (or `brew uninstall --cask anypick`).
+- **macOS app**: quit AnyPick and move `AnyPick.app` to the Trash. Local data
+  stays in `~/.anypick`; delete that directory only if you also mean to remove
+  every saved account, proxy state, and activity entry.
+- **Windows/Linux installers**: uninstall through Settings → Apps (MSI/NSIS) or
+  your distribution's package manager.
+- **Rollback**: install the previous release from the GitHub Releases page. The
+  app and CLI are self-contained; `~/.anypick` data is forward-compatible, and
+  account backups (readable JSON) are the supported way to move credentials.
 
 ## Run from source
 
@@ -156,10 +206,10 @@ CI (`.github/workflows/ci.yml`) runs the same gates: format and vet and version
 sync, Go tests on Ubuntu and Windows, the macOS app and helper contract, and the
 docs site.
 
-> **If you run `go` directly, set `GOPATH`.** `~/.zshrc` on this machine exports
-> a `GOPATH` belonging to another project; tests that shell out to `go build`
-> then stall in module resolution and appear to hang. The Makefile pins
-> `GOPATH := $(HOME)/go` so `make` is always safe; otherwise use
+> **Prefer `make` over a bare `go`.** The Makefile pins `GOPATH` to
+> `$HOME/go` and finds the toolchain. A shell that exports `GOPATH` at
+> another project's module cache makes tests that shell out to `go build`
+> stall in module resolution. If you invoke `go` directly:
 > `GOPATH=$HOME/go go test ./...` (warm once with `go mod download all`).
 
 The documentation site is a separate pnpm project:
@@ -172,25 +222,35 @@ The local data directory is `~/.anypick`; `ANYPICK_HOME` overrides it. Account
 and configuration mutations touch real developer credentials, so use an
 isolated `ANYPICK_HOME` when experimenting.
 
+The loopback `anypick serve` status API also exposes `GET /agents`: a
+credential-free worker manifest for local coordinators. It reports installed
+clients, the saved route, provider-owned transport capability, selected model,
+and proxy health. Credentials, gateway URLs, proxy tokens, and filesystem
+paths never cross that boundary. `anypick doctor --json` includes the same
+redacted proxy-environment diagnostics, including mixed-case environment
+conflicts that can make a spawned worker take a different network path.
+
 ## Current platform status
 
 - The macOS 14+ SwiftUI target and bundled universal Go-helper build exist in
-  source and are under active cutover testing. The first release is macOS-only.
-- The CLI and the terminal UI are Go. There is no TypeScript engine and no npm
-  package: distribution is source checkouts plus GitHub Release assets.
-- CI exercises the Go core on Ubuntu and the Xcode app/helper contract on
-  macOS. The Tauri Linux/Windows apps build from source and in CI, but their
-  artifacts are staged, not published, until target-OS smoke testing lands.
-  These source gates do not make an installer a released product.
-- Signed installer channels beyond the macOS Release asset remain planned work.
-  Do not treat their ADR target entries as available downloads.
+  source and are signed/notarized in the macOS release job.
+- The Tauri Linux/Windows apps build installers in the default all-platform
+  release path. Before staging, `packaging/smoke/` extracts each Linux
+  deb/AppImage/rpm and the Windows MSI and runs the bundled Go helper
+  (`--version` + `providers`) in a throwaway HOME. The GUI is not launched.
+- The CLI release job builds macOS Intel/Apple Silicon, Linux x64/arm64, and
+  Windows x64/arm64 archives. `npm/anypick` selects only those archives.
+- Homebrew, WinGet and Scoop are external repositories. Their generated
+  manifests are attached to each release; publishing them requires the
+  corresponding repository secret/variable and is deliberately opt-in. WinGet
+  additionally requires a submission to `microsoft/winget-pkgs`.
 
 ## Documentation
 
+- [Distribution and release operations](packaging/README.md)
 - [Documentation site source](docs/src/content/docs/index.mdx)
 - [Contributing](CONTRIBUTING.md)
 - [Architecture decisions](adr/README.md)
 - [Security policy](SECURITY.md)
-- [Design checklist skill](.claude/skills/design-checklist/README.md)
 
 AnyPick is licensed under the [MIT License](LICENSE).

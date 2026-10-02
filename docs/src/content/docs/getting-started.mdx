@@ -42,7 +42,8 @@ You land on **Apps**:
  enter connect app a accounts g gateways p proxies d diagnose
 ```
 
-Only **Claude Code** and **Codex** appear here — they can be pointed at almost
+Only **Claude Code**, **Codex**, **ZCode**, **`dsh`**, **`commandcode`**, **`pi`**
+and **`omp`** appear here — they can be pointed at almost
 any saved source. Other tools switch their own logins under Accounts.
 
 Three habits that make the UI safe for non-experts:
@@ -52,10 +53,12 @@ Three habits that make the UI safe for non-experts:
 - **Nothing is saved until a preview says so.** You can always <kbd>esc</kbd>
   back.
 
-The command examples below show AnyPick's CLI grammar. Until a supported CLI
-package is published, run the same arguments from this checkout with
-`make run ARGS="…"`; for example, `make run ARGS="list accounts"` (or build
-once with `make build` and run `./src/go/bin/anypick-dev …` directly).
+The command examples below show AnyPick's CLI grammar. Install the CLI from the
+checksum-listed archives on the GitHub Release, or through
+`npm install --global anypick` when that channel is enabled; you can also run
+the same arguments from this checkout with `make run ARGS="…"`; for example,
+`make run ARGS="list accounts"` (or build once with `make build` and run
+`./src/go/bin/anypick-dev …` directly).
 
 Full walkthrough of source → models → preview:
 [Terminal UI · Apps](/docs/guides/terminal-ui#build-a-route-the-main-flow).

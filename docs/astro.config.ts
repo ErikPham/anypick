@@ -11,8 +11,8 @@ const nimbusConfig = defineNimbusConfig({
   title: "AnyPick",
   description: "Switch accounts, route providers and keep your AI coding tools moving.",
   locale: "en",
-  // PLACEHOLDER — no repo exists yet. Replace before deploying, same as `site`
-  // above. Drives the header icon link, the hero button, and the footer link.
+  // The public repository (matches the `github` links in README/docs).
+  // Drives the header icon link, the hero button, and the footer link.
   github: "https://github.com/outof0/anypick",
   socialImageAlt: "AnyPick — Pick any. Code on.",
   sidebar: {

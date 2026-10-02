@@ -39,18 +39,18 @@ writes state.
 | `make test-race` | the same under `-race` |
 | `make vet` | `go vet ./...` |
 | `make fmt` / `make fmt-check` | gofmt; CI fails if anything is unformatted |
-| `make gates` | every cross-language gate (see below) |
+| `make check` | every cross-language gate (see below) |
 | `make run ARGS="providers"` | build, then run a command |
 | `make sandbox ARGS="status"` | the same against a throwaway data root |
-| `make app` / `make app-test` | the macOS app (Xcode) |
-| `make tauri-deps` / `make tauri-ui` / `make tauri-build` | the Linux/Windows app |
+| `make open-macos` / `make test-macos` | the macOS app (Xcode) |
+| `make install-tauri` / `make build-tauri-ui` / `make build-tauri` | the Linux/Windows app |
 
 Run `make review` before opening a pull request — it is `fmt-check`, `vet`,
-`test` and `gates` in one command. CI runs those four plus `make lint`
+`test` and `check` in one command. CI runs those four plus `make lint`
 (staticcheck), which needs `go install honnef.co/go/tools/cmd/staticcheck@v0.8.1`
 if you want it locally.
 
-### `make gates` — the cheap cross-language checks
+### `make check` — the cheap cross-language checks
 
 Three facts are asserted in more than one language, and nothing links them:
 
@@ -60,10 +60,10 @@ Three facts are asserted in more than one language, and nothing links them:
   (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`) and Swift
   (`src/macos/AppServiceClient.swift`).
 
-`make gates` (`paths` + `protocol-sync` + `release-check`) verifies all of them
+`make check` (`paths` + `check-protocol` + `check-release`) verifies all of them
 in about a second. It exists because moving a directory, or bumping the
 protocol on one platform only, produces a failure that is otherwise very hard
-to trace. **If you move a directory under `src/`, run `make paths` first.**
+to trace. **If you move a directory under `src/`, run `make check-paths` first.**
 
 ## Architecture overview
 
@@ -118,7 +118,7 @@ Every persisted mutation runs under the coordinator with sorted, scoped locks
    — it makes the compiler refuse the mistake.
 
 Inside a `func(c context.Context)` lock closure, use `c`, not the outer `ctx`.
-`make gates` will not catch this one; the lock timeout will, after five
+`make check` will not catch this one; the lock timeout will, after five
 seconds, with an error that says exactly what went wrong.
 
 Compensation and rollback paths should use `context.WithoutCancel(ctx)`: they
@@ -219,15 +219,17 @@ no version field to type: the version is calculated from Conventional Commits
 since the previous tag — a breaking change bumps major, `feat` bumps minor,
 and `fix` / `perf` bumps patch.
 
-`VERSION` at the repository root is canonical. Three other places ship the same
+`VERSION` at the repository root is canonical. Five other places ship the same
 number and must agree with it: `MARKETING_VERSION` in the Xcode project,
-`version` in `src/tauri/app/Cargo.toml`, and `version` in
-`src/tauri/app/tauri.conf.json`. `make release-check` verifies all four;
-`make release-bump PART=patch` or `make release-set VERSION=1.2.3` updates them
+`version` in `src/tauri/app/Cargo.toml`, `version` in
+`src/tauri/app/Cargo.lock`, `version` in `src/tauri/app/tauri.conf.json`, and
+`version` in `npm/anypick/package.json`.
+`make check-release` verifies all six;
+`make bump-version PART=patch` or `make set-version VERSION=1.2.3` updates them
 together.
 
 The bump itself is decided from Conventional Commits by
-`make release-plan` (`anypick-release plan`), which prints `mode`, `bump`,
+`make plan-release` (`anypick-release plan`), which prints `mode`, `bump`,
 `version` and `tag`. `mode=none` means there is no `feat`, `fix` or `perf`
 commit since the current tag and the run stops before changing anything.
 Adding a version source means adding it to `secondarySources` in
@@ -235,9 +237,15 @@ Adding a version source means adding it to `secondarySources` in
 otherwise.
 
 The workflow is safe to rerun after a partial external failure: an existing
-tag or published version is verified and reused rather than recreated.
+tag or published version is verified and reused rather than recreated. The
+default `all` scope publishes macOS, Linux and Windows artifacts after their
+build check and the per-OS installer-payload smoke (`packaging/smoke/`); the
+GUI is not launched on hosted runners. `macos-only` is available for a
+deliberately narrowed run. npm and external package-manager pushes are opt-in
+inputs (or repository variables) so a missing tap credential cannot silently
+turn a release into a partial publish.
 
 ## Code of conduct
 
 Be respectful and constructive. This project follows the
-[Contributor Covenant](https://www.contributor-covenant.org/) in spirit.
+[Contributor Covenant](CODE_OF_CONDUCT.md).

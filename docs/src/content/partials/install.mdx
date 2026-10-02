@@ -1,7 +1,9 @@
-<Aside type="caution" title="Development preview">
-AnyPick does not currently publish a signed native app or supported installer.
-Build and run it from this repository; release channels named in ADR 0020 are
-planned targets, not available downloads.
+<Aside type="caution" title="Release channels">
+The GitHub Release is the canonical source for signed native artifacts. The CLI
+is published there as checksum-listed archives, and through the thin npm
+launcher when that channel is enabled (`npm install --global anypick`). The
+native macOS, Linux and Windows assets are linked from the latest release. Build
+from this repository when you are testing unreleased changes.
 </Aside>
 
 For the native macOS source target (macOS 14+, Xcode, and Go required):

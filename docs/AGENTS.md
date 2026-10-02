@@ -21,8 +21,8 @@ cd docs && pnpm typecheck    # astro check
 cd docs && pnpm lint:docs    # nimbus-docs lint
 ```
 
-A bare `pnpm build` from the repo root builds the **CLI**, not the site — you
-will happily test stale `dist/` output and believe it.
+A bare `pnpm build` from the repo root fails: there is no root `package.json`.
+The site build lives in this directory; run it here or with `cd docs &&`.
 
 `nimbus/frontmatter-shape` and `nimbus/internal-link` are configured as
 **errors** in `astro.config.ts`, so `pnpm lint:docs` fails on a link to a page
@@ -33,11 +33,17 @@ that does not exist. Run it after moving or renaming anything.
 The one rule that matters most. This site has already shipped invented feature
 claims that had to be walked back.
 
-- **Capability pairs come from `transportFor`** in
-  `../src/sources/account-adapters.ts`. Only `claude` and `codex` can be bound to
-  a source from a different provider; `gemini` and `kiro` return `unsupported`
-  for anything but their own. `../src/clients/index.ts` lists what *exists*, not
-  what is *allowed*.
+- **Capability pairs come from the adapters** in
+  `../src/go/internal/transport/`. `claude`, `codex`, `opencode`, `zcode`,
+  `dsh` and `commandcode` may accept a source from a different provider.
+  `gemini` and `kiro` clients return `unsupported` for anything but their own.
+  The workbuddy *client* uses its own login directly, so it is
+  `unsupported` everywhere else; a workbuddy *account*
+  still serves those borrowing clients through the proxy, and switching the
+  app between saved accounts works natively via its session file. `cline` is a
+  provider login without a client adapter. `../src/go/internal/client` lists
+  what *exists*, not what *is allowed*.
+  `internal/transport/adapter_test.go` holds the exhaustive pairing matrix.
 - **Binding and switching are different questions.** Binding a client to a
   foreign provider is the narrow list above. Switching which account is live is
   broader, because AnyPick restores the provider's own credential file, so
@@ -47,12 +53,15 @@ claims that had to be walked back.
   detects the mismatch to suppress the quota readout.
 - **Do not invite readers to point third-party tools at a proxy.** The proxies do
   speak standard OpenAI and Anthropic wire formats, but each requires a
-  per-instance bearer token (ADR 0006) that `publicProxyHandle` strips from all
-  output. There is no documented way for a user to obtain it.
-- CI runs on `ubuntu-latest` only. Do not claim Windows support.
-- Flags, exit codes, and JSON shapes come from `../src/cli/commands.ts` and
-  `ExitCode` in `../src/utils/errors.ts`. Copy them; do not infer them from a
-  sibling command.
+  per-instance bearer token (ADR 0006) that never crosses an output boundary
+  (AGENTS.md invariant #2). There is no documented way for a user to obtain it.
+- CI runs Go tests on `ubuntu-latest` and `windows-latest`, the macOS app job on
+  macOS, plus Tauri, docs, and distribution-adapter jobs. Windows is a supported
+  build target for the Go engine and the Tauri app; do not claim macOS-only
+  support.
+- Flags, exit codes, and JSON shapes come from `../src/go/cmd/anypick` and
+  `ExitCode` in `../src/go/internal/anyerr/errors.go`. Copy them; do not infer
+  them from a sibling command.
 - `TuiFrame.astro` renders **real captured frames**. Never hand-write plausible
   TUI output — the layout is checked against the running app.
 
@@ -79,9 +88,10 @@ claims that had to be walked back.
   URLs from `entry.id`, and ids are relative to `base`. Basing on `src/content`
   and globbing `docs/**` is what puts pages at `/docs/*` while leaving `/` free
   for the landing page. Files still live in `src/content/docs/`.
-- `site` and `github` in `astro.config.ts` are **placeholders** — no repo exists
-  yet. They drive canonical URLs, OG images, robots.txt, the sitemap, and every
-  header/footer link. Replace both before any deploy.
+- `site` and `github` in `astro.config.ts` are set to the production values
+  (`https://anypick.dev`, `https://github.com/outof0/anypick`), and the release
+  workflow deploys the built site. They drive canonical URLs, OG images,
+  robots.txt, the sitemap, and every header/footer link.
 - Deploys are Cloudflare Pages Direct Uploads via `wrangler.jsonc`
   (`pages_build_output_dir = "./dist"`), so `pnpm build` must run first —
   `predeploy` chains `astro check && astro build` for exactly that reason.

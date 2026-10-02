@@ -23,7 +23,7 @@ Read this before copying a review process from a larger project.
 So review happens in **three layers**, in this order. Cheapest first; judgment
 last, and only on what machines cannot decide.
 
-1. **Automated gates** — `make ci` (`review` + `lint` + `test-race`).
+1. **Automated check** — `make ci` (`review` + `lint` + `test-race`).
    Non-negotiable, no discretion, no exceptions.
 2. **Invariant tests** — the project's real safety net. A rule that matters is a
    test that fails the build (§5).
@@ -99,11 +99,11 @@ Every change, including one-line ones.
 **Gates (must be green — paste the output, don't claim it)**
 
 - [ ] `make ci` — one command for the universal Go engine checks: `make review`
-      (`fmt-check` + `vet` + `test` + `gates`), `make lint`, and `make test-race`.
+      (`fmt-check` + `vet` + `test` + `check`), `make lint`, and `make test-race`.
       Use the same pinned staticcheck version as CI.
-- [ ] The affected platform job: `make app-test`; the complete Tauri CI job
+- [ ] The affected platform job: `make test-macos`; the complete Tauri CI job
       (typecheck + UI build + Rust check/format/test/clippy/audit); or
-      `make docs-check docs-build`
+      `make check-docs build-docs`
 
 **Shape**
 
@@ -115,9 +115,11 @@ Every change, including one-line ones.
       load-bearing. No comments narrating the current task.
 - [ ] No dead code, no commented-out blocks, no `TODO` without an owner or issue.
 
-**Commit record** — the commit is the reviewable unit here. This repository has
-no pull requests, so nothing in `.github/` executes; the commit trailer is the
-durable record of the risk class and the review (§12).
+**Commit record** — the commit is the reviewable unit. GitHub Actions
+(`.github/workflows/ci.yml`, `release.yml`) run on `main` and on pull
+requests; `SECURITY.md` requires branch protection so those jobs are
+mandatory before merge. The commit trailer is the durable record of the
+risk class and the review (§12).
 
 - [ ] Install the gate once per clone: `make hooks`. An uninstalled gate has
       caught nothing, and reads exactly like a passing one.
@@ -144,7 +146,7 @@ durable record of the risk class and the review (§12).
 
 ---
 
-## 5. Findings become gates
+## 5. Findings become check
 
 This is the mechanism that makes review compound instead of repeating. It is
 already how this codebase works — `internal/store/coordinator_test.go` parses
@@ -159,15 +161,15 @@ stop at the lowest rung that actually holds:
 | **Comment** | The constraint is local and obvious from the code. | `// re-entrancy is carried in the context (ADR 0009)` |
 | **Checklist item** | Judgment is genuinely required every time. | "does the plan express rollback?" |
 | **Test that fails the build** | The rule is structural, mechanical, and silently violable. | `coordinator_test.go`, `tables_test.go`, `help_parity_test.go` + `testdata/parity/cli-tree.json` |
-| **CI / make gate** | The fact is asserted in more than one language or place. | `make protocol-sync`, `make release-check`, `check-node-free-app.sh` |
+| **CI / make gate** | The fact is asserted in more than one language or place. | `make check-protocol`, `make check-release`, `check-node-free-app.sh` |
 
 Every P0 and every P1 that was not a one-off gets a rung-3 or rung-4 gate in the
 same change. A P0 fixed with only a comment will be paid for again — this has
-already happened: the `src/` move added a `make paths` guard and still shipped
+already happened: the `src/` move added a `make check-paths` guard and still shipped
 `working-directory: go` in CI, because the guard did not check GitHub Actions
 syntax. The guard was then extended to cover it. That is the pattern.
 
-Two rules about gates themselves:
+Two rules about check themselves:
 
 - **Two implementations of the same gate must reject the same shapes.** The
   Node-free bundle check exists twice — `src/macos/scripts/check-node-free-app.sh`
@@ -200,6 +202,10 @@ Apply the universal list, plus the list for every area the diff touches.
       `staticFallbackModels`, `roleModelHints`).
 - [ ] New provider behaviour was exercised against a throwaway root
       (`make sandbox`), never a real account.
+- [ ] A new proxy-capable provider (or a new upstream capability) has a row in
+      the discovery matrix (`internal/provider/discovery_matrix_test.go`): its
+      resolved upstream publishes a catalog operation, or the exception names
+      its reason. An unclassified provider fails the build.
 
 ### Proxies and secrets
 
@@ -209,6 +215,22 @@ Apply the universal list, plus the list for every area the diff touches.
 - [ ] Listeners bind loopback only.
 - [ ] Per-instance request authentication is intact (ADR 0006).
 - [ ] Nothing that prints a secret was added to a failure path.
+- [ ] A new `Upstream` field has a row in `upstreamCarry`
+      (`internal/proxy/upstream_carry_test.go`) saying which hops carry it
+      (`buildServer`, `upstreamValue`, `flattenedNativeUpstream`). An
+      unclassified field fails the build; a dropped copy fails silently in
+      production, never in tests.
+- [ ] A vendor strictness the proxy papers over (rejected parameters, required
+      schema keys) has a strict-mock case that validates like the vendor, fed
+      with a realistic client-shaped body — not a mock that accepts everything.
+- [ ] Hub references stay integral: deleting an account cascades its hub
+      membership at the database level (`proxy_hub_sources` foreign keys) and
+      prunes its route pins by value (`PruneAccount`). Positional pins and
+      slice surgery are retired — a dangling `provider/account` must be
+      impossible, not just rare.
+- [ ] A restarted or adopted hub child serves the stored config revision
+      (`hub.ChildSynced`, ADR-0030). Liveness checks alone re-adopt stale
+      routing.
 
 ### Stores, locking, database
 
@@ -267,11 +289,12 @@ Apply the universal list, plus the list for every area the diff touches.
 
 ### Cross-language and release
 
-- [ ] A directory move under `src/` was preceded by `make paths`.
+- [ ] A directory move under `src/` was preceded by `make check-paths`.
 - [ ] Desktop protocol version bumped in **all three**: `internal/buildinfo`,
       `src/tauri/app/src/protocol.rs`, `src/macos/AppServiceClient.swift`.
-- [ ] A version change is applied through `make release-set` / `release-bump`;
-      `VERSION` is canonical and three other files must agree.
+- [ ] A version change is applied through `make set-version` / `bump-version`;
+      `VERSION` is canonical and the five secondary sources in
+      `src/go/cmd/anypick-release/version.go` (`secondarySources`) must agree.
 - [ ] No support is claimed for a platform the release matrix does not build.
 
 ### Docs
@@ -336,7 +359,7 @@ For a high or architectural change:
 4. Apply every P0/P1 fix and add the regression. Only P2 may be deferred, with a
    linked follow-up, owner, and due date. Skip speculative suggestions.
 5. If the diff changed after review, record the new head SHA, re-run affected
-   gates, and re-review the changed hunks. Review is not done until the reviewed
+   check, and re-review the changed hunks. Review is not done until the reviewed
    commit is green, not until someone says it is.
 
 A reusable reviewer prompt lives in §9.
@@ -375,7 +398,7 @@ it is never silently treated as not applicable.
 An emergency shortens coordination; it does not lower the evidence bar. Prefer
 reverting to the last known-good release. Security incidents use the private
 advisory path in `SECURITY.md`. If required CI is unavailable, restore service
-with a known-good artifact and merge only after the gates recover. No emergency
+with a known-good artifact and merge only after the check recover. No emergency
 may bypass a P0/P1 or weaken a gate.
 
 ---
@@ -393,11 +416,26 @@ Review quality is not measured in comments per PR. Watch these instead:
   year and then costs a weekend. `internal/pubgate` and `internal/modelcache`
   were the last two; both now have suites that were mutation-checked when they
   were written (break `Clear`'s scope or the nil-`Gate` no-op and a test fails).
-- **Docs drift.** Run `make gates` after any structural move; treat a doc that
-  names a deleted path as a P1. Two live examples were found and fixed in this
-  pass: the PR template asked for `pnpm check` and pointed at a TypeScript file
-  deleted with the JS toolchain, and the README documented `pnpm macos:design`
-  from the deleted root `package.json`.
+- **Docs drift.** Treat a doc that names a deleted path as a P1, and do not
+  rely on noticing it: `checkDocumentCitations` now fails when AGENTS.md,
+  CONTRIBUTING.md, CODE_REVIEW.md, SECURITY.md or an ADR cites a `*.md` that
+  does not exist. It found six live ones in its first run — two accepted ADRs,
+  this document and three source comments, all still pointing at plans that had
+  been consolidated into `docs/history/`. It is scoped to the documents that
+  state what is true now: a README has to be able to say "these were retired"
+  and name them, and a source comment may cite another project's docs.
+  Two earlier examples were found by hand: the PR template asked for
+  `pnpm check` and pointed at a TypeScript file deleted with the JS toolchain,
+  and the README documented `pnpm macos:design` from the deleted root
+  `package.json`.
+- **Prose that describes the code is not gated, and cannot be.** Two claims in
+  AGENTS.md's own invariants had drifted from the tree: that
+  `TransportFor("cline")` is `unsupported` on every account adapter — its own
+  adapter returns `ManagedBuiltinProxy`, and a passing test pins that — and
+  that `docs/AGENTS.md` is a symlink, which it never was. Both were corrected
+  by hand. A claim about behaviour is not a citation, so there is no rung-3
+  form for it; it is a §6 checklist item, and these two are the evidence that
+  someone has to actually read the invariants against the code.
 
 ---
 
@@ -446,7 +484,7 @@ Tracked so it does not evaporate:
 
 Done:
 
-- [x] `make review` — `fmt-check` + `vet` + `test` + `gates` in one command.
+- [x] `make review` — `fmt-check` + `vet` + `test` + `check` in one command.
 - [x] `make lint` — staticcheck, pinned at `v0.8.1` in CI. Fails when the tool
       is absent rather than skipping, and prefers the GOPATH the Makefile pins
       (the ambient GOPATH's staticcheck was built with an older Go and cannot
@@ -496,18 +534,18 @@ Done:
       `main` did not compile, `git status` said nothing (an ignored path is
       invisible, not merely untracked), and `refs.ProviderScope` — the lock
       scope behind ADR 0011 and invariant #5 — was not in the repository. Both
-      `refs/` and `design/` are now anchored to the root, and `make paths`
+      `refs/` and `design/` are now anchored to the root, and `make check-paths`
       fails if any `.go` file under `src/go` is git-ignored or if any of the
       authority documents is untracked (§4).
 - [x] **The table-ownership guard and two concurrency suites were also
       untracked** — `internal/db/tables.go` + its test (invariant #6),
       `internal/pubgate/gate_test.go` and `internal/modelcache/store_test.go`.
       On `main` those rules were asserted by nobody.
-- [x] **`make paths` was dead on arrival.** A `#` comment inside the recipe's
+- [x] **`make check-paths` was dead on arrival.** A `#` comment inside the recipe's
       backslash-continuation chain commented out the rest of the target —
       including the git-ignored-source check, the authority-documents check,
-      and the final `exit 1` — so `make paths` reported success no matter what.
-      Found by mutation: adding `refs/` to `.gitignore` still left `make paths`
+      and the final `exit 1` — so `make check-paths` reported success no matter what.
+      Found by mutation: adding `refs/` to `.gitignore` still left `make check-paths`
       green. Every explanatory comment was moved above the target (the Makefile
       "path integrity" block documents the trap). The same pass added the
       "no build artifact is tracked" check the committed 16.9 MB
@@ -533,7 +571,8 @@ Done:
 Open:
 
 - [x] **`internal/store` no longer has a ctx-less read wrapper**
-      (2026-09-08). Shipped as §8.2 of `SYSTEM_ARCHITECTURE_2026-09-07.md`,
+      (2026-09-08). Shipped as §8.2 of the architecture plan that has since been
+      consolidated into `docs/history/ARCHITECTURE_AND_ROADMAP_2026-09-08.md`,
       but this list was never updated, so it went on claiming six of them at
       `account_store.go:91,114,439,473,597` and `proxy_config.go:14`. Verified,
       not assumed: production files under `internal/store` contain **zero**
@@ -581,7 +620,7 @@ The maintainer who cuts releases owns this pass. Record each result in one
 GitHub issue labelled `review-health`; §10 remains the durable backlog, not the
 run log. The issue title is `Review health — YYYY-MM-DD` and records these
 metrics: risky PR review coverage, merged P0/P1 count, repeated finding families
-without gates, exemption count, packages without tests, docs drift, and overdue
+without check, exemption count, packages without tests, docs drift, and overdue
 P2 follow-ups.
 
 1. `make ci` from a **clean checkout**, with no shell customisation — a fresh
@@ -627,7 +666,7 @@ never assumed to be running because it is written down.
 | Layer | Fires on | Mechanism | Catches |
 | --- | --- | --- | --- |
 | **L0 — commit** | every `git commit` | `.githooks/commit-msg` | subject shape, exactly one risk class, a named non-author reviewer for High/Architectural, an ADR for Architectural |
-| **L0 — push** | every `git push` | `.githooks/pre-push` → `make fmt-check vet gates` | formatting, vet, and the path/parity/ownership gates. The test suite is deliberately **not** duplicated here: CI runs it on the same push, and a ten-minute local gate is a gate people learn to skip (§5) |
+| **L0 — push** | every `git push` | `.githooks/pre-push` → `make check` | formatting, vet, and the path/parity/ownership check. The test suite is deliberately **not** duplicated here: CI runs it on the same push, and a ten-minute local gate is a gate people learn to skip (§5) |
 | **L1 — CI** | a push or a pull request | `.github/workflows/` | the full suite, race detector, staticcheck, the platform builds, PR metadata validation |
 | **L2 — judgment** | any change that needs it | a human, or a separate agent context (§7) | everything a machine cannot decide |
 
@@ -649,7 +688,7 @@ Three facts worth keeping in view, because each has already been true here:
   — the same failure as a rule nobody can read, wearing a passing test suite.
 - **L1 only executes if a pull request exists.** This repository has none: every
   commit goes to `main`. So the commit trailer, not the PR template, is the
-  durable record of the risk class and the review. `make paths` fails if any file
+  durable record of the risk class and the review. `make check-paths` fails if any file
   in `.githooks/` is untracked, so a clone cannot silently lose the layer that is
   actually doing the work.
 - **A gate and its reader must agree on what a fact is.** `commit-msg` once

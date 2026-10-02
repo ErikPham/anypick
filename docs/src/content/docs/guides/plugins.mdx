@@ -61,7 +61,9 @@ ANYPICK_NO_PLUGINS=1 anypick doctor   # skip every plugin for one run
 
 The providers that used to ship as the `bundled:popular-providers` pack are now
 registered directly by the Go engine. You do not install anything — they are
-available as managed accounts out of the box.
+available as managed accounts out of the box. The table below covers the
+subscription-key vendors; the full built-in set is `BuiltinDefinitions()` in
+`src/go/internal/provider/compatible.go`.
 
 ```bash
 # Omit the --secret value to use the masked prompt.
@@ -69,7 +71,7 @@ anypick add account kimi --credential subscription-key --secret --name personal
 anypick add account minimax --credential api-key --secret --name paygo \
   --option profile=global
 anypick add account mimo --credential subscription-key --secret --name europe \
-  --option profile=europe
+  --option profile=token-plan-ams
 ```
 
 | Provider | `api-key` | `subscription-key` profiles |
@@ -77,9 +79,9 @@ anypick add account mimo --credential subscription-key --secret --name europe \
 | Kimi | Open Platform (`global`, `china`) | Kimi Code membership |
 | GLM | BigModel / Z.AI (`china`, `global`) | GLM Coding Plan (`china`, `global`) |
 | MiniMax | pay-as-you-go (`china`, `global`) | Token Plan (`china`, `global`) |
-| MiMo | pay-as-you-go | Token Plan (`china`, `singapore`, `europe`) |
+| MiMo | pay-as-you-go (`global`) + Token Plan via api-key (`token-plan-cn`, `token-plan-sgp`, `token-plan-ams`) | Token Plan (`token-plan-cn`, `token-plan-sgp`, `token-plan-ams`) |
 | DeepSeek | platform API | — |
-| Qwen | Model Studio (`china`, `singapore`, `us`) | Coding Plan / Token Plan |
+| Qwen | Model Studio (`intl`, `china`) | Coding Plan / Token Plan |
 | Ark | Volcengine / BytePlus (`china`, `global`) | Coding Plan (`china`, `global`) |
 | TokenHub | Tencent pay-as-you-go | Tencent Coding Plan |
 | OpenRouter | multi-model API | — |

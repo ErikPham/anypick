@@ -8,7 +8,7 @@ same way.
 
 | Word | Meaning |
 | --- | --- |
-| **Client** | The CLI you run: `claude`, `codex`, `gemini`, `kiro`, `opencode`, `workbuddy`, `zcode`, `dsh` |
+| **Client** | The CLI you run: `claude`, `codex`, `commandcode`, `gemini`, `kiro`, `opencode`, `zcode`, `dsh`, `pi`, `omp` |
 | **Source** | What powers it: an account (`grok/work`), a gateway (`openrouter-work`), a pool (`pool:gemini`), the opt-in hub (`hub:default`), or a preset (`@work`) |
 | **Binding** | A concrete snapshot: this client → this source, plus model roles |
 | **Preset** | An editable template (`@name`), created only when you pass `--save` |
@@ -29,12 +29,24 @@ along with what it writes for each:
 - `gemini` — Gemini CLI (`GEMINI_API_KEY`, `GEMINI_MODEL`)
 - `kiro` — Kiro
 - `opencode` — OpenCode (an `anypick-managed` provider in `opencode.json`)
-- `workbuddy` — WorkBuddy AI / CodeBuddy (an AnyPick entry in `models.json`)
+- `workbuddy` — WorkBuddy AI / CodeBuddy subscription accounts, serving the
+  clients above through the built-in proxy. The WorkBuddy *app* itself uses
+  its own login directly, and switching the app between saved accounts
+  restores its session file natively.
 - `zcode` — ZCode (an `anypick` provider in `~/.zcode/cli/config.json` and/or
   `~/.zcode/v2/config.json`)
-- `dsh` — DeepSeek Harness (a Cordis-based coding CLI; AnyPick writes
-  `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL` into `~/.dsh/.env` and pins the default
-  model, pointing the harness at the managed proxy so it can ride any upstream)
+- `dsh` — DeepSeek Harness (a Cordis-based coding CLI; AnyPick stores the proxy
+  key in `~/.dsh/.env`, points `llm-deepseek.baseURL` at the managed proxy in
+  `~/.dsh/settings.yaml`, and pins the selected default model and the source's
+  model catalog there, so the harness can ride any upstream)
+- `commandcode` — Command Code (an OpenAI-compatible BYOK provider in
+  `~/.commandcode/providers.json`, with its proxy credential in `auth.json`)
+- `pi` — Pi (an `anypick` provider in `~/.pi/agent/models.json` with the
+  proxy base URL, plus the default provider/model selection in
+  `~/.pi/agent/settings.json`; `~/.pi/agent/auth.json` stays Pi-managed)
+- `omp` — Omp (an `anypick` provider in `~/.omp/agent/models.yml` with the
+  proxy base URL; the default model stays the user's pick in omp's own UI,
+  and `~/.omp/agent/agent.db` credentials are never touched)
 
 Each client has an isolation manifest describing which files and variables
 belong to it, which is what makes `anypick reset <client>` and rollback exact
@@ -49,10 +61,15 @@ model picker once and it stays routed until you `anypick reset zcode`.
 </Aside>
 
 <Aside type="note" title="Which clients cross providers">
-`claude`, `codex`, `opencode`, `zcode` and `dsh` can be bound to any source, including
-one from a different provider — that is what the proxies exist for. `gemini` and
-`kiro` only accept their own provider's login, so `gemini --with grok/work` is
-rejected rather than silently proxied.
+`claude`, `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and `omp`
+can be bound to
+a source from a different provider — that is what the proxies exist for, and
+the exact matrix is enforced by `internal/transport/adapter_test.go`. `gemini`
+and `kiro` only accept their own provider's login, so `gemini --with grok/work`
+is rejected rather than silently proxied. The `workbuddy` app uses its own
+login directly; `workbuddy` *accounts*
+still serve the clients above through the proxy, and switching the app
+between saved accounts works natively via its session file.
 </Aside>
 
 That list is about *binding*. Switching which account is live is broader,
@@ -152,6 +169,6 @@ run, without secrets.
 ## Non-interactive behavior
 
 AnyPick never prompts when there is no TTY, and never guesses a source.
-`use <client>` requires `--with` or `--current`; without one it exits `2`. This
-makes it safe in CI and in scripts. `--no-input` forces the same behavior on a
-TTY, and `--json` switches every command to machine-readable output.
+`use <client>` requires `--with`; without it the command exits `2`. This
+makes it safe in CI and in scripts. `--no-input` refuses prompts even on a
+TTY, and `--json` switches command output to one JSON value on stdout.

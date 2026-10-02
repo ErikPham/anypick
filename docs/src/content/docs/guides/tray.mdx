@@ -14,11 +14,11 @@ Both are front ends, not engines. Neither reads credentials or owns AnyPick
 state: each launches, handshakes with, supervises and shuts down the bundled Go
 service, then renders what that service sends it (ADR 0019 §1).
 
-<Aside type="caution" title="Source preview, not a published app">
-Both targets are available in this repository for development and testing.
-There is no signed/notarized DMG, Homebrew Cask, Windows installer or supported
-download. The release targets in ADR 0020 are planned distribution work, not
-currently available artifacts.
+<Aside type="caution" title="Install from the release channel">
+The GitHub Release is the canonical download source for the signed macOS app
+and the Tauri installers. Homebrew Cask is available when the configured
+external tap is published. Do not copy an unsigned Xcode build to another
+machine and call it a supported release.
 </Aside>
 
 ## The app owns its service
@@ -109,15 +109,15 @@ open src/macos/AnyPick.xcodeproj
 
 Select the shared **AnyPick** scheme and Run. A build phase installs the Go
 executable at `AnyPick.app/Contents/Helpers/anypick-core`. To build from the
-command line instead, use `make app-build`; `make app-test` runs the unit tests
-and the bundled-helper contract, and `make app-verify` additionally asserts the
+command line instead, use `make build-macos`; `make test-macos` runs the unit tests
+and the bundled-helper contract, and `make verify-macos` additionally asserts the
 bundle contains no Node runtime.
 
 **Linux and Windows** — from the repository root:
 
 ```bash
-make tauri-dev     # run against the real Go service
-make tauri-build   # package for this platform
+make run-tauri     # run against the real Go service
+make build-tauri   # package for this platform
 ```
 
 ### Previewing UI states without a live account

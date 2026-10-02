@@ -1,6 +1,6 @@
 ---
 title: Apps & Terminal UI
-description: How Apps routes Claude Code, Codex and ZCode — pick a source, set models, preview, then activate.
+description: How Apps routes Claude Code, Codex, ZCode, dsh, commandcode, pi and omp — pick a source, set models, preview, then activate.
 sidebar:
   label: Apps & Terminal UI
 ---
@@ -8,7 +8,7 @@ sidebar:
 Run `anypick` (or `anypick tui`). You land on **Apps**. That screen is the product:
 it answers one question for each coding tool —
 
-> **What should Claude Code / Codex / ZCode use right now?**
+> **What should Claude Code / Codex / ZCode / dsh / commandcode / pi / omp use right now?**
 
 Everything else (accounts, gateways, proxies) exists to feed that answer.
 
@@ -32,8 +32,9 @@ anypick
 
 Read it top to bottom:
 
-1. **Each row is an app** — Claude Code, Codex, or ZCode. Gemini and Kiro are
-   *not* here; they only switch their own login under Accounts.
+1. **Each row is an app** — Claude Code, Codex, ZCode, DeepSeek Harness (`dsh`),
+   Command Code (`commandcode`), Pi (`pi`), or Omp (`omp`). Gemini, Kiro and
+   WorkBuddy are *not* here; they only switch their own login under Accounts.
 2. **The middle column** is who powers it (account, gateway, …) and which model
    AnyPick set.
 3. **The status** on the right is plain English: ready, native, not set, or
@@ -60,7 +61,7 @@ four short screens. **Nothing is written until the last confirmation.**
 ### 1. Home — choose the app
 
 Move with <kbd>↑</kbd> <kbd>↓</kbd> (or <kbd>j</kbd> <kbd>k</kbd>). Highlight
-Claude or Codex. Press <kbd>enter</kbd>.
+an app — Claude Code, Codex, ZCode, `dsh`, `commandcode`, `pi`, or `omp`. Press <kbd>enter</kbd>.
 
 - Footer says **connect app** when the row is empty or only native.
 - Footer says **change route** when it is already ready.
@@ -90,7 +91,7 @@ Three groups, in plain language:
 
 | Group | Pick this when… |
 | --- | --- |
-| **Native accounts** | You want Claude or Codex on *its own* provider login. AnyPick switches the live credential; the app keeps its own model picker. ZCode has no entry here — AnyPick does not manage a ZCode login — so route it through a gateway or an account proxy instead. |
+| **Native accounts** | You want Claude, Codex, or Z.ai on its *own* provider login. AnyPick switches the saved credential; the app keeps its own model picker. ZCode accounts can be detected from the encrypted local login or added through Z.ai's browser flow. |
 | **Gateways & proxies** | You want another provider, an API key endpoint, a multi-account pool, or the Proxy Hub. AnyPick will set models next. |
 | **Saved setups** | You already saved a full recipe with `--save` / a preset (`@name`). |
 

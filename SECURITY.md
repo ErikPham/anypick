@@ -12,7 +12,7 @@ Include the affected version, a minimal reproduction, impact, and any relevant p
 
 ## Security boundaries
 
-AnyPick intentionally handles local credentials and client configuration. It writes only to AnyPick-managed state and explicit adapter-owned paths, and journals compensating actions before mutable activation steps.
+AnyPick intentionally handles local credentials and client configuration. It writes only to AnyPick-managed state and explicit adapter-owned paths, and journals compensating actions before mutable activation steps. The reachable trust boundary is: loopback-only proxy listeners with per-instance request tokens (ADR 0006), OS keychain/credential-store items the providers own, and the live credential/config files the adapters rewrite (Claude/Codex/Cline/Gemini/OpenCode paths owned by `src/go/internal/provider` and `src/go/internal/client`).
 
 ## Required branch protection
 
@@ -22,7 +22,7 @@ The `main` branch must be protected with:
 
 - **Require a pull request before merging.** No direct pushes to `main`.
 - **Require at least one approving review from an independent reviewer.** Self-review is not independent review; a risky change needs a reviewer who did not write it. `CODEOWNERS` (`* @outof0`) is what makes a code-owner review bite once contributors exist — it has no effect until branch protection requires code-owner review.
-- **Require status checks to pass before merge.** The following CI checks must be *required*: format / vet / staticcheck (Ubuntu), Go tests (Ubuntu), Go tests (Windows), the Tauri app check, the macOS app + helper contract, and the docs site build.
+- **Require status checks to pass before merge.** The following CI checks must be *required*: format / vet / staticcheck (Ubuntu), Go tests (Ubuntu), Go tests (Windows), the Tauri app check, the macOS app + helper contract, the docs site build, and the distribution adapters job.
 - **Require the "Review metadata" job** (the job that records review metadata for architectural / severity-gated changes) to pass.
 - **Do not loosen these when a new contributor joins.** The opposite: enable `CODEOWNERS` + branch protection *first*, then grant push access.
 

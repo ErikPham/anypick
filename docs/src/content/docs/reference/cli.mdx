@@ -3,10 +3,10 @@ title: CLI reference
 description: Every AnyPick command, global flag, exit code, and environment variable.
 ---
 
-The command name is `anypick`. During the current development preview, run the
-same command tree from a checkout with `make run ARGS="…"`; for example,
-`make run ARGS="list accounts"`. No supported CLI or native-app installer is currently
-published.
+The command name is `anypick`. Download a checksum-listed archive from the
+GitHub Release, or install the thin npm launcher when that channel is enabled.
+During development, run the same command tree from a checkout with
+`make run ARGS="…"`; for example, `make run ARGS="list accounts"`.
 
 The native macOS application is a separate app-owned target. It launches its
 bundled Go service itself and does not need this CLI to parent it.
@@ -31,54 +31,125 @@ Valid on every command.
 ## Bindings
 
 ```bash
-anypick use [client] [--with <source>] [--current]
-                     [--model <id>] [--save <name>]
-anypick run [client] [--with <source>] [--model <id>]
-anypick current [client]
-anypick link <client> [--with <source>] [--model <id>]
+anypick use <client> --with <source> [--model <id>] [--transport auto|direct|proxy] [--allow-foreign-config]
+anypick use codex --with <source> --profile <name> [--model <id>] [--transport auto|direct|proxy] [--allow-foreign-config]
+anypick run <client> (--with <source>|--profile <name>) [--model <id>] -- <args…>
+anypick codex profile login <name> [--auth-method <id>] [--source <id>]
+anypick codex profile list
+anypick codex profile show <name>
+anypick codex profile remove <name> [--yes]
+anypick current <provider>
+anypick models <client> [--with <source>]
+anypick link <client> [--with <source>] [--model <id>] [--allow-foreign-config]
 anypick unlink [client]
 anypick reset [client]
 ```
 
 | Command | Description |
 | --- | --- |
-| `use` | Set what a client uses by default |
-| `use --current` | Re-apply the stored global binding |
-| `use --save <name>` | Bind, and also save the result as a preset |
+| `use` | Set what a client uses by default (`--with` is required) |
 | `run` | Launch a client with its effective binding |
-| `current` | Show effective bindings |
-| `link` / `unlink` | Project-scoped bindings for the current directory |
+| `current` | Show one provider's effective bindings |
+| `models` | List the model ids the bound source publishes |
+| `link` / `unlink` | Project-scoped bindings for the current directory; `link` without `--with` re-applies the stored global spec |
 | `reset` | Remove AnyPick-managed configuration for a client |
 
 `--with` accepts an account (`grok/work`), a gateway name, a pool
 (`pool:gemini`), the Proxy Hub (`hub:default`), or a preset (`@work-stack`).
+`--transport` pins the route policy instead of letting the planner choose.
+
+#### Client configs AnyPick does not own
+
+AnyPick writes other tools' config files, so it refuses to replace a value it
+cannot prove it wrote. If `~/.claude/settings.json` or a Codex config already
+points at your own login or endpoint, `use` fails with `CLIENT_CONFIG_FOREIGN`
+and names the file and the keys at stake — the config is left byte-identical.
+
+`--allow-foreign-config` is the explicit answer: it backs the current file up
+under `$ANYPICK_HOME/recovery/clients/<client>/` and then replaces those values.
+Consent is per run and never persisted, and the desktop app asks the same
+question with a **Manage with AnyPick** button instead of a flag. A client
+AnyPick already manages (a loopback proxy endpoint, or a config carrying
+AnyPick's managed marker) is updated without asking.
+
+### Named Codex profiles
+
+`--profile` gives Codex a stable native profile name while AnyPick stores the
+source behind it. This is useful when one shell or script needs several saved
+routes: each profile has its own `CODEX_HOME`, `<name>.config.toml`, and
+`auth.json`. Proxy-backed profiles also get an owner-only environment file.
+
+For a saved Codex account, `auto` uses a native profile home and copies that
+account's saved `auth.json`; it does not touch the desktop app's live
+`CODEX_HOME`. To create an account and profile without switching the desktop
+login, use `profile login`:
+
+```bash
+anypick codex profile login work
+anypick use codex --with codex/work --profile work --model gpt-5.6
+anypick use codex --with openrouter-work --profile gateway
+anypick use codex --with hub:default --profile hub-work
+```
+
+`profile login` runs the official Codex login with
+`CODEX_HOME=$ANYPICK_HOME/clients/codex/profiles/work/codex-home`, so the
+browser flow writes account B there. AnyPick then saves the same file as the
+`codex/work` snapshot and restores the desktop active pointer. To use an
+account-backed proxy instead, enable it and pin `--transport proxy`:
+
+```bash
+anypick proxy enable codex work
+anypick use codex --with codex/work --profile work-proxy --transport proxy
+```
+
+The default Codex CLI config accepts the same routes without `--profile`:
+
+```bash
+anypick use codex --with codex/work --transport proxy
+anypick use codex --with hub:default
+```
+
+To run a profile through an isolated Codex CLI process, use:
+
+```bash
+anypick run codex --profile personal -- exec --help
+anypick codex profile list
+```
+
+For a raw invocation, use the `launch` command printed by
+`anypick codex profile show <name>`. It sets the profile-specific `CODEX_HOME`
+explicitly; proxy-backed profiles also source their owner-only env file. Do not
+print or commit that env file: it contains the local proxy credential.
+Hub-backed profiles have distinct route tokens, so activating one profile
+does not invalidate the default route or another profile. These commands
+configure Codex CLI; Codex Desktop keeps its own signed-in account and does
+not follow the CLI's `CODEX_HOME`.
 
 <Aside type="caution" title="Non-interactive use">
-`use <client>` requires `--with` or `--current`. With neither, and no TTY to
-prompt on, it exits `2` instead of guessing.
+`use <client>` requires `--with`. Without it there is nothing to derive the
+source from, so the command exits `2` instead of guessing.
 </Aside>
 
 ## Inventory
 
 ```bash
-anypick list [accounts|gateways|clients|presets]
+anypick list [providers|accounts]   # default: providers
 anypick providers
 anypick clients
 ```
 
-`list` with no argument prints all four. `ls` is an alias.
+There is no `ls` alias and no `list gateways|clients|presets` form: gateways,
+presets, and plugins each have their own command family below.
 
 ## Adding sources
 
 ```bash
-anypick add account [provider] [--current] [--new]
-    [--name <name>] [--source <id>] [--auth-method <id>]
-    [--api-key [key]] [--region <region>]
-    [--credential <kind> --secret [secret]]
-    [--option <key=value...>]
-anypick add gateway [name] --provider <id> --endpoint <url>
-    [--api-key <key> | --api-key-env <var>]
-    [--model <id>] [--models <role=id...>]
+anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
+anypick add account <provider> --new --name <name> [--auth-method <id>] [--source <id>]
+anypick add account <provider> --name <name> --credential <kind> --secret [--option profile=<id>] [--region <region>]
+anypick add gateway <name> --provider <id> [--endpoint url]
+    [--api-key [key] | --api-key-env <var> | --secret <key>]
+    [--model <id>] [--models <role=id>]
 ```
 
 `--current` snapshots the login that is live now. `--new` uses an available
@@ -86,34 +157,39 @@ provider-owned browser sign-in and saves its resulting native credential;
 otherwise it stashes the current login and prints the manual continuation.
 Official methods are preferred, while `--auth-method <id>` can select any method
 the provider declares, including a community method. `--source <id>` picks an
-explicit native store for a multi-source provider. `--api-key` is the
-backwards-compatible shortcut for `--credential api-key` and prompts for the
-value when it is omitted; `--region` is reserved for Kiro API-key accounts
-(not implemented yet — refused with a clear error). Plugin providers use
-`--credential <kind>`, `--secret`, and one or more provider-declared
-`key=value` qualifiers after `--option`. Omit the `--secret`
-value to use a masked prompt.
+explicit native store for a multi-source provider. `--credential <kind>`
+(covers `--api-key` for compatible providers) plus `--secret`, `--api-key`, or
+a bare `--api-key` prompt supplies an API-key credential; `--profile` or
+`--option profile=<id>` selects an endpoint profile, and `--region` is the
+Kiro API-key cloud region. Omit the `--secret` value to use a masked prompt, or
+pass it through `ANYPICK_SECRET`.
 
 ## Accounts
 
 ```bash
 anypick account list [provider]
-anypick account refresh <provider> [name] [--all]
-anypick account remove <provider> <name>
-anypick account export <provider> <name> -o <file>
-anypick account import <provider> <name> -i <file> [-f]
+anypick account refresh [provider [name]]
+anypick account remove <provider> <name> [--yes]
+anypick account export <provider> <name> --out <file>
+anypick account import <provider> <name> <file> [--force]
 ```
 
-`refresh` with no name refreshes the live login. `rm` is an alias for `remove`,
-`ls` for `list`.
+`refresh` adopts the provider's current live login into a saved account. With no
+provider it tries every saved account; with a provider (and optionally a name)
+it refreshes just those. A refresh that would give one account another account's
+snapshot is refused — one login stays one account — so refreshing a whole
+provider cannot silently collapse distinct logins into the current live one.
+There is no `rm` alias.
 
 ## Gateways
 
 ```bash
+anypick gateway add <name> --provider <id> [--endpoint url]
+    [--api-key [key]|--api-key-env <var>|--secret <key>]
+    [--model <id>] [--models <role=id>]
 anypick gateway list
 anypick gateway show <name>
-anypick gateway edit <name> [--endpoint <url>] [--api-key <key>]
-    [-m <id>] [--models <id...>]
+anypick gateway edit <name> [--endpoint url] [--model id]
 anypick gateway remove <name>
 ```
 
@@ -133,53 +209,61 @@ reference one in `--with`.
 ## Proxies
 
 ```bash
-anypick proxy
-anypick proxy status [provider] [name]
-anypick proxy start [provider] [name] [-p <port>] [--host <host>]
-anypick proxy stop [provider] [name]
-anypick proxy enable <provider> <name> [-p <port>] [--host <host>]
-    [--auth-mode auto|public|api] [--no-start]
-    [--oauth-source auto|gemini-cli|antigravity]
-anypick proxy config <provider> <name> [-p <port>] [--host <host>]
-    [--auth-mode …] [--oauth-source …] [--no-restart]
-anypick proxy disable <provider> <name>
-anypick proxy logs <provider> [name] [-n <lines>] [-f]
+anypick proxy enable|disable <provider> <account> [--port N]
+anypick proxy start|stop|status|token <provider> <account>
+anypick proxy config <provider> <account> [--port N]
+anypick proxy restart <provider> <account>
+anypick proxy logs <provider> <account> [--lines N] [--follow]
 ```
 
-`config` has the alias `set`. `--host` defaults to `127.0.0.1`. Omitting `-p` on
-`enable` takes the first free port. `stop` with no arguments stops every running
-account proxy.
+`--port` on `enable`/`config` pins a port; otherwise the first free port is
+used. `token` prints or rotates (`--rotate`) the authentication token / API key
+for the proxy. `logs` prints the last 50 lines by default.
 
 ### Pools
 
 ```bash
 anypick proxy pool status <provider>
-anypick proxy pool enable <provider> [-p <port>] [--host <host>] [--no-start]
+anypick proxy pool enable <provider> [--strategy failover|round-robin]
+    [--mode single|multi] [--port N] [+account|-account ...]
 anypick proxy pool member <provider> <account> <on|off>
+anypick proxy pool start <provider>
+anypick proxy pool stop <provider>
 anypick proxy pool disable <provider>
 ```
+
+`enable` adds `+account` members and pauses `-account` ones in one call; the
+default strategy is `failover`, the default mode `multi`. With `round-robin`
+each request starts at the next eligible member; with `failover` the account
+that last answered keeps serving until it is rejected. Either way a
+quota-class failure moves the request on to the next member.
 
 ### Proxy Hub
 
 ```bash
-anypick proxy hub status
-anypick proxy hub enable [-p <port>] [--host <host>] [--start]
-anypick proxy hub source <provider> <account> <on|off>
-anypick proxy hub owner <model> <provider> <account>
-anypick proxy hub preview
-anypick proxy hub start
-anypick proxy hub stop
+anypick proxy hub status <name>
+anypick proxy hub enable <name> [--host <host>] [--port N]
+    [--strategy failover|round-robin]
+anypick proxy hub source <name> <provider> <account>
+anypick proxy hub owner <name> <model> <provider>/<account>
+anypick proxy hub preview <name>
+anypick proxy hub start <name>
+anypick proxy hub stop <name>
 ```
 
-Bind with `--with hub:default` after at least one source is enabled. `owner`
-picks which account wins when two sources advertise the same model id;
-`preview` refreshes catalogs and prints routes plus conflicts.
+`source` toggles: present sources are removed, absent ones added (an account
+name is required). `--strategy round-robin` makes the hub spread each model
+across the enabled accounts that can serve it — the accounts of the provider the
+model resolves to — instead of pinning it to one; without the flag the current
+mode is kept. Bind with `--with hub:<name>` after at least one source is
+enabled. `owner` picks which account wins when two sources advertise the same
+model id; `preview` refreshes catalogs and prints routes plus conflicts.
 
 ## Plugins
 
 ```bash
 anypick plugin list
-anypick plugin add <dir|bundled:name>
+anypick plugin add <dir>
 anypick plugin enable <name>
 anypick plugin disable <name>
 anypick plugin trust <name>
@@ -196,15 +280,16 @@ package digest after the plugin's code changes. See
 ```bash
 anypick tui
 anypick tray
-anypick tray start
-anypick tray status
-anypick tray stop
+anypick start
+anypick status
+anypick stop
 ```
 
 `anypick tui` always opens the [Apps / Terminal UI](/docs/guides/terminal-ui).
-The `tray` command family remains in the TypeScript source tree as a compatibility
-path while the native cutover is completed. `start`, `status`, and `stop`
-inspect or control that compatibility supervisor and the proxies it owns.
+The `tray` command family is implemented by the Go engine (the TypeScript tree
+and its tray surface no longer exist): `anypick tray` prints the compatibility
+snapshot, while `start`, `status`, and `stop` control the compatibility
+supervisor and the proxies it owns.
 
 These commands do not define native-app ownership. The macOS app resolves and
 starts `Contents/Helpers/anypick-core`, keeps the menu-bar quick panel inside the
@@ -228,17 +313,17 @@ anypick update
 ```
 
 The command is advisory only: it queries the GitHub releases API for the
-newest published tag and compares it with the running version. There is no npm
-package and no self-updater, so the printed guidance points at the two real
-channels — download the asset from the releases page, or update a source
-checkout and rebuild:
+newest published tag and compares it with the running version. It does not
+replace the package manager or native-app updater. The printed guidance points
+at the npm launcher (when that channel is enabled), the release page, or a
+source checkout:
 
 ```bash
 git pull && make build
 ```
 
-Until the first release is published, the check reports `no published release
-yet` and points at the source workflow. JSON output is supported:
+Until a release is published, the check reports `no published release yet`
+and points at the source workflow. JSON output is supported:
 
 ```bash
 anypick update --json
@@ -249,8 +334,8 @@ anypick update --json
 ```
 
 <Aside type="caution" title="Not a native app updater">
-Do not use `anypick update` for an Xcode-built app. Signed app updates and all
-installer channels remain planned distribution work.
+Do not use `anypick update` for an installed native app. Use the release
+page or the package manager that installed that app.
 </Aside>
 
 ## Shell completion
@@ -288,20 +373,19 @@ source <(anypick completion zsh)
 | Variable | Effect |
 | --- | --- |
 | `ANYPICK_HOME` | Data directory. Default `~/.anypick` |
-| `ANYPICK_UI=tui\|tray` | Override the saved surface for a bare compatibility CLI run |
+| `ANYPICK_SECRET` | Credential value for `add account` / `add <provider>`, so it is not visible in the process listing |
 | `ANYPICK_NO_PLUGINS=1` | Skip loading plugins entirely |
-
-| `ANYPICK_DEBUG=1` | Echo internal events to stderr |
 | `NO_COLOR` | Drop all color; glyphs still carry state |
 
 ### Provider overrides
 
 | Variable | Effect |
 | --- | --- |
-| `OPENCODE_PROXY_UPSTREAM` | Override the OpenCode upstream base URL |
-| `OPENCODE_MODEL_METADATA_URL` | Override model metadata source; `none` disables enrichment |
-| `GEMINI_PROXY_UPSTREAM` | Override the Gemini upstream base URL |
-| `GEMINI_CODE_ASSIST_UPSTREAM` | Override the Code Assist endpoint |
-| `GROK_PROXY_UPSTREAM` | Override the Grok upstream base URL |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY` | Live Gemini API key read by `add account gemini --current` |
+| `GEMINI_API_KEY_UPSTREAM` | Override the Gemini API-key upstream base URL |
+| `GEMINI_CODE_ASSIST_UPSTREAM` | Override the Gemini Code Assist endpoint |
+| `GEMINI_CLI_HOME`, `GEMINI_CONFIG_DIR` | Gemini config-dir resolution (`GEMINI_CLI_HOME` wins, matching the CLI) |
+| `CLAUDE_BINARY`, `CODEX_BINARY`, `KIRO_BINARY`, `GROK_BINARY` | Launch a specific client binary |
 | `KIROLINK_BIN` | Path to an external `kirolink` binary |
-| `CLAUDE_BINARY`, `CODEX_BINARY`, `KIRO_BINARY` | Launch a specific client binary |
+| `WORKBUDDY_BASE_URL` | Override the WorkBuddy/CodeBuddy API base |
+| `CLINE_API_BASE_URL`, `CLINE_WORKOS_CLIENT_ID` | Cline API/WorkOS overrides (the client id is public; it overrides the built-in default) |

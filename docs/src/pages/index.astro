@@ -5,7 +5,7 @@ import Header from "../components/Header.astro";
 import RoutingConcept from "../components/RoutingConcept.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const sourceCommand = "open src/macos/AnyPick.xcodeproj";
+const sourceCommand = "npm install --global anypick";
 
 const capabilities = [
   {
@@ -108,7 +108,7 @@ const proof = [
           <div class="hero-copy max-w-2xl">
             <p class="eyebrow">
               <span></span>
-              Native source preview · no signed download yet
+              Native releases · one Go engine
             </p>
 
             <h1 class="mt-7 text-balance text-[clamp(3rem,7vw,5.4rem)] font-semibold leading-[0.96] tracking-[-0.055em]">
@@ -137,7 +137,7 @@ const proof = [
                 <span>Copy</span>
               </button>
             </div>
-            <p class="mt-3 font-mono text-xs text-[#8b93a7]">macOS 14+ source target · Xcode + Go · no published installer</p>
+            <p class="mt-3 font-mono text-xs text-[#8b93a7]">macOS 14+ signed app · CLI archives on GitHub Releases · npm launcher when enabled</p>
             <p class="sr-only" aria-live="polite" data-copy-status></p>
           </div>
 

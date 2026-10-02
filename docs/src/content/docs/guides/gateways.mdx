@@ -29,9 +29,24 @@ anypick run claude
 | `--api-key-env <var>` | Read the key from an environment variable at activation instead of storing it |
 | `--model <id>` | Default model for this gateway |
 | `--models <id...>` | Models to expose in the client's own model picker |
+| `--gateway-id <id>` | Gateway id for providers addressing several gateways per endpoint |
 
-Catalog providers: `anthropic`, `openai`, `openrouter`, `grok-api`, `litellm`,
-`local`, `custom`.
+Catalog providers include `anthropic`, `openai`, `openrouter`, `grok-api`,
+`gemini-api`, `litellm`, `local`, `custom` and `cloudflare-aigateway` — the
+full set is `Builtin()` in `src/go/internal/catalog/catalog.go`.
+
+Cloudflare AI Gateway needs an explicit endpoint (the base URL embeds the
+Cloudflare account id) and a gateway id:
+
+```bash
+anypick add gateway cf-prod \
+  --provider cloudflare-aigateway \
+  --endpoint https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/v1 \
+  --api-key "$CF_API_TOKEN" \
+  --gateway-id my-gateway
+```
+
+Omit `--gateway-id` to use the provider default (`default`).
 
 <Aside type="tip" title="Keys you would rather not store">
 `--api-key-env OPENROUTER_API_KEY` records the variable name, not the secret.
@@ -56,9 +71,15 @@ subscription.
 
 ## Models in the client's picker
 
-For Codex, `--models` writes a managed model catalog so exactly those ids show
-up under `/model`. Set the default with `--model`; it becomes the model the
-client starts on.
+For clients with a native model registry — Codex, OpenCode, ZCode,
+Command Code, and DSH — AnyPick writes the source-scoped catalog so the ids
+available in the client match the selected gateway or proxy. Set the default
+with `--model`; it becomes the model the client starts on.
+
+Claude Code, Gemini CLI, and Kiro expose model selection through environment
+variables or native role slots rather than a writable model registry. AnyPick
+configures their native default/role values, but cannot invent a client-side
+list those programs do not read.
 
 Account proxies do not need this — AnyPick reads their live `/v1/models` catalog
 whenever it activates the client.

@@ -15,16 +15,23 @@ switch between them, and lend one to a client that was never designed to use it.
 | `codex` | `~/.codex/auth.json` | direct, for Codex only |
 | `grok` | `~/.grok/auth.json` | built-in dual proxy (OpenAI + Anthropic) |
 | `opencode` | OpenCode auth store | built-in Zen/Go dual proxy |
-| `gemini` | `~/.gemini/` (`.env`, oauth, accounts) | built-in dual proxy → Gemini API |
+| `gemini` | `~/.gemini/` (`.env`, oauth, accounts), Antigravity state/keyring | built-in dual proxy → Gemini API |
 | `kiro` | kiro-cli secret store, `~/.aws/sso/cache`, or an API key you supply | external `kirolink` / `kiro-proxy`, if installed |
+| `workbuddy` | WorkBuddy / CodeBuddy subscription (device-flow OAuth) | built-in OpenAI proxy, serving the clients above; `anypick use workbuddy/<name>` also switches the WorkBuddy app itself via its session file |
+| `cline` | ClinePass / Cline WorkOS login | built-in OpenAI proxy (no Cline client adapter yet) |
 
-`anypick providers` prints the same table with live status for your machine.
+`anypick providers` is the authoritative inventory for the build on your
+machine. In addition to the native providers above, the Go engine ships the
+compatible API-key and subscription-key providers directly; they do not
+require a `popular-providers` plugin. See
+[Compatible providers are built in](/docs/guides/plugins#compatible-providers-are-built-in)
+for the credential profiles and examples.
 
-The optional `popular-providers` plugin adds official API and developer-plan
-accounts for Kimi, GLM, MiniMax, MiMo, DeepSeek, Qwen, Ark, TokenHub, OpenRouter,
-GroqCloud, Mistral, Together, Fireworks, Cerebras, SiliconFlow, and NVIDIA NIM. See
-[Plugins](/docs/guides/plugins) for the install command and the distinct
-`api-key` / `subscription-key` profiles.
+<Aside type="caution" title="Account backups contain credentials">
+Account backup files are readable JSON and are not encrypted by AnyPick. Store
+them like working credentials. They cover saved accounts; gateway secrets,
+preferences, and activity history are not a complete application backup.
+</Aside>
 
 ## Saving a login
 
@@ -49,10 +56,13 @@ anypick add account codex --new --name work
 ```
 When an installed provider exposes browser Auth, AnyPick backs up the live
 credential, opens the provider's browser flow, verifies the new native login,
-and saves it under the new name in one command. Codex, Claude Code, Kiro, and
-Grok provide this path. If no browser launcher is available, AnyPick falls back
-to clearing the live login and tells you how to save it after signing in with a
-provider-supported tool.
+and saves it under the new name in one command. Codex, Claude Code, Kiro, Grok,
+and Gemini provide this path. Z.ai also supports importing the encrypted ZCode
+login on this Mac or starting its official browser flow. Gemini's picker has separate Gemini CLI and
+Antigravity-compatible Google sources; AnyPick opens the Google OAuth flow
+directly because `gemini` itself has no login-only command. If no browser
+launcher is available, AnyPick falls back to clearing the live login and tells
+you how to save it after signing in with a provider-supported tool.
 </TabItem>
 </Tabs>
 
@@ -61,12 +71,35 @@ likely to conflict with provider policy. They are not a whitelist: a full
 provider plugin may expose a community method, and you can choose it explicitly
 with `--auth-method <id>` or the method picker. Provider terms still apply.
 
+A login is saved once. Saving credential material AnyPick already holds under a
+second name is refused and the error names the account that already has it:
+use that account, or remove it
+(`anypick account remove <provider>/<name>`) before saving under a new name.
+Two names for one snapshot would otherwise look like two accounts that
+switched nothing; `anypick doctor` reports the pairs saved before this rule.
+
 If browser sign-in or snapshot saving fails, AnyPick restores the previous
 native login and active-account pointer. Authorization URLs, one-time codes, and
 launcher output are not copied into tray or JSON output.
 
 For Gemini, `--source gemini-cli|antigravity` picks which sign-in to read when
-both exist.
+both exist. In the macOS app, **On This Mac** imports the subscription already
+logged in to Gemini CLI or Antigravity. **New Account** lets you choose either
+Google source and sign in as another account. A failed or cancelled flow
+restores the previous login and active account; AnyPick never writes a new
+login into Antigravity's IDE database or keychain.
+
+Gemini API keys (`GEMINI_API_KEY` or `GOOGLE_API_KEY`) can also be saved as
+named native accounts. This is separate from a gateway profile and works even
+when no Gemini CLI or Antigravity login is present:
+
+```bash
+anypick add account gemini --credential api-key --secret --name studio
+```
+
+The macOS Add Account sheet keeps all three Gemini paths available: the login
+already on this Mac, a new Google subscription login, and a separate API-key
+form. The API-key path is AnyPick-owned and does not replace the native login.
 
 ## Saving a key instead of a login
 
@@ -82,11 +115,13 @@ never enters your shell history. Every `--option key=value` must be a qualifier
 declared by that provider (`profile` today). The CLI fails closed on anything
 else instead of silently dropping it.
 
-> **Kiro API keys are not implemented yet.** The Go engine has no writer for
-> Kiro API-key snapshots and no API-key mode for its external proxy, so
-> `add account kiro --api-key/--region` is refused with a clear error until
-> that path lands. Kiro logins via browser sign-in (`--new`) and snapshots of
-> the live login (`--current`) work as documented.
+> **Kiro API keys are not accepted yet.** The `kiro` provider declares no
+> `CredentialDefinitions` (it is not a `CredentialInputProvider`), so
+> `add account kiro --api-key/--region` fails closed in `SaveInput` with
+> `UNSUPPORTED_CREDENTIAL_INPUT`, and a bare `--region` is refused in
+> `cmd/anypick/main.go` before it reaches the provider. Kiro logins via
+> browser sign-in (`--new`) and snapshots of the live login (`--current`)
+> work as documented.
 
 In the [terminal UI](/docs/guides/terminal-ui) the same flow is
 **Use an API key instead** on the add-account screen, offered for providers
@@ -112,10 +147,11 @@ In the macOS app, these providers show an API-key form in Add Account instead
 of a sign-in flow.
 
 <Aside type="caution" title="One live login at a time">
-Provider CLIs keep exactly one credential on disk. That is the constraint
-AnyPick works around: saved accounts live in its own store, and activation
-restores the selected one into the provider's path. Do not edit the provider's
-auth file by hand while a binding is active.
+Provider CLIs normally keep one credential in their default home. Saved
+accounts live in AnyPick's store, and ordinary activation restores the selected
+one into that provider path. Codex named profiles are the exception: each one
+gets an isolated `CODEX_HOME`, so multiple Codex CLI accounts can run at once.
+Do not edit a managed auth file by hand while its profile is active.
 </Aside>
 
 ## Using an account
@@ -123,12 +159,50 @@ auth file by hand while a binding is active.
 ```bash
 anypick use codex --with codex/personal    # same-protocol: direct
 anypick use claude --with grok/work        # cross-protocol: proxy starts on demand
+anypick use commandcode --with workbuddy/work --model deepseek-4.1-flash
+anypick run commandcode --with workbuddy/work --model deepseek-4.1-flash --
 anypick run claude
 ```
 
+Codex CLI also supports named routes. AnyPick gives each named route its own
+`CODEX_HOME`, native profile config, and `auth.json`, so profiles can point at
+different saved accounts or gateways without overwriting the global Codex
+config or login:
+
+```bash
+anypick codex profile login personal
+anypick codex profile login work
+anypick use codex --with codex/personal --profile personal
+anypick use codex --with codex/work --profile work
+anypick use codex --with hub:default --profile shared
+anypick codex profile list
+anypick run codex --profile work -- exec --help
+```
+
+`profile login` opens the official Codex sign-in in the selected profile home,
+then saves the resulting credential as `codex/<name>` and materializes the
+profile. It does not replace the desktop app's default `~/.codex/auth.json`.
+For an account already saved in AnyPick, `anypick use ... --profile <name>`
+copies its snapshot into the profile home. Gateway-backed profiles use their
+saved endpoint directly. If a profile should use an account-specific AnyPick
+proxy instead of native Codex auth, enable the account proxy and pass
+`--transport proxy`. A Hub-backed profile has a separate route token, so it
+does not invalidate another Codex profile. The default Codex CLI config can
+also use an account proxy or Hub directly:
+
+```bash
+anypick use codex --with codex/work --transport proxy
+anypick use codex --with hub:default
+```
+
+These routes configure Codex CLI. Codex Desktop retains its own signed-in
+account and does not follow the CLI's `CODEX_HOME`.
+
 When the client and the account speak different protocols, AnyPick starts a
 local translating proxy and points the client at it. You do not start the proxy
-yourself — see [Proxies](/docs/guides/proxies) if you want to.
+yourself — Command Code receives an OpenAI-compatible `anypick-managed` provider
+in `~/.commandcode/providers.json`; its per-instance proxy token is kept in
+`~/.commandcode/auth.json`. See [Proxies](/docs/guides/proxies) if you want to.
 
 ## Managing saved accounts
 

@@ -22,6 +22,11 @@ provider's real API:
   `/v1/responses` request and SSE lifecycle current Codex CLI releases expect
 - **kiro** — delegated to an external `kirolink` / `kiro-proxy` binary if you
   have one installed
+- **workbuddy** — OpenAI Chat Completions (and Anthropic translation) to the
+  CodeBuddy subscription. Some reasoning models can ramble (`OK.` / `Let me
+  write.`); stop the turn and pick a non-router slug such as `hy3` if that
+  happens.
+- **cline** — OpenAI Chat Completions to the Cline gateway
 - **compatible provider plugins** — native Anthropic Messages when the vendor
   exposes it, OpenAI Chat Completions otherwise, plus the Responses lifecycle
   used by Codex; API and coding-subscription keys use the same local boundary
@@ -41,73 +46,56 @@ pass-through.
 
 ## Default ports
 
-| Provider | Port |
-| --- | --- |
-| `grok` | `8080` |
-| `kiro` | `4119` |
-| `opencode` | `4120` |
-| `gemini` | `4130` |
-| plugin: `kimi` … `qwen` | `4141` … `4146` |
-
-A proxy that has no configured port takes the first free one.
+A proxy uses its configured pool port when one is set; otherwise the provider's
+advertised `DefaultProxyPort` when the provider declares one, otherwise the
+shared `8080` fallback (`plannedPoolPort` in `src/go/internal/activation/planner.go`,
+`defaultPoolPort` in `src/go/internal/proxy/service_pool.go`). Declared today:
+Ark `4155`, TokenHub `4156`, GroqCloud `4148`, Fireworks `4151`, Cerebras `4152`,
+NVIDIA NIM `4154` (all in `src/go/internal/provider/compatible.go`).
+A proxy that has no configured port and no provider default takes the first free one.
 
 ## Manual lifecycle
 
 ```bash
-anypick proxy                              # board: every proxy-capable account
-anypick proxy status
-anypick proxy status gemini work
-anypick proxy start
-anypick proxy stop
-anypick proxy enable grok work -p 8080
-anypick proxy disable grok work
-anypick proxy logs gemini -f
+anypick proxy status <provider> <account>
+anypick proxy start <provider> <account>
+anypick proxy stop <provider> <account>
+anypick proxy enable <provider> <account> [--port N]
+anypick proxy disable <provider> <account>
+anypick proxy config <provider> <account> [--port N]
+anypick proxy restart <provider> <account>
+anypick proxy logs <provider> <account> [--lines N] [--follow]
 ```
 
-`enable` configures a proxy and starts it; `--no-start` writes the config only.
-`disable` is the inverse. `config` (alias `set`) changes host, port, or auth
-options on an existing proxy and restarts it, unless you pass `--no-restart`.
-
-`anypick proxy stop` with no arguments stops every running account proxy —
-including one left behind by an older session for an account that is no longer
-active.
+`enable` configures a proxy and starts it; `config` changes the port and
+restarts the proxy; `restart` stops and starts the same account. `status`,
+`start`, `stop` and `logs` each take the exact `<provider> <account>` pair —
+there is no "all proxies" form.
 
 ## Gemini auth sources
 
-Gemini accepts two sign-ins, and `--oauth-source` decides which one a proxy
-uses:
+Gemini accepts two sign-ins. Which one an account stores is decided when the
+account is saved, not per proxy:
 
 ```bash
-anypick proxy config gemini work --oauth-source auto          # default
-anypick proxy config gemini work --oauth-source gemini-cli
-anypick proxy config gemini work --oauth-source antigravity
+anypick add account gemini --current --source gemini-cli --name work
+anypick add account gemini --current --source antigravity --name work
 ```
 
-`auto` honors the Gemini CLI's selected OAuth or API-key login first, then falls
-back to the signed-in Antigravity credential from the macOS Keychain when the
-CLI catalog does not expose the requested model or returns an entitlement error.
-Catalog aliases resolve within a single auth source, so an Antigravity rollout id
-is never sent through Gemini CLI by mistake. Pin a source when you are debugging
-or when policy requires it.
+Omit `--source` and AnyPick infers it from the files the apps left behind
+(gemini-cli first). The proxy serves from the saved snapshot, so switching the
+pinned source means saving a new account, and catalog aliases stay within one
+source — an Antigravity rollout id is never sent through the Gemini CLI by
+mistake.
 
 ## OpenCode auth mode
 
-```bash
-anypick proxy config opencode work --auth-mode auto|public|api
-```
-
-`auto` uses whatever the saved credential supports. `public` restricts the proxy
-to the Zen catalog. The upstream base URL can be overridden with
-`OPENCODE_PROXY_UPSTREAM`, and model metadata enrichment with
-`OPENCODE_MODEL_METADATA_URL` (set it to `none` to disable enrichment).
-
-<Aside type="caution" title="Engine status">
 The Go engine resolves **one** OpenCode catalog per account, from the credential
 that is actually logged in: a Go subscription row targets
 `https://opencode.ai/zen/go/v1`, any other Zen/Go key targets
-`https://opencode.ai/zen/v1`. Per-model catalog routing, `public` mode, and the
-`OPENCODE_PROXY_UPSTREAM` override are not ported yet.
-</Aside>
+`https://opencode.ai/zen/v1`. The TypeScript `--auth-mode auto|public|api` flag,
+per-model catalog routing, and the `OPENCODE_PROXY_UPSTREAM` override are not
+ported; save the account from the credential you want served.
 
 The key is looked up in this order, first hit wins:
 
@@ -137,7 +125,7 @@ one provider behind a single port, so a client sees one endpoint and AnyPick
 handles rotation.
 
 ```bash
-anypick proxy pool enable gemini -p 4130
+anypick proxy pool enable gemini -p 4150
 anypick proxy pool member gemini work on
 anypick proxy pool member gemini alt off      # keep it configured but paused
 anypick proxy pool status gemini
@@ -157,6 +145,45 @@ see per request. Prefer per-account proxies unless you specifically want one
 endpoint with failover.
 </Aside>
 
+### Failover, rotation, and the quota guard
+
+`--strategy failover` (the default) keeps serving from the account that last
+answered and only moves on when that account is rejected. `--strategy
+round-robin` instead starts each request at the next member of the ring, so
+successive requests spread across accounts:
+
+```bash
+anypick proxy pool enable kiro --strategy round-robin
+```
+
+Both strategies walk the *eligible* members only: an account the quota guard has
+put on cooldown is skipped, and rotation skips it too. The difference is where an
+attempt starts, not whether it fails over — a member that answers with a
+quota-class error still hands the request to the next one.
+
+When **every** member is cooling down, the pool keeps serving: it attempts the
+account that will recover soonest and passes the vendor's answer back to the
+caller, rather than refusing locally. One attempt only, so a fully throttled
+provider is not hammered by a ring walk. An exhausted subscription therefore
+surfaces exactly what the vendor said (`429`, `402`, or a reset time), which is
+what a client can act on:
+
+```jsonc
+// ~/.anypick/config.json — set false to restore the local refusal
+{
+  "ui": {
+    "quotaGuard": {
+      "enabled": true,
+      "cooldownMinutes": 60,
+      "serveWhenAllCooling": true
+    }
+  }
+}
+```
+
+The guard itself is toggled per pool: <kbd>f</kbd> on the pool row in the
+terminal UI, or `enabled` in the config above.
+
 ## Proxy Hub (opt-in)
 
 Pools keep one provider. The unified **Proxy Hub** is a separate opt-in surface
@@ -170,6 +197,41 @@ anypick proxy hub status
 anypick use claude --with hub:default
 ```
 
+### Rotation: one global mode for the hub
+
+Every account in the hub has its own on/off switch, and the hub has one global
+mode for how requests pick among the accounts you switched on. By default
+(`failover`) each model goes to the account that owns it — or the first source,
+when nothing claims the model. **Rotate across accounts** spreads each model over
+*every enabled account that can serve it*, so three saved Gemini logins share the
+work instead of one taking every request:
+
+```bash
+anypick proxy hub enable default --strategy round-robin
+```
+
+"Can serve" comes from the provider catalogs, so two providers advertising the
+same model id (a compatibility proxy and the vendor, for example) both take
+turns; accounts that cannot serve the requested model are never chosen. When the
+catalogs know nothing about a model, rotation stays inside the provider the
+model resolves to, and a recorded model owner still decides which provider
+answers — rotation only changes *which account* of it does.
+
+Per-account switches are the whole membership rule: an account switched off is
+never a candidate, and switching every account of a provider off simply removes
+that provider from the hub. The mode is global — not one switch per provider —
+because the hub resolves a source per request and then spreads it.
+
+The hub also keeps a **quota guard of its own** (the same
+`ui.quotaGuard` settings): when a vendor refuses a request because the key or
+account is out of quota, that account cools down and the request moves on to the
+next enabled account that can serve the same model. A vendor refusal that does
+not blame the credential (a real 500, a per-minute rate limit) is handed to you
+verbatim — the hub does not spend another account's quota on it. When every
+candidate is cooling it still serves the one that recovers soonest and passes
+its verdict through, unless `serveWhenAllCooling` is false. Pool proxies keep
+their own guard; this one applies to the hub only.
+
 The Proxy board lists the Hub as its own row when configured; <kbd>enter</kbd>
 or <kbd>m</kbd> opens the Hub editor. Prefer ordinary per-account proxies unless
 you specifically need one shared endpoint across providers.
@@ -181,24 +243,24 @@ the Go service owns local proxy processes. Closing the main window keeps the app
 running; explicit app Quit gracefully stops the helper and its services. The
 menu-bar item is a view of that same app, not a standalone supervisor.
 
-The TypeScript CLI/TUI still has a compatibility supervisor during the source
-cutover:
+The Go engine owns the same supervisor directly (`cmdTray` /
+`runSuperviseChild` in `src/go/cmd/anypick/lifecycle.go`):
 
 ```bash
-anypick tray          # compatibility source surface
+anypick tray          # app surface (same core as `anypick app`)
 anypick tray start
 anypick tray status
 anypick tray stop     # stop that supervisor and the proxies it owns
 ```
 
 From this repository, run those forms with `make run ARGS="…"`. Closing the TUI with
-<kbd>q</kbd> leaves compatibility background state unchanged. Its
+<kbd>q</kbd> leaves background supervisor state unchanged. Its
 <kbd>Shift+D</kbd> and <kbd>t</kbd> actions do not manage a separately launched
 native app.
 
 Orphans are cleaned up rather than accumulating: on startup, AnyPick releases
 leases whose owning process has exited and stops their proxies.
 
-No packaged Linux/Windows tray helper or desktop installer is currently a
-supported download. See [macOS app and menu bar](/docs/guides/tray) for the
-app-owned source target.
+The Linux and Windows Tauri installers are published from the same release
+workflow as the macOS app. See [the release page](https://github.com/outof0/anypick/releases/latest)
+for the current assets; there is no separate tray-only installer.

@@ -5,13 +5,13 @@ other tools' credential and config files and spawns local proxies, so a careless
 change corrupts a developer's real logins. Bias toward verifying over assuming.
 
 The engine is **Go** (`src/go/`): CLI, terminal UI and desktop service all run from
-one bundled binary (ADR 0020). The macOS app is Swift (`src/macos/`). There is
-no npm package and no `bin/` launcher in the tree: distribution is source
-checkouts plus GitHub Release assets (macOS first), and an npm adapter remains
-planned work, not a channel you can install from today.
+one bundled binary (ADR 0020). The macOS app is Swift (`src/macos/`). Distribution
+is source checkouts plus GitHub Release assets (signed macOS app and CLI archives
+first), a thin npm launcher in `npm/anypick/`, and package-manager metadata
+generators in `packaging/` (Homebrew/WinGet/Scoop), all opt-in at release time.
 
 `CLAUDE.md` and `GEMINI.md` are symlinks to this file — edit this one.
-`docs/AGENTS.md` (symlinked the same way) covers the docs site, which has
+`docs/AGENTS.md` is its own document and covers the docs site, which has
 different rules; `docs/AGENT.md` is the nimbus template's own authoring guide.
 
 ## Commands
@@ -25,29 +25,32 @@ make test-race                 # the same under -race
 make vet
 make fmt-check                 # fails if anything is not gofmt-clean
 make lint                      # staticcheck; wants it at $(go env GOPATH)/bin
-make review                    # fmt-check + vet + test + gates in one command
+make check                     # every static gate: fmt-check, vet, cross-file references
+make review                    # check + test: the CODE_REVIEW.md §4 gates in one command
 make build                     # -> src/go/bin/anypick-dev
 
 make run ARGS="providers"      # build, then run a command
 make sandbox ARGS="providers"  # same, against a throwaway HOME + ANYPICK_HOME
 
-make release-check             # VERSION and Xcode MARKETING_VERSION agree
-make release-bump PART=patch   # also: make release-set VERSION=1.2.3
-make artifact-check ROOT=path  # ADR 0020 §8: no Node runtime in the artifact
+make check-release             # every version source agrees with VERSION
+make bump-version PART=patch   # also: make set-version VERSION=1.2.3
+make check-artifact ROOT=path  # ADR 0020 §8: no Node runtime in the artifact
 
-make app                       # open src/macos/AnyPick.xcodeproj
-make app-test                  # xcodebuild unit tests
+make open-macos                # open src/macos/AnyPick.xcodeproj
+make test-macos                # xcodebuild unit tests
 ```
 
-There is no root `package.json` and no pnpm workspace: this repository has no
+There is no root `package.json` and no pnpm workspace: the repository has no
 JavaScript build and no `scripts/` directory — a `Makefile` and Go tooling are
-all there is. The only Node project is `docs/`, the documentation site, with its
-own lockfile.
+all there is. The Node projects are `docs/` (the documentation site, with its
+own lockfile) and the dependency-free npm launcher in `npm/anypick/` (no
+dependencies, so no lockfile).
 
-CI (`.github/workflows/ci.yml`) runs six jobs: format/vet/staticcheck/version
+CI (`.github/workflows/ci.yml`) runs seven jobs: format/vet/staticcheck/version
 sync, Go tests on Ubuntu, Go tests on Windows, the Tauri app check and UI build,
-the macOS app and helper contract, and the docs site. Run the Go ones before
-you claim a change is done.
+the macOS app and helper contract, the docs site, and the distribution adapters
+(npm launcher + packaging scripts). Run the Go ones before you claim a change is
+done.
 
 > **GOPATH trap.** `~/.zshrc` currently exports `GOPATH="$HOME/workspace/ocg/go"`,
 > which is *another project's* module cache. Tests that shell out to `go build`
@@ -55,7 +58,12 @@ you claim a change is done.
 > package times out after many minutes — which looks exactly like a change you
 > just broke. It cost hours once; check this before debugging any code.
 >
-> The Makefile pins `GOPATH := $(HOME)/go`, so `make` targets are always safe.
+> The Makefile pins `GOPATH := $(HOME)/go` and **exports** it, so `make` targets
+> are always safe. The export is global on purpose: two builds spawn `go`
+> indirectly and inherit the environment — Xcode runs
+> `src/macos/scripts/bundle-go-helper.sh`, and `cargo tauri build` runs
+> `src/tauri/app/build.rs`. Scoping the pin to the Makefile's own `go`
+> invocations would hand the wrong module cache to both.
 > If you run `go` directly, use `GOPATH=$HOME/go go test ./...` (warm once with
 > `go mod download all`). The real fix is to delete that export from `~/.zshrc`:
 > Go modules have not needed GOPATH since 1.16.
@@ -63,13 +71,13 @@ you claim a change is done.
 > **`go` may not be on your `PATH` at all.** `~/.zshrc` here also exports a
 > `GOROOT` and a `PATH` entry for a `go@1.21` that is no longer installed, so a
 > bare `go` fails with `command not found` (exit 127) — which reads exactly like
-> a change that broke the build, and is how a gate quietly stops being run. The
-> Makefile resolves the toolchain itself (`PATH`, then `~/sdk/go*/bin`,
-> `/usr/local/go/bin`, `/opt/homebrew/bin`) and prints the install instructions
-> when it finds nothing, so **`make` targets work regardless**. Only a direct
-> `go` invocation needs `export PATH=<go-install>/bin:$PATH`. Keep
-> `GOTOOLCHAIN=auto`: the module requires go1.26, and an older local toolchain
-> delegates upward only under `auto`.
+> a change that broke the build, and is how a gate quietly stops being run.
+> Every `make` target that shells out to Go depends on `go-toolchain`, which
+> fails with the install instructions instead of a bare 127; point it at a
+> toolchain you already have with `make GO=/path/to/go/bin/go <target>`. A
+> direct `go` invocation still needs `export PATH=<go-install>/bin:$PATH`. Keep
+> `GOTOOLCHAIN=auto` (Go's default): the module requires go1.26, and an older
+> local toolchain delegates upward only under `auto`.
 
 The docs site is a **separate** pnpm project with its own lockfile:
 
@@ -88,6 +96,7 @@ run it against the wrong project.
 | --- | --- |
 | How is this layered? What do I implement to add a client/provider? | `CONTRIBUTING.md` |
 | How does everything wire together? | `src/go/internal/app/app.go` — the composition root |
+| How is a release produced and distributed? | `packaging/README.md` and `.github/workflows/release.yml` |
 | *Why* is it like this? | `adr/` — cite records by number |
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
@@ -101,12 +110,25 @@ old superseded.
 
 Breaking one of these is a correctness or security regression, not a style nit.
 
-1. **Capability pairs come from `TransportFor`** in `src/go/internal/transport`.
-   `claude`, `codex`, `opencode`, and `zcode` may accept a source from a
-   different provider; `gemini` and `kiro` return `unsupported` for anything but
-   their own. `src/go/internal/client` lists what *exists*, not what is
-   *allowed* — never infer a pairing from the registry, and never publish one in
-   docs or marketing copy without reading the adapter.
+1. **Capability pairs come from the adapters** in `src/go/internal/transport`.
+   `claude`, `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and
+   `omp` may accept a
+   source from a different provider. `gemini` and `kiro` clients return
+   `unsupported` for anything but their own. The workbuddy *client* uses
+   its own login directly, so every other adapter still returns `unsupported`
+   for it; a workbuddy *account* still serves `claude`,
+   `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and `omp`
+   through the proxy.
+   Switching the WorkBuddy app itself between saved accounts works natively:
+   the provider restores the desktop session file
+   (`workbuddy-desktop-ai.info`), so the running app follows.
+   `cline` is a provider login with no *client* adapter yet, so nothing can be
+   pointed at it. Its own account adapter still classifies the `cline` client
+   `ManagedBuiltinProxy` — Cline's subscription client is proxy-backed — and
+   every other adapter returns `unsupported` for it.
+   `src/go/internal/client` lists what *exists*, not what is *allowed* — never
+   infer a pairing from the registry, and never publish one in docs or
+   marketing copy without reading the adapter.
    `internal/transport/adapter_test.go` requires an explicit expectation for
    every registered client in every adapter row, so adding a client without
    classifying it there fails the build.
@@ -161,7 +183,7 @@ Breaking one of these is a correctness or security regression, not a style nit.
   nothing (an ignored path is invisible, not merely untracked), and
   `refs.ProviderScope` — the lock scope behind ADR 0011 and invariant #5 — was
   absent from the repository. Anchor directory rules to the root: `/refs/`,
-  `/design/`. `make paths` now fails if any `.go` file under `src/go` is
+  `/design/`. `make check-paths` now fails if any `.go` file under `src/go` is
   git-ignored. Note that plain `git check-ignore` **skips tracked paths**, so
   the gate needs `--no-index` to see the pattern rather than the index.
 - **`/dev/null` is a character device.** `Mode()&os.ModeCharDevice != 0` is not
@@ -202,9 +224,11 @@ Breaking one of these is a correctness or security regression, not a style nit.
   follow a switch of `~/.codex/auth.json`. AnyPick only detects the mismatch in
   order to suppress the quota readout (`src/go/internal/provider/codex.go`).
 - **macOS chrome has one contract.** `src/macos/` is a System Settings
-  clone (grouped `Form`, system controls, no cards). Pencil boards are IA/copy
-  only. A prompt that says “native SwiftUI” is not enough if leftover tray
-  cards or RGB tokens are treated as references.
+  clone (grouped `Form`, system controls, no cards) — except the menu-bar
+  Quick Panel, which is deliberately customized product chrome per Pen
+  board 29 (see `src/macos/README.md`). Pencil boards are IA/copy
+  only. A prompt that says “native SwiftUI” is not enough if tray
+  chrome is treated as a reference for panes or sheets.
 - **`MenuBarExtra` is the `.window` Power Quick Panel.** Production and the
   fixture both host `src/macos/MenuBarMenu.swift`, matching Pencil node
   `m0s8el`. Do not replace it with a text-only menu. With no fixture variables
@@ -215,9 +239,22 @@ Breaking one of these is a correctness or security regression, not a style nit.
   `src/macos/README.md`, update the test.
 - **Native app bundles are Node-free (ADR 0020).** Do not copy a private Node
   runtime, an npm/pnpm/tsx shim, an ESM plugin pack, or source-tree absolute
-  paths into `AnyPick.app`. Two gates enforce it and both must reject the same
+  paths into `AnyPick.app`. Two check enforce it and both must reject the same
   shapes: `src/macos/scripts/check-node-free-app.sh` (shell, used by Xcode) and
   `go run ./cmd/anypick-artifact node-free <root>` (Go, used by CI).
+- **Repository-structure checks are Go, not shell in a recipe.** `make check-paths`
+  and `make check-protocol` run `cmd/anypick-repocheck`, whose rules and reasons
+  live in `internal/repocheck`. A check that parses a file must fail when it
+  matches nothing — an empty extraction that reads as success is how three
+  checks once went dead behind a comment in the Makefile. It also owns two rules
+  nothing else can see: an untracked `.go` file under `src/go` (the module
+  compiles it, a clean clone would not have it) and a stray untracked entry at
+  the repository root (where a downloaded bundle or an exported credential
+  would otherwise sit unnoticed).
+- **A make target earns its place three ways only:** automation calls it, a
+  document tells a human to run it, or it is the only way to run a distinct
+  action. `make check-paths` fails when the target list and `.PHONY` disagree,
+  and when a document or workflow names a target that does not exist.
 
 ## macOS SwiftUI (System Settings)
 
@@ -233,7 +270,9 @@ The macOS app’s main window must look like an app Apple could ship:
   colors, materials. Instant-apply toggles.
 - **Do not use** custom cards, rounded containers, gradients, chip strips,
   handmade sidebars, RGB tokens, `TraySpacing` / `QuickPanelMetrics`, or
-  pixel-perfect CSS-like padding. If SwiftUI cannot do a System Settings
+  pixel-perfect CSS-like padding in the main window. The menu-bar Quick
+  Panel is the deliberate exception (customized per Pen board 29; details
+  in `src/macos/README.md`). If SwiftUI cannot do a System Settings
   behavior, bridge AppKit (`NSAlert`, `NSOpenPanel`, `NSSavePanel`, `NSMenu`)
   instead of faking the control.
 - **Settings (⌘,) is a `Settings` scene**, not a main-sidebar destination.

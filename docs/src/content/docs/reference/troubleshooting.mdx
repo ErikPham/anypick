@@ -77,23 +77,26 @@ anypick use claude --with grok/work
 Look at the log, then at the port:
 
 ```bash
-anypick proxy status
-anypick proxy logs gemini -n 100
-anypick proxy config gemini work -p 4131     # move it
+anypick proxy status gemini work
+anypick proxy logs gemini work --lines 100
+anypick proxy config gemini work --port 4131     # move it
 ```
 
-If a proxy from an earlier session is holding the port, `anypick proxy stop`
-with no arguments stops every account proxy, including inactive ones.
+A configured port that is already held no longer fails the start: AnyPick moves
+the proxy to a free port, persists it, rewrites bound clients, and reports the
+move as a warning. A proxy left from an earlier session can still be stopped by
+naming it: `anypick proxy stop gemini work`. There is no "stop everything"
+form; the `anypick proxy` command with no arguments prints its usage.
 
 ### The Gemini proxy rejects a model
 
 An OAuth-only Gemini account can sign a client in but cannot drive the proxy,
 which needs `GEMINI_API_KEY` in the saved login's `.env`. If both sign-ins exist,
-pin one while you diagnose:
+save the source the proxy should serve:
 
 ```bash
-anypick proxy config gemini work --oauth-source gemini-cli
-anypick proxy config gemini work --oauth-source antigravity
+anypick add account gemini --current --source gemini-cli --name work
+anypick add account gemini --current --source antigravity --name work
 ```
 
 ### The saved login and the live login disagree
@@ -104,6 +107,23 @@ credential after AnyPick took its snapshot. Adopt the new one:
 ```bash
 anypick account refresh codex
 ```
+
+### Two saved accounts share one snapshot
+
+`anypick doctor` reports `duplicate-snapshot` when two names for the same
+provider hold the same credential snapshot. Switching between them cannot
+change the login. AnyPick refuses to create new pairs and only asks you to clean
+up ones saved earlier:
+
+```bash
+anypick doctor --json                          # exact names, and which to keep
+anypick account remove workbuddy/work
+```
+
+Doctor names the account to keep as `keep <provider>/<account>` and prints the
+removal commands. When both names are live — one active, another still
+referenced by a client binding — it asks you to re-bind clients to one account
+instead of printing removals, so a cleanup never breaks a route.
 
 ### Proxies keep running after I close the UI
 
@@ -129,11 +149,17 @@ paths, so a failed activation restores the prior state — client config, native
 auth, and any proxy it started. If the process was killed before rollback could
 finish, `anypick doctor --fix` completes it.
 
+An account switch is the same transaction: if the newly selected account cannot
+be applied to bound clients, the active pointer, the client binding and the
+previous account's proxy are all restored, and the error says so. You should
+never see the app claim a new active account while a client still points at the
+old proxy.
+
 ## Digging deeper
 
 ```bash
 anypick --trace use claude --with grok/work    # name each step, no secrets
-ANYPICK_DEBUG=1 anypick proxy status           # echo internal events to stderr
+anypick proxy status <provider> <account>      # live listener state
 anypick doctor --json                          # machine-readable findings
 ```
 
