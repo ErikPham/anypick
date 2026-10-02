@@ -164,6 +164,47 @@ func TestPlannerWarnsOnUnknownModel(t *testing.T) {
 	}
 }
 
+// TestPlannerReapplySpecPreservesRolesAndTransport: a same-source reapply
+// (TUI account switch, desktop route restore) must re-apply the stored spec.
+// Planning a fresh source request would reset model roles and the transport
+// policy — the TUI reapply used to do exactly that.
+func TestPlannerReapplySpecPreservesRolesAndTransport(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.writeOpenCodeLive(t, "x@example.com")
+	if _, err := env.Svc.Save(ctx, "opencode", "x", true); err != nil {
+		t.Fatal(err)
+	}
+	spec := bindings.Spec{
+		Client:          "claude",
+		Source:          refs.AccountRef("opencode", "x"),
+		Model:           bindings.ExplicitModel("gpt-5.6"),
+		TransportPolicy: "proxy",
+		ClientOptions: map[string]interface{}{
+			"modelRoles": map[string]interface{}{
+				"default": "gpt-5.6",
+				"opus":    "gpt-5.6-opus",
+			},
+		},
+	}
+	plan, err := PlanActivation(ctx, Request{
+		Mode: ModePersistent, Client: "claude",
+	}, env.Deps, Options{ReapplySpec: &spec, ReapplyProv: &bindings.Provenance{Kind: "global_binding_snapshot"}})
+	if err != nil {
+		t.Fatalf("reapply plan: %v", err)
+	}
+	if plan.BindingSpec == nil {
+		t.Fatal("reapply plan lost the binding spec")
+	}
+	if got := plan.BindingSpec.TransportPolicy; got != "proxy" {
+		t.Fatalf("transport policy = %q, want proxy", got)
+	}
+	roles, _ := plan.BindingSpec.ClientOptions["modelRoles"].(map[string]interface{})
+	if roles["opus"] != "gpt-5.6-opus" {
+		t.Fatalf("reapply dropped model roles: %+v", plan.BindingSpec.ClientOptions)
+	}
+}
+
 func stringifyRef(r refs.Ref) string {
 	data, _ := json.Marshal(r)
 	return string(data)
@@ -219,5 +260,44 @@ func TestPlannerManagedProxyAccountStillWritesNativeAuth(t *testing.T) {
 	}
 	if !foundRestore {
 		t.Fatal("plan rollback must contain RestoreNativeAuth when WriteNativeAuth is planned")
+	}
+}
+
+// TestPlannerRestoreOnlySkipsNativeAuthWrite: desktop rehydration rebuilds an
+// existing managed route after a service restart. It must start the proxy and
+// rewrite client config without touching the provider's live credential files
+// — a restart cannot know whether the user has since signed into another
+// account.
+func TestPlannerRestoreOnlySkipsNativeAuthWrite(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+
+	env.writeOpenCodeLive(t, "x@example.com")
+	if _, err := env.Svc.Save(ctx, "opencode", "x", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Deps.Accounts.Svc.Store.SetProxyConfigContext(context.Background(), "opencode", "x",
+		store.ProxyConfig{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanActivation(ctx, Request{
+		Mode:            ModePersistent,
+		Client:          "claude",
+		Source:          refPtr(refs.AccountRef("opencode", "x")),
+		TransportPolicy: "proxy",
+	}, env.Deps, Options{SkipNativeAuthWrite: true})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	for _, s := range plan.Steps {
+		if s.Kind == StepWriteNativeAuth {
+			t.Fatal("restore-only plan must not rewrite native auth")
+		}
+	}
+	for _, r := range plan.Rollback {
+		if r.Kind == "RestoreNativeAuth" {
+			t.Fatal("restore-only plan must not plan a native-auth rollback")
+		}
 	}
 }

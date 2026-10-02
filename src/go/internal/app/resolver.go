@@ -2,11 +2,8 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
-	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/catalog"
@@ -17,10 +14,9 @@ import (
 )
 
 // snapshotUpstreamResolver resolves forwarding targets from account
-// snapshots: compatible vendors use their saved endpoint profile + scheme;
-// codex uses the ChatGPT backend with the snapshot's OAuth token. Gateway
-// profiles created via gateway-create carry no account snapshot, so the
-// provider is handed the profile credential in memory instead.
+// snapshots through provider-owned capabilities. Gateway profiles created via
+// gateway-create carry no account snapshot, so the provider is handed the
+// profile credential in memory instead.
 type snapshotUpstreamResolver struct {
 	store     *store.AccountStore
 	providers *provider.Registry
@@ -47,25 +43,36 @@ func (r *snapshotUpstreamResolver) ResolveUpstream(ctx context.Context, provider
 		// once per request, so a cleartext write here races a concurrent
 		// `anypick backup` with a half-written file, and a stale copy keeps
 		// resolving after the key is rotated or deleted (invariants #2 and #4).
-		if gw, ok := pv.(interface {
-			GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error)
-		}); ok && r.profiles != nil {
+		if r.profiles != nil {
 			if pr, perr := r.profiles.GetContext(ctx, accountName); perr == nil &&
 				pr != nil && pr.Meta.Provider == providerID && pr.Secrets.APIKey != "" {
-				if up, uerr := gw.GatewayUpstreamWithKey(pr.Secrets.APIKey); uerr == nil {
-					return up, nil
+				// Providers with a per-account endpoint (Cloudflare AI
+				// Gateway) resolve from the stored endpoint plus the profile
+				// headers. The header map stays generic here; the provider
+				// maps its own keys onto wire headers.
+				if gw, ok := pv.(interface {
+					GatewayUpstreamWithEndpoint(endpoint, apiKey string, headers map[string]string) (*proxy.Upstream, error)
+				}); ok && pr.Meta.Endpoint != "" {
+					if up, uerr := gw.GatewayUpstreamWithEndpoint(pr.Meta.Endpoint, pr.Secrets.APIKey, pr.Secrets.Headers); uerr == nil {
+						return withCatalogScope(up, providerID, accountName), nil
+					}
+				}
+				if gw, ok := pv.(interface {
+					GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error)
+				}); ok {
+					if up, uerr := gw.GatewayUpstreamWithKey(pr.Secrets.APIKey); uerr == nil {
+						return withCatalogScope(up, providerID, accountName), nil
+					}
 				}
 			}
 		}
-		// grok gateways reuse the live x.ai OIDC session (~/.grok/auth.json)
-		// shared with the account flow; no API key, no account snapshot.
-		if providerID == "grok" {
-			if gp, ok := pv.(interface {
-				GatewayUpstream() (*proxy.Upstream, error)
-			}); ok {
-				if up, uerr := gp.GatewayUpstream(); uerr == nil {
-					return up, nil
-				}
+		// Providers with a live-session gateway own how that session becomes
+		// an upstream. The resolver only dispatches the optional capability.
+		if gp, ok := pv.(interface {
+			GatewayUpstream() (*proxy.Upstream, error)
+		}); ok {
+			if up, uerr := gp.GatewayUpstream(); uerr == nil {
+				return withCatalogScope(up, providerID, accountName), nil
 			}
 		}
 		return nil, fmt.Errorf("no snapshot for %s/%s", providerID, accountName)
@@ -78,26 +85,18 @@ func (r *snapshotUpstreamResolver) ResolveUpstream(ctx context.Context, provider
 		if uerr != nil {
 			return nil, uerr
 		}
-		return up, nil
+		return withCatalogScope(up, providerID, accountName), nil
 	}
 
-	if providerID == "codex" {
-		data, rerr := os.ReadFile(filepath.Join(acct.SnapshotDir, "auth.json"))
-		if rerr != nil {
-			return nil, fmt.Errorf("read snapshot auth.json: %w", rerr)
-		}
-		var auth struct {
-			Tokens struct {
-				AccessToken string `json:"access_token"`
-			} `json:"tokens"`
-		}
-		if json.Unmarshal(data, &auth) != nil || auth.Tokens.AccessToken == "" {
-			return nil, fmt.Errorf("snapshot has no OAuth access token")
-		}
-		base, _ := url.Parse("https://chatgpt.com/backend-api")
-		return &proxy.Upstream{BaseURL: base, Auth: auth.Tokens.AccessToken}, nil
+	return nil, fmt.Errorf("provider %q does not expose a snapshot upstream", providerID)
+}
+
+func withCatalogScope(up *proxy.Upstream, providerID, accountName string) *proxy.Upstream {
+	if up == nil || strings.TrimSpace(up.CatalogScope) != "" {
+		return up
 	}
-	return nil, fmt.Errorf("no builtin upstream for provider %q", providerID)
+	up.CatalogScope = proxy.AccountCatalogScope(providerID, accountName)
+	return up
 }
 
 func catalogEntriesFrom(entries map[string]catalog.Provider) map[string]activation.CatalogEntry {

@@ -15,6 +15,7 @@ import (
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/lock"
@@ -49,13 +50,15 @@ type ExecuteOptions struct {
 	HealthTimeout time.Duration
 	OperationID   string
 
-	markAlreadyActive bool
-}
+	// AllowForeignConfig carries explicit user consent to replace client
+	// settings AnyPick does not own. It is set from a CLI flag or a confirmed
+	// app action only — never inferred, never persisted (client.ApplyContext
+	// documents the same rule). Without it an adapter refuses to overwrite a
+	// value it cannot prove it wrote, which is the whole point: AnyPick must
+	// not take over a config the user pointed somewhere else.
+	AllowForeignConfig bool
 
-// NativeRestorer is implemented by client adapters that can drop AnyPick
-// managed config so the client returns to its native login.
-type NativeRestorer interface {
-	RestoreNative() error
+	markAlreadyActive bool
 }
 
 type activationContext struct {
@@ -64,11 +67,16 @@ type activationContext struct {
 	undo                []func() error
 	binding             *bindings.Global
 	projectBind         *bindings.Project
+	clientProfile       *client.NamedProfile
 	checkpointJSON      map[string]interface{}
 	clientConfigWritten string
 	isolated            *runtime.EphemeralRuntime
 	backupPaths         []string
 	warnings            []string
+	// allowForeignConfig is the user's takeover consent for this run, copied
+	// from ExecuteOptions so every client-config write in the transaction sees
+	// the same answer instead of each one re-deriving it.
+	allowForeignConfig bool
 }
 
 // Execute ports executeActivation: dry-run short-circuit, then the whole
@@ -137,6 +145,9 @@ func mutationScopes(plan *Plan) []string {
 	if plan.Mode == ModeProject && plan.ProjectRoot != "" {
 		scopes = append(scopes, "project/"+plan.ProjectRoot)
 	}
+	if plan.Mode == ModeProfile && plan.ProfileName != "" {
+		scopes = append(scopes, "client-profile/"+plan.Client+"/"+plan.ProfileName)
+	}
 	if plan.ResolvedSource.Ref.Kind == refs.KindProxyHub {
 		scopes = append(scopes, "hub/"+plan.ResolvedSource.Ref.Name)
 	} else {
@@ -148,6 +159,9 @@ func mutationScopes(plan *Plan) []string {
 func executeLocked(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOptions) (*ExecuteResult, error) {
 	sourceRefStr := refs.SerializeRef(plan.ResolvedSource.Ref)
 	affected := []string{"client/" + plan.Client, sourceRefStr}
+	if plan.Mode == ModeProfile && plan.ProfileName != "" {
+		affected = append(affected, "client-profile/"+plan.Client+"/"+plan.ProfileName)
+	}
 
 	stepKinds := make([]interface{}, 0, len(plan.Steps))
 	for _, s := range plan.Steps {
@@ -173,10 +187,14 @@ func executeLocked(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOpti
 	// Plan-time warnings have to survive into the result or the CLI never
 	// shows them: they are produced before any step runs, and nothing else
 	// carries them. MODEL_UNKNOWN used to be dropped the same way.
-	actx := &activationContext{journalID: journalID, warnings: planWarningsAsStrings(plan)}
+	actx := &activationContext{
+		journalID:          journalID,
+		warnings:           planWarningsAsStrings(plan),
+		allowForeignConfig: opts.AllowForeignConfig,
+	}
 	fail := func(cause error) (*ExecuteResult, error) {
 		rolledBack := runRollback(actx)
-		finalizeJournal(ctx, deps, journalID, rolledBack)
+		finalizeJournal(context.WithoutCancel(ctx), deps, journalID, rolledBack)
 		mutated := actx.mutated && !rolledBack
 		var ae *anyerr.Error
 		if errorsAs(cause, &ae) {
@@ -266,13 +284,16 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 		return verifyEffectiveState(plan, deps, actx)
 
 	case StepWriteClientConfig:
-		return writeClientConfig(ctx, plan, deps, opts, actx)
+		return writeClientConfig(ctx, plan, deps, actx)
 
 	case StepCommitGlobalBinding:
 		return commitGlobalBinding(ctx, plan, deps, actx)
 
 	case StepCommitProjectBinding:
 		return commitProjectBinding(ctx, step, plan, deps, opts, actx)
+
+	case StepCommitClientProfile:
+		return commitClientProfile(ctx, plan, deps, actx)
 
 	// Planner-time markers: resolved while building the plan, no execution work.
 	case StepResolveSource, StepExpandPreset, StepValidateCompatibility,
@@ -284,6 +305,26 @@ func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts Ex
 	default:
 		return fmt.Errorf("no handler for plan step %q", step.Kind)
 	}
+}
+
+// validateSnapshotCredential runs the provider-owned staleness check for one
+// saved account. Providers without the capability are skipped silently: the
+// check is advisory per provider, while presence (above) stays mandatory.
+func validateSnapshotCredential(ctx context.Context, plan *Plan, deps *Deps) error {
+	ref := plan.ResolvedSource.Ref
+	pv, err := deps.Providers.Get(ref.Provider)
+	if err != nil || pv == nil {
+		return nil
+	}
+	validator, ok := pv.(provider.SnapshotValidator)
+	if !ok {
+		return nil
+	}
+	account, err := deps.Accounts.Svc.Get(ctx, ref.Provider, ref.Name)
+	if err != nil || account == nil {
+		return nil
+	}
+	return validator.ValidateSnapshot(account.SnapshotDir)
 }
 
 // validateExternalDep is the execution half of StepValidateExternalDep: the
@@ -319,7 +360,7 @@ func validateCredential(ctx context.Context, plan *Plan, deps *Deps) error {
 				anyerr.WithExitCode(anyerr.AuthRequired),
 				anyerr.WithSuggestions("anypick add "+ref.Provider+" --name "+ref.Name))
 		}
-		return nil
+		return validateSnapshotCredential(ctx, plan, deps)
 	case refs.KindGateway:
 		pr, err := deps.Profiles.GetContext(ctx, ref.Name)
 		if err != nil {
@@ -381,7 +422,10 @@ func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activati
 	if err != nil {
 		return err
 	}
-	if current.Active == target.Meta.Name && current.IsLiveMatch {
+	// An unknown comparison is not proof this snapshot is already the live
+	// login. Skipping the restore on that guess leaves the official app on
+	// whatever file DetectLive happened to see.
+	if current.Active == target.Meta.Name && current.IsLiveMatch && current.LiveMatchKnown {
 		return nil
 	}
 
@@ -398,7 +442,26 @@ func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activati
 
 	// Durable checkpoint before provider.restore; register undo before the call
 	// so a provider that writes one auth file and then throws is compensated.
-	cp, err := deps.Accounts.Svc.CheckpointLiveAuth(ctx, ref.Provider, true)
+	if err := recordNativeAuthCheckpoint(ctx, deps, actx, journalID, ref.Provider); err != nil {
+		return err
+	}
+
+	_, err = deps.Accounts.Svc.Use(ctx, ref.Provider, ref.Name, UseNoProxyOption())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// recordNativeAuthCheckpoint journals the live login before restore and
+// registers the undo that puts it back. The undo re-enters with the
+// activation's context: it carries the coordinator locks Execute already
+// holds, and a fresh context here would deadlock. WithoutCancel keeps those
+// values while surviving the cancellation that probably caused this rollback
+// in the first place. Compensation must finish after its trigger is
+// cancelled, or a cancelled login leaves the previous credentials unrestored.
+func recordNativeAuthCheckpoint(ctx context.Context, deps *Deps, actx *activationContext, journalID, providerID string) error {
+	cp, err := deps.Accounts.Svc.CheckpointLiveAuth(ctx, providerID, true)
 	if err != nil {
 		return err
 	}
@@ -422,21 +485,10 @@ func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activati
 	actx.mutated = true
 	actx.checkpointJSON = cpMap
 	actx.undo = append(actx.undo, func() error {
-		// Re-enter with the activation's context: it carries the coordinator
-		// locks Execute already holds, and a fresh context here would deadlock.
-		// WithoutCancel keeps those values while surviving the cancellation
-		// that probably caused this rollback in the first place — compensation
-		// must be able to finish after its trigger is cancelled, or a
-		// cancelled login leaves the previous credentials unrestored.
 		restoreErr := deps.Accounts.Svc.RestoreLiveAuthCheckpoint(context.WithoutCancel(ctx), cp)
 		_ = deps.Accounts.Svc.DiscardLiveAuthCheckpoint(cp)
 		return restoreErr
 	})
-
-	_, err = deps.Accounts.Svc.Use(ctx, ref.Provider, ref.Name, UseNoProxyOption())
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -481,8 +533,10 @@ func createEphemeralHome(ctx context.Context, plan *Plan, deps *Deps, actx *acti
 	iso, err := deps.Runtime.CreateEphemeralRuntimeContext(ctx, runtime.EphemeralSpec{
 		ClientID: plan.Client, Endpoint: endpoint, APIKey: apiKey,
 		DefaultModel: model, ModelRoles: rolesFromSpec(plan.BindingSpec),
-		SourceKind: string(ref.Kind), SourceProvider: ref.Provider, SourceName: ref.Name,
-		TransportCapability: plan.Transport.Capability,
+		ModelCatalog: plan.ModelCatalog,
+		SourceKind:   string(ref.Kind), SourceProvider: ref.Provider, SourceName: ref.Name,
+		TransportCapability: plan.Transport.Capability, ProfileName: plan.ProfileName,
+		NativeAuthSnapshotDir: plan.NativeAuthSnapshotDir,
 	})
 	if err != nil {
 		return err
@@ -524,6 +578,17 @@ func startHubProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activation
 			if perr != nil {
 				return anyerr.Wrapf(perr, "pick hub port", "HUB_START_FAILED")
 			}
+			// Journal the prior port before the row changes. A kill after the
+			// upsert still finds this record; the in-memory undo below does
+			// not survive that kill.
+			if err := journalActivationUndo(c, deps, actx.journalID, map[string]any{
+				"kind":         "hub-port",
+				"hubName":      name,
+				"previousPort": prevPort,
+				"pickedPort":   picked,
+			}); err != nil {
+				return err
+			}
 			cfg.Port = picked
 			saved, serr := deps.Hub.UpsertConfigContext(c, *cfg)
 			if serr != nil {
@@ -531,14 +596,20 @@ func startHubProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activation
 			}
 			cfg = &saved
 			actx.mutated = true
+			undoCtx := context.WithoutCancel(c)
 			actx.undo = append(actx.undo, func() error {
 				// Restore the kernel-assigned choice only if nothing else took it.
-				cur, gerr2 := deps.Hub.GetConfigContext(c, name)
-				if gerr2 != nil || cur == nil || cur.Port != picked {
+				// A cancelled activation still has to read the row. Swallowing
+				// that error recorded rolled_back while the picked port stayed.
+				cur, gerr2 := deps.Hub.GetConfigContext(undoCtx, name)
+				if gerr2 != nil {
+					return gerr2
+				}
+				if cur == nil || cur.Port != picked {
 					return nil
 				}
 				cur.Port = prevPort
-				_, uerr := deps.Hub.UpsertConfigContext(c, *cur)
+				_, uerr := deps.Hub.UpsertConfigContext(undoCtx, *cur)
 				return uerr
 			})
 		}
@@ -548,13 +619,21 @@ func startHubProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activation
 			return anyerr.Wrapf(terr, "generate route token", "HUB_START_FAILED")
 		}
 		token = routeToken
-		routeID := fmt.Sprintf("%s/route-%s", name, plan.Client)
+		routeID := hub.ClientRouteID(name, plan.Client)
+		if plan.Mode == ModeProfile {
+			routeID = hub.ClientProfileRouteID(name, plan.Client, plan.ProfileName)
+		} else if plan.Mode == ModeEphemeral {
+			routeID = hub.ClientRunRouteID(name, plan.Client, actx.journalID)
+		}
 		// Exact compensation: AttachRoute overwrites the whole row (manifest AND
 		// token hash), so rollback must restore the PRIOR row verbatim — a plain
 		// detach would destroy a route the user had before this activation.
 		prevRoute, gerr := deps.Hub.SnapshotRouteContext(c, routeID)
 		if gerr != nil {
 			return gerr
+		}
+		if err := journalActivationUndo(c, deps, actx.journalID, hubRouteUndoRecord(routeID, prevRoute)); err != nil {
+			return err
 		}
 		if aerr := deps.Hub.AttachRouteContext(c, hub.Route{
 			RouteID: routeID, HubName: name, ClientID: plan.Client, Token: token,
@@ -585,10 +664,21 @@ func startHubProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activation
 	plan.Transport.Endpoint = endpoint
 
 	// Adopt an already-healthy child on this exact endpoint; otherwise spawn
-	// one. The spawned pid file carries an ADR-0003 record; rollback stops
-	// ONLY that instance-verified child — an adopted child keeps serving.
+	// one. Liveness is not freshness: adopt only when the child serves the
+	// stored config revision (ADR-0030), else stop it ownership-verified and
+	// spawn fresh below. The spawned pid file carries an ADR-0003 record;
+	// rollback stops ONLY that instance-verified child — an adopted child
+	// keeps serving.
 	if hubHealthy(endpoint) {
-		return nil
+		revision := 0
+		if cfg, cerr := deps.Hub.GetConfigContext(ctx, name); cerr == nil && cfg != nil {
+			revision = cfg.Revision
+		}
+		if restarted, rerr := hub.RestartStaleChild(deps.Root, name, endpoint, revision, 3*time.Second); rerr != nil {
+			return anyerr.Wrapf(rerr, "stale hub child", "HUB_START_FAILED")
+		} else if !restarted {
+			return nil
+		}
 	}
 	pid, serr := deps.SpawnHubChild(name)
 	if serr != nil {
@@ -708,6 +798,14 @@ func startManagedProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activa
 		})
 	}
 	fillManagedProxy(plan, started)
+	// A moved port is user-visible state: the client config below is rewritten
+	// with the new endpoint, so the warning travels with the activation rather
+	// than leaving the user to notice the Proxies pane changed address.
+	if started.PortMovedFrom > 0 {
+		actx.warnings = append(actx.warnings, fmt.Sprintf(
+			"proxy port %d was busy; %s/%s now listens on %d",
+			started.PortMovedFrom, ref.Provider, ref.Name, started.Port))
+	}
 	return nil
 }
 
@@ -731,75 +829,33 @@ func fillManagedProxy(plan *Plan, started *proxy.StartResult) {
 
 // writeClientConfig ports the WriteClientConfig handler branches:
 //   - account + managed proxy → inject endpoint into native client config;
-//   - gateway (persistent/project) → apply the saved profile to the client;
-//   - codex + direct persistent → restore native model/provider config.
+//   - gateway (persistent/project/named profile) → apply the saved profile;
+//   - codex + direct persistent → restore native model/provider config;
+//   - codex + direct named profile → materialize its saved auth.json into
+//     the profile-owned CODEX_HOME.
 //
 // Each mutating branch persists exact file compensation BEFORE the adapter
 // runs, and registers its inverse on the undo stack.
-func writeClientConfig(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOptions, actx *activationContext) error {
+func writeClientConfig(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
 	ref := plan.ResolvedSource.Ref
 	direct := plan.Transport.Capability == transport.Direct
 	managedProxy := plan.Transport.Endpoint != "" && !direct
 
 	if managedProxy && (ref.Kind == refs.KindAccount || ref.Kind == refs.KindProxyHub ||
 		ref.Kind == refs.KindAccountPool) {
-		if deps.Runtime == nil {
-			return anyerr.Newf("runtime service is unavailable in this composition",
-				"CLIENT_CONFIG_INVALID")
-		}
-		recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx)
-		if err != nil {
-			return err
-		}
-		actx.mutated = true
-		actx.undo = append(actx.undo, func() error {
-			return runtime.RestoreClientConfigRecovery(recovery.records)
-		})
-		if _, err := deps.Runtime.ApplyProxyEndpoint(ctx, plan.Client, runtime.ProxyEndpointOptions{
-			Endpoint: plan.Transport.Endpoint, APIKey: plan.Transport.ManagedProxy.Token,
-			DefaultModel: explicitModelID(plan.Model), ModelRoles: rolesFromSpec(plan.BindingSpec),
-			Label: refs.DisplayRef(ref), SourceKind: string(ref.Kind),
-			SourceProvider: ref.Provider, SourceName: ref.Name,
-			TransportCapability: plan.Transport.Capability,
-		}); err != nil {
-			return err
-		}
-		actx.clientConfigWritten = plan.Client
-		return nil
+		return writeManagedProxyConfig(ctx, plan, deps, actx)
 	}
 
-	if ref.Kind == refs.KindGateway && (plan.Mode == ModePersistent || plan.Mode == ModeProject) {
-		if deps.Runtime == nil {
-			return anyerr.Newf("runtime service is unavailable in this composition",
-				"CLIENT_CONFIG_INVALID")
-		}
-		recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx)
-		if err != nil {
-			return err
-		}
-		actx.mutated = true
-		actx.undo = append(actx.undo, func() error {
-			return runtime.RestoreClientConfigRecovery(recovery.records)
-		})
-		if _, err := deps.Runtime.ApplyGatewayProfile(ctx, ref.Name, plan.Client); err != nil {
-			return err
-		}
-		actx.clientConfigWritten = plan.Client
-		return nil
+	if ref.Kind == refs.KindGateway && (plan.Mode == ModePersistent || plan.Mode == ModeProject || plan.Mode == ModeProfile) {
+		return writeGatewayClientConfig(ctx, plan, deps, actx)
+	}
+
+	if direct && ref.Kind == refs.KindAccount && plan.Mode == ModeProfile {
+		return writeNativeCodexProfileConfig(ctx, plan, deps, actx)
 	}
 
 	if direct && ref.Kind == refs.KindAccount && plan.Mode == ModePersistent {
-		cad, err := deps.Clients.Get(plan.Client)
-		if err != nil {
-			return err
-		}
-		if restorer, ok := cad.(NativeRestorer); ok {
-			if err := restorer.RestoreNative(); err != nil {
-				return err
-			}
-			actx.mutated = true
-		}
-		return nil
+		return restoreDirectAccountClientConfig(ctx, plan, deps, actx)
 	}
 
 	if managedProxy || ref.Kind == refs.KindGateway {
@@ -811,22 +867,132 @@ func writeClientConfig(ctx context.Context, plan *Plan, deps *Deps, opts Execute
 	return nil
 }
 
+func writeManagedProxyConfig(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
+	if deps.Runtime == nil {
+		return anyerr.Newf("runtime service is unavailable in this composition", "CLIENT_CONFIG_INVALID")
+	}
+	recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx, plan.ProfileName)
+	if err != nil {
+		return err
+	}
+	actx.mutated = true
+	actx.undo = append(actx.undo, func() error { return runtime.RestoreClientConfigRecovery(recovery.records) })
+	ref := plan.ResolvedSource.Ref
+	_, err = deps.Runtime.ApplyProxyEndpoint(ctx, plan.Client, runtime.ProxyEndpointOptions{
+		Endpoint: plan.Transport.Endpoint, APIKey: plan.Transport.ManagedProxy.Token,
+		DefaultModel: explicitModelID(plan.Model), ModelRoles: rolesFromSpec(plan.BindingSpec),
+		ModelCatalog: plan.ModelCatalog,
+		Label:        refs.DisplayRef(ref), SourceKind: string(ref.Kind),
+		SourceProvider: ref.Provider, SourceName: ref.Name,
+		TransportCapability: plan.Transport.Capability, ProfileName: plan.ProfileName,
+		NativeAuthSnapshotDir: plan.NativeAuthSnapshotDir,
+		AllowForeignConfig:    actx.allowForeignConfig,
+	})
+	if err != nil {
+		return err
+	}
+	actx.clientConfigWritten = plan.Client
+	return nil
+}
+
+func writeNativeCodexProfileConfig(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
+	cad, err := deps.Clients.Get(plan.Client)
+	if err != nil {
+		return err
+	}
+	recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx, plan.ProfileName)
+	if err != nil {
+		return err
+	}
+	actx.mutated = true
+	actx.undo = append(actx.undo, func() error { return runtime.RestoreClientConfigRecovery(recovery.records) })
+	ref := plan.ResolvedSource.Ref
+	_, err = cad.Apply(&client.ApplyContext{
+		DefaultModel:          explicitModelID(plan.Model),
+		ModelRoles:            rolesFromSpec(plan.BindingSpec),
+		ModelCatalog:          plan.ModelCatalog,
+		AnyPickRoot:           deps.Root,
+		SourceKind:            string(ref.Kind),
+		SourceProvider:        ref.Provider,
+		SourceName:            ref.Name,
+		TransportCapability:   plan.Transport.Capability,
+		Mode:                  string(plan.Mode),
+		ProfileName:           plan.ProfileName,
+		NativeAuthSnapshotDir: plan.NativeAuthSnapshotDir,
+		AllowForeignConfig:    actx.allowForeignConfig,
+	})
+	if err != nil {
+		return err
+	}
+	actx.clientConfigWritten = plan.Client
+	return nil
+}
+
+func writeGatewayClientConfig(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
+	if deps.Runtime == nil {
+		return anyerr.Newf("runtime service is unavailable in this composition", "CLIENT_CONFIG_INVALID")
+	}
+	recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx, plan.ProfileName)
+	if err != nil {
+		return err
+	}
+	actx.mutated = true
+	actx.undo = append(actx.undo, func() error { return runtime.RestoreClientConfigRecovery(recovery.records) })
+	ref := plan.ResolvedSource.Ref
+	_, err = deps.Runtime.ApplyGatewayProfileWithOptions(ctx, ref.Name, plan.Client,
+		runtime.GatewayApplyOptions{
+			SelectedModel:      explicitModelID(plan.Model),
+			SelectedRoles:      rolesFromSpec(plan.BindingSpec),
+			ModelCatalog:       plan.ModelCatalog,
+			NativeProfileName:  plan.ProfileName,
+			AllowForeignConfig: actx.allowForeignConfig,
+		})
+	if err != nil {
+		return err
+	}
+	actx.clientConfigWritten = plan.Client
+	return nil
+}
+
+func restoreDirectAccountClientConfig(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
+	cad, err := deps.Clients.Get(plan.Client)
+	if err != nil {
+		return err
+	}
+	restorer, ok := cad.(client.NativeRestorer)
+	if !ok {
+		return nil
+	}
+	recovery, err := prepareClientRecoveryContext(ctx, plan.Client, deps, actx)
+	if err != nil {
+		return err
+	}
+	actx.mutated = true
+	actx.undo = append(actx.undo, func() error { return runtime.RestoreClientConfigRecovery(recovery.records) })
+	return restorer.RestoreNative()
+}
+
 // recoveryBundle carries prepared compensation records for this activation.
 type recoveryBundle struct {
 	clientID string
 	records  []string
 }
 
-func prepareClientRecoveryContext(ctx context.Context, clientID string, deps *Deps, actx *activationContext) (*recoveryBundle, error) {
+func prepareClientRecoveryContext(ctx context.Context, clientID string, deps *Deps, actx *activationContext, profileNames ...string) (*recoveryBundle, error) {
 	if deps.Runtime == nil {
 		return &recoveryBundle{clientID: clientID}, nil
 	}
-	records, err := deps.Runtime.PrepareClientConfigRecovery(clientID, actx.journalID)
+	records, err := deps.Runtime.PrepareClientConfigRecovery(clientID, actx.journalID, profileNames...)
 	if err != nil {
 		return nil, err
 	}
 	actx.backupPaths = append(actx.backupPaths, records...)
-	_, _ = deps.Journal.UpdateContext(ctx, actx.journalID, journal.Entry{BackupPaths: actx.backupPaths})
+	// The backup files exist. The journal is what a restarted process will
+	// replay (ADR 0008). Writing the client config after a failed update
+	// leaves that process with an empty BackupPaths list.
+	if _, err := deps.Journal.UpdateContext(ctx, actx.journalID, journal.Entry{BackupPaths: actx.backupPaths}); err != nil {
+		return nil, err
+	}
 	return &recoveryBundle{clientID: clientID, records: records}, nil
 }
 
@@ -911,7 +1077,18 @@ func verifyEffectiveState(plan *Plan, deps *Deps, actx *activationContext) error
 	if err != nil {
 		return err
 	}
-	inspected, err := cad.Inspect()
+	var inspected *client.InspectResult
+	if plan.ProfileName != "" {
+		profileInspector, ok := cad.(client.ProfileInspector)
+		if !ok {
+			actx.warnings = append(actx.warnings,
+				"Could not verify named profile "+plan.ProfileName+" for "+plan.Client)
+			return nil
+		}
+		inspected, err = profileInspector.InspectProfile(plan.ProfileName)
+	} else {
+		inspected, err = cad.Inspect()
+	}
 	if err != nil {
 		actx.warnings = append(actx.warnings,
 			"Could not read back "+plan.Client+" configuration after activation")
@@ -933,6 +1110,17 @@ func commitGlobalBinding(ctx context.Context, plan *Plan, deps *Deps, actx *acti
 	}
 	previous, err := deps.Bindings.GetGlobalContext(ctx, plan.Client)
 	if err != nil {
+		return err
+	}
+	rec := map[string]any{"kind": "global-binding", "client": plan.Client}
+	if previous != nil {
+		encoded, err := asParam(*previous)
+		if err != nil {
+			return err
+		}
+		rec["previous"] = encoded
+	}
+	if err := journalActivationUndo(ctx, deps, actx.journalID, rec); err != nil {
 		return err
 	}
 	upserted, err := deps.Bindings.UpsertGlobalContext(ctx, bindings.Global{
@@ -977,6 +1165,19 @@ func commitProjectBinding(ctx context.Context, step PlanStep, plan *Plan, deps *
 	if err != nil {
 		return err
 	}
+	rec := map[string]any{
+		"kind": "project-binding", "client": plan.Client, "projectRoot": root,
+	}
+	if previous != nil {
+		encoded, err := asParam(*previous)
+		if err != nil {
+			return err
+		}
+		rec["previous"] = encoded
+	}
+	if err := journalActivationUndo(ctx, deps, actx.journalID, rec); err != nil {
+		return err
+	}
 	upserted, err := deps.Bindings.UpsertProjectContext(ctx, bindings.Project{
 		ProjectRoot: root,
 		Client:      plan.Client,
@@ -997,6 +1198,47 @@ func commitProjectBinding(ctx context.Context, step PlanStep, plan *Plan, deps *
 			return err
 		}
 		return deps.Bindings.DeleteProjectContext(undoCtx, root, plan.Client)
+	})
+	return nil
+}
+
+func commitClientProfile(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
+	if plan.Mode != ModeProfile || plan.ProfileName == "" || plan.BindingSpec == nil {
+		return fmt.Errorf("internal plan error: invalid client profile commit")
+	}
+	if deps.ClientProfiles == nil {
+		return anyerr.Newf("client profile store is unavailable in this composition", "STATE_CONFLICT")
+	}
+	previous, err := deps.ClientProfiles.GetContext(ctx, plan.Client, plan.ProfileName)
+	if err != nil {
+		return err
+	}
+	rec := map[string]any{
+		"kind": "client-profile", "client": plan.Client, "profile": plan.ProfileName,
+	}
+	if previous != nil {
+		encoded, err := asParam(*previous)
+		if err != nil {
+			return err
+		}
+		rec["previous"] = encoded
+	}
+	if err := journalActivationUndo(ctx, deps, actx.journalID, rec); err != nil {
+		return err
+	}
+	saved, err := deps.ClientProfiles.UpsertContext(ctx, plan.Client, plan.ProfileName, *plan.BindingSpec)
+	if err != nil {
+		return err
+	}
+	actx.clientProfile = &saved
+	actx.mutated = true
+	undoCtx := context.WithoutCancel(ctx)
+	actx.undo = append(actx.undo, func() error {
+		if previous != nil {
+			_, err := deps.ClientProfiles.UpsertContext(undoCtx, previous.Client, previous.Name, previous.Spec)
+			return err
+		}
+		return deps.ClientProfiles.DeleteContext(undoCtx, plan.Client, plan.ProfileName)
 	})
 	return nil
 }

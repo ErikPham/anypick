@@ -37,6 +37,15 @@ func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResu
 			if err != nil || entry == nil || !isIncompleteState(string(entry.State)) {
 				return err
 			}
+			if entry.Corrupt {
+				// The recorded resources are unknown, so there is nothing to
+				// compensate exactly. Report it as unrecovered rather than
+				// "nothing to do": claiming a clean recovery over a
+				// half-applied mutation is worse than admitting the gap, and
+				// the other entries still get their chance.
+				result.Failed = append(result.Failed, entry.ID)
+				return nil
+			}
 			recover(ctx, deps, entry, result)
 			return nil
 		}
@@ -166,6 +175,17 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 
 	// Durable native-auth checkpoints restore AFTER client config files
 	// (reverse mutation order), then the journal is finalized.
+	if entry.Params != nil {
+		if raw, ok := entry.Params["activationUndo"]; ok && raw != nil {
+			// Hub route, hub port, and binding writes are journalled before
+			// they land. The in-memory undo stack is gone after a kill.
+			restored, undoErrs := applyActivationUndo(ctx, deps, raw)
+			restoreErrs = append(restoreErrs, undoErrs...)
+			if restored {
+				restoredDurableState = true
+			}
+		}
+	}
 	if cpRaw, ok := entry.Params["nativeAuthCheckpoint"]; ok {
 		cpMap, isObj := cpRaw.(map[string]interface{})
 		providerID, _ := cpMap["providerId"].(string)

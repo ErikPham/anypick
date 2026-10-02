@@ -16,7 +16,7 @@ import (
 )
 
 // MaxTextBytes is the content-scan bound shared with
-// macos/scripts/check-node-free-app.sh. Files larger than this are exempt from
+// src/macos/scripts/check-node-free-app.sh. Files larger than this are exempt from
 // the developer-path scan (they are still subject to the name, extension,
 // symlink and shebang rules). Anything at or under the bound is scanned in
 // full, not a prefix.
@@ -37,12 +37,17 @@ var forbiddenExtensions = []string{".mjs", ".cjs"}
 // variables that would pin an artifact to one machine. The leading alternation
 // anchors on a boundary character so a path fragment inside a longer token
 // (a bundle id, a URL host) is not a false positive.
+// The Homebrew prefix matches the shell gate as a prefix: node, node@22, and
+// node@22.14.0 all fail that script. Requiring a slash or an integer-only
+// version let those paths through this scanner.
 var devPathPattern = regexp.MustCompile(
-	`(?:^|[\s"'=])(?:/Users/|/home/|/opt/homebrew/opt/node(?:@\d+)?/|GOROOT=|GOPATH=)`,
+	`(?:^|[\s"'=])(?:/Users/|/home/|/opt/homebrew/opt/node|GOROOT=|GOPATH=)`,
 )
 
 // nodeShebangPattern matches an interpreter line that invokes Node.
-var nodeShebangPattern = regexp.MustCompile(`\bnode(?:exe)?\b`)
+// Case-insensitive, and nodejs / node_modules are not interpreters: the shell
+// gate requires a non-alphanumeric boundary after the name.
+var nodeShebangPattern = regexp.MustCompile(`(?i)(?:^|[^[:alnum:]_])node(?:exe)?(?:[^[:alnum:]_]|$)`)
 
 // Violation is one reason an artifact failed the gate.
 type Violation struct {

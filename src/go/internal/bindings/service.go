@@ -25,9 +25,40 @@ func (s *Service) GetGlobalContext(ctx context.Context, clientID string) (*Globa
 	return s.Store.GetGlobalContext(ctx, clientID)
 }
 
+// GetProviderModelRoles returns the stored model defaults for one provider
+// bucket, empty when none were saved.
+func (s *Service) GetProviderModelRoles(ctx context.Context, providerID string) (map[string]string, error) {
+	return s.Store.GetProviderModelRoles(ctx, providerID)
+}
+
+// SetProviderModelRoles replaces the model defaults for one provider bucket.
+// An empty map deletes the row.
+func (s *Service) SetProviderModelRoles(ctx context.Context, providerID string, roles map[string]string) error {
+	return s.Store.SetProviderModelRoles(ctx, providerID, roles)
+}
+
 // UpsertGlobalContext inserts or replaces the global binding for a client.
 func (s *Service) UpsertGlobalContext(ctx context.Context, g Global) (Global, error) {
 	return s.Store.UpsertGlobalContext(ctx, g)
+}
+
+// RealignNativeClientBinding mirrors the account-service post-switch hook in
+// the TypeScript runtime. A provider account switch changes the live account
+// pointer, but a homonymous native client can have a separate global binding
+// that still names the old account. Only that exact provider/client binding is
+// rewritten; explicit cross-provider routes remain pinned by design.
+func (s *Service) RealignNativeClientBinding(ctx context.Context, providerID, accountName string) error {
+	binding, err := s.GetGlobalContext(ctx, providerID)
+	if err != nil || binding == nil {
+		return err
+	}
+	source := binding.Spec.Source
+	if source.Kind != refs.KindAccount || source.Provider != providerID || source.Name == accountName {
+		return nil
+	}
+	binding.Spec.Source.Name = accountName
+	_, err = s.UpsertGlobalContext(ctx, *binding)
+	return err
 }
 
 // GetProjectContext returns one project binding, nil when none.

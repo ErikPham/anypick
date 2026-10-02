@@ -7,8 +7,8 @@ import (
 
 func TestBuiltinIDsSortedAndUnique(t *testing.T) {
 	ids := IDs()
-	if len(ids) != 8 {
-		t.Fatalf("IDs len=%d want 8, got %v", len(ids), ids)
+	if len(ids) != 9 {
+		t.Fatalf("IDs len=%d want 9, got %v", len(ids), ids)
 	}
 	sorted := append([]string(nil), ids...)
 	sort.Strings(sorted)
@@ -41,8 +41,11 @@ func TestBuiltinEntriesValid(t *testing.T) {
 		if len(p.Protocols) == 0 {
 			t.Errorf("%q: no Protocols", id)
 		}
-		if id != "custom" && p.DefaultEndpoint == "" {
-			t.Errorf("%q: empty DefaultEndpoint (only custom may be empty)", id)
+		// Entries without a single static base (bring-your-own endpoint,
+		// or a per-account base like Cloudflare's) force an explicit
+		// endpoint instead of shipping a wrong default.
+		if id != "custom" && id != "cloudflare-aigateway" && p.DefaultEndpoint == "" {
+			t.Errorf("%q: empty DefaultEndpoint (only custom and cloudflare-aigateway may be empty)", id)
 		}
 		if p.AnthropicEndpoint != "" && p.AnthropicEndpoint == p.DefaultEndpoint {
 			t.Errorf("%q: AnthropicEndpoint same as DefaultEndpoint %q", id, p.DefaultEndpoint)

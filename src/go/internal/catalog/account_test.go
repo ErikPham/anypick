@@ -10,8 +10,10 @@ func TestCatalogProviderForFirstPartyLogins(t *testing.T) {
 		"openai":      "openai",
 		"gemini":      "gemini-api",
 		"google":      "gemini-api",
+		"gemini-api":  "gemini-api",
 		"grok":        "grok-api",
 		"xai":         "grok-api",
+		"grok-api":    "grok-api",
 		"opencode":    "opencode",
 		"opencode-go": "opencode",
 		"zen":         "opencode",
@@ -30,6 +32,19 @@ func TestCatalogProviderForFirstPartyLogins(t *testing.T) {
 	}
 }
 
+func TestCatalogIdentityForUnknownProvidersKeepsLiveCacheNamespace(t *testing.T) {
+	for _, tc := range []struct{ provider, want string }{
+		{provider: "codex", want: "openai"},
+		{provider: "gemini", want: "gemini-api"},
+		{provider: "future-provider", want: "future-provider"},
+		{provider: "", want: ""},
+	} {
+		if got := CatalogIdentityFor(tc.provider); got != tc.want {
+			t.Errorf("CatalogIdentityFor(%q) = %q, want %q", tc.provider, got, tc.want)
+		}
+	}
+}
+
 func TestOpenCodePolicyIsLiveOnly(t *testing.T) {
 	p := Policy("opencode")
 	if p == nil {
@@ -40,5 +55,24 @@ func TestOpenCodePolicyIsLiveOnly(t *testing.T) {
 	}
 	if len(p.StaticFallback) != 0 {
 		t.Errorf("opencode StaticFallback must stay empty (no vendor-published list), got %v", p.StaticFallback)
+	}
+}
+
+func TestPolicyResolvesAccountProviderAliases(t *testing.T) {
+	for providerID, wantKey := range map[string]string{
+		"gemini":     "gemini-api",
+		"gemini-api": "gemini-api",
+		"claude":     "anthropic",
+		"anthropic":  "anthropic",
+		"codex":      "openai",
+		"openai":     "openai",
+		"grok":       "grok-api",
+		"grok-api":   "grok-api",
+		"opencode":   "opencode",
+	} {
+		p := Policy(providerID)
+		if p == nil {
+			t.Errorf("Policy(%q) = nil, want policy for %s", providerID, wantKey)
+		}
 	}
 }

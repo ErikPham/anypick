@@ -77,9 +77,11 @@ func parseModelIds(body []byte) []string {
 
 // FetchContext is the input every live fetch needs.
 type FetchContext struct {
-	Endpoint string
-	APIKey   string
-	Client   *http.Client
+	Endpoint        string
+	APIKey          string
+	AuthHeader      string
+	AuthValuePrefix string
+	Client          *http.Client
 }
 
 func (c *FetchContext) httpClient() *http.Client {
@@ -87,6 +89,21 @@ func (c *FetchContext) httpClient() *http.Client {
 		return c.Client
 	}
 	return egress.NewClient(fetchTimeout)
+}
+
+func (c *FetchContext) setAuth(req *http.Request, defaultHeader, defaultPrefix string) {
+	if c.APIKey == "" {
+		return
+	}
+	header := c.AuthHeader
+	if header == "" {
+		header = defaultHeader
+	}
+	prefix := c.AuthValuePrefix
+	if prefix == "" && c.AuthHeader == "" {
+		prefix = defaultPrefix
+	}
+	req.Header.Set(header, prefix+c.APIKey)
 }
 
 func readModelIDs(resp *http.Response) ([]string, error) {
@@ -131,9 +148,7 @@ func fetchOpenAiStyleModels(ctx context.Context, fc *FetchContext) ([]string, er
 	req.Header.Set("accept", "application/json")
 	req.Header.Set("x-opencode-client", "desktop")
 	req.Header.Set("user-agent", "opencode/desktop")
-	if fc.APIKey != "" {
-		req.Header.Set("authorization", "Bearer "+fc.APIKey)
-	}
+	fc.setAuth(req, "authorization", "Bearer ")
 	resp, err := fc.httpClient().Do(req)
 	if err != nil {
 		return nil, err
@@ -155,7 +170,7 @@ func fetchAnthropicModels(ctx context.Context, fc *FetchContext) ([]string, erro
 		return nil, err
 	}
 	req.Header.Set("accept", "application/json")
-	req.Header.Set("x-api-key", fc.APIKey)
+	fc.setAuth(req, "x-api-key", "")
 	req.Header.Set("anthropic-version", AnthropicVersion())
 	resp, err := fc.httpClient().Do(req)
 	if err != nil {

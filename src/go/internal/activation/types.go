@@ -12,7 +12,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// StepKind enumerates PlanStepKind — all 23 literals from src/types/bindings.ts.
+// StepKind enumerates PlanStepKind — the activation steps shared by normal
+// bindings and named client profiles.
 type StepKind string
 
 const (
@@ -37,6 +38,7 @@ const (
 	StepVerifyEffectiveState     StepKind = "VerifyEffectiveState"
 	StepCommitGlobalBinding      StepKind = "CommitGlobalBinding"
 	StepCommitProjectBinding     StepKind = "CommitProjectBinding"
+	StepCommitClientProfile      StepKind = "CommitClientProfile"
 	StepSpawnChild               StepKind = "SpawnChild"
 	StepReleaseLease             StepKind = "ReleaseLease"
 	StepRestoreTemporaryState    StepKind = "RestoreTemporaryState"
@@ -49,6 +51,7 @@ const (
 	ModePersistent Mode = "persistent"
 	ModeEphemeral  Mode = "ephemeral"
 	ModeProject    Mode = "project"
+	ModeProfile    Mode = "profile"
 )
 
 // PlanStep mirrors PlanStep.
@@ -78,7 +81,7 @@ type ManagedProxyRef struct {
 	Account  string `json:"account,omitempty"`
 	Port     int    `json:"port"`
 	LeaseID  string `json:"leaseId"`
-	Token    string `json:"token,omitempty"`
+	Token    string `json:"-"`
 }
 
 // ResolvedTransport mirrors ResolvedTransport.
@@ -99,28 +102,43 @@ type ResolvedSource struct {
 
 // Request mirrors ActivationRequest.
 type Request struct {
-	Mode            Mode
-	Client          string
-	Source          *refs.Ref // account | gateway | proxy-hub
-	Preset          string
-	Model           string
-	ModelRoles      map[string]string
+	Mode        Mode
+	Client      string
+	Source      *refs.Ref // account | gateway | proxy-hub
+	ProfileName string    // native named profile (currently Codex)
+	Preset      string
+	Model       string
+	ModelRoles  map[string]string
+	// ModelCatalog is the source-scoped model list used by client adapters
+	// whose native configuration has its own model registry.
+	ModelCatalog []string
+	// ModelCatalogErr carries the discovery failure behind an empty
+	// ModelCatalog, if any, so planning can explain a missing default model
+	// actionably (stale login vs unsupported catalog). Nil when discovery
+	// succeeded or was never attempted.
+	ModelCatalogErr error
 	ProjectRoot     string
 	TransportPolicy transport.Policy
 }
 
 // Plan mirrors ActivationPlan.
 type Plan struct {
-	Mode           Mode                    `json:"mode"`
-	Client         string                  `json:"client"`
-	ProjectRoot    string                  `json:"-"`
-	ResolvedSource *ResolvedSource         `json:"-"`
-	SourceRefJSON  map[string]interface{}  `json:"source,omitempty"`
-	Transport      ResolvedTransport       `json:"transport"`
-	Model          bindings.ModelSelection `json:"model"`
-	Steps          []PlanStep              `json:"steps"`
-	Rollback       []RollbackStep          `json:"rollback"`
-	Warnings       []Warning               `json:"warnings"`
-	BindingSpec    *bindings.Spec          `json:"-"`
-	Provenance     *bindings.Provenance    `json:"-"`
+	Mode        Mode   `json:"mode"`
+	Client      string `json:"client"`
+	ProfileName string `json:"profileName,omitempty"`
+	ProjectRoot string `json:"-"`
+	// NativeAuthSnapshotDir is kept out of serialized plans and output. It is
+	// only the source path used to copy an account's Codex auth.json into the
+	// private profile CODEX_HOME.
+	NativeAuthSnapshotDir string                  `json:"-"`
+	ResolvedSource        *ResolvedSource         `json:"-"`
+	SourceRefJSON         map[string]interface{}  `json:"source,omitempty"`
+	Transport             ResolvedTransport       `json:"transport"`
+	Model                 bindings.ModelSelection `json:"model"`
+	ModelCatalog          []string                `json:"-"`
+	Steps                 []PlanStep              `json:"steps"`
+	Rollback              []RollbackStep          `json:"rollback"`
+	Warnings              []Warning               `json:"warnings"`
+	BindingSpec           *bindings.Spec          `json:"-"`
+	Provenance            *bindings.Provenance    `json:"-"`
 }

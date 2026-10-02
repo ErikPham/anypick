@@ -176,3 +176,56 @@ func TestSnapshotResolverResolvesGrokGatewaySession(t *testing.T) {
 		t.Error("AuthProvider = nil, want per-request OIDC refresh")
 	}
 }
+
+// A Cloudflare profile gateway (gateway-create) carries no account snapshot:
+// the per-account endpoint plus the profile key and gateway id must resolve
+// through the provider, or the gateway is dead on arrival.
+func TestSnapshotResolverResolvesCloudflareGatewayProfile(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+
+	database, err := db.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	st := store.New(root, database)
+	reg := provider.NewRegistry()
+	if err := provider.RegisterBuiltin(reg, home); err != nil {
+		t.Fatal(err)
+	}
+	ep := "https://api.cloudflare.com/client/v4/accounts/f4b3c2a1e5d647a8b9c0d1e2f3a4b5c6/ai/v1"
+	profiles := &profile.Store{DB: database.DB}
+	if _, err := profiles.UpsertContext(context.Background(), profile.Runtime{
+		Meta: profile.Meta{
+			Name: "cf-prod", Provider: "cloudflare-aigateway", Endpoint: ep,
+		},
+		Secrets: profile.Secrets{
+			APIKey:  "tok-123",
+			Headers: map[string]string{"gatewayId": "prod"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &snapshotUpstreamResolver{store: st, providers: reg, profiles: profiles}
+	up, err := r.ResolveUpstream(context.Background(), "cloudflare-aigateway", "cf-prod")
+	if err != nil {
+		t.Fatalf("ResolveUpstream: %v", err)
+	}
+	if got := up.BaseURL.String(); got != ep {
+		t.Errorf("base = %q, want endpoint", got)
+	}
+	if up.Auth != "tok-123" || up.AuthValuePrefix != "Bearer " {
+		t.Errorf("auth = %q/%q", up.AuthValuePrefix, up.Auth)
+	}
+	found := false
+	for _, h := range up.ExtraHeaders {
+		if h.Name == "cf-aig-gateway-id" && h.Value == "prod" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing cf-aig-gateway-id header: %+v", up.ExtraHeaders)
+	}
+}

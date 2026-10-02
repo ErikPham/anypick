@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/activation"
@@ -75,11 +76,14 @@ type App struct {
 	// ratchet counts the literal "a.Bindings", and a field named
 	// `a.BindingsSvc` would still match it (prefix trap), so the field must
 	// not contain "a.Bindings" at all.
-	BindingSvc  *bindings.Service
-	Config      *config.ConfigService
-	ConfigStore *config.Store
-	Plugins     *plugins.Service
-	PluginStore *plugins.Store
+	BindingSvc *bindings.Service
+	// CodexProfileSvc stores named native route profiles; it is separate from
+	// the one active global binding exposed by BindingSvc.
+	CodexProfileSvc *client.ProfileService
+	Config          *config.ConfigService
+	ConfigStore     *config.Store
+	Plugins         *plugins.Service
+	PluginStore     *plugins.Store
 	// PluginRuntime contains digest-verified candidates and non-fatal package
 	// failures. Nothing is activated: this build has no plugin host (ADR 0020
 	// §5), so every candidate degrades to a LoadFailure. See plugin_host.go.
@@ -149,14 +153,15 @@ func (a *App) compose() error {
 	if err := provider.RegisterBuiltin(provReg, homeDir()); err != nil {
 		return err
 	}
-	if err := provider.RegisterBuiltinCompatibles(provReg); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(provReg, homeDir()); err != nil {
 		return err
 	}
 	clientReg := client.NewRegistry()
 	clientReg.SetGate(gate)
-	if err := client.RegisterBuiltin(clientReg, homeDir()); err != nil {
+	if err := client.RegisterBuiltin(clientReg, homeDir(), a.Root); err != nil {
 		return err
 	}
+	clientProfileStore := &client.ProfileStore{Root: a.Root, DB: a.DB.DB}
 
 	svc := accounts.New(st, provReg)
 	leases := &proxy.LeaseStore{DB: a.DB.DB}
@@ -186,19 +191,20 @@ func (a *App) compose() error {
 		Catalog:  catalogRegistry,
 	}
 	deps := &activation.Deps{
-		Root:      a.Root,
-		Accounts:  activation.NewAccountsView(svc),
-		Providers: provReg,
-		Clients:   clientReg,
-		Bindings:  &bindings.Store{Root: a.Root, DB: a.DB.DB},
-		Presets:   activation.NewPresetsView(&presets.Store{DB: a.DB.DB}),
-		Profiles:  rt.Profiles,
-		Pools:     activation.NewPoolsView(poolsStore),
-		Journal:   jrnl,
-		Runtime:   rt,
-		Proxy:     px,
-		Catalog:   depCatalog,
-		Hub:       hubStore,
+		Root:           a.Root,
+		Accounts:       activation.NewAccountsView(svc),
+		Providers:      provReg,
+		Clients:        clientReg,
+		ClientProfiles: clientProfileStore,
+		Bindings:       &bindings.Store{Root: a.Root, DB: a.DB.DB},
+		Presets:        activation.NewPresetsView(&presets.Store{DB: a.DB.DB}),
+		Profiles:       rt.Profiles,
+		Pools:          activation.NewPoolsView(poolsStore),
+		Journal:        jrnl,
+		Runtime:        rt,
+		Proxy:          px,
+		Catalog:        depCatalog,
+		Hub:            hubStore,
 		SpawnHubChild: func(hubName string) (int, error) {
 			selfExe, exeErr := selfExecutable()
 			if exeErr != nil {
@@ -210,7 +216,22 @@ func (a *App) compose() error {
 			// TRUSTED record verifies the live process; legacy numeric or stale
 			// records are removed and a fresh, instance-stamped child is spawned.
 			if rec := ownership.Load(pidFile); rec != nil && rec.VerifyLive() {
-				return rec.PID, nil
+				// Liveness is not freshness: an adopted child may serve a
+				// config from before the last mutation (ADR-0030). Restart it
+				// when its revision trails the stored one; adopt it otherwise.
+				endpoint, revision := "", 0
+				if cfg, cerr := hubStore.GetConfigContext(context.Background(), hubName); cerr != nil {
+					return 0, cerr
+				} else if cfg != nil && cfg.Port != 0 {
+					endpoint = fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+					revision = cfg.Revision
+				}
+				if restarted, rerr := hub.RestartStaleChild(a.Root, hubName, endpoint, revision, 3*time.Second); rerr != nil {
+					return 0, rerr
+				} else if !restarted {
+					return rec.PID, nil
+				}
+				// Fall through: spawn fresh below.
 			}
 			rec, err := ownership.Spawn(selfExe, []string{"_serve-hub", hubName}, pidFile,
 				filepath.Join(hubDir, "service.log"), "ANYPICK_HUB_CHILD=1")
@@ -236,13 +257,12 @@ func (a *App) compose() error {
 		}
 		return 0
 	}
-	px.QuotaGuardPolicy = func(ctx context.Context) (bool, int64) {
+	px.QuotaGuardPolicy = func(ctx context.Context) config.QuotaGuardPolicy {
 		cfg, err := a.Config.Read(ctx)
 		if err != nil {
-			return false, 0
+			return config.QuotaGuardPolicy{ServeWhenAllCooling: true}
 		}
-		policy := config.QuotaGuardPolicyOf(cfg)
-		return policy.Enabled, int64(policy.CooldownMinutes) * 60_000
+		return config.QuotaGuardPolicyOf(cfg)
 	}
 	px.PoolSpawner = func(providerID string) (int, error) {
 		selfExe, exeErr := selfExecutable()
@@ -285,6 +305,8 @@ func (a *App) compose() error {
 	a.Journal = jrnl
 	a.PresetSvc = presets.NewService(&presets.Store{DB: a.DB.DB})
 	a.BindingSvc = bindings.NewService(&bindings.Store{Root: a.Root, DB: a.DB.DB})
+	a.CodexProfileSvc = client.NewProfileService(clientProfileStore)
+	svc.SetAfterSwitch(a.BindingSvc.RealignNativeClientBinding)
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: homeDir(), Clients: clientReg,
 		ProfileSvc: profile.NewService(rt.Profiles), Catalog: catalogRegistry,
@@ -355,20 +377,7 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 	}
 
 	if !opts.SkipMaintenance {
-		// Best-effort startup recovery: a failure means a partial operation
-		// could not be rolled back automatically — surfaced via doctor.
-		if a.Deps != nil {
-			if _, rerr := activation.RecoverIncompleteOperations(ctx, a.Deps); rerr != nil {
-				fmt.Fprintf(os.Stderr, "[anypick] startup journal recovery failed: %v\n", rerr)
-			}
-		}
-	}
-
-	// Reap detached proxy processes only when no live supervisor owns them.
-	if !opts.SkipMaintenance && RunningTrayPid(root) == nil {
-		if _, rerr := a.Proxy.ReapStaleContext(ctx); rerr != nil {
-			fmt.Fprintf(os.Stderr, "[anypick] stale lease reaping failed: %v\n", rerr)
-		}
+		runStartupMaintenance(ctx, a, root)
 	}
 
 	releaseLock()
@@ -377,6 +386,46 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 		a.Close()
 	}
 	return a, closer, nil
+}
+
+// RunStartupMaintenance rolls back operations a previous run left mid-flight
+// and reaps detached proxy children nobody owns. Ready calls it unless
+// SkipMaintenance is set. The bare no-TTY path opens the database first so it
+// can read ui.defaultSurface, then calls this only when that surface is not
+// the terminal UI. A configured tui with no terminal must not reap proxies
+// the desktop app is using.
+func RunStartupMaintenance(ctx context.Context, a *App) {
+	if a == nil {
+		return
+	}
+	runStartupMaintenance(ctx, a, a.Root)
+}
+
+// runStartupMaintenance rolls back operations a previous run left mid-flight and
+// reaps detached proxy children nobody owns. Both are best-effort: a failure
+// here must not stop AnyPick from starting, but it must not be silent either —
+// "recovery could not roll this back" and "there was nothing to roll back"
+// used to look identical to the user.
+func runStartupMaintenance(ctx context.Context, a *App, root string) {
+	if a.Deps != nil {
+		recovered, err := activation.RecoverIncompleteOperations(ctx, a.Deps)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[anypick] startup journal recovery failed: %v\n", err)
+		}
+		if recovered != nil && len(recovered.Failed) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"[anypick] %d incomplete operation(s) could not be rolled back: %v\n"+
+					"[anypick] run `anypick doctor` before retrying them.\n",
+				len(recovered.Failed), recovered.Failed)
+		}
+	}
+	// Detached proxy children are reaped only when no live supervisor owns them.
+	if RunningTrayPid(root) != nil {
+		return
+	}
+	if _, err := a.Proxy.ReapStaleContext(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[anypick] stale lease reaping failed: %v\n", err)
+	}
 }
 
 // Close disposes the app idempotently. The plugin supervisor closes first:

@@ -612,3 +612,43 @@ func TestRecoverMissingJournalEntryNeverCountsRecovered(t *testing.T) {
 		t.Fatalf("ghost entry must fail, got %+v", result)
 	}
 }
+
+// An entry whose stored resources no longer parse must be reported as
+// unrecovered, not as "nothing to compensate": recovery cannot know what the
+// operation touched, and claiming a clean start over a half-applied mutation is
+// exactly the failure the journal exists to prevent (ADR 0004).
+func TestRecoverRefusesACorruptJournalEntry(t *testing.T) {
+	env := newTestEnv(t)
+	deps := env.Deps
+	ctx := context.Background()
+
+	const entryID = "j-corrupt"
+	if _, err := deps.Journal.CreateContext(ctx, "activation", journal.CreateOptions{
+		ID: entryID, State: journal.StateExecuting,
+		AffectedResources: []string{"account/workbuddy/main"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deps.Journal.DB.ExecContext(ctx,
+		`UPDATE operation_journal SET affected_resources_json = ? WHERE id = ?`,
+		"{oops", entryID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RecoverIncompleteOperations(ctx, deps)
+	if err != nil {
+		t.Fatalf("recovery: %v", err)
+	}
+	if result.Recovered != 0 {
+		t.Fatalf("a corrupt entry reported as recovered: %+v", result)
+	}
+	found := false
+	for _, id := range result.Failed {
+		if id == entryID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("corrupt entry missing from Failed: %+v", result)
+	}
+}

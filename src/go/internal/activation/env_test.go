@@ -41,8 +41,9 @@ type testEnv struct {
 	UpstreamAuthHeader string // empty = Authorization
 	UpstreamAuthPrefix string // empty = "Bearer "
 
-	Px *proxy.Service
-	Rt *runtime.Service
+	Px             *proxy.Service
+	Rt             *runtime.Service
+	ClientProfiles *client.ProfileStore
 
 	Deps *Deps
 	Svc  *accounts.Service
@@ -75,7 +76,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	clientReg := client.NewRegistry()
-	if err := client.RegisterBuiltin(clientReg, home); err != nil {
+	if err := client.RegisterBuiltin(clientReg, home, root); err != nil {
 		t.Fatal(err)
 	}
 	svc := accounts.New(st, provReg)
@@ -92,30 +93,33 @@ func newTestEnv(t *testing.T) *testEnv {
 		Clients:  clientReg,
 		Profiles: &profile.Store{DB: database.DB},
 	}
+	clientProfiles := &client.ProfileStore{Root: root, DB: database.DB}
 	leases := &proxy.LeaseStore{DB: database.DB}
 	px := proxy.New(st, leases)
 	px.Resolver = &testUpstreamResolver{env: env}
 
 	env.Deps = &Deps{
-		Root:      root,
-		Accounts:  &accountsView{Svc: svc},
-		Providers: provReg,
-		Clients:   clientReg,
-		Bindings:  &bindings.Store{Root: root, DB: database.DB},
-		Presets:   &presetsView{Store: &presets.Store{DB: database.DB}},
-		Profiles:  &profile.Store{DB: database.DB},
-		Pools:     &poolsView{Store: &pools.Store{DB: database.DB}},
-		Journal:   &journal.OperationJournal{DB: database.DB},
-		Runtime:   rt,
-		Proxy:     px,
-		Catalog:   NewCatalogIndex(map[string]CatalogEntry{}),
-		Hub:       &hub.Store{DB: database.DB, Root: root},
+		Root:           root,
+		Accounts:       &accountsView{Svc: svc},
+		Providers:      provReg,
+		Clients:        clientReg,
+		ClientProfiles: clientProfiles,
+		Bindings:       &bindings.Store{Root: root, DB: database.DB},
+		Presets:        &presetsView{Store: &presets.Store{DB: database.DB}},
+		Profiles:       &profile.Store{DB: database.DB},
+		Pools:          &poolsView{Store: &pools.Store{DB: database.DB}},
+		Journal:        &journal.OperationJournal{DB: database.DB},
+		Runtime:        rt,
+		Proxy:          px,
+		Catalog:        NewCatalogIndex(map[string]CatalogEntry{}),
+		Hub:            &hub.Store{DB: database.DB, Root: root},
 		// Unit tests have no detached child to spawn; hub activations fail at
 		// the spawn step, which is exactly the rollback seam they exercise.
 		SpawnHubChild: func(string) (int, error) { return 0, errors.New("no live hub child in unit tests") },
 	}
 	env.Px = px
 	env.Rt = rt
+	env.ClientProfiles = clientProfiles
 	env.Svc = svc
 	return env
 }

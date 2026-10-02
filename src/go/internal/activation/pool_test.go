@@ -65,8 +65,10 @@ func newPoolTestEnv(t *testing.T, upstreamURL string) *testEnv {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"a", "b"} {
+		// Distinct credentials per member: a pool rotates real accounts, and
+		// the account service refuses to save one snapshot under two names.
 		if _, err := env.Svc.SaveInput(ctx, "vendorx", name,
-			accounts.CredentialInput{Kind: "api-key", Secret: env.UpstreamAuth, Profile: "global"},
+			accounts.CredentialInput{Kind: "api-key", Secret: env.UpstreamAuth + "-" + name, Profile: "global"},
 			true); err != nil {
 			t.Fatalf("save %s: %v", name, err)
 		}
@@ -363,7 +365,7 @@ func TestStartManagedProxyBranchesUnchanged(t *testing.T) {
 	ctx := context.Background()
 
 	if _, err := env.Svc.SaveInput(ctx, "vendorx", "single",
-		accounts.CredentialInput{Kind: "api-key", Secret: env.UpstreamAuth, Profile: "global"},
+		accounts.CredentialInput{Kind: "api-key", Secret: env.UpstreamAuth + "-single", Profile: "global"},
 		true); err != nil {
 		t.Fatal(err)
 	}

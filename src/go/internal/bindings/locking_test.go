@@ -2,11 +2,11 @@ package bindings
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/outof0/anypick/go/internal/testgate"
 )
 
 // These two guards exist because of a shape this package used to have: every
@@ -28,44 +28,28 @@ import (
 // TestMutatingMethodsTakeContext enforces invariant #5's contract for this
 // package: a mutating method must receive the caller's context, so a lock held
 // upstream stays visible to it.
+//
+// The check itself lives in internal/testgate, beside the six other packages
+// that own persisted state. This package used to carry its own copy, and that
+// copy had drifted: it was missing Attach, Detach, Migrate and Restore, so a
+// ctx-less AttachProject or RestoreSnapshot would have passed the guard. That
+// is precisely the failure the shared implementation exists to prevent — "five
+// near-identical copies already drifted once, which is exactly what a gate must
+// not do" — so this is now a call rather than a seventh implementation.
 func TestMutatingMethodsTakeContext(t *testing.T) {
-	fset := token.NewFileSet()
-	files, err := packageFiles(fset)
-	if err != nil {
-		t.Fatalf("parse the bindings package: %v", err)
-	}
-
-	var missing []string
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || fn.Body == nil {
-				continue
-			}
-			name := fn.Name.Name
-			if !ast.IsExported(name) || !mutatesByVerbs(name) {
-				continue
-			}
-			if !takesContextFirst(fn) {
-				missing = append(missing, name+" ("+fset.Position(fn.Pos()).String()+")")
-			}
-		}
-	}
-
-	if len(missing) > 0 {
-		t.Errorf("mutating methods that do not take the caller's context (ADR 0009): %s\n"+
-			"Give the method a ctx context.Context first parameter. A ctx-less twin\n"+
-			"that starts from context.Background() cannot see a lock the caller holds.",
-			strings.Join(missing, "; "))
-	}
+	testgate.CheckNoCtxlessMutations(t, ".", map[string]string{
+		// No exceptions: every bindings mutation is ctx-first.
+	})
 }
 
 // TestNoBackgroundContextInProductionCode catches the other half of the same
 // trap: a product path that manufactures a fresh context inside a region that
 // may already be locked.
+//
+// The rule is bindings-specific, so it stays here; only the parse is shared.
 func TestNoBackgroundContextInProductionCode(t *testing.T) {
 	fset := token.NewFileSet()
-	files, err := packageFiles(fset)
+	files, err := testgate.PackageFiles(".", fset)
 	if err != nil {
 		t.Fatalf("parse the bindings package: %v", err)
 	}
@@ -97,57 +81,4 @@ func TestNoBackgroundContextInProductionCode(t *testing.T) {
 			"caller's ctx through instead.",
 			strings.Join(offenders, ", "))
 	}
-}
-
-// packageFiles parses the package's non-test sources. Test files are excluded:
-// a test that starts from a background context is not inside a held lock.
-func packageFiles(fset *token.FileSet) ([]*ast.File, error) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		return nil, err
-	}
-	var files []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, perr := parser.ParseFile(fset, name, nil, 0)
-		if perr != nil {
-			return nil, perr
-		}
-		files = append(files, f)
-	}
-	return files, nil
-}
-
-// mutatesByVerbs reports whether a method name reads as a mutation. Broad on
-// purpose: a false positive costs a sentence of justification, and a false
-// negative costs a hang. "Record" is included because RecordSourceResume writes
-// the source_resumes row.
-func mutatesByVerbs(name string) bool {
-	for _, verb := range []string{
-		"Write", "Set", "Clear", "Delete", "Patch", "Update", "Create", "Remove",
-		"Save", "Upsert", "Insert", "Discard", "Prepare", "Ingest", "Reset",
-		"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Record",
-	} {
-		if strings.HasPrefix(name, verb) {
-			return true
-		}
-	}
-	return false
-}
-
-// takesContextFirst reports whether the method's first parameter is a
-// context.Context.
-func takesContextFirst(fn *ast.FuncDecl) bool {
-	if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
-		return false
-	}
-	sel, ok := fn.Type.Params.List[0].Type.(*ast.SelectorExpr)
-	if !ok || sel.Sel == nil || sel.Sel.Name != "Context" {
-		return false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	return ok && ident.Name == "context"
 }

@@ -29,6 +29,7 @@ func NewPoolsView(s *pools.Store) *poolsView {
 type accountLike struct {
 	providerID   string
 	name         string
+	snapshotDir  string
 	proxyEnabled bool
 	proxyPort    int
 }
@@ -43,6 +44,7 @@ func (v *accountsView) Get(ctx context.Context, providerID, name string) (*accou
 	return &accountLike{
 		providerID:   a.Meta.Provider,
 		name:         a.Meta.Name,
+		snapshotDir:  a.SnapshotDir,
 		proxyEnabled: a.Proxy.Enabled,
 		proxyPort:    a.Proxy.Port,
 	}, nil

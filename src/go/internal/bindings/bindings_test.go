@@ -110,6 +110,57 @@ func TestGlobalGetMissingNil(t *testing.T) {
 	}
 }
 
+func TestRealignNativeClientBinding(t *testing.T) {
+	database, root := testDB(t)
+	svc := NewService(&Store{Root: root, DB: database.DB})
+	ctx := context.Background()
+
+	global := Global{
+		Client: "workbuddy",
+		Spec: Spec{
+			Client:          "workbuddy",
+			Source:          refs.AccountRef("workbuddy", "old"),
+			Model:           OmittedModel(),
+			TransportPolicy: "auto",
+		},
+		Provenance: Provenance{Kind: "direct"},
+	}
+	if _, err := svc.UpsertGlobalContext(ctx, global); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RealignNativeClientBinding(ctx, "workbuddy", "new"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetGlobalContext(ctx, "workbuddy")
+	if err != nil || got == nil {
+		t.Fatalf("binding = %#v, err=%v", got, err)
+	}
+	if got.Spec.Source.Name != "new" {
+		t.Fatalf("source = %#v want workbuddy/new", got.Spec.Source)
+	}
+}
+
+func TestRealignNativeClientBindingLeavesExplicitCrossProviderRoute(t *testing.T) {
+	database, root := testDB(t)
+	svc := NewService(&Store{Root: root, DB: database.DB})
+	ctx := context.Background()
+
+	global := Global{Client: "dsh", Spec: spec(), Provenance: Provenance{Kind: "direct"}}
+	if _, err := svc.UpsertGlobalContext(ctx, global); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RealignNativeClientBinding(ctx, "workbuddy", "new"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetGlobalContext(ctx, "dsh")
+	if err != nil || got == nil {
+		t.Fatalf("binding = %#v, err=%v", got, err)
+	}
+	if got.Spec.Source.Name != "work" {
+		t.Fatalf("explicit route moved unexpectedly: %#v", got.Spec.Source)
+	}
+}
+
 func TestProjectUpsertGetDelete(t *testing.T) {
 	database, root := testDB(t)
 	s := &Store{Root: root, DB: database.DB}

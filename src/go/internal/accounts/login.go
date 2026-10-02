@@ -6,6 +6,8 @@ package accounts
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -18,6 +20,10 @@ import (
 )
 
 const fallbackAccountName = "stash"
+
+// loginCommitHook runs after the snapshot commit and before the cancel
+// barrier. Tests cancel in that window. Production leaves it nil.
+var loginCommitHook func()
 
 // LoginResult mirrors ProviderLoginResult minus protocol framing.
 type LoginResult struct {
@@ -33,6 +39,12 @@ type LoginOptions struct {
 	Source   string
 	Name     string
 	Label    string
+	// RefuseDistinctOverwrite rejects a save onto an existing account whose
+	// identity is not this login. Codex profile login sets it so a profile
+	// name cannot wipe a desktop account that merely shares the name.
+	// A profile that already owns the account leaves it false so a refresh
+	// can replace that profile's own snapshot.
+	RefuseDistinctOverwrite bool
 }
 
 // LoginMethods lists a provider's browser sign-in methods, filtered by source
@@ -122,7 +134,9 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		return LoginResult{}, anyerr.Newf(
 			"Choose which "+pv.Name()+" sign-in source to use.",
 			"ACCOUNT_SOURCE_REQUIRED",
-			anyerr.WithSuggestions("Pass --source <source> together with --auth-method <id>."))
+			anyerr.WithSuggestions(
+				fmt.Sprintf("Select an available sign-in source for %s in the Add Account sheet.", pv.Name()),
+				"Or pass --source <source> together with --auth-method <id> on the command line."))
 	}
 
 	methods, err := s.LoginMethods(ctx, providerID, opts.Source)
@@ -141,7 +155,9 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		return LoginResult{}, anyerr.Newf(
 			msg,
 			"PROVIDER_LOGIN_UNAVAILABLE",
-			anyerr.WithSuggestions("Install the launcher required by "+method.Label+", then try again."))
+			anyerr.WithSuggestions(
+				fmt.Sprintf("Install %s on this Mac, then try again.", method.Label),
+				"Ensure the application has completed its initial setup."))
 	}
 	source := opts.Source
 	if source == "" {
@@ -151,7 +167,9 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		return LoginResult{}, anyerr.Newf(
 			"Choose which "+pv.Name()+" sign-in source to use.",
 			"ACCOUNT_SOURCE_REQUIRED",
-			anyerr.WithSuggestions("Pass --source <source> together with --auth-method "+method.ID+"."))
+			anyerr.WithSuggestions(
+				fmt.Sprintf("Select an available sign-in source for %s in the Add Account sheet.", pv.Name()),
+				"Or pass --source <source> together with --auth-method "+method.ID+" on the command line."))
 	}
 	if opts.Source != "" && method.Source != "" && opts.Source != method.Source {
 		return LoginResult{}, anyerr.Newf(
@@ -166,6 +184,22 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 	var backedUpTo *string
 	defer func() { _ = s.DiscardLiveAuthCheckpoint(checkpoint) }()
 
+	// preservedEnv is the live dotenv taken before the clear. An empty
+	// checkpoint rolls back through ClearLive, which strips API-key and
+	// Vertex lines the new OAuth snapshot does not replace; success merges
+	// the same lines back so they are not discarded with the checkpoint.
+	preservedEnv, preserveErr := preserveLiveEnv(pv)
+	if preserveErr != nil {
+		return LoginResult{}, preserveErr
+	}
+	restorePreserved := func() error { return restoreLiveEnv(pv, preservedEnv) }
+
+	// overwritten is the account whose snapshot WriteMeta replaced. createdName
+	// is an account this login inserted. Both stay empty until that commit, so
+	// an earlier failure does not delete or rewrite a snapshot it never touched.
+	var overwritten *store.Account
+	var overwrittenSnap string
+	var createdName string
 	// rollbackOrCancel restores the checkpoint exactly once and returns the
 	// cause (or the rollback failure when restoration itself broke).
 	rollback := func(cause error) (LoginResult, error) {
@@ -174,7 +208,24 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		// context would fail on its own cancellation and leave the user's real
 		// previous login unrestored. WithoutCancel keeps the coordinator locks
 		// the context carries while dropping the cancellation.
-		if rbErr := s.restoreCheckpointQuiet(context.WithoutCancel(ctx), checkpoint); rbErr != nil {
+		rbCtx := context.WithoutCancel(ctx)
+		var rbErr error
+		switch {
+		case overwritten != nil:
+			// writeMeta already deleted the previous snapshot rows (ADR 0004).
+			// Put that copy back before restoring the live files.
+			rbErr = s.Store.WriteMetaContext(rbCtx, overwritten.Meta, overwrittenSnap)
+		case createdName != "":
+			rbErr = s.Delete(rbCtx, providerID, createdName)
+		}
+		liveErr := s.restoreCheckpointQuiet(rbCtx, checkpoint)
+		if envErr := restorePreserved(); envErr != nil && liveErr == nil {
+			liveErr = envErr
+		}
+		if rbErr == nil {
+			rbErr = liveErr
+		}
+		if rbErr != nil {
 			return LoginResult{}, anyerr.Wrapf(rbErr,
 				"Provider sign-in failed and the previous login could not be restored",
 				"PROVIDER_LOGIN_ROLLBACK_FAILED")
@@ -203,6 +254,16 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		backedUpTo = &name
 	}
 
+	// Browser login must start from an empty provider-owned staging store. The
+	// checkpoint above is the compensation copy; clearing here prevents a
+	// provider CLI from silently reusing the account that was already active.
+	// The clear is the store this method is about to rewrite, not every
+	// credential the provider can see: an external IDE login and an API key
+	// the new snapshot does not replace must survive.
+	if err := clearLiveForLogin(pv, source); err != nil {
+		return rollback(err)
+	}
+
 	if err := loginer.Login(ctx, method.ID, source); err != nil {
 		// Once the context is cancelled the terminal result must be
 		// cancellation — however the launcher itself exited.
@@ -216,7 +277,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 		return rollback(cerr)
 	}
 
-	live, err := pv.DetectLive()
+	live, err := loginLiveSource(pv, source)
 	if err != nil {
 		return rollback(err)
 	}
@@ -235,19 +296,187 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 	if err != nil {
 		return rollback(err)
 	}
-	meta, err := s.saveLockedWithLabel(ctx, pv, accountName, opts.Label)
+	accountName, err = s.avoidClobberingStash(ctx, pv, accountName, backedUpTo, live, source)
 	if err != nil {
 		return rollback(err)
 	}
-	// Last barrier before the commit point: a cancel here must roll back the
-	// snapshot write above rather than publish success.
+	if opts.RefuseDistinctOverwrite {
+		if err := s.refuseDistinctOverwrite(ctx, pv, accountName, live); err != nil {
+			return rollback(err)
+		}
+	}
+	if previous, gerr := s.Get(ctx, providerID, accountName); gerr != nil {
+		return rollback(gerr)
+	} else if previous != nil {
+		dir, merr := os.MkdirTemp("", "anypick-login-prev-")
+		if merr != nil {
+			return rollback(merr)
+		}
+		defer os.RemoveAll(dir)
+		if cerr := s.Store.CopySnapshotFiles(ctx, providerID, accountName, dir); cerr != nil {
+			return rollback(cerr)
+		}
+		overwritten = previous
+		overwrittenSnap = dir
+	}
+	meta, err := s.saveLockedWithLabelSource(ctx, pv, accountName, opts.Label, source)
+	if err != nil {
+		return rollback(err)
+	}
+	if overwritten == nil {
+		createdName = meta.Name
+	}
+	if loginCommitHook != nil {
+		loginCommitHook()
+	}
+	// The snapshot write above is the commit (ADR 0004). A cancel here must
+	// put the previous rows back rather than publish success.
 	if cerr := commitBarrier(); cerr != nil {
 		return rollback(cerr)
+	}
+	if err := restorePreserved(); err != nil {
+		return rollback(err)
 	}
 	if err := s.Store.SetActiveContext(ctx, providerID, meta.Name); err != nil {
 		return rollback(err)
 	}
 	return LoginResult{Provider: providerID, Account: meta, Method: method, BackedUpTo: backedUpTo}, nil
+}
+
+// liveEnvPreserver snapshots auth env lines a full ClearLive would strip.
+// The login keeps them in memory because the checkpoint backup omits a
+// Vertex-only dotenv, and success discards the checkpoint directory.
+type liveEnvPreserver interface {
+	PreserveAuthEnv() (string, error)
+	RestoreAuthEnv(string) error
+}
+
+func preserveLiveEnv(pv provider.Provider) (string, error) {
+	preserver, ok := pv.(liveEnvPreserver)
+	if !ok {
+		return "", nil
+	}
+	return preserver.PreserveAuthEnv()
+}
+
+func restoreLiveEnv(pv provider.Provider, body string) error {
+	if body == "" {
+		return nil
+	}
+	preserver, ok := pv.(liveEnvPreserver)
+	if !ok {
+		return nil
+	}
+	return preserver.RestoreAuthEnv(body)
+}
+
+// clearLiveForLogin clears the store the selected method rewrites. A provider
+// that refuses CanClearLive for this source keeps its external credential;
+// a source-scoped clear leaves every other store in place. Providers with
+// only ClearLive (one credential file) keep that behavior.
+func clearLiveForLogin(pv provider.Provider, source string) error {
+	if policy, ok := pv.(provider.LiveClearPolicy); ok && !policy.CanClearLive(source) {
+		return nil
+	}
+	if source != "" {
+		if scoped, ok := pv.(interface{ ClearLiveSource(string) error }); ok {
+			return scoped.ClearLiveSource(source)
+		}
+	}
+	if clearer, ok := pv.(provider.LiveClearer); ok {
+		return clearer.ClearLive()
+	}
+	return nil
+}
+
+// stashSnapshotPreserver reports when a source-scoped save would discard
+// credentials the stash snapshot still holds.
+type stashSnapshotPreserver interface {
+	SourceSaveDropsSnapshot(snapshotDir, source string) bool
+}
+
+// avoidClobberingStash keeps the pre-login backup when the new source
+// snapshot would replace it and drop an API key or another sign-in source.
+// The new login is saved under a different name.
+func (s *Service) avoidClobberingStash(ctx context.Context, pv provider.Provider, accountName string, backedUpTo *string, live provider.LiveAuthStatus, source string) (string, error) {
+	if backedUpTo == nil || *backedUpTo == "" || *backedUpTo != accountName || source == "" {
+		return accountName, nil
+	}
+	preserver, ok := pv.(stashSnapshotPreserver)
+	if !ok {
+		return accountName, nil
+	}
+	existing, err := s.Get(ctx, pv.ID(), accountName)
+	if err != nil || existing == nil {
+		return accountName, err
+	}
+	if !preserver.SourceSaveDropsSnapshot(existing.SnapshotDir, source) {
+		return accountName, nil
+	}
+	base := accountName
+	if live.Identity != "" {
+		if derived, derr := accountNameFromIdentity(live.Identity); derr == nil && derived != "" {
+			base = derived
+		}
+	}
+	return s.accountNameAvoiding(ctx, pv.ID(), base, *backedUpTo)
+}
+
+// accountNameAvoiding returns a free account name, skipping the stash that
+// this login must keep and any name already saved.
+func (s *Service) accountNameAvoiding(ctx context.Context, providerID, base, avoid string) (string, error) {
+	if strings.TrimSpace(base) == "" {
+		base = fallbackAccountName
+	}
+	for n := 0; n < 100; n++ {
+		candidate := base
+		if n > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, n+1)
+		}
+		if candidate == avoid {
+			continue
+		}
+		slugged, serr := slug.AccountName(candidate)
+		if serr != nil {
+			return "", serr
+		}
+		if slugged == avoid {
+			continue
+		}
+		existing, err := s.Get(ctx, providerID, slugged)
+		if err != nil {
+			return "", err
+		}
+		if existing == nil {
+			return slugged, nil
+		}
+	}
+	return "", anyerr.Newf(
+		"Could not choose a free account name that keeps the previous login.",
+		"ACCOUNT_NAME_TAKEN")
+}
+
+// refuseDistinctOverwrite rejects a save that would replace an existing
+// account with a login we cannot prove is the same one. Profile login sets
+// this so a profile name cannot wipe a desktop account that shares it.
+func (s *Service) refuseDistinctOverwrite(ctx context.Context, pv provider.Provider, accountName string, live provider.LiveAuthStatus) error {
+	existing, err := s.Get(ctx, pv.ID(), accountName)
+	if err != nil || existing == nil {
+		return err
+	}
+	if accountScopedIdentity(live.Identity) && accountScopedIdentity(existing.Meta.Identity) &&
+		identitiesEqual(existing.Meta.Identity, live.Identity) {
+		return nil
+	}
+	if !accountScopedIdentity(live.Identity) && !accountScopedIdentity(existing.Meta.Identity) {
+		return nil
+	}
+	return anyerr.Newf(
+		pv.Name()+" account \""+accountName+"\" already exists and is a different login.",
+		"ACCOUNT_NAME_TAKEN",
+		anyerr.WithSuggestions(
+			"Choose a name that is not an existing "+pv.Name()+" account.",
+			"Or sign in as that account again so the saved login is refreshed."))
 }
 
 // stashBackupTarget ports resolveStashBackupTarget for the no-explicit-name
@@ -288,7 +517,8 @@ func (s *Service) resolveCurrentSaveName(ctx context.Context, pv provider.Provid
 		return "", anyerr.Newf(
 			"No live "+pv.Name()+" login to save.",
 			"NO_LIVE_AUTH",
-			anyerr.WithSuggestions("Sign in with the official tool first, then try again."))
+			anyerr.WithSuggestions(
+				fmt.Sprintf("Sign in to %s directly in the official app or browser, then try saving again.", pv.Name())))
 	}
 	if live.Identity != "" {
 		if existing := s.findAccountNameByIdentity(ctx, pv.ID(), live.Identity); existing != "" {
@@ -316,10 +546,17 @@ func (s *Service) resolveCurrentSaveName(ctx context.Context, pv provider.Provid
 	return "", anyerr.Newf(
 		"Name the "+pv.Name()+" login before saving it.",
 		"MISSING_ACCOUNT_NAME",
-		anyerr.WithSuggestions("anypick add account "+pv.ID()+" --current --name <name>"))
+		anyerr.WithSuggestions(
+			"Enter an account name before saving.",
+			"In the terminal, run: anypick add account "+pv.ID()+" --current --name <name>"))
 }
 
 func (s *Service) findAccountNameByIdentity(ctx context.Context, providerID, identity string) string {
+	// Display-only constants ("API key") are not account identities: matching
+	// one would resolve a different login onto the wrong account.
+	if !accountScopedIdentity(identity) {
+		return ""
+	}
 	accounts, err := s.Store.ListAccounts(ctx, providerID)
 	if err != nil {
 		return ""
@@ -347,13 +584,12 @@ func accountNameFromIdentity(identity string) (string, error) {
 	return name, nil
 }
 
-// saveLockedWithLabel wraps saveLocked with the login-supplied label.
-func (s *Service) saveLockedWithLabel(ctx context.Context, pv provider.Provider, accountName, label string) (store.Meta, error) {
+func (s *Service) saveLockedWithLabelSource(ctx context.Context, pv provider.Provider, accountName, label, source string) (store.Meta, error) {
 	existing, err := s.Get(ctx, pv.ID(), accountName)
 	if err != nil {
 		return store.Meta{}, err
 	}
-	meta, err := s.saveLocked(ctx, pv, accountName, existing)
+	meta, err := s.saveLockedSource(ctx, pv, accountName, existing, source)
 	if err != nil {
 		return store.Meta{}, err
 	}
@@ -361,6 +597,20 @@ func (s *Service) saveLockedWithLabel(ctx context.Context, pv provider.Provider,
 		return s.Store.PatchMetaContext(ctx, pv.ID(), meta.Name, store.MetaPatch{LabelSet: true, Label: label})
 	}
 	return meta, nil
+}
+
+// loginLiveSource verifies exactly the store selected by the login method.
+// DetectLive is intentionally broad for status polling, but using it after a
+// source-specific login could accept a stale Antigravity credential after a
+// Gemini CLI flow (or the reverse).
+func loginLiveSource(pv provider.Provider, source string) (provider.LiveAuthStatus, error) {
+	if source == "" {
+		return pv.DetectLive()
+	}
+	if scoped, ok := pv.(provider.SourceScopedProvider); ok {
+		return scoped.DetectLiveSource(source)
+	}
+	return pv.DetectLive()
 }
 
 // errLoginCancelled mirrors PROVIDER_LOGIN_CANCELLED for post-launcher

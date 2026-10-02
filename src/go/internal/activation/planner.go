@@ -2,11 +2,14 @@ package activation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/catalog"
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/journal"
@@ -32,14 +35,17 @@ type Deps struct {
 	Accounts  *accountsView
 	Providers *provider.Registry
 	Clients   *client.Registry
-	Bindings  *bindingsStore
-	Presets   *presetsView
-	Profiles  *profile.Store
-	Pools     *poolsView
-	Journal   *journal.OperationJournal
-	Runtime   *runtime.Service // optional; nil degrades proxy/gateway applies
-	Proxy     proxyStart       // optional; nil makes managed transports fail closed
-	Catalog   *CatalogIndex
+	// ClientProfiles owns named native route mappings. It is separate from the
+	// one-row-per-client global binding.
+	ClientProfiles *client.ProfileStore
+	Bindings       *bindingsStore
+	Presets        *presetsView
+	Profiles       *profile.Store
+	Pools          *poolsView
+	Journal        *journal.OperationJournal
+	Runtime        *runtime.Service // optional; nil degrades proxy/gateway applies
+	Proxy          proxyStart       // optional; nil makes managed transports fail closed
+	Catalog        *CatalogIndex
 	// Hub enables Proxy Hub sources; SpawnHubChild launches the detached
 	// `_serve-hub <name>` helper during execution. nil → hub sources fail closed.
 	Hub           *hub.Store
@@ -66,6 +72,11 @@ type Options struct {
 	TransportPolicy transport.Policy
 	ReapplySpec     *bindings.Spec
 	ReapplyProv     *bindings.Provenance
+	// SkipNativeAuthWrite builds a restore-only plan: start the proxy and
+	// rewrite client config, but never touch the provider's live credential
+	// files. Desktop rehydration uses it so a service restart cannot silently
+	// replace a login the user changed after the binding was created.
+	SkipNativeAuthWrite bool
 }
 
 func protocolsFromAPIStyle(style string) []transport.Protocol {
@@ -311,6 +322,17 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			anyerr.WithSuggestions("Known clients: "+joinIDs(deps.Clients)))
 	}
 	caps := cad.Capabilities()
+	if req.Mode == ModeProfile || req.ProfileName != "" {
+		if clientID != "codex" {
+			return nil, anyerr.Newf(
+				"Named client profiles are currently supported only for Codex.",
+				"UNSUPPORTED_PROFILE", anyerr.WithExitCode(anyerr.CapabilityConflict))
+		}
+		if err := client.ValidateCodexProfileName(req.ProfileName); err != nil {
+			return nil, anyerr.Newf(err.Error(), "INVALID_USAGE",
+				anyerr.WithExitCode(anyerr.InvalidUsage))
+		}
+	}
 
 	var steps []PlanStep
 	var rollback []RollbackStep
@@ -397,8 +419,24 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			Model:           model,
 			TransportPolicy: "auto",
 		}
-		spec.ClientOptions = mergeModelRolesIntoClientOptions(
-			nil, firstNonNilMap(req.ModelRoles, opts.ModelRoles), model)
+		explicit := firstNonNilMap(req.ModelRoles, opts.ModelRoles)
+		var base map[string]interface{}
+		marker := ""
+		if len(explicit) == 0 {
+			// No per-connection choice: inherit stored provider defaults so
+			// one setting covers every account of the provider. Explicit
+			// pins always win and are never merged over.
+			if copied, ok := providerModelRoleDefaults(ctx, deps, clientID, sourceRef, req.ModelCatalog); ok {
+				base = map[string]interface{}{"modelRoles": rolesToStringInterface(copied)}
+				marker = "provider"
+			}
+		} else {
+			marker = "explicit"
+		}
+		spec.ClientOptions = mergeModelRolesIntoClientOptions(base, explicit, model)
+		if marker != "" {
+			spec.ClientOptions["modelRolesSource"] = marker
+		}
 		model = modelFromRolesOrSelection(spec, model)
 		spec.Model = model
 		bindingSpec = &spec
@@ -409,6 +447,22 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			anyerr.WithSuggestions(
 				"anypick use "+clientID+" --with <source>",
 				"anypick use "+clientID+" --current"))
+	}
+
+	// Some clients cannot represent a connection until their native config
+	// contains a default model. Prefer a model explicitly selected by the user;
+	// otherwise choose from the exact source-scoped catalog. A provider-level
+	// first model can be unavailable to this entitlement and would make the
+	// client send a model that the selected proxy cannot serve.
+	if caps != nil && caps.RequiresDefaultModel && model.Mode != "explicit" {
+		fallback := bootstrapModelForSource(ctx, resolved, deps, req.ModelCatalog)
+		if fallback == "" {
+			return nil, modelRequiredError(clientID, resolved, req.ModelCatalogErr)
+		}
+		model = bindings.ExplicitModel(fallback)
+		bindingSpec.Model = model
+		bindingSpec.ClientOptions = mergeModelRolesIntoClientOptions(
+			bindingSpec.ClientOptions, nil, model)
 	}
 
 	transportPolicy := bindingSpec.TransportPolicy
@@ -467,6 +521,15 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			tr.Endpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
 		}
 	}
+	nativeAuthSnapshotDir := ""
+	// A saved Codex account can safely run directly in an isolated home. Carry
+	// its auth.json for both persistent profile materialization and
+	// `run --profile`; other providers' snapshots belong to their proxies and
+	// are not Codex auth.json files.
+	if req.ProfileName != "" && resolved.Ref.Kind == refs.KindAccount &&
+		resolved.Ref.Provider == "codex" && account != nil {
+		nativeAuthSnapshotDir = account.snapshotDir
+	}
 	if resolved.Kind == "proxy-hub" {
 		// The hub is itself the local managed proxy. Endpoint/token are
 		// filled in by startHubProxy during execution — planning stays pure.
@@ -478,7 +541,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	planWarningsFromModel(&model, &warnings)
 
 	// Proxy steps: only persistent use and ephemeral run own shared lifecycle.
-	if (req.Mode == ModePersistent || req.Mode == ModeEphemeral) &&
+	if (req.Mode == ModePersistent || req.Mode == ModeEphemeral || req.Mode == ModeProfile) &&
 		(capability == transport.ManagedBuiltinProxy || capability == transport.ManagedExternalProxy) {
 		steps = append(steps,
 			PlanStep{Kind: StepAllocateProxyLease, Params: map[string]interface{}{"port": tr.ManagedProxy.Port}},
@@ -491,7 +554,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	}
 
 	// Ephemeral safety gate (invariant: ephemeral must never switch live login).
-	if req.Mode == ModeEphemeral && resolved.Kind == "account" &&
+	if req.Mode == ModeEphemeral && req.ProfileName == "" && resolved.Kind == "account" &&
 		resolved.Adapter.Capabilities.RequiresNativeAuthWrite &&
 		capability == transport.Direct {
 		return nil, anyerr.Newf(
@@ -509,7 +572,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	// proxy refreshes per request from saved auth) declare
 	// RequiresNativeAuthWrite=false and stay excluded here.
 	if req.Mode == ModePersistent && resolved.Kind == "account" &&
-		resolved.Adapter.Capabilities.RequiresNativeAuthWrite {
+		resolved.Adapter.Capabilities.RequiresNativeAuthWrite && !opts.SkipNativeAuthWrite {
 		steps = append(steps, PlanStep{
 			Kind:   StepWriteNativeAuth,
 			Detail: resolved.Display,
@@ -538,6 +601,14 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			Kind:   StepCommitProjectBinding,
 			Params: map[string]interface{}{"projectRoot": projectRoot},
 		})
+	case ModeProfile:
+		steps = append(steps,
+			PlanStep{Kind: StepInspectClientState},
+			PlanStep{Kind: StepWriteClientConfig},
+			PlanStep{Kind: StepVerifyEffectiveState},
+			PlanStep{Kind: StepCommitClientProfile,
+				Params: map[string]interface{}{"profile": req.ProfileName}},
+		)
 	default: // persistent
 		steps = append(steps,
 			PlanStep{Kind: StepInspectClientState},
@@ -560,18 +631,132 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 		firstNonNilMap(req.ModelRoles, opts.ModelRoles), &warnings)
 
 	return &Plan{
-		Mode:           req.Mode,
-		Client:         clientID,
-		ProjectRoot:    projectRoot,
-		ResolvedSource: resolved,
-		Transport:      tr,
-		Model:          model,
-		Steps:          steps,
-		Rollback:       rollback,
-		Warnings:       warnings,
-		BindingSpec:    bindingSpec,
-		Provenance:     provenance,
+		Mode:                  req.Mode,
+		Client:                clientID,
+		ProfileName:           req.ProfileName,
+		ProjectRoot:           projectRoot,
+		NativeAuthSnapshotDir: nativeAuthSnapshotDir,
+		ResolvedSource:        resolved,
+		Transport:             tr,
+		Model:                 model,
+		ModelCatalog:          append([]string(nil), req.ModelCatalog...),
+		Steps:                 steps,
+		Rollback:              rollback,
+		Warnings:              warnings,
+		BindingSpec:           bindingSpec,
+		Provenance:            provenance,
 	}, nil
+}
+
+func fallbackModelForProvider(deps *Deps, providerID string) string {
+	if providerID == "" {
+		return ""
+	}
+	if pol := catalog.Policy(providerID); pol != nil {
+		if def := strings.TrimSpace(pol.RoleDefaults["default"]); def != "" {
+			return def
+		}
+		for _, m := range pol.StaticFallback {
+			if m = strings.TrimSpace(m); m != "" {
+				return m
+			}
+		}
+	}
+	if deps != nil && deps.Providers != nil {
+		if pv, err := deps.Providers.Get(providerID); err == nil && pv != nil {
+			if c, ok := pv.(*provider.Compatible); ok && c != nil {
+				for _, m := range c.Def.Models {
+					if m = strings.TrimSpace(m); m != "" {
+						return m
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// bootstrapModelForSource prefers a gateway profile's own default. Otherwise
+// it chooses the first id from the exact source catalog supplied to planning;
+// a saved account, pool, or Proxy Hub may safely use that list because it is
+// already scoped to the selected source rather than a provider-wide fallback.
+// When the discovery catalog is not yet warmed (cold start), it falls back to
+// provider role defaults or compatible definition models.
+func bootstrapModelForSource(ctx context.Context, resolved *ResolvedSource, deps *Deps, modelCatalog []string) string {
+	if resolved == nil || deps == nil {
+		for _, model := range modelCatalog {
+			if model = strings.TrimSpace(model); model != "" {
+				return model
+			}
+		}
+		return ""
+	}
+	if resolved.Ref.Kind == refs.KindGateway && deps.Profiles != nil {
+		if profile, err := deps.Profiles.GetContext(ctx, resolved.Ref.Name); err == nil && profile != nil {
+			if model := strings.TrimSpace(profile.Meta.DefaultModel); model != "" {
+				return model
+			}
+		}
+	}
+	for _, model := range modelCatalog {
+		if model = strings.TrimSpace(model); model != "" {
+			return model
+		}
+	}
+	if resolved.Ref.Kind == refs.KindProxyHub && deps.Hub != nil {
+		if routes, rerr := deps.Hub.RouteModelsContext(ctx, resolved.Ref.Name); rerr == nil {
+			for _, r := range routes {
+				if m := strings.TrimSpace(r.Model); m != "" {
+					return m
+				}
+			}
+		}
+		if cfg, err := deps.Hub.GetConfigContext(ctx, resolved.Ref.Name); err == nil && cfg != nil {
+			for _, src := range cfg.Sources {
+				if !src.IsEnabled() {
+					continue
+				}
+				pID := src.ProviderID
+				if p, ok := hub.PoolSourceProvider(src); ok {
+					pID = p
+				}
+				if m := fallbackModelForProvider(deps, pID); m != "" {
+					return m
+				}
+			}
+		}
+	}
+	return fallbackModelForProvider(deps, resolved.Ref.Provider)
+}
+
+// modelRequiredError explains a missing default model with the exact next
+// command. The discovery failure tailors the advice: an unsupported catalog
+// (a provider with no live discovery) can never be refreshed, while a failed
+// fetch often means the saved login went stale and the user must sign in again.
+func modelRequiredError(clientID string, resolved *ResolvedSource, catalogErr error) error {
+	with := refs.DisplayRef(resolved.Ref)
+	listCmd := fmt.Sprintf("anypick models %s --with %s", clientID, with)
+	switch {
+	case errors.Is(catalogErr, proxy.ErrModelDiscoveryUnsupported):
+		return anyerr.Newf(
+			fmt.Sprintf("%s needs a default model, and %s publishes no live model catalog. Pick an id from `%s`, then re-run with --model <id>.",
+				clientID, resolved.Display, listCmd),
+			"MODEL_REQUIRED",
+			anyerr.WithSuggestions(listCmd))
+	case catalogErr != nil && resolved.Ref.Kind == refs.KindAccount:
+		return anyerr.Newf(
+			fmt.Sprintf("%s needs a default model, but the %s model catalog could not be read (%s). The saved login may be stale — sign in again, save it, then pick a model.",
+				clientID, resolved.Display, catalogErr),
+			"MODEL_REQUIRED",
+			anyerr.WithSuggestions(
+				fmt.Sprintf("anypick add account %s --name %s --force", resolved.Ref.Provider, resolved.Ref.Name),
+				listCmd+" -- then re-run with --model <id>"))
+	default:
+		return anyerr.Newf(
+			clientID+" needs a default model before this connection can be applied.",
+			"MODEL_REQUIRED",
+			anyerr.WithSuggestions("Refresh the source models, then choose a Default model.", listCmd))
+	}
 }
 
 func planWarningsFromModel(model *bindings.ModelSelection, warnings *[]Warning) {
@@ -605,11 +790,12 @@ var clientNativeProvider = map[string]string{
 // account answers the first two by intent but has no Haiku tier at all.
 //
 // AnyPick deliberately does not invent a default here. The static catalog's
-// Gemini entries (gemini-3.1-pro-preview, gemini-3.6-flash) are not ids Google
-// actually serves — checked against a live Code Assist catalog — and live
-// Gemini discovery speaks Generative Language with an API key, which the OAuth
+// Gemini entries are vendor-published API ids, but an OAuth account's Code
+// Assist entitlement can expose a different, account-scoped set. Live Gemini
+// discovery also speaks Generative Language with an API key, which the OAuth
 // (Antigravity / gemini-cli) accounts do not have. So the honest answer is to
-// say the model is missing rather than to write one that will 404.
+// say the model is missing rather than to assume every account serves every
+// published id.
 func planWarningsFromUnpinnedModel(clientID string, resolved *ResolvedSource, model bindings.ModelSelection, roles map[string]string, warnings *[]Warning) {
 	if resolved == nil || resolved.Kind != string(refs.KindAccount) {
 		return
@@ -718,6 +904,49 @@ func protocolForClient(caps *client.Capabilities, sourceProtocols []transport.Pr
 		return sourceProtocols[0]
 	}
 	return transport.OpenAI
+}
+
+// providerModelRoleDefaults resolves stored provider defaults for a fresh
+// binding with no explicit choice. Roles the client does not declare are
+// dropped, and anything outside a known catalog is dropped with them: a
+// provider-level model the new entitlement cannot serve must never be
+// written into client config. An empty discovery catalog skips only the
+// catalog check (mirroring routeDefaultModel's leniency) — dropping the
+// copy there would wipe inherited pins on every service restart, when the
+// restore path plans without warming.
+func providerModelRoleDefaults(
+	ctx context.Context, deps *Deps, clientID string, source refs.Ref, catalog []string,
+) (map[string]string, bool) {
+	if deps == nil || deps.Bindings == nil {
+		return nil, false
+	}
+	key := bindings.ModelRolesProviderKey(source)
+	if key == "" {
+		return nil, false
+	}
+	stored, err := deps.Bindings.GetProviderModelRoles(ctx, key)
+	if err != nil || len(stored) == 0 {
+		return nil, false
+	}
+	allowed := client.AllowedRoleIDs(clientID)
+	inCatalog := map[string]bool{}
+	for _, m := range catalog {
+		inCatalog[m] = true
+	}
+	out := map[string]string{}
+	for role, model := range stored {
+		if !allowed[role] || model == "" {
+			continue
+		}
+		if len(catalog) > 0 && !inCatalog[model] {
+			continue
+		}
+		out[role] = model
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 // mergeModelRolesIntoClientOptions ports activation-models.

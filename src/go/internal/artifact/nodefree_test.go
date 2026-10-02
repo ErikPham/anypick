@@ -8,8 +8,8 @@ import (
 )
 
 // The fixtures below are ported from scripts/node-free-artifact-fixtures.mjs.
-// They are shared contract: macos/scripts/check-node-free-app.sh rejects the
-// same shapes, and the two scanners must stay in agreement.
+// They are shared contract: src/macos/scripts/check-node-free-app.sh rejects
+// the same shapes, and the two scanners must stay in agreement.
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
@@ -77,6 +77,36 @@ func TestNodeFreeFixtures(t *testing.T) {
 			wantPass: false,
 			build: func(t *testing.T, root string) {
 				writeFile(t, filepath.Join(root, "launch"), "#!/usr/bin/env node\nconsole.log(1)\n")
+			},
+		},
+		{
+			name:     "node-shebang-capital",
+			wantPass: false,
+			build: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "launch"), "#!/usr/bin/env Node\nconsole.log(1)\n")
+			},
+		},
+		{
+			name:     "nodejs-shebang-is-not-node",
+			wantPass: true,
+			build: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "launch"), "#!/usr/bin/env nodejs\nconsole.log(1)\n")
+			},
+		},
+		{
+			name:     "homebrew-node-unsuffixed",
+			wantPass: false,
+			build: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "Info.plist"),
+					"helper=/opt/homebrew/opt/node\n")
+			},
+		},
+		{
+			name:     "homebrew-node-dotted-version",
+			wantPass: false,
+			build: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(root, "Info.plist"),
+					"helper=/opt/homebrew/opt/node@22.14.0/bin/node\n")
 			},
 		},
 		{

@@ -31,7 +31,8 @@ import (
 // forbidden: ANY occurrence fails the build, so the count cannot creep back
 // up. This is the locked-in end state of the facade ratchet — the irreducible
 // wiring (a.Store, a.Hub, Deps.Store) was the last survivor of the tourniquet
-// and is now forbidden too (Decision 7 in SYSTEM_ARCHITECTURE_2026-09-07.md §6).
+// and is now forbidden too (Decision 7 of the retired architecture plan —
+// docs/history/ARCHITECTURE_AND_ROADMAP_2026-09-08.md).
 // Bringing it to zero is the whole point: the budget mechanism is gone because
 // there is nothing irreducible left to tolerate.
 

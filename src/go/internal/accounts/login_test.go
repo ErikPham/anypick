@@ -13,6 +13,7 @@ import (
 	"github.com/outof0/anypick/go/internal/db"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/store"
+	"github.com/outof0/anypick/go/internal/transport"
 )
 
 // fakeLauncher writes an executable script and returns its absolute path
@@ -58,14 +59,24 @@ func grokAuthBody(email string) string {
 	return `{"sessions":{"s1":{"email":"` + email + `","access_token":"tok"}}}`
 }
 
-func TestLoginMethodsForProviderWithoutCapability(t *testing.T) {
+func TestLoginMethodsForGeminiSubscriptionSources(t *testing.T) {
 	svc, _, _ := newLoginService(t)
 	methods, err := svc.LoginMethods(context.Background(), "gemini", "")
 	if err != nil {
 		t.Fatalf("LoginMethods: %v", err)
 	}
-	if len(methods) != 0 {
-		t.Fatalf("gemini must not advertise browser sign-in: %+v", methods)
+	if len(methods) != 2 {
+		t.Fatalf("gemini methods = %+v, want Gemini and Antigravity subscription paths", methods)
+	}
+	if methods[0].ID != "gemini-subscription" || methods[0].Source != "gemini-cli" || !methods[0].Preferred {
+		t.Fatalf("default Gemini method = %+v", methods[0])
+	}
+	filtered, err := svc.LoginMethods(context.Background(), "gemini", "antigravity")
+	if err != nil {
+		t.Fatalf("filtered LoginMethods: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "antigravity-subscription" {
+		t.Fatalf("filtered methods = %+v", filtered)
 	}
 }
 
@@ -196,7 +207,10 @@ func TestLoginFailureRollsBackLiveAuth(t *testing.T) {
 	if err := os.WriteFile(authPath, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	failing := loginLauncher(t, "exit 7")
+	// The provider launcher refuses to proceed if the old auth is still in
+	// place. This pins the checkpoint → clear → login ordering: a fresh login
+	// must not silently reuse the current subscription account.
+	failing := loginLauncher(t, "if [ -f \""+authPath+"\" ]; then exit 9; fi; exit 7")
 	t.Setenv("GROK_BINARY", failing)
 
 	before, _ := svc.Store.ListAccounts(context.Background(), "grok")
@@ -253,6 +267,102 @@ func TestSelectLoginMethodPreferenceOrdering(t *testing.T) {
 	}
 }
 
+func TestLoginCancelAfterSnapshotCommitRestoresPrevious(t *testing.T) {
+	svc, st, authPath := newLoginService(t)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(grokAuthBody("old@example.com")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Save(context.Background(), "grok", "keep", false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if body := snapshotBlob(t, st, "grok", "keep"); !strings.Contains(body, "old@example.com") {
+		t.Fatalf("seed snapshot = %s", body)
+	}
+	// Save does not clear the live file and does not mark the account active.
+	// Login would then stash those same bytes under "stash", and the alias
+	// guard would refuse before the launcher ever replaced the snapshot.
+	if err := os.Remove(authPath); err != nil {
+		t.Fatal(err)
+	}
+
+	launcher := loginLauncher(t,
+		"mkdir -p \"$(dirname "+authPath+")\" && printf '%s' '"+grokAuthBody("new@example.com")+"' > "+authPath)
+	t.Setenv("GROK_BINARY", launcher)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loginCommitHook = func() { cancel() }
+	t.Cleanup(func() { loginCommitHook = nil })
+
+	_, err := svc.Login(ctx, "grok", LoginOptions{Name: "keep"})
+	if err == nil || wantCode(t, err) != "PROVIDER_LOGIN_CANCELLED" {
+		t.Fatalf("want PROVIDER_LOGIN_CANCELLED, got %v", err)
+	}
+	got, gerr := st.Get(context.Background(), "grok", "keep")
+	if gerr != nil || got == nil {
+		t.Fatalf("account after cancel: %+v %v", got, gerr)
+	}
+	body := snapshotBlob(t, st, "grok", "keep")
+	if !strings.Contains(body, "old@example.com") || strings.Contains(body, "new@example.com") {
+		t.Fatalf("snapshot bytes after cancel: %s identity %s", body, got.Meta.Identity)
+	}
+}
+
+func snapshotBlob(t *testing.T, st *store.AccountStore, providerID, name string) string {
+	t.Helper()
+	rows, err := st.DB.QueryContext(context.Background(),
+		`SELECT path, content FROM account_snapshot_files WHERE provider = ? AND account = ?`,
+		providerID, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var b strings.Builder
+	for rows.Next() {
+		var path string
+		var content []byte
+		if err := rows.Scan(&path, &content); err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(path)
+		b.WriteByte('\n')
+		b.Write(content)
+		b.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+func TestLoginCancelAfterCreatingAccountDeletesIt(t *testing.T) {
+	svc, st, authPath := newLoginService(t)
+	launcher := loginLauncher(t,
+		"mkdir -p \"$(dirname "+authPath+")\" && printf '%s' '"+grokAuthBody("new@example.com")+"' > "+authPath)
+	t.Setenv("GROK_BINARY", launcher)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loginCommitHook = func() { cancel() }
+	t.Cleanup(func() { loginCommitHook = nil })
+
+	_, err := svc.Login(ctx, "grok", LoginOptions{Name: "fresh"})
+	if err == nil || wantCode(t, err) != "PROVIDER_LOGIN_CANCELLED" {
+		t.Fatalf("want PROVIDER_LOGIN_CANCELLED, got %v", err)
+	}
+	got, gerr := st.Get(context.Background(), "grok", "fresh")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got != nil {
+		t.Fatalf("cancelled login left account %+v", got.Meta)
+	}
+	if body := snapshotBlob(t, st, "grok", "fresh"); body != "" {
+		t.Fatalf("cancelled login left snapshot rows: %s", body)
+	}
+}
+
 func TestLoginCancelInCommitWindowRollsBack(t *testing.T) {
 	svc, st, authPath := newLoginService(t)
 
@@ -297,5 +407,228 @@ func TestLoginCancelInCommitWindowRollsBack(t *testing.T) {
 	}
 	if active, _ := st.GetActive(context.Background(), "grok"); active != "" {
 		t.Fatalf("active pointer set despite cancellation: %q", active)
+	}
+}
+
+// memLogin is a two-store provider: an API-key file plus a CLI oauth file.
+// It exists so login tests can prove a source-scoped sign-in does not destroy
+// the other store or a dotenv the new snapshot does not replace.
+type memLogin struct {
+	root string
+	fail bool
+}
+
+func (p *memLogin) ID() string          { return "memlogin" }
+func (p *memLogin) Name() string        { return "Mem" }
+func (p *memLogin) Description() string { return "test login provider" }
+func (p *memLogin) CanProxy() bool      { return false }
+func (p *memLogin) AccountAdapter(name string, _ bool) transport.Adapter {
+	return transport.GeminiAccountAdapter("memlogin", name)
+}
+func (p *memLogin) live(name string) string { return filepath.Join(p.root, name) }
+
+func (p *memLogin) DetectLive() (provider.LiveAuthStatus, error) {
+	if _, err := os.Stat(p.live("api-key")); err == nil {
+		return provider.LiveAuthStatus{Present: true, Details: "api"}, nil
+	}
+	return p.DetectLiveSource("cli")
+}
+
+func (p *memLogin) DetectLiveSource(source string) (provider.LiveAuthStatus, error) {
+	if source != "cli" {
+		return provider.LiveAuthStatus{}, nil
+	}
+	raw, err := os.ReadFile(p.live("oauth"))
+	if err != nil {
+		return provider.LiveAuthStatus{}, nil
+	}
+	return provider.LiveAuthStatus{Present: true, Identity: strings.TrimSpace(string(raw)), Source: "cli"}, nil
+}
+
+func (p *memLogin) Backup(dest string) (provider.SnapshotInfo, error) {
+	found := false
+	for _, name := range []string{"api-key", "oauth", "anti", "env"} {
+		raw, err := os.ReadFile(p.live(name))
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dest, name), raw, 0o600); err != nil {
+			return provider.SnapshotInfo{}, err
+		}
+		found = true
+	}
+	if !found {
+		return provider.SnapshotInfo{}, anyerr.Newf("no live auth", "NO_LIVE_AUTH")
+	}
+	info := provider.SnapshotInfo{}
+	if raw, err := os.ReadFile(p.live("oauth")); err == nil {
+		info.Identity = strings.TrimSpace(string(raw))
+	}
+	return info, nil
+}
+
+func (p *memLogin) BackupSource(source, dest string) (provider.SnapshotInfo, error) {
+	if source != "cli" {
+		return provider.SnapshotInfo{}, anyerr.Newf("unknown source", "INVALID_USAGE")
+	}
+	raw, err := os.ReadFile(p.live("oauth"))
+	if err != nil {
+		return provider.SnapshotInfo{}, err
+	}
+	if err := os.WriteFile(filepath.Join(dest, "oauth"), raw, 0o600); err != nil {
+		return provider.SnapshotInfo{}, err
+	}
+	return provider.SnapshotInfo{Identity: strings.TrimSpace(string(raw))}, nil
+}
+
+func (p *memLogin) Restore(src string) error {
+	for _, name := range []string{"api-key", "oauth", "anti", "env"} {
+		raw, err := os.ReadFile(filepath.Join(src, name))
+		if err != nil {
+			_ = os.Remove(p.live(name))
+			continue
+		}
+		if err := os.WriteFile(p.live(name), raw, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *memLogin) DescribeSnapshot(string) (provider.SnapshotInfo, error) {
+	return provider.SnapshotInfo{}, nil
+}
+
+func (p *memLogin) LoginMethods() []provider.LoginMethod {
+	return []provider.LoginMethod{{
+		ID: "mem-login", Label: "Mem", Source: "cli",
+		Provenance: "official", Preferred: true, Available: true,
+	}}
+}
+
+func (p *memLogin) Login(_ context.Context, methodID, source string) error {
+	if methodID != "mem-login" || (source != "" && source != "cli") {
+		return anyerr.Newf("unknown method", "PROVIDER_LOGIN_METHOD_UNKNOWN")
+	}
+	if p.fail {
+		return anyerr.Newf("sign-in failed", "PROVIDER_LOGIN_FAILED")
+	}
+	return os.WriteFile(p.live("oauth"), []byte("new@example.com"), 0o600)
+}
+
+func (p *memLogin) CanClearLive(source string) bool { return source != "external" }
+
+func (p *memLogin) ClearLive() error {
+	for _, name := range []string{"api-key", "oauth", "anti", "env"} {
+		_ = os.Remove(p.live(name))
+	}
+	return nil
+}
+
+func (p *memLogin) ClearLiveSource(source string) error {
+	if !p.CanClearLive(source) {
+		return nil
+	}
+	if source == "cli" {
+		_ = os.Remove(p.live("oauth"))
+	}
+	return nil
+}
+
+func (p *memLogin) SourceSaveDropsSnapshot(dir, _ string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "api-key")); err == nil {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, "anti"))
+	return err == nil
+}
+
+func (p *memLogin) PreserveAuthEnv() (string, error) {
+	raw, err := os.ReadFile(p.live("env"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func (p *memLogin) RestoreAuthEnv(body string) error {
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	return os.WriteFile(p.live("env"), []byte(body), 0o600)
+}
+
+func TestLoginKeepsAPIKeyStashAndUnrelatedFiles(t *testing.T) {
+	svc, st, _ := newLoginService(t)
+	p := &memLogin{root: t.TempDir()}
+	if err := os.MkdirAll(p.root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.live("api-key"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.live("anti"), []byte("other-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.live("env"), []byte("VERTEX=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Providers.Register(p); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Login(context.Background(), "memlogin", LoginOptions{Name: "stash"})
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if res.Account.Name == "stash" {
+		t.Fatal("new oauth login replaced the API-key stash")
+	}
+	if res.BackedUpTo == nil || *res.BackedUpTo != "stash" {
+		t.Fatalf("backedUpTo = %v, want stash", res.BackedUpTo)
+	}
+	stash, err := st.Get(context.Background(), "memlogin", "stash")
+	if err != nil || stash == nil {
+		t.Fatalf("stash missing: %v", err)
+	}
+	key, err := os.ReadFile(filepath.Join(stash.SnapshotDir, "api-key"))
+	if err != nil || string(key) != "secret" {
+		t.Fatalf("stash api key = %q (%v)", key, err)
+	}
+	if _, err := os.Stat(p.live("anti")); err != nil {
+		t.Fatalf("other source removed: %v", err)
+	}
+	env, err := os.ReadFile(p.live("env"))
+	if err != nil || string(env) != "VERTEX=1\n" {
+		t.Fatalf("env = %q (%v)", env, err)
+	}
+	if _, err := os.Stat(p.live("api-key")); err != nil {
+		t.Fatalf("live api key removed: %v", err)
+	}
+}
+
+func TestLoginFailureRestoresPreservedEnv(t *testing.T) {
+	svc, _, _ := newLoginService(t)
+	p := &memLogin{root: t.TempDir(), fail: true}
+	if err := os.MkdirAll(p.root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = "GOOGLE_CLOUD_PROJECT=vertex\n"
+	if err := os.WriteFile(p.live("env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Providers.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Login(context.Background(), "memlogin", LoginOptions{Name: "work"})
+	if err == nil {
+		t.Fatal("expected login failure")
+	}
+	got, rerr := os.ReadFile(p.live("env"))
+	if rerr != nil || string(got) != body {
+		t.Fatalf("env after failed login = %q (%v), want preserved", got, rerr)
 	}
 }

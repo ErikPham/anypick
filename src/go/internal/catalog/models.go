@@ -1,5 +1,7 @@
 package catalog
 
+import "strings"
+
 // Static model policies ported from src/catalog/providers.ts. Every id is
 // vendor-published; alias keys are stable logical names used by client
 // overlays. Values only ever resolve inside one provider.
@@ -77,8 +79,10 @@ var geminiModels = map[string]string{
 }
 
 var grokModels = map[string]string{
-	"grok":                    "grok-4.5",
+	"grok":                    "grok-4.7",
+	"grok-4.7":                "grok-4.7",
 	"grok-4.5":                "grok-4.5",
+	"grok-4.6":                "grok-4.6",
 	"grok-4.3":                "grok-4.3",
 	"grok-4.20":               "grok-4.20-0309-reasoning",
 	"grok-4.20-reasoning":     "grok-4.20-0309-reasoning",
@@ -187,11 +191,11 @@ var modelPolicies = map[string]ModelPolicy{
 	"grok-api": {
 		SuggestModels: grokModels,
 		RoleDefaults: map[string]string{
-			"default": "grok-4.5", "sonnet": "grok-4.5", "opus": "grok-4.5", "haiku": "grok-4.3",
+			"default": "grok-4.7", "sonnet": "grok-4.7", "opus": "grok-4.7", "haiku": "grok-4.3",
 		},
-		RoleFriendly: []string{"grok-4.5", "grok-4.3", "grok-4.20", "grok"},
+		RoleFriendly: []string{"grok-4.7", "grok-4.5", "grok-4.6", "grok-4.3", "grok-4.20", "grok"},
 		StaticFallback: []string{
-			"grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning",
+			"grok-4.7", "grok-4.5", "grok-4.6", "grok-4.3", "grok-4.20-0309-reasoning",
 		},
 		LiveFetch: "openai",
 	},
@@ -233,11 +237,41 @@ var modelPolicies = map[string]ModelPolicy{
 	"opencode": {
 		LiveFetch: "openai",
 	},
+	// cloudflare-aigateway: Unified Billing REST API
+	// (.../ai/v1/chat/completions + .../ai/v1/messages). Model ids ride
+	// with their provider prefix (openai/…, anthropic/…, @cf/…); the list
+	// below is the offline fallback — live discovery hits .../ai/v1/models
+	// with the account's gateway header.
+	"cloudflare-aigateway": {
+		SuggestModels: map[string]string{
+			"gpt":           "openai/gpt-5.6-sol",
+			"claude-sonnet": "anthropic/claude-sonnet-5",
+			"claude-opus":   "anthropic/claude-opus-5",
+			"claude-haiku":  "anthropic/claude-haiku-4-5",
+		},
+		RoleDefaults: map[string]string{
+			"default": "openai/gpt-5.6-sol", "sonnet": "anthropic/claude-sonnet-5",
+			"opus": "anthropic/claude-opus-5", "haiku": "anthropic/claude-haiku-4-5",
+		},
+		RoleFriendly: []string{
+			"openai/gpt-5.6-sol", "anthropic/claude-sonnet-5",
+			"anthropic/claude-opus-5", "anthropic/claude-haiku-4-5",
+		},
+		StaticFallback: []string{
+			"openai/gpt-5.6-sol", "anthropic/claude-sonnet-5",
+			"anthropic/claude-opus-5", "anthropic/claude-haiku-4-5",
+		},
+		LiveFetch: "openai",
+	},
 }
 
 // Policy returns the model policy for a catalog provider id, or nil when the
 // provider declares none.
 func Policy(providerID string) *ModelPolicy {
+	providerID = strings.TrimSpace(providerID)
+	if id := CatalogProviderFor(providerID); id != "" {
+		providerID = id
+	}
 	if p, ok := modelPolicies[providerID]; ok {
 		return &p
 	}

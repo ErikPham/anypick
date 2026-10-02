@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -99,5 +100,37 @@ func TestUseRefreshesPreviousWhenLivePresent(t *testing.T) {
 	got, _ := st.Get(context.Background(), "grok", "acc-a")
 	if got.Meta.Identity != "a-refreshed@grok.xai" {
 		t.Fatalf("acc-a not refreshed: %q", got.Meta.Identity)
+	}
+}
+
+func TestUseDoesNotOverwritePreviousWithADifferentLogin(t *testing.T) {
+	svc, st := testService(t)
+	ctx := context.Background()
+	credPath := filepath.Join(t.TempDir(), "claude-creds.json")
+	t.Setenv("ANYPICK_CLAUDE_CREDENTIALS_PATH", credPath)
+
+	seedClaudeLive(t, "a@x.dev", "at-a", "rt-a")
+	if _, err := svc.Save(ctx, "claude", "acc-a", false); err != nil {
+		t.Fatal(err)
+	}
+	seedClaudeLive(t, "b@x.dev", "at-b", "rt-b")
+	if _, err := svc.Save(ctx, "claude", "acc-b", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetActiveContext(context.Background(), "claude", "acc-a"); err != nil {
+		t.Fatal(err)
+	}
+	seedClaudeLive(t, "stranger@x.dev", "at-s", "rt-s")
+
+	res, err := svc.Use(ctx, "claude", "acc-b", UseOptions{})
+	if err != nil {
+		t.Fatalf("Use: %v", err)
+	}
+	if res.RefreshedPrevious {
+		t.Fatalf("different live login was written onto the account being left: %#v", res)
+	}
+	got, _ := st.Get(context.Background(), "claude", "acc-a")
+	if got == nil || got.Meta.Identity != "a@x.dev" {
+		t.Fatalf("acc-a identity = %+v, want a@x.dev", got)
 	}
 }

@@ -6,10 +6,15 @@ package accounts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,9 +58,10 @@ type CurrentResult struct {
 
 // Service is the Go AccountService.
 type Service struct {
-	Store     *store.AccountStore
-	Providers *provider.Registry
-	Proxy     ProxyStopper
+	Store       *store.AccountStore
+	Providers   *provider.Registry
+	Proxy       ProxyStopper
+	AfterSwitch func(ctx context.Context, providerID, accountName string) error
 }
 
 // ProxyStopper is the narrow proxy lifecycle surface account deletion needs.
@@ -65,14 +71,29 @@ type ProxyStopper interface {
 	Stop(ctx context.Context, providerID, accountName string) error
 }
 
+// ProxySwitcher is the optional lifecycle surface used by account switching.
+// Keep it separate from ProxyStopper: account deletion only needs Stop, while
+// a switch must preserve the previous account's enabled setting, stop its live
+// listener, and start the selected account only when that account is enabled.
+// It stays an interface so accounts keeps no dependency on the proxy
+// implementation's stores and locks.
+type ProxySwitcher interface {
+	ProxyStopper
+	ProxyRunning(ctx context.Context, providerID, accountName string) (bool, error)
+	StopProxyForSwitch(ctx context.Context, providerID, accountName string) error
+	StartProxyIfEnabled(ctx context.Context, providerID, accountName string) error
+}
+
 func New(st *store.AccountStore, reg *provider.Registry) *Service {
 	return &Service{Store: st, Providers: reg}
 }
 
-// BackupInputer is implemented by providers that accept explicit credential
-// input (compatible vendors) instead of reading a native login.
-type BackupInputer interface {
-	BackupInput(kind, secret, profile, destDir string) (provider.SnapshotInfo, error)
+// SetAfterSwitch installs the optional side effect that keeps a provider's
+// homonymous native client binding on the account just made active. The
+// callback is deliberately injected to keep accounts independent from the
+// bindings package.
+func (s *Service) SetAfterSwitch(fn func(context.Context, string, string) error) {
+	s.AfterSwitch = fn
 }
 
 // CredentialInput mirrors CredentialInput from src/types/account.ts.
@@ -90,11 +111,14 @@ func (s *Service) SaveInput(ctx context.Context, providerID, name string, in Cre
 		return store.Meta{}, anyerr.Newf("Unknown provider "+providerID+".", "PROVIDER_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound))
 	}
-	inputer, ok := pv.(BackupInputer)
+	inputer, ok := pv.(provider.CredentialInputProvider)
 	if !ok {
 		return store.Meta{}, anyerr.Newf(
-			"Provider "+providerID+" does not accept credential inputs. Sign in natively and use save.",
-			"UNSUPPORTED_CREDENTIAL_INPUT")
+			"Provider "+providerID+" does not accept manual credential inputs.",
+			"UNSUPPORTED_CREDENTIAL_INPUT",
+			anyerr.WithSuggestions(
+				"Sign in using the official application or browser sign-in.",
+				"Then save the current login in AnyPick."))
 	}
 	accountName, err := slug.AccountName(name)
 	if err != nil {
@@ -111,7 +135,7 @@ func (s *Service) SaveInput(ctx context.Context, providerID, name string, in Cre
 			return anyerr.Newf(
 				"Account \""+accountName+"\" already exists for "+providerID+".",
 				"ACCOUNT_EXISTS",
-				anyerr.WithSuggestions("Pick another --name, or pass --force to overwrite."))
+				anyerr.WithSuggestions("Choose a different account name, or confirm overwrite to replace it."))
 		}
 		snapshotDir, _, err := s.Store.PrepareSnapshot(providerID, accountName)
 		if err != nil {
@@ -119,6 +143,10 @@ func (s *Service) SaveInput(ctx context.Context, providerID, name string, in Cre
 		}
 		info, err := inputer.BackupInput(in.Kind, in.Secret, in.Profile, snapshotDir)
 		if err != nil {
+			_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
+			return err
+		}
+		if err := s.ensureSnapshotNotAliased(c, providerID, accountName, snapshotDir); err != nil {
 			_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
 			return err
 		}
@@ -161,6 +189,18 @@ func (s *Service) Active(ctx context.Context, providerID string) (string, error)
 	return s.Store.GetActive(ctx, providerID)
 }
 
+// SetActive updates only AnyPick's active pointer. Profile-scoped logins use
+// this to restore the pointer that belongs to the desktop/live CODEX_HOME
+// after saving a second account in an isolated profile home.
+func (s *Service) SetActive(ctx context.Context, providerID, name string) error {
+	return lock.WithMutationLock(ctx, s.Store.Root, refs.ProviderScope(providerID), func(c context.Context) error {
+		if strings.TrimSpace(name) == "" {
+			return s.Store.ClearActiveContext(c, providerID)
+		}
+		return s.Store.SetActiveContext(c, providerID, name)
+	})
+}
+
 // PatchMeta applies a partial metadata update to a saved account. The store's
 // mutator takes the coordinator lock itself, so a caller that already holds the
 // same provider scope re-enters rather than deadlocking.
@@ -179,6 +219,16 @@ func (s *Service) Get(ctx context.Context, providerID, name string) (*store.Acco
 // Save backs up live auth into a named account. writeMeta stays the atomic
 // commit point: staging first, backup second, single transaction last.
 func (s *Service) Save(ctx context.Context, providerID, name string, force bool) (store.Meta, error) {
+	return s.SaveWithSource(ctx, providerID, name, "", force)
+}
+
+// SaveWithSource is Save with an optional provider-owned live-login source.
+// The empty source retains the automatic provider probe used by all existing
+// callers; providers that expose SourceScopedProvider use the non-empty source
+// to select one live store, while single-store providers keep their normal
+// Backup operation.
+func (s *Service) SaveWithSource(ctx context.Context, providerID, name, source string, force bool) (store.Meta, error) {
+	source = strings.TrimSpace(source)
 	pv, err := s.Providers.Get(providerID)
 	if err != nil {
 		return store.Meta{}, anyerr.Newf("Unknown provider "+providerID+".", "PROVIDER_NOT_FOUND",
@@ -199,9 +249,9 @@ func (s *Service) Save(ctx context.Context, providerID, name string, force bool)
 			return anyerr.Newf(
 				"Account \""+accountName+"\" already exists for "+providerID+".",
 				"ACCOUNT_EXISTS",
-				anyerr.WithSuggestions("Pick another --name, or pass --force to overwrite."))
+				anyerr.WithSuggestions("Choose a different account name, or confirm overwrite to replace it."))
 		}
-		meta, saveErr := s.saveLocked(c, pv, accountName, existing)
+		meta, saveErr := s.saveLockedSource(c, pv, accountName, existing, source)
 		if saveErr == nil {
 			result = meta
 		}
@@ -286,12 +336,32 @@ func (s *Service) Delete(ctx context.Context, providerID, name string) error {
 }
 
 func (s *Service) saveLocked(ctx context.Context, pv provider.Provider, accountName string, existing *store.Account) (store.Meta, error) {
+	return s.saveLockedSource(ctx, pv, accountName, existing, "")
+}
+
+func (s *Service) saveLockedSource(ctx context.Context, pv provider.Provider, accountName string, existing *store.Account, source string) (store.Meta, error) {
 	snapshotDir, _, err := s.Store.PrepareSnapshot(pv.ID(), accountName)
 	if err != nil {
 		return store.Meta{}, err
 	}
-	info, err := pv.Backup(snapshotDir)
+	var info provider.SnapshotInfo
+	if source == "" {
+		info, err = pv.Backup(snapshotDir)
+	} else if scoped, ok := pv.(provider.SourceScopedProvider); ok {
+		info, err = scoped.BackupSource(source, snapshotDir)
+	} else {
+		// LoginMethod.Source is also used by providers to describe the
+		// owning client (for example Codex or Kiro). Only providers that
+		// implement SourceScopedProvider have multiple snapshot stores;
+		// their source is selected by the method but Backup remains the
+		// correct provider-owned operation.
+		info, err = pv.Backup(snapshotDir)
+	}
 	if err != nil {
+		_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
+		return store.Meta{}, err
+	}
+	if err := s.ensureSnapshotNotAliased(ctx, pv.ID(), accountName, snapshotDir); err != nil {
 		_ = s.Store.DiscardPreparedSnapshot(snapshotDir)
 		return store.Meta{}, err
 	}
@@ -326,6 +396,12 @@ func (s *Service) Use(ctx context.Context, providerID, name string, opts UseOpti
 type UseOptions struct {
 	NoRefresh bool
 	NoProxy   bool
+	// PostSwitch runs inside the switch transaction, after the target is
+	// active, its binding is realigned and its proxy state settled. Callers
+	// use it to reapply client configs to the new account. A failure rolls the
+	// whole switch back — native auth, active pointer, binding, and the
+	// previous proxy — so the user never sees a half-switched state.
+	PostSwitch func(ctx context.Context) error
 }
 
 // CheckpointLiveAuth captures the real local login before a switch.
@@ -403,10 +479,215 @@ func (s *Service) DiscardLiveAuthCheckpoint(cp *Checkpoint) error {
 	return os.RemoveAll(cp.Directory)
 }
 
+// accountScopedIdentity reports whether an identity names one specific login.
+// Providers publish display-only constants when their snapshot carries no
+// account id (Codex reports "API key" for an OPENAI_API_KEY snapshot); those
+// say nothing about which upstream account a snapshot belongs to, so identity
+// resolution must not treat two of them as one login.
+func accountScopedIdentity(identity string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(identity))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "api key":
+		return false
+	}
+	return true
+}
+
+// SnapshotFingerprint returns a content digest of one snapshot directory. Two
+// accounts with the same digest hold the same credential material. A directory
+// with no readable files returns ok=false so callers fail open instead of
+// acting on a stale or half-materialized snapshot. The save guard and the
+// doctor audit share this one function so the check and the refusal cannot
+// disagree about what "the same snapshot" means.
+func SnapshotFingerprint(dir string) (string, bool) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil || len(files) == 0 {
+		return "", false
+	}
+	sort.Strings(files)
+	digest := sha256.New()
+	for _, rel := range files {
+		raw, readErr := os.ReadFile(filepath.Join(dir, rel))
+		if readErr != nil {
+			return "", false
+		}
+		_, _ = digest.Write([]byte(rel))
+		_, _ = digest.Write([]byte{0})
+		_, _ = digest.Write(raw)
+		_, _ = digest.Write([]byte{0})
+	}
+	return hex.EncodeToString(digest.Sum(nil)), true
+}
+
+// ensureSnapshotNotAliased refuses to save one credential store under a second
+// name. The identity is the snapshot's content: if AnyPick already holds a
+// byte-equivalent snapshot, a second name would look like a second account
+// while every switch between them changes nothing (the WorkBuddy `outof0` +
+// `work` pair). Writing to an account that already exists is the normal
+// refresh/overwrite path and skips the check.
+//
+// This is deliberately not an identity (email) comparison: one login can own
+// several distinct credential snapshots (Codex workspaces under one email,
+// Gemini CLI vs Antigravity grants), and those stay separately saveable.
+func (s *Service) ensureSnapshotNotAliased(ctx context.Context, providerID, accountName, snapshotDir string) error {
+	digest, ok := SnapshotFingerprint(snapshotDir)
+	if !ok {
+		return nil
+	}
+	accounts, err := s.Store.ListAccounts(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	// Refreshing an account that already holds this exact snapshot adds no new
+	// alias: leave the store as it is (a legacy duplicate stays removable,
+	// not frozen) and let the write proceed.
+	for _, acct := range accounts {
+		if acct.Meta.Name != accountName {
+			continue
+		}
+		full, gerr := s.Store.Get(ctx, providerID, accountName)
+		if gerr == nil && full != nil {
+			if existing, ok := SnapshotFingerprint(full.SnapshotDir); ok && existing == digest {
+				return nil
+			}
+		}
+	}
+	var owners []string
+	for _, acct := range accounts {
+		if acct.Meta.Name == accountName {
+			continue
+		}
+		// Get materializes the snapshot cache; ListAccounts only builds the
+		// path, and a path without files would hide a duplicate.
+		full, gerr := s.Store.Get(ctx, providerID, acct.Meta.Name)
+		if gerr != nil || full == nil {
+			continue
+		}
+		existing, ok := SnapshotFingerprint(full.SnapshotDir)
+		if !ok || existing != digest {
+			continue
+		}
+		owners = append(owners, acct.Meta.Name)
+	}
+	if len(owners) == 0 {
+		return nil
+	}
+	qualified := make([]string, 0, len(owners))
+	for _, owner := range owners {
+		qualified = append(qualified, providerID+"/"+owner)
+	}
+	// Suggest using the account the user is already on before any removal:
+	// the first name is alphabetical, not "the one in use".
+	keep := owners[0]
+	if active, aerr := s.Store.GetActive(ctx, providerID); aerr == nil && active != "" {
+		for _, owner := range owners {
+			if owner == active {
+				keep = owner
+				break
+			}
+		}
+	}
+	suggestions := []string{
+		"Use " + providerID + "/" + keep + "; AnyPick keeps one account per login.",
+	}
+	if len(owners) == 1 {
+		suggestions = append(suggestions,
+			"anypick account remove "+providerID+"/"+keep+"  # then save this login under the new name")
+	} else {
+		suggestions = append(suggestions,
+			"anypick doctor --verbose  # lists the duplicates and which one to keep")
+	}
+	return anyerr.Newf(
+		"This login is already saved as "+strings.Join(qualified, ", ")+".",
+		"ACCOUNT_SNAPSHOT_EXISTS",
+		anyerr.WithSuggestions(suggestions...))
+}
+
+// DuplicateSnapshotGroup names saved accounts of one provider that hold the
+// same snapshot content under different names.
+type DuplicateSnapshotGroup struct {
+	Provider string
+	Names    []string // every account in the group, sorted
+	// Keep is the account a cleanup should leave in place: the provider's
+	// active account when it belongs to the group, otherwise the first name.
+	Keep string
+}
+
+// DuplicateSnapshotGroups reports saved accounts that hold one snapshot under
+// different names. It is the read-only counterpart of the save guard and shares
+// its fingerprint, so what doctor recommends cannot disagree with what a save
+// refuses. A store read failure is returned alongside whatever groups were
+// still collected; the caller decides whether that is worth reporting.
+func (s *Service) DuplicateSnapshotGroups(ctx context.Context) ([]DuplicateSnapshotGroup, error) {
+	if s == nil || s.Store == nil || s.Providers == nil {
+		return nil, nil
+	}
+	var groups []DuplicateSnapshotGroup
+	var errs []error
+	for _, providerID := range s.Providers.IDs() {
+		list, err := s.Store.ListAccounts(ctx, providerID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		byDigest := map[string][]string{}
+		for _, acct := range list {
+			full, gerr := s.Store.Get(ctx, providerID, acct.Meta.Name)
+			if gerr != nil || full == nil {
+				continue
+			}
+			digest, ok := SnapshotFingerprint(full.SnapshotDir)
+			if !ok {
+				continue
+			}
+			byDigest[digest] = append(byDigest[digest], acct.Meta.Name)
+		}
+		active, _ := s.Store.GetActive(ctx, providerID)
+		for _, names := range byDigest {
+			if len(names) < 2 {
+				continue
+			}
+			sort.Strings(names)
+			keep := names[0]
+			for _, name := range names {
+				if name == active {
+					keep = name
+					break
+				}
+			}
+			groups = append(groups, DuplicateSnapshotGroup{Provider: providerID, Names: names, Keep: keep})
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Provider != groups[j].Provider {
+			return groups[i].Provider < groups[j].Provider
+		}
+		return groups[i].Names[0] < groups[j].Names[0]
+	})
+	return groups, errors.Join(errs...)
+}
+
 // ResolveIdentityTarget resolves a duplicate identity to its existing local
 // account after confirmation (ports resolveIdentityTarget in src/core/service.ts).
 func (s *Service) ResolveIdentityTarget(ctx context.Context, providerID string, identity, accountName string, allowOverwrite bool) (string, error) {
-	if identity == "" || strings.TrimSpace(identity) == "" {
+	if !accountScopedIdentity(identity) {
 		return accountName, nil
 	}
 	accounts, err := s.Store.ListAccounts(ctx, providerID)

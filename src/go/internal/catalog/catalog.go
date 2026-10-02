@@ -48,7 +48,7 @@ func dualProtocols() []transport.Protocol {
 // Builtin returns the eight catalog entries shipped with AnyPick, mirroring
 // src/catalog/providers.ts.
 func Builtin() map[string]Provider {
-	return map[string]Provider{
+	builtin := map[string]Provider{
 		"openrouter": {
 			ID:              "openrouter",
 			Name:            "OpenRouter",
@@ -119,11 +119,27 @@ func Builtin() map[string]Provider {
 			DefaultEndpoint: "",
 		},
 	}
+	builtin["cloudflare-aigateway"] = cloudflareAIGatewayEntry()
+	return builtin
+}
+
+// cloudflareAIGatewayEntry is Go-native (no TS mirror entry): the base
+// embeds the Cloudflare account id, so like custom there is no
+// DefaultEndpoint and gateway add requires an explicit --endpoint.
+func cloudflareAIGatewayEntry() Provider {
+	return Provider{
+		ID:              "cloudflare-aigateway",
+		Name:            "Cloudflare AI Gateway",
+		Description:     "Cloudflare AI Gateway REST API (Unified Billing)",
+		APIStyle:        StyleOpenAI,
+		Protocols:       dualProtocols(),
+		DefaultEndpoint: "",
+	}
 }
 
 // IDs returns sorted built-in catalog ids.
 func IDs() []string {
-	out := make([]string, 0, 8)
+	out := make([]string, 0, 9)
 	for id := range Builtin() {
 		out = append(out, id)
 	}
