@@ -1,0 +1,28 @@
+{
+  "name": "anypick",
+  "version": "1.0.1",
+  "description": "Thin npm launcher for the AnyPick Go CLI.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/outof0/anypick.git"
+  },
+  "homepage": "https://github.com/outof0/anypick",
+  "bin": {
+    "anypick": "bin/anypick.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "pack:check": "npm pack --dry-run",
+    "test": "node --test test/launcher.test.js && node --check bin/anypick.js"
+  }
+}
