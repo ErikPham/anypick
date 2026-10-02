@@ -16,16 +16,8 @@ type openAIStreamChunk struct {
 	Model   string `json:"model"`
 	Choices []struct {
 		Delta struct {
-			Content   json.RawMessage `json:"content"`
-			ToolCalls []struct {
-				Index    int    `json:"index"`
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
+			Content   json.RawMessage       `json:"content"`
+			ToolCalls []openAIToolCallDelta `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -33,6 +25,17 @@ type openAIStreamChunk struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
+}
+
+// openAIToolCallDelta is one OpenAI tool_call fragment inside a stream chunk.
+type openAIToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // streamTranslator accumulates per-request block state while converting
@@ -160,7 +163,15 @@ func (t *streamTranslator) handleChunk(chunk openAIStreamChunk) {
 		})
 	}
 
-	for _, call := range delta.ToolCalls {
+	t.emitToolCallDeltas(delta.ToolCalls)
+
+	if chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
+		t.stopReason = mapFinishReason(*chunk.Choices[0].FinishReason)
+	}
+}
+
+func (t *streamTranslator) emitToolCallDeltas(calls []openAIToolCallDelta) {
+	for _, call := range calls {
 		if call.ID != "" || call.Function.Name != "" {
 			if !t.toolBlocks[call.Index] {
 				t.closeTextBlock()
@@ -184,10 +195,6 @@ func (t *streamTranslator) handleChunk(chunk openAIStreamChunk) {
 				},
 			})
 		}
-	}
-
-	if chunk.Choices[0].FinishReason != nil && *chunk.Choices[0].FinishReason != "" {
-		t.stopReason = mapFinishReason(*chunk.Choices[0].FinishReason)
 	}
 }
 

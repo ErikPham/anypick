@@ -75,19 +75,18 @@ func Spawn(selfExe string, args []string, pidPath, logPath string, extraEnv ...s
 	}
 	cmd := exec.Command(selfExe, args...)
 	cmd.Env = append(append(os.Environ(), extraEnv...), EnvInstanceID+"="+instanceID)
+	var output *os.File
 	if logPath != "" {
-		if f, lerr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); lerr == nil {
-			defer f.Close()
-			cmd.Stdout, cmd.Stderr = f, f
-		} else {
-			devnull, derr := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-			if derr != nil {
-				return nil, derr
-			}
-			defer devnull.Close()
-			cmd.Stdout, cmd.Stderr = devnull, devnull
+		output, _ = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	}
+	if output == nil {
+		output, err = os.OpenFile(os.DevNull, os.O_RDWR, 0)
+		if err != nil {
+			return nil, fmt.Errorf("open detached child output: %w", err)
 		}
 	}
+	defer output.Close()
+	cmd.Stdout, cmd.Stderr = output, output
 	spawned, err := startDetached(cmd, instanceID)
 	if err != nil {
 		return nil, err
@@ -184,8 +183,15 @@ type StopOptions struct {
 
 // Stop stops the verified child: load record (nil ⇒ nothing to stop),
 // verify live identity, run optional health proof, SIGTERM the session group,
-// wait bounded, SIGKILL, then remove the record. Returns false — without
-// signalling anything — whenever ownership cannot be proven.
+// wait bounded for the whole group, SIGKILL, then remove the record. Returns
+// false — without signalling anything — whenever ownership cannot be proven.
+//
+// The wait is on the group, not on the recorded pid. A child that spawned a
+// helper of its own (a proxy child running a provider CLI, a hub child running
+// a pool) can exit while its grandchild is still flushing logs into the data
+// directory, and a stop that returned then made "the proxy is gone" a promise
+// no caller could rely on — callers, tests and the reap path all treated the
+// return as final.
 func Stop(pidPath string, opts StopOptions) bool {
 	rec := Load(pidPath)
 	if rec == nil {
@@ -206,16 +212,30 @@ func Stop(pidPath string, opts StopOptions) bool {
 	// The child is its own session leader: negative pid signals the group so
 	// helpers it spawned die with it.
 	_ = terminateRecord(rec, false)
-	deadline := time.Now().Add(opts.Timeout)
-	for time.Now().Before(deadline) {
-		if !rec.Alive() {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if rec.Alive() {
+	if !waitForGroupGone(rec, opts.Timeout) {
 		_ = terminateRecord(rec, true)
+		// A SIGKILL cannot be ignored, so this wait is short: it only covers the
+		// kernel reaping the group, and a group that somehow survives it must not
+		// hold the caller for another full timeout.
+		waitForGroupGone(rec, killGrace)
 	}
 	_ = os.Remove(pidPath)
 	return true
+}
+
+// killGrace bounds the wait after SIGKILL.
+const killGrace = 500 * time.Millisecond
+
+// waitForGroupGone polls until no process of the child's group is left.
+func waitForGroupGone(rec *Record, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !groupAlive(rec) {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }

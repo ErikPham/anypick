@@ -185,23 +185,21 @@ func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name
 			CredentialKind:  envelope.Meta.CredentialKind,
 			CredentialClass: envelope.Meta.CredentialClass,
 		}
-		if werr := deps.Store.WriteMetaContext(ctx, meta, snapshotDir); werr != nil {
+		proxyCfg := store.ProxyConfig{Enabled: false}
+		if envelope.Proxy != nil {
+			proxyCfg = *envelope.Proxy
+			proxyCfg.Enabled = false
+			proxyCfg.Options = nil
+		}
+		if werr := deps.Store.WriteAccountsBatchContext(ctx, []store.BatchWrite{{
+			Meta: meta, Proxy: proxyCfg, SnapshotDir: snapshotDir,
+		}}); werr != nil {
 			failure = werr
 			meta = store.Meta{}
 		}
 	}()
 	if failure != nil {
 		return zero, failure
-	}
-
-	// Imported proxies are always disabled; options were dropped by the codec.
-	if envelope.Proxy != nil {
-		cfg := *envelope.Proxy
-		cfg.Enabled = false
-		cfg.Options = nil
-		if serr := deps.Store.SetProxyConfigContext(ctx, providerID, accountName, cfg); serr != nil {
-			return zero, serr
-		}
 	}
 	return meta, nil
 }

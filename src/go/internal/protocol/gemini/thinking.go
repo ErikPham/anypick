@@ -55,8 +55,8 @@ func ReasoningFromOpenAI(req OpenAIChatRequest) ReasoningIntent {
 	intent := ReasoningIntent{}
 	if effort != "" {
 		intent.Effort = effort
-		disabled := effort == EffortNone
-		intent.Enabled = &disabled
+		enabled := effort != EffortNone
+		intent.Enabled = &enabled
 	}
 	if summary := stringFromMap(reasoning, "summary"); summary == "auto" || summary == "concise" || summary == "detailed" {
 		intent.IncludeSummary = true

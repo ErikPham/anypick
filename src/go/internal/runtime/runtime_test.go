@@ -92,6 +92,36 @@ func TestSmartEndpointKeepsV1ForOpenAIClients(t *testing.T) {
 	}
 }
 
+func TestApplyGatewayProfileUsesSelectedModel(t *testing.T) {
+	s := testService(t)
+	ctx := context.Background()
+	if _, err := s.Profiles.UpsertContext(ctx, profile.Runtime{
+		Meta: profile.Meta{
+			Name: "or-model", Provider: "openrouter",
+			Endpoint: "https://openrouter.ai/api/v1", DefaultModel: "profile-model",
+		},
+		Secrets: profile.Secrets{APIKey: "sk-or"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyGatewayProfileWithSelection(
+		ctx, "or-model", "codex", "selected-proxy-model",
+		map[string]string{"default": "selected-proxy-model"},
+	); err != nil {
+		t.Fatalf("apply selected gateway model: %v", err)
+	}
+	raw, err := os.ReadFile(codexConfigPath(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(raw), `model = "selected-proxy-model"`) {
+		t.Fatalf("selected model was not written:\n%s", raw)
+	}
+	if contains(string(raw), `model = "profile-model"`) {
+		t.Fatalf("profile default overwrote selected model:\n%s", raw)
+	}
+}
+
 // Unknown vendors without a trailing /v1 pass through untouched, and explicit
 // catalog entries win over the heuristic.
 func TestSmartEndpointEdgeCases(t *testing.T) {

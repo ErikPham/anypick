@@ -38,6 +38,11 @@ func Run(ctx context.Context, a *app.App, stdin *os.File, stdout *os.File) error
 	if model, ok := final.(*Model); ok && model.statusErr && model.status != "" {
 		// Surface a failed action as a non-zero exit so `anypick tui` can be
 		// used in scripts that care, without printing anything extra to stdout.
+		// The original error still carries suggestions. A fresh errors.New
+		// drops them before reportErr can print the recovery commands.
+		if model.statusCause != nil {
+			return model.statusCause
+		}
 		return errors.New(model.status)
 	}
 	return nil

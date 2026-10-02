@@ -14,16 +14,21 @@ const (
 	intentLite    GeminiModelIntent = "lite"
 )
 
-// GeminiModelResolution is the result of resolving a client model id.
+// GeminiModelResolution keeps the client-facing model id separate from the
+// exact endpoint id accepted by an OAuth provider such as Code Assist.
 type GeminiModelResolution struct {
-	ID       string
-	Remapped bool
-	Reason   string // case|alias|effort|intent|default|unavailable
+	ID         string
+	UpstreamID string
+	Remapped   bool
+	Reason     string // case|alias|effort|intent|default|unavailable
 }
 
 // GeminiModelDescriptor is one catalog entry.
 type GeminiModelDescriptor struct {
-	ID          string
+	ID string
+	// UpstreamID preserves an OAuth provider's internal route name when ID is
+	// normalized for clients (for example, gemini-3.8-flash-tiered).
+	UpstreamID  string
 	DisplayName string
 	Recommended bool
 }
@@ -70,12 +75,12 @@ func ResolveGeminiModel(requested string, available ModelCatalogInput, effort st
 	if id != "" {
 		for _, candidate := range ids {
 			if candidate == id {
-				return GeminiModelResolution{ID: candidate, Remapped: false}
+				return resolutionForCatalogID(candidate, catalog, id, "")
 			}
 		}
 		for _, candidate := range ids {
 			if strings.EqualFold(candidate, id) {
-				return GeminiModelResolution{ID: candidate, Remapped: candidate != id, Reason: "case"}
+				return resolutionForCatalogID(candidate, catalog, id, "case")
 			}
 		}
 
@@ -91,22 +96,18 @@ func ResolveGeminiModel(requested string, available ModelCatalogInput, effort st
 		defaultAlias := preferCatalogModel(aliasMatches, catalog)
 		alias := preferCatalogModelForEffort(aliasMatches, catalog, effort)
 		if alias.ID != "" {
-			return GeminiModelResolution{
-				ID:       alias.ID,
-				Remapped: alias.ID != id,
-				Reason:   ternary(alias.ID != defaultAlias.ID, "effort", "alias"),
-			}
+			return resolutionForDescriptor(alias, id, ternary(alias.ID != defaultAlias.ID, "effort", "alias"))
 		}
 
 		intent := modelIntent(id)
 		if intent == "" {
 			// Unknown concrete ids are intentionally not rejected; the live
 			// catalog can be stale during a rollout.
-			return GeminiModelResolution{ID: id, Remapped: false}
+			return GeminiModelResolution{ID: id, UpstreamID: id, Remapped: false}
 		}
 		selected := SelectGeminiModel(ids, intent)
 		if selected != "" {
-			return GeminiModelResolution{ID: selected, Remapped: selected != id, Reason: "intent"}
+			return resolutionForCatalogID(selected, catalog, id, "intent")
 		}
 		return GeminiModelResolution{ID: "", Remapped: true, Reason: "unavailable"}
 	}
@@ -122,9 +123,31 @@ func ResolveGeminiModel(requested string, available ModelCatalogInput, effort st
 		selected = SelectGeminiModel(ids, intentQuality)
 	}
 	if selected != "" {
-		return GeminiModelResolution{ID: selected, Remapped: true, Reason: "default"}
+		return resolutionForCatalogID(selected, catalog, "", "default")
 	}
 	return GeminiModelResolution{ID: "", Remapped: false, Reason: "unavailable"}
+}
+
+func resolutionForCatalogID(id string, catalog GeminiModelCatalog, requested, reason string) GeminiModelResolution {
+	for _, model := range catalog.Models {
+		if model.ID == id {
+			return resolutionForDescriptor(model, requested, reason)
+		}
+	}
+	return GeminiModelResolution{ID: id, UpstreamID: id, Remapped: id != requested, Reason: reason}
+}
+
+func resolutionForDescriptor(model GeminiModelDescriptor, requested, reason string) GeminiModelResolution {
+	upstreamID := strings.TrimSpace(model.UpstreamID)
+	if upstreamID == "" {
+		upstreamID = model.ID
+	}
+	return GeminiModelResolution{
+		ID:         model.ID,
+		UpstreamID: upstreamID,
+		Remapped:   model.ID != requested,
+		Reason:     reason,
+	}
 }
 
 func normalizeModelCatalog(available ModelCatalogInput) GeminiModelCatalog {

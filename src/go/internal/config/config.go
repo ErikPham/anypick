@@ -32,8 +32,12 @@ type UI struct {
 
 // QuotaGuardCfg is the raw stored form of the quota-guard policy.
 type QuotaGuardCfg struct {
-	Enabled         *bool `json:"enabled,omitempty"`
-	CooldownMinutes *int  `json:"cooldownMinutes,omitempty"`
+	// ServeWhenAllCooling keeps a pool serving when every member is cooling
+	// (absent → true). It is a Go-side extension: the TypeScript build only
+	// stored a cooldown and refused with a local 429.
+	ServeWhenAllCooling *bool `json:"serveWhenAllCooling,omitempty"`
+	Enabled             *bool `json:"enabled,omitempty"`
+	CooldownMinutes     *int  `json:"cooldownMinutes,omitempty"`
 }
 
 // TrayCfg holds tray-local toggles from the global config document.
@@ -262,18 +266,29 @@ const DefaultQuotaGuardCooldownMinutes = 60
 type QuotaGuardPolicy struct {
 	Enabled         bool
 	CooldownMinutes int
+	// ServeWhenAllCooling is true unless the operator turned it off: a pool
+	// whose accounts are all quota-blocked should tell the caller what the
+	// vendor said, not refuse with a local guess.
+	ServeWhenAllCooling bool
 }
 
 // QuotaGuardPolicyOf ports quotaGuardPolicy(config), including the strict
 // integer 1..24*60 cooldown validation with fallback to the default.
 func QuotaGuardPolicyOf(cfg GlobalConfig) QuotaGuardPolicy {
-	policy := QuotaGuardPolicy{Enabled: false, CooldownMinutes: DefaultQuotaGuardCooldownMinutes}
+	policy := QuotaGuardPolicy{
+		Enabled:             false,
+		CooldownMinutes:     DefaultQuotaGuardCooldownMinutes,
+		ServeWhenAllCooling: true,
+	}
 	if cfg.UI == nil || cfg.UI.QuotaGuard == nil {
 		return policy
 	}
 	raw := cfg.UI.QuotaGuard
 	if raw.Enabled != nil && *raw.Enabled {
 		policy.Enabled = true
+	}
+	if raw.ServeWhenAllCooling != nil {
+		policy.ServeWhenAllCooling = *raw.ServeWhenAllCooling
 	}
 	if raw.CooldownMinutes != nil &&
 		*raw.CooldownMinutes >= 1 && *raw.CooldownMinutes <= 24*60 {

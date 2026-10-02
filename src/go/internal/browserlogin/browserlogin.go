@@ -37,12 +37,17 @@ type Command struct {
 // (mirrors loginMethodAvailability). The caller supplies every field except
 // Available/UnavailableReason, which only this package may decide.
 type Method struct {
-	ID                string
-	Label             string
-	Description       string
-	Provenance        string
-	Preferred         bool
-	Source            string
+	ID          string
+	Label       string
+	Description string
+	Provenance  string
+	Preferred   bool
+	Source      string
+	// SourceLabel names the local credential store this method reads when it
+	// is selected as an existing-account source. It is separate from Label:
+	// the latter describes the sign-in product, while native UI needs to say
+	// which local app owns the detected login.
+	SourceLabel       string
 	Available         bool
 	UnavailableReason string
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/compensation"
+	"github.com/outof0/anypick/go/internal/transport"
 )
 
 func TestCreateEphemeralClaude(t *testing.T) {
@@ -63,7 +64,7 @@ func TestCreateEphemeralCodex(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cfg, []byte("# user\nmodel=\"user-model\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte("# user\napproval_policy=\"never\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rt, err := s.CreateEphemeralRuntime(EphemeralSpec{
@@ -88,11 +89,49 @@ func TestCreateEphemeralCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Should preserve user content and add proxy block.
-	if !strings.Contains(string(raw), "user-model") {
+	if !strings.Contains(string(raw), "approval_policy=\"never\"") {
 		t.Fatalf("user content lost: %s", raw)
 	}
 	if !strings.Contains(string(raw), "proxy.example") {
 		t.Fatalf("proxy block missing: %s", raw)
+	}
+}
+
+func TestCreateEphemeralCodexNativeProfileCopiesAuth(t *testing.T) {
+	s := testService(t)
+	t.Setenv("CODEX_HOME", filepath.Join(s.Home, ".codex"))
+	snapshot := t.TempDir()
+	const authB = `{"OPENAI_API_KEY":"sk-profile-b"}`
+	if err := os.WriteFile(filepath.Join(snapshot, "auth.json"), []byte(authB), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := s.CreateEphemeralRuntime(EphemeralSpec{
+		ClientID: "codex", DefaultModel: "gpt-5.6", SourceKind: "account",
+		SourceProvider: "codex", SourceName: "b", TransportCapability: transport.Direct,
+		ProfileName: "b", NativeAuthSnapshotDir: snapshot,
+	})
+	if err != nil {
+		t.Fatalf("CreateEphemeralRuntime native Codex profile: %v", err)
+	}
+	defer func() { _ = rt.Cleanup() }()
+	if rt.Environment["CODEX_HOME"] != filepath.Join(rt.Home, ".codex") {
+		t.Fatalf("profile CODEX_HOME = %q", rt.Environment["CODEX_HOME"])
+	}
+	auth, err := os.ReadFile(filepath.Join(rt.Home, ".codex", "auth.json"))
+	if err != nil || string(auth) != authB {
+		t.Fatalf("isolated profile auth = %q, %v", auth, err)
+	}
+	config, err := os.ReadFile(filepath.Join(rt.Home, ".codex", "b.config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), "model_provider = \"openai\"") ||
+		strings.Contains(string(config), "base_url") {
+		t.Fatalf("isolated native profile config is not native:\n%s", config)
+	}
+	if _, err := os.Stat(filepath.Join(s.Home, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("ephemeral native profile touched live auth: %v", err)
 	}
 }
 

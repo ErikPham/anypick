@@ -9,96 +9,16 @@ import (
 // Gemini generateContent request. Ports openAIResponsesToGemini
 // (translate-responses.ts).
 func OpenAIResponsesToGemini(req OpenAIResponsesRequest, resolvedModel string) *GeminiGenerateRequest {
-	messages := make([]OpenAIMessage, 0)
-	if req.Instructions != "" {
-		messages = append(messages, OpenAIMessage{Role: "system", Content: jsonRaw(req.Instructions)})
-	}
+	return OpenAIToGemini(OpenAIResponsesToChat(req, resolvedModel), resolvedModel)
+}
 
-	var pendingReasoning string
-	var pendingSignature string
-	attachReasoning := func(message OpenAIMessage) OpenAIMessage {
-		if pendingReasoning != "" {
-			message.ReasoningContent = pendingReasoning
-		}
-		if pendingSignature != "" {
-			message.ReasoningSignature = pendingSignature
-		}
-		pendingReasoning = ""
-		pendingSignature = ""
-		return message
-	}
-
-	if req.Input != nil {
-		var input string
-		if json.Unmarshal(req.Input, &input) == nil {
-			messages = append(messages, OpenAIMessage{Role: "user", Content: jsonRaw(input)})
-		} else {
-			var items []map[string]interface{}
-			if json.Unmarshal(req.Input, &items) == nil {
-				for _, item := range items {
-					typ, _ := item["type"].(string)
-					switch typ {
-					case "reasoning":
-						pendingReasoning = FlattenResponsesText(item["summary"])
-						if ec, ok := item["encrypted_content"].(string); ok && ec != "" {
-							pendingSignature = ec
-						}
-						continue
-					case "function_call":
-						id := asString(item["call_id"], asString(item["id"], "call_"+RandomID()))
-						name := asString(item["name"], "tool")
-						args := asString(item["arguments"], "{}")
-						messages = append(messages, attachReasoning(OpenAIMessage{
-							Role: "assistant",
-							ToolCalls: []OpenAIToolCall{{
-								ID:   id,
-								Type: "function",
-								Function: struct {
-									Name      string `json:"name"`
-									Arguments string `json:"arguments"`
-								}{Name: name, Arguments: args},
-							}},
-						}))
-						continue
-					case "function_call_output":
-						if pendingReasoning != "" {
-							messages = append(messages, attachReasoning(OpenAIMessage{Role: "assistant"}))
-						}
-						messages = append(messages, OpenAIMessage{
-							Role:       "tool",
-							ToolCallID: asString(item["call_id"], asString(item["id"], "call_"+RandomID())),
-							Content:    jsonRaw(FlattenResponsesText(item["output"])),
-						})
-						continue
-					}
-					rawRole, _ := item["role"].(string)
-					role := "user"
-					switch rawRole {
-					case "assistant":
-						role = "assistant"
-					case "system", "developer":
-						role = "system"
-					}
-					message := OpenAIMessage{Role: role, Content: jsonRaw(FlattenResponsesText(item["content"]))}
-					if role == "assistant" {
-						messages = append(messages, attachReasoning(message))
-					} else {
-						messages = append(messages, message)
-					}
-				}
-			}
-		}
-	}
-	if pendingReasoning != "" {
-		messages = append(messages, attachReasoning(OpenAIMessage{Role: "assistant"}))
-	}
-	if allSystem(messages) {
-		messages = append(messages, OpenAIMessage{Role: "user", Content: jsonRaw("")})
-	}
-
+// OpenAIResponsesToChat converts the Responses request into the common Chat
+// Completions shape. It is shared by Gemini and OpenAI-compatible subscription
+// upstreams whose public surface is chat/completions.
+func OpenAIResponsesToChat(req OpenAIResponsesRequest, resolvedModel string) OpenAIChatRequest {
 	chat := OpenAIChatRequest{
 		Model:    resolvedModel,
-		Messages: messages,
+		Messages: openAIResponsesMessages(req.Instructions, req.Input),
 	}
 	if req.MaxOutputTokens != nil {
 		chat.MaxTokens = req.MaxOutputTokens
@@ -112,13 +32,106 @@ func OpenAIResponsesToGemini(req OpenAIResponsesRequest, resolvedModel string) *
 	if len(req.Reasoning) > 0 {
 		chat.Reasoning = req.Reasoning
 	}
-	functionTools := make([]OpenAITool, 0)
-	for _, raw := range req.Tools {
-		var tool map[string]interface{}
-		if json.Unmarshal(raw, &tool) != nil {
-			continue
+	functionTools := openAIResponsesTools(req.Tools)
+	if len(functionTools) > 0 {
+		chat.Tools = functionTools
+	}
+	if len(req.ToolChoice) > 0 {
+		chat.ToolChoice = req.ToolChoice
+	}
+	return chat
+}
+
+type responsesMessageBuilder struct {
+	messages         []OpenAIMessage
+	pendingReasoning string
+	pendingSignature string
+}
+
+func openAIResponsesMessages(instructions string, input json.RawMessage) []OpenAIMessage {
+	b := &responsesMessageBuilder{}
+	if instructions != "" {
+		b.messages = append(b.messages, OpenAIMessage{Role: "system", Content: jsonRaw(instructions)})
+	}
+	b.addInput(input)
+	if b.pendingReasoning != "" {
+		b.messages = append(b.messages, b.attachReasoning(OpenAIMessage{Role: "assistant"}))
+	}
+	if allSystem(b.messages) {
+		b.messages = append(b.messages, OpenAIMessage{Role: "user", Content: jsonRaw("")})
+	}
+	return b.messages
+}
+
+func (b *responsesMessageBuilder) attachReasoning(message OpenAIMessage) OpenAIMessage {
+	message.ReasoningContent = b.pendingReasoning
+	message.ReasoningSignature = b.pendingSignature
+	b.pendingReasoning, b.pendingSignature = "", ""
+	return message
+}
+
+func (b *responsesMessageBuilder) addInput(input json.RawMessage) {
+	if input == nil {
+		return
+	}
+	var text string
+	if json.Unmarshal(input, &text) == nil {
+		b.messages = append(b.messages, OpenAIMessage{Role: "user", Content: jsonRaw(text)})
+		return
+	}
+	var items []map[string]interface{}
+	if json.Unmarshal(input, &items) != nil {
+		return
+	}
+	for _, item := range items {
+		b.addItem(item)
+	}
+}
+
+func (b *responsesMessageBuilder) addItem(item map[string]interface{}) {
+	switch typ, _ := item["type"].(string); typ {
+	case "reasoning":
+		b.pendingReasoning = FlattenResponsesText(item["summary"])
+		if signature, ok := item["encrypted_content"].(string); ok {
+			b.pendingSignature = signature
 		}
-		if tool["type"] != "function" {
+	case "function_call":
+		id := asString(item["call_id"], asString(item["id"], "call_"+RandomID()))
+		call := OpenAIToolCall{ID: id, Type: "function"}
+		call.Function.Name = asString(item["name"], "tool")
+		call.Function.Arguments = asString(item["arguments"], "{}")
+		b.messages = append(b.messages, b.attachReasoning(OpenAIMessage{
+			Role: "assistant", ToolCalls: []OpenAIToolCall{call},
+		}))
+	case "function_call_output":
+		if b.pendingReasoning != "" {
+			b.messages = append(b.messages, b.attachReasoning(OpenAIMessage{Role: "assistant"}))
+		}
+		b.messages = append(b.messages, OpenAIMessage{
+			Role: "tool", ToolCallID: asString(item["call_id"], asString(item["id"], "call_"+RandomID())),
+			Content: jsonRaw(FlattenResponsesText(item["output"])),
+		})
+	default:
+		role := "user"
+		switch rawRole, _ := item["role"].(string); rawRole {
+		case "assistant":
+			role = "assistant"
+		case "system", "developer":
+			role = "system"
+		}
+		message := OpenAIMessage{Role: role, Content: jsonRaw(FlattenResponsesText(item["content"]))}
+		if role == "assistant" {
+			message = b.attachReasoning(message)
+		}
+		b.messages = append(b.messages, message)
+	}
+}
+
+func openAIResponsesTools(rawTools []json.RawMessage) []OpenAITool {
+	tools := make([]OpenAITool, 0, len(rawTools))
+	for _, raw := range rawTools {
+		var tool map[string]interface{}
+		if json.Unmarshal(raw, &tool) != nil || tool["type"] != "function" {
 			continue
 		}
 		name, _ := tool["name"].(string)
@@ -127,25 +140,113 @@ func OpenAIResponsesToGemini(req OpenAIResponsesRequest, resolvedModel string) *
 		}
 		decl := OpenAITool{Type: "function"}
 		decl.Function.Name = name
-		if d, ok := tool["description"].(string); ok {
-			decl.Function.Description = d
+		decl.Function.Description, _ = tool["description"].(string)
+		params, ok := tool["parameters"].(map[string]interface{})
+		if !ok {
+			params = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
-		if params, ok := tool["parameters"].(map[string]interface{}); ok {
-			rawParams, _ := json.Marshal(params)
-			decl.Function.Parameters = rawParams
-		} else {
-			rawParams, _ := json.Marshal(map[string]interface{}{"type": "object", "properties": map[string]interface{}{}})
-			decl.Function.Parameters = rawParams
+		decl.Function.Parameters, _ = json.Marshal(params)
+		tools = append(tools, decl)
+	}
+	return tools
+}
+
+// OpenAIChatToResponses converts a chat-completion response back to the
+// Responses shape expected by Codex. Subscription endpoints such as
+// WorkBuddy expose only chat/completions, while current Codex requires
+// wire_api = "responses".
+func OpenAIChatToResponses(res *OpenAIChatResponse, model string) *OpenAIResponsesResponse {
+	if res == nil {
+		return &OpenAIResponsesResponse{
+			ID: "resp_" + RandomID(), Object: "response", CreatedAt: time.Now().Unix(),
+			Status: "failed", Model: model, Output: []OpenAIResponseOutputItem{},
+			ParallelToolCalls: true,
+			Error:             map[string]string{"type": "server_error", "message": "empty upstream response"},
 		}
-		functionTools = append(functionTools, decl)
 	}
-	if len(functionTools) > 0 {
-		chat.Tools = functionTools
+	if res.Error != nil {
+		return &OpenAIResponsesResponse{
+			ID: "resp_" + RandomID(), Object: "response", CreatedAt: time.Now().Unix(),
+			Status: "failed", Model: model, Output: []OpenAIResponseOutputItem{},
+			ParallelToolCalls: true, Error: res.Error,
+		}
 	}
-	if len(req.ToolChoice) > 0 {
-		chat.ToolChoice = req.ToolChoice
+	if model == "" {
+		model = res.Model
 	}
-	return OpenAIToGemini(chat, resolvedModel)
+	out := &OpenAIResponsesResponse{
+		ID:                "resp_" + res.ID,
+		Object:            "response",
+		CreatedAt:         time.Now().Unix(),
+		Status:            "completed",
+		Model:             model,
+		Output:            []OpenAIResponseOutputItem{},
+		ParallelToolCalls: true,
+	}
+	if out.ID == "resp_" {
+		out.ID = "resp_" + RandomID()
+	}
+
+	if len(res.Choices) > 0 {
+		items, status, details := openAIChatChoiceToResponses(res.Choices[0])
+		out.Output = append(out.Output, items...)
+		out.Status, out.IncompleteDetails = status, details
+	}
+	if len(out.Output) == 0 {
+		out.Output = append(out.Output, OpenAIResponseOutputItem{
+			ID: "msg_" + RandomID(), Type: "message", Status: "completed", Role: "assistant",
+			Content: []OpenAIResponseContent{{
+				Type: "output_text", Text: "", Annotations: []interface{}{}, Logprobs: []interface{}{},
+			}},
+		})
+	}
+	if res.Usage != nil {
+		out.Usage = &OpenAIResponsesUsage{
+			InputTokens:         res.Usage.PromptTokens,
+			InputTokensDetails:  map[string]int{"cached_tokens": 0},
+			OutputTokens:        res.Usage.CompletionTokens,
+			OutputTokensDetails: map[string]int{"reasoning_tokens": 0},
+			TotalTokens:         res.Usage.TotalTokens,
+		}
+	}
+	return out
+}
+
+func openAIChatChoiceToResponses(choice OpenAIChatChoice) ([]OpenAIResponseOutputItem, string, map[string]string) {
+	message := choice.Message
+	output := make([]OpenAIResponseOutputItem, 0, 2+len(message.ToolCalls))
+	if message.ReasoningContent != "" || message.ReasoningSignature != "" {
+		item := OpenAIResponseOutputItem{
+			ID: "rs_" + RandomID(), Type: "reasoning", Status: "completed",
+		}
+		if message.ReasoningContent != "" {
+			item.Summary = []OpenAIResponseSummary{{Type: "summary_text", Text: message.ReasoningContent}}
+		}
+		item.EncryptedContent = message.ReasoningSignature
+		output = append(output, item)
+	}
+	if text := MessageText(message); text != "" {
+		output = append(output, OpenAIResponseOutputItem{
+			ID: "msg_" + RandomID(), Type: "message", Status: "completed", Role: "assistant",
+			Content: []OpenAIResponseContent{{
+				Type: "output_text", Text: text,
+				Annotations: []interface{}{}, Logprobs: []interface{}{},
+			}},
+		})
+	}
+	for _, call := range message.ToolCalls {
+		output = append(output, OpenAIResponseOutputItem{
+			ID: "fc_" + RandomID(), Type: "function_call", Status: "completed",
+			CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments,
+		})
+	}
+	status := "completed"
+	var details map[string]string
+	if choice.FinishReason == "length" {
+		status = "incomplete"
+		details = map[string]string{"reason": "max_output_tokens"}
+	}
+	return output, status, details
 }
 
 // GeminiToOpenAIResponses translates a Gemini generateContent response into an

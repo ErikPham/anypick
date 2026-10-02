@@ -13,12 +13,16 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/app"
+	"github.com/outof0/anypick/go/internal/desktop"
+	"github.com/outof0/anypick/go/internal/hub"
+	"github.com/outof0/anypick/go/internal/ownership"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -72,7 +76,10 @@ func identityDisplayText(value, fallback string) string {
 	if regexp.MustCompile(`^antigravity:[0-9a-f]{12,}$`).MatchString(v) {
 		return "Gemini OAuth"
 	}
-	return v
+	if safe := desktop.DisplaySafeIdentity(v); safe != "" {
+		return safe
+	}
+	return fallback
 }
 
 func normalizeIdentity(value string) string {
@@ -453,15 +460,16 @@ func clientNativeProvider(a *app.App, clientID string) string {
 
 // routingAppAllowlist is the explicit set of clients the Apps board routes.
 // Login-only clients (gemini, kiro, opencode, workbuddy) are excluded by
-// design — they switch their own provider login under Accounts. zcode and dsh
-// are the opposite case: neither has a provider of its own, so this board is
-// the only surface that can reach them at all. dsh is a Cordis-based harness
-// whose OpenAI-compatible endpoint is pointed at the AnyPick managed proxy;
-// zcode's `zai` entry in the compatible list is a plain API-key provider that
-// never touches ~/.zcode. Both are deliberately absent from
-// nativeProviderByClient — AnyPick does not manage a ZCode or DeepSeek Harness
-// login, so claiming one would make the row lie about being "native".
-var routingAppAllowlist = []string{"claude", "codex", "zcode", "dsh"}
+// design — they switch their own provider login under Accounts. zcode, dsh
+// and commandcode are the opposite case: none is a direct native switch
+// target, so this board is the only surface that reaches them. dsh is a
+// Cordis-based harness whose OpenAI-compatible endpoint is pointed at the
+// AnyPick managed proxy; zcode and commandcode follow their configured AnyPick
+// entries. zcode still belongs here even though the Z.ai subscription login is
+// managed under Accounts: that login is a source, not a native switch target.
+// pi and omp are the same case: harness clients with no native switch
+// target, reachable only by pointing them at an AnyPick-managed source.
+var routingAppAllowlist = []string{"claude", "codex", "zcode", "dsh", "commandcode", "pi", "omp"}
 
 // routingAppIDs returns the client ids that are routing apps, filtered against
 // the live client registry so an app absent from a particular build simply does
@@ -701,32 +709,61 @@ type ProxyRow struct {
 	Running  bool
 	Endpoint string
 	Enabled  bool
+	ApiKey   string
 }
 
-// LoadProxies reads account-proxy status for every CanProxy provider.
+// LoadProxies reads proxy-hub gateways and account-proxy status for every CanProxy provider.
 func LoadProxies(ctx context.Context, a *app.App) []ProxyRow {
 	var rows []ProxyRow
-	for _, pid := range a.Providers.IDs() {
-		p, perr := a.Providers.Get(pid)
-		if perr != nil || !p.CanProxy() {
-			continue
+
+	if a != nil && a.ProxyHub != nil {
+		configs, err := a.ProxyHub.ListConfigsContext(ctx)
+		if err != nil || len(configs) == 0 {
+			configs = []hub.Config{{Name: "default", Enabled: true, Port: 4680}}
 		}
-		accounts, aerr := a.Store.ListAccounts(ctx, pid)
-		if aerr != nil {
-			continue
+		for _, cfg := range configs {
+			pidFile := filepath.Join(a.Root, "runtime", "hub", cfg.Name, "service.pid")
+			rec := ownership.Load(pidFile)
+			running := rec != nil && rec.VerifyLive()
+			port := cfg.Port
+			if port == 0 {
+				port = 4680
+			}
+			endpoint := fmt.Sprintf("http://127.0.0.1:%d", port)
+			rows = append(rows, ProxyRow{
+				Provider: "proxy-hub",
+				Account:  cfg.Name,
+				RefText:  "proxy-hub/" + cfg.Name,
+				Running:  running,
+				Enabled:  cfg.Enabled,
+				Endpoint: endpoint,
+			})
 		}
-		for _, acct := range accounts {
-			row := ProxyRow{
-				Provider: pid,
-				Account:  acct.Meta.Name,
-				RefText:  fmt.Sprintf("%s/%s", pid, acct.Meta.Name),
+	}
+
+	if a != nil && a.Providers != nil {
+		for _, pid := range a.Providers.IDs() {
+			p, perr := a.Providers.Get(pid)
+			if perr != nil || !p.CanProxy() {
+				continue
 			}
-			if st, serr := a.Proxy.StatusContext(ctx, pid, acct.Meta.Name); serr == nil && st != nil {
-				row.Enabled = st.Enabled
-				row.Running = st.Running
-				row.Endpoint = st.Endpoint
+			accounts, aerr := a.Store.ListAccounts(ctx, pid)
+			if aerr != nil {
+				continue
 			}
-			rows = append(rows, row)
+			for _, acct := range accounts {
+				row := ProxyRow{
+					Provider: pid,
+					Account:  acct.Meta.Name,
+					RefText:  fmt.Sprintf("%s/%s", pid, acct.Meta.Name),
+				}
+				if st, serr := a.Proxy.StatusContext(ctx, pid, acct.Meta.Name); serr == nil && st != nil {
+					row.Enabled = st.Enabled
+					row.Running = st.Running
+					row.Endpoint = st.Endpoint
+				}
+				rows = append(rows, row)
+			}
 		}
 	}
 	return rows

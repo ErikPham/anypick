@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,51 @@ func TestEveryRegisteredClientIsReachableInTheTUI(t *testing.T) {
 		t.Errorf("client %q is invisible in the TUI: it is not in routingAppAllowlist "+
 			"and no provider named %q exists to switch its login under Accounts — "+
 			"either add it to routingAppAllowlist or give it a provider", id, id)
+	}
+}
+
+func TestViewProxiesOmitsApiKey(t *testing.T) {
+	const hubKey = "aph_1234567890abcdef1234567890abcdef"
+	const accountKey = "b3f862b6add39ed9401fdebef019006983361fd4dd8daef7ccdb5d4b8e08ba7b"
+	m := New(context.Background(), nil)
+	m.board = boardProxy
+	m.proxies = []ProxyRow{
+		{
+			Provider: "proxy-hub",
+			Account:  "default",
+			RefText:  "proxy-hub/default",
+			Running:  true,
+			Endpoint: "http://127.0.0.1:4680",
+			ApiKey:   hubKey,
+		},
+		{
+			Provider: "workbuddy",
+			Account:  "stacktify",
+			RefText:  "workbuddy/stacktify",
+			Running:  true,
+			Endpoint: "http://127.0.0.1:58613",
+			ApiKey:   accountKey,
+		},
+		{
+			Provider: "codex",
+			Account:  "work",
+			RefText:  "codex/work",
+			Running:  false,
+		},
+	}
+	rendered := m.viewProxies()
+	if len(rendered) != 3 {
+		t.Fatalf("len(rendered) = %d, want 3", len(rendered))
+	}
+	for i, row := range rendered {
+		if strings.Contains(row, hubKey) || strings.Contains(row, accountKey) || strings.Contains(row, "key ") {
+			t.Errorf("row %d rendered a bearer: %q", i, row)
+		}
+	}
+	if !strings.Contains(rendered[0], "http://127.0.0.1:4680") {
+		t.Errorf("hub row dropped the endpoint: %q", rendered[0])
+	}
+	if !strings.Contains(rendered[1], "http://127.0.0.1:58613") {
+		t.Errorf("account row dropped the endpoint: %q", rendered[1])
 	}
 }

@@ -13,15 +13,18 @@ import (
 
 // EphemeralSpec carries what an isolated session needs to configure a client.
 type EphemeralSpec struct {
-	ClientID            string
-	Endpoint            string // managed proxy endpoint (already started by StartProxy)
-	APIKey              string // proxy token for the session
-	DefaultModel        string
-	ModelRoles          map[string]string
-	SourceKind          string
-	SourceProvider      string
-	SourceName          string
-	TransportCapability transport.Capability
+	ClientID              string
+	Endpoint              string // managed proxy endpoint (already started by StartProxy)
+	APIKey                string // proxy token for the session
+	DefaultModel          string
+	ModelRoles            map[string]string
+	ModelCatalog          []string
+	SourceKind            string
+	SourceProvider        string
+	SourceName            string
+	TransportCapability   transport.Capability
+	ProfileName           string
+	NativeAuthSnapshotDir string
 }
 
 // EphemeralRuntime is the shared client-owned runtime handle used by both
@@ -46,9 +49,11 @@ func (s *Service) CreateEphemeralRuntimeContext(
 		return adapter.CreateEphemeralRuntime(ctx, &client.EphemeralContext{
 			ClientID: spec.ClientID, Endpoint: spec.Endpoint, APIKey: spec.APIKey,
 			DefaultModel: spec.DefaultModel, ModelRoles: spec.ModelRoles,
-			AnyPickRoot: s.Root, Home: clientHome(s), SourceKind: spec.SourceKind,
+			ModelCatalog: spec.ModelCatalog,
+			AnyPickRoot:  s.Root, Home: clientHome(s), SourceKind: spec.SourceKind,
 			SourceProvider: spec.SourceProvider, SourceName: spec.SourceName,
-			TransportCapability: spec.TransportCapability,
+			TransportCapability: spec.TransportCapability, ProfileName: spec.ProfileName,
+			NativeAuthSnapshotDir: spec.NativeAuthSnapshotDir,
 		})
 	}
 	root, err := os.MkdirTemp("", "anypick-"+cad.ID()+"-")
@@ -82,6 +87,9 @@ func (s *Service) CreateEphemeralRuntimeContext(
 		}
 		out.Environment["CODEX_HOME"] = isoCodex
 		out.Environment["ANYPICK_PROXY_API_KEY"] = spec.APIKey
+		if spec.ProfileName != "" {
+			out.Environment[client.CodexProfileEnvKey(spec.ProfileName)] = spec.APIKey
+		}
 	case "claude":
 		isoClaude := filepath.Join(out.Home, ".claude")
 		if err := os.MkdirAll(isoClaude, 0o700); err != nil {
@@ -129,13 +137,22 @@ func (s *Service) CreateEphemeralRuntimeContext(
 	}
 
 	actx := &client.ApplyContext{
-		Endpoint:     spec.Endpoint,
-		APIKey:       spec.APIKey,
-		DefaultModel: spec.DefaultModel,
-		ModelRoles:   spec.ModelRoles,
-		AnyPickRoot:  s.Root,
-		Home:         live,
-		IsolatedHome: out.Home,
+		Endpoint:              spec.Endpoint,
+		APIKey:                spec.APIKey,
+		DefaultModel:          spec.DefaultModel,
+		ModelRoles:            spec.ModelRoles,
+		ModelCatalog:          spec.ModelCatalog,
+		AnyPickRoot:           s.Root,
+		Home:                  live,
+		IsolatedHome:          out.Home,
+		ExtraEnv:              out.Environment,
+		SourceKind:            spec.SourceKind,
+		SourceProvider:        spec.SourceProvider,
+		SourceName:            spec.SourceName,
+		TransportCapability:   spec.TransportCapability,
+		Mode:                  "ephemeral",
+		ProfileName:           spec.ProfileName,
+		NativeAuthSnapshotDir: spec.NativeAuthSnapshotDir,
 	}
 	if _, err := cad.Apply(actx); err != nil {
 		_ = out.Cleanup()

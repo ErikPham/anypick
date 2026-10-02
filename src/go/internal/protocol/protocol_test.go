@@ -94,6 +94,32 @@ func TestTranslateRequestToolsAndResults(t *testing.T) {
 	}
 }
 
+func TestTranslateRequestAcceptsSystemMessagesInMessagesArray(t *testing.T) {
+	out, err := TranslateRequest([]byte(`{
+		"model":"m",
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"in-band rules"}]},
+			{"role":"user","content":"hello"}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Messages []openAIMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	if len(req.Messages) != 2 || req.Messages[0].Role != "system" {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	var text string
+	if err := json.Unmarshal(req.Messages[0].Content, &text); err != nil || text != "in-band rules" {
+		t.Fatalf("system content = %s", req.Messages[0].Content)
+	}
+}
+
 func TestTranslateResponseTextAndUsage(t *testing.T) {
 	in := `{
 	  "id":"cmpl-1","model":"m",

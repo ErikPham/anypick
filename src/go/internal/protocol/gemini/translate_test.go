@@ -179,6 +179,85 @@ func TestAnthropicRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParallelToolResultsStayOneUserTurn(t *testing.T) {
+	body := `{
+		"model": "gemini-2.5-pro",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "weather and time"}]},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "t1", "name": "get_weather", "input": {}},
+				{"type": "tool_use", "id": "t2", "name": "get_time", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "t1", "content": "20C"},
+				{"type": "tool_result", "tool_use_id": "t2", "content": "noon"}
+			]}
+		]
+	}`
+	g, _, err := AnthropicToGemini([]byte(body), "gemini-2.5-pro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Contents) != 3 {
+		t.Fatalf("contents = %d, want user + one model turn + one response turn", len(g.Contents))
+	}
+	calls := 0
+	for _, part := range g.Contents[1].Parts {
+		if part.FunctionCall != nil {
+			calls++
+		}
+	}
+	if g.Contents[1].Role != "model" || calls != 2 {
+		t.Fatalf("model turn = %+v", g.Contents[1])
+	}
+	if g.Contents[2].Role != "user" || len(g.Contents[2].Parts) != 2 {
+		t.Fatalf("response turn = %+v", g.Contents[2])
+	}
+	if g.Contents[2].Parts[0].FunctionResponse == nil || g.Contents[2].Parts[0].FunctionResponse.Name != "get_weather" {
+		t.Fatalf("first response = %+v", g.Contents[2].Parts[0])
+	}
+	if g.Contents[2].Parts[1].FunctionResponse == nil || g.Contents[2].Parts[1].FunctionResponse.Name != "get_time" {
+		t.Fatalf("second response = %+v", g.Contents[2].Parts[1])
+	}
+}
+
+func TestConsecutiveToolCallsMergeIntoOneModelTurn(t *testing.T) {
+	weather := OpenAIToolCall{ID: "c1"}
+	weather.Function.Name = "get_weather"
+	weather.Function.Arguments = "{}"
+	clock := OpenAIToolCall{ID: "c2"}
+	clock.Function.Name = "get_time"
+	clock.Function.Arguments = "{}"
+	req := OpenAIChatRequest{
+		Messages: []OpenAIMessage{
+			{Role: "user", Content: json.RawMessage(`"go"`)},
+			{Role: "assistant", ToolCalls: []OpenAIToolCall{weather}},
+			{Role: "assistant", ToolCalls: []OpenAIToolCall{clock}},
+			{Role: "tool", ToolCallID: "c1", Content: json.RawMessage(`"20C"`)},
+			{Role: "tool", ToolCallID: "c2", Content: json.RawMessage(`"noon"`)},
+		},
+	}
+	g := OpenAIToGemini(req, "gemini-2.5-pro")
+	if len(g.Contents) != 3 {
+		t.Fatalf("contents = %d, want 3", len(g.Contents))
+	}
+	calls := 0
+	for _, part := range g.Contents[1].Parts {
+		if part.FunctionCall != nil {
+			calls++
+		}
+	}
+	responses := 0
+	for _, part := range g.Contents[2].Parts {
+		if part.FunctionResponse != nil {
+			responses++
+		}
+	}
+	if calls != 2 || responses != 2 {
+		t.Fatalf("calls %d responses %d", calls, responses)
+	}
+}
+
 func TestAnthropicToolUseRoundTrip(t *testing.T) {
 	body := `{
 		"model": "gemini-2.5-pro",

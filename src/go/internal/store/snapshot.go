@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"io/fs"
@@ -109,6 +110,40 @@ func IngestSnapshotDir(tx *sql.Tx, providerID, name, snapDir string) error {
 		return nil
 	}
 	return walk(snapDir, "")
+}
+
+// CopySnapshotFiles writes the committed snapshot BLOBs for one account into
+// dest. The canonical cache is left alone, so a later materialize cannot
+// destroy the copy a cancelled login still has to restore (ADR 0004).
+func (s *AccountStore) CopySnapshotFiles(ctx context.Context, providerID, name, dest string) error {
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return err
+	}
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT path, content FROM account_snapshot_files WHERE provider = ? AND account = ?`,
+		providerID, name)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rel string
+		var content []byte
+		if err := rows.Scan(&rel, &content); err != nil {
+			return err
+		}
+		to, err := stagedFilePath(dest, rel)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(to, content, 0o600); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // MaterializeSnapshot ports materializeSnapshot: rebuild the on-disk snapshot

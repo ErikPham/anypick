@@ -224,6 +224,27 @@ func TestReadBackupPackageRejectsNewerVersionDistinctly(t *testing.T) {
 	}
 }
 
+func TestInspectBackupRejectsMissingEnvelopeWithoutPanicking(t *testing.T) {
+	st, reg := newTransferEnv(t)
+	cases := map[string]string{
+		"null":    `{"version":1,"kind":"anypick-backup","accounts":[{"provider":"claude","name":"broken","envelope":null}]}`,
+		"missing": `{"version":1,"kind":"anypick-backup","accounts":[{"provider":"claude","name":"broken"}]}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "broken.anypick-backup")
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InspectBackup(st, reg, path); err == nil {
+				t.Fatal("malformed backup was accepted")
+			} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_FORMAT" {
+				t.Fatalf("error = %v, want BACKUP_FORMAT", err)
+			}
+		})
+	}
+}
+
 func TestValidateBackupSelectionAndLimits(t *testing.T) {
 	if _, err := ValidateBackupSelection(nil); err == nil {
 		t.Fatal("empty selection accepted")

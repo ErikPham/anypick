@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/activation"
+	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/doctor"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -76,9 +78,10 @@ type Model struct {
 	promptLabel string
 	promptRun   func(string) tea.Cmd
 
-	status    string
-	statusErr bool
-	quitting  bool
+	status      string
+	statusErr   bool
+	statusCause error
+	quitting    bool
 }
 
 type confirmState struct {
@@ -107,6 +110,19 @@ type wizardState struct {
 
 	plan    *activation.Plan
 	planErr string
+}
+
+// formatErrWithSuggestions keeps the recovery commands on the text the TUI
+// can render. err.Error() alone drops anyerr.Suggestions.
+func formatErrWithSuggestions(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ae *anyerr.Error
+	if !errors.As(err, &ae) || len(ae.Suggestions) == 0 {
+		return err.Error()
+	}
+	return err.Error() + "\n" + strings.Join(ae.Suggestions, "\n")
 }
 
 // New builds the initial model, landing on the Apps board.
@@ -175,6 +191,13 @@ func planWizardCmd(ctx context.Context, a *app.App, clientID string, ref refs.Re
 			Model:           model,
 			ModelRoles:      roles,
 			TransportPolicy: transport.PolicyAuto,
+		}
+		// Native same-provider routes skip the wizard's model step, so the
+		// planner must bootstrap the default itself. Best-effort catalog;
+		// the failure is kept so the preview can explain itself.
+		if ref.Kind == refs.KindAccount && a.Proxy != nil {
+			models, derr := a.Proxy.DiscoverModels(ctx, ref.Provider, ref.Name)
+			req.ModelCatalog, req.ModelCatalogErr = models, derr
 		}
 		plan, err := activation.PlanActivation(ctx, req, a.Deps, activation.Options{})
 		if err != nil {
@@ -320,7 +343,17 @@ func loadAccountsCmd(ctx context.Context, a *app.App, providerID string) tea.Cmd
 
 func useCmd(ctx context.Context, a *app.App, providerID, name string) tea.Cmd {
 	return func() tea.Msg {
-		res, err := a.Accounts.Use(ctx, providerID, name, accounts.UseOptions{})
+		reapplied := 0
+		// The reapply is part of the switch transaction: a failure restores the
+		// previous account (pointer, binding, proxy) instead of leaving bound
+		// clients pointed at the account that was just switched away from.
+		res, err := a.Accounts.Use(ctx, providerID, name, accounts.UseOptions{
+			PostSwitch: func(pc context.Context) error {
+				n, rerr := reapplyClientsBoundTo(pc, a, refs.AccountRef(providerID, name))
+				reapplied = n
+				return rerr
+			},
+		})
 		if err != nil {
 			return actionMsg{err: err}
 		}
@@ -328,7 +361,11 @@ func useCmd(ctx context.Context, a *app.App, providerID, name string) tea.Cmd {
 		if from == "" {
 			from = "(none)"
 		}
-		return actionMsg{text: fmt.Sprintf("switched %s: %s → %s", providerID, from, res.To)}
+		text := fmt.Sprintf("switched %s: %s → %s", providerID, from, res.To)
+		if reapplied > 0 {
+			text += fmt.Sprintf("; reapplied %d client(s)", reapplied)
+		}
+		return actionMsg{text: text}
 	}
 }
 
@@ -445,7 +482,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.wizard != nil {
 			m.wizard.plan = msg.plan
 			if msg.err != nil {
-				m.wizard.planErr = msg.err.Error()
+				m.wizard.planErr = formatErrWithSuggestions(msg.err)
 			} else {
 				m.wizard.planErr = ""
 			}
@@ -456,8 +493,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case actionMsg:
 		m.statusErr = msg.err != nil
+		m.statusCause = msg.err
 		if msg.err != nil {
-			m.status = msg.err.Error()
+			m.status = formatErrWithSuggestions(msg.err)
 		} else {
 			m.status = msg.text
 		}

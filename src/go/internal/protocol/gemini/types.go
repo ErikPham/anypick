@@ -175,6 +175,7 @@ type OpenAIChatRequest struct {
 	Tools           []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
 	Stream          bool            `json:"stream,omitempty"`
+	StreamOptions   json.RawMessage `json:"stream_options,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 	Reasoning       json.RawMessage `json:"reasoning,omitempty"`
 	Effort          string          `json:"effort,omitempty"`

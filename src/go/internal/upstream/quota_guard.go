@@ -7,6 +7,7 @@ package upstream
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,15 @@ type GuardOptions struct {
 	AccountNames []string
 	StatePath    string
 	ProviderID   string
+	// ServeWhenAllCooling keeps a ring serving when every member is cooling.
+	//
+	// The zero value keeps the original behaviour (refuse with a 429 naming the
+	// local policy), because a guard whose policy is unset must not silently
+	// gain a new failure mode. The composition opts in: when every account is
+	// quota-blocked, attempting the one that recovers soonest hands the caller
+	// the vendor's own verdict instead of this process's guess, which is the
+	// difference between "your pool is down" and "the vendor says 429".
+	ServeWhenAllCooling bool
 }
 
 // Candidate is anything carrying an optional saved-account name.
@@ -97,6 +107,74 @@ func (g *Guard) Ordered(candidates []Candidate) ([]Candidate, error) {
 	ordered = append(ordered, eligible[:activeIdx]...)
 	ordered = append(ordered, eligible[activeIdx+1:]...)
 	return ordered, nil
+}
+
+// ServesWhenAllCooling reports whether the ring may attempt a cooling member
+// instead of refusing the request.
+func (g *Guard) ServesWhenAllCooling() bool { return g.options.ServeWhenAllCooling }
+
+// Eligible drops cooling accounts and preserves the caller's ring order.
+//
+// Ordered cannot serve a rotating ring: it promotes the active account to the
+// head, which is exactly what rotation is trying to move past. Both share the
+// cooldown filter, so a rotating ring still skips an exhausted account.
+func (g *Guard) Eligible(candidates []Candidate) ([]Candidate, error) {
+	if !g.options.Enabled {
+		return append([]Candidate(nil), candidates...), nil
+	}
+	g.mu.Lock()
+	state, err := g.loadLocked()
+	g.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	now := g.nowMillis()
+	eligible := make([]Candidate, 0, len(candidates))
+	for _, c := range candidates {
+		account := c.GetAccountName()
+		if account == "" || state.Cooling[account] <= now {
+			eligible = append(eligible, c)
+		}
+	}
+	return eligible, nil
+}
+
+// Cooling reports the candidates that are still cooling, the one that will
+// recover soonest first. A ring uses it when nothing is eligible and the
+// operator asked it to keep serving: attempting the soonest-to-recover member
+// once passes the vendor's own answer through, and cannot be retried into a
+// loop by a ring that would otherwise walk every cooling member per request.
+func (g *Guard) Cooling(candidates []Candidate) ([]Candidate, error) {
+	if !g.options.Enabled {
+		return append([]Candidate(nil), candidates...), nil
+	}
+	g.mu.Lock()
+	state, err := g.loadLocked()
+	g.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	now := g.nowMillis()
+	type cooling struct {
+		candidate Candidate
+		until     int64
+	}
+	entries := make([]cooling, 0, len(candidates))
+	for _, c := range candidates {
+		account := c.GetAccountName()
+		if account == "" {
+			continue
+		}
+		if until := state.Cooling[account]; until > now {
+			entries = append(entries, cooling{candidate: c, until: until})
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].until < entries[j].until })
+	out := make([]Candidate, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.candidate)
+	}
+	return out, nil
 }
 
 // Exhausted ports QuotaGuard.exhausted: cool `from` down for at least one

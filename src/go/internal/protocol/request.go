@@ -116,6 +116,16 @@ func TranslateRequest(body []byte) ([]byte, error) {
 	for _, msg := range req.Messages {
 		blocks := decodeBlocks(msg.Content)
 		switch msg.Role {
+		case "system":
+			// Claude Code can place system blocks in messages[] instead of
+			// using the top-level system field. Preserve those instructions
+			// as an OpenAI system message rather than rejecting an otherwise
+			// valid Messages request.
+			if sys := joinSystemText(msg.Content); sys != "" {
+				messages = append(messages, openAIMessage{
+					Role: "system", Content: jsonString(sys),
+				})
+			}
 		case "user":
 			userMsgs := userBlocksToOpenAI(blocks)
 			messages = append(messages, userMsgs...)

@@ -3,6 +3,7 @@
 package ownership
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"time"
@@ -24,6 +25,27 @@ func (p *unixDetachedProcess) terminate() error { return syscall.Kill(-p.pid, sy
 func (p *unixDetachedProcess) close() error     { return nil }
 
 func processAlive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// groupAlive reports whether any process of the child's session group is still
+// running. The child is a session leader (Setsid), so its pid is its group id
+// and `kill(-pid, 0)` reaches every member it spawned — including grandchildren
+// that inherited the group. ESRCH means the group is gone, which is the only
+// answer that lets Stop claim the tree is down.
+//
+// A process that daemonizes itself with its own setsid leaves this group and
+// cannot be reached this way; that is what the ownership record and the reap
+// path are for.
+func groupAlive(rec *Record) bool {
+	if rec == nil || rec.PID <= 0 {
+		return false
+	}
+	err := syscall.Kill(-rec.PID, 0)
+	if err == nil {
+		return true
+	}
+	// EPERM means a member exists but is not ours to signal — still alive.
+	return errors.Is(err, syscall.EPERM)
+}
 
 // verifyLiveRecord proves current ownership: the pid must be alive, its live
 // command line must contain every recorded argument token, and — when the

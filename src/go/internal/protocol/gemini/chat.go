@@ -2,6 +2,26 @@ package gemini
 
 import "encoding/json"
 
+// mergeConsecutiveGeminiRoles folds adjacent turns that share a role.
+// Gemini generateContent requires user and model to alternate, and one user
+// turn must carry every functionResponse for the preceding functionCall turn.
+func mergeConsecutiveGeminiRoles(contents []GeminiContent) []GeminiContent {
+	if len(contents) < 2 {
+		return contents
+	}
+	out := make([]GeminiContent, 0, len(contents))
+	out = append(out, contents[0])
+	for _, c := range contents[1:] {
+		last := &out[len(out)-1]
+		if last.Role == c.Role {
+			last.Parts = append(last.Parts, c.Parts...)
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // OpenAIToGemini translates an OpenAI /v1/chat/completions request into a Gemini
 // generateContent request. Ports openAIToGemini (translate-chat.ts).
 func OpenAIToGemini(req OpenAIChatRequest, resolvedModel string) *GeminiGenerateRequest {
@@ -88,6 +108,10 @@ func OpenAIToGemini(req OpenAIChatRequest, resolvedModel string) *GeminiGenerate
 			})
 		}
 	}
+	// generateContent rejects consecutive turns of the same role, and a
+	// function-response turn must contain every response for the previous
+	// function-call turn. Parallel tool calls arrive as separate messages.
+	contents = mergeConsecutiveGeminiRoles(contents)
 
 	// Gemini requires alternating user/model; ensure starts with user.
 	if len(contents) == 0 {

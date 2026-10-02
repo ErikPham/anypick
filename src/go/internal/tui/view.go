@@ -371,7 +371,8 @@ func (m *Model) viewProxies() []string {
 		} else if r.Enabled {
 			status = "enabled, stopped"
 		}
-		line := fmt.Sprintf("%s %s   %s", mark, r.RefText, styleDim.Render(status))
+		extra := []string{status}
+		line := fmt.Sprintf("%s %-20s %s", mark, r.RefText, styleDim.Render(strings.Join(extra, " · ")))
 		if i == m.cursor {
 			rows = append(rows, styleSelected.Render(line))
 		} else {
@@ -509,12 +510,12 @@ func (m *Model) viewWizardModels() []string {
 func (m *Model) viewWizardPreview() []string {
 	w := m.wizard
 	if w.planErr != "" {
-		return []string{
-			styleError.Render("Could not plan this route:"),
-			styleError.Render("  " + w.planErr),
-			"",
-			styleDim.Render("esc to go back and pick a different source"),
+		lines := []string{styleError.Render("Could not plan this route:")}
+		for _, line := range strings.Split(w.planErr, "\n") {
+			lines = append(lines, styleError.Render("  "+line))
 		}
+		lines = append(lines, "", styleDim.Render("esc to go back and pick a different source"))
+		return lines
 	}
 	if w.plan == nil {
 		return []string{styleDim.Render("planning…")}
@@ -653,7 +654,7 @@ func (m *Model) viewHelpFull() string {
 		"  a g p       jump to Accounts / Gateways / Proxy from Apps",
 		"  d           diagnose               ?   this screen      q   quit (Apps)",
 		"",
-		"Proxy endpoints are shown; proxy tokens are never displayed.",
+		"Proxy endpoints and hub keys are shown; account proxy tokens are never displayed.",
 	}
 	var out strings.Builder
 	out.WriteString(styleHeader.Render("anypick / help") + "\n\n")

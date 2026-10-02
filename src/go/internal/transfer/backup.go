@@ -219,6 +219,10 @@ type RestoreOptions struct {
 // provider-scoped coordinator locks (invariant #5). Replacing an existing
 // account requires its exact provider/name pair in opts.Replace.
 func RestoreSelected(st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
+	return RestoreSelectedContext(context.Background(), st, reg, path, selected, opts)
+}
+
+func RestoreSelectedContext(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
 	// Sorted provider-scoped locks cover every account the batch touches so a
 	// concurrent save/refresh/remove cannot interleave (ADR 0009/0011).
 	scopeSet := map[string]bool{}
@@ -231,7 +235,7 @@ func RestoreSelected(st *store.AccountStore, reg *provider.Registry, path string
 	}
 	sort.Strings(scopes)
 	var metas []store.Meta
-	err := lock.WithMutationLocks(context.Background(), st.Root, scopes,
+	err := lock.WithMutationLocks(ctx, st.Root, scopes,
 		func(ctx context.Context) error {
 			m, err := restoreSelectedLocked(ctx, st, reg, path, selected, opts)
 			metas = m
@@ -400,6 +404,17 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 	}
 	if len(pkg.Accounts) > MaxBackupAccounts {
 		return nil, backupError("BACKUP_LIMIT", "A backup can contain at most %d accounts.", MaxBackupAccounts)
+	}
+	for i, acct := range pkg.Accounts {
+		// The envelope is untrusted input. A missing or explicit null envelope
+		// must be reported as a format error before prepareBackup dereferences
+		// its metadata (the desktop inspection path accepts user-selected files).
+		if acct.Envelope == nil {
+			return nil, backupError("BACKUP_FORMAT", "Backup entry %d is missing its envelope.", i+1)
+		}
+		if slugNormalize(acct.Provider) == "" || slugNormalize(acct.Name) == "" {
+			return nil, backupError("BACKUP_FORMAT", "Backup entry %d has an invalid account reference.", i+1)
+		}
 	}
 	return &pkg, nil
 }

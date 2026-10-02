@@ -79,6 +79,28 @@ func IsCredentialQuotaFailure(status int, headerValue func(string) string, bodyP
 	return exhaustedRe.MatchString(text) || keyAttributionRe.MatchString(text)
 }
 
+// MatchesQuotaErrorPattern checks provider-declared quotaErrorPatterns regexes
+// against the response body. Invalid patterns are skipped.
+func MatchesQuotaErrorPattern(patterns []string, body string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	preview := body
+	if len(preview) > 4000 {
+		preview = preview[:4000]
+	}
+	for _, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(preview) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseRetryAfter ports parseRetryAfter (delta-seconds or HTTP-date).
 func ParseRetryAfter(value string, now time.Time) *int64 {
 	raw := trimSpace(value)

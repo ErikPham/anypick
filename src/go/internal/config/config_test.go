@@ -254,3 +254,34 @@ func TestSettingsTogglePreservesWholeDocument(t *testing.T) {
 		t.Fatalf("stored defaults shape drifted: %s", value)
 	}
 }
+
+// ServeWhenAllCooling is a Go-side extension to the ported policy: it decides
+// whether a fully cooled pool keeps serving. Absent means yes — a pool whose
+// accounts are all quota-blocked should hand the caller the vendor's verdict
+// rather than a local guess — and an explicit false restores the old refusal.
+func TestQuotaGuardServeWhenAllCoolingDefaultsOn(t *testing.T) {
+	plain := QuotaGuardPolicyOf(GlobalConfig{})
+	if !plain.ServeWhenAllCooling {
+		t.Fatal("the default must keep serving when every member is cooling")
+	}
+
+	off := false
+	explicit := QuotaGuardPolicyOf(GlobalConfig{UI: &UI{QuotaGuard: &QuotaGuardCfg{
+		Enabled:             boolPtr(true),
+		ServeWhenAllCooling: &off,
+	}}})
+	if explicit.ServeWhenAllCooling {
+		t.Fatal("an explicit false must be honoured")
+	}
+	if !explicit.Enabled {
+		t.Fatal("enabling the guard must still be read")
+	}
+
+	on := true
+	back := QuotaGuardPolicyOf(GlobalConfig{UI: &UI{QuotaGuard: &QuotaGuardCfg{
+		ServeWhenAllCooling: &on,
+	}}})
+	if !back.ServeWhenAllCooling {
+		t.Fatal("an explicit true must be honoured")
+	}
+}
