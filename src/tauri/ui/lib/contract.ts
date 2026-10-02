@@ -8,9 +8,12 @@
  *
  * Do not add fields "for the UI's convenience" — change the Go struct, or map
  * at the edge. A contract that drifts from the engine is worse than none.
+ *
+ * `test/contract-drift.test.ts` reads `snapshot.go` and fails the build when a
+ * Go JSON tag has no counterpart here, so the mirror cannot rot silently.
  */
 
-/** Loose engine objects (routes, hub sources, activity, …) stay open maps. */
+/** One engine object whose shape the engine itself documents as free-form. */
 export type EngineMap = Record<string, unknown>;
 
 export type DegradedCondition = {
@@ -28,13 +31,15 @@ export type ActionRow = {
   client: string;
   label: string;
   detail?: string;
-  /** 'native' | 'gateway' */
+  /** 'native' | 'gateway' | 'hub' */
   kind: string;
+  /** 'native-account' | 'app-route' */
   presentation: string;
   selected: boolean;
   enabled: boolean;
-  /** Extra engine-supplied fields (badges, warnings, ordering). */
-  extras?: EngineMap;
+  disabledReason?: string;
+  /** 'direct-account' | 'managed-account' | 'gateway' | 'hub' */
+  routeKind?: string;
 };
 
 export type AccountRow = {
@@ -60,19 +65,13 @@ export type ProxyRow = {
   logsAvailable?: boolean;
   toggleActionId: string;
   restartActionId: string;
-};
-
-export type GatewayRow = {
-  id: string;
-  providerId?: string;
-  label?: string;
-  detail?: string;
-} & EngineMap;
-
-export type UsageSnapshotRow = {
-  client: string;
-  account: string;
-  windows: EngineMap[];
+  rotateActionId?: string;
+  /**
+   * Says a copy can be fetched. The bearer itself never crosses into the
+   * snapshot (ADR 0006); the UI asks for it with the `proxy-token` operation
+   * and reads it from the result payload.
+   */
+  hasToken?: boolean;
 };
 
 export type LogSourceRow = {
@@ -83,10 +82,42 @@ export type LogSourceRow = {
   detail: string;
 };
 
+/**
+ * The engine emits gateways as a free-form map today. These are the keys it
+ * actually writes; a reader that needs one of them should read it through
+ * `decodeGateway` so a missing or mistyped key becomes one place to fix.
+ */
+export type GatewayRow = {
+  id: string;
+  providerId: string;
+  name: string;
+  detail: string;
+  ready: boolean;
+  defaultModel: string;
+};
+
 export type LoginMethodRow = {
   id: string;
   label: string;
   detail?: string;
+  /** 'official' | 'community' */
+  provenance: string;
+  preferred: boolean;
+  sourceId?: string;
+  sourceLabel?: string;
+  available: boolean;
+  unavailableReason?: string;
+};
+
+export type CredentialProfileRow = {
+  id: string;
+  label: string;
+};
+
+export type CredentialKindRow = {
+  kind: string;
+  label: string;
+  profiles: CredentialProfileRow[];
 };
 
 export type AccountProviderRow = {
@@ -101,6 +132,18 @@ export type AccountProviderRow = {
   liveIdentity?: string;
   loginMethods: LoginMethodRow[];
   canClear?: boolean;
+  /**
+   * The explicit credential products this provider accepts through
+   * `account-save-input`. Native-only providers leave it empty: those
+   * accounts come from a live login or a browser sign-in, never typed input.
+   * Definitions only — no secrets cross this boundary.
+   */
+  credentialKinds?: CredentialKindRow[];
+  /**
+   * The provider can save its own auth file from pasted JSON. Absent on a
+   * snapshot from an older engine, which means the paste field stays hidden.
+   */
+  acceptsAuthPaste?: boolean;
 };
 
 export type GatewayProviderRow = {
@@ -108,8 +151,180 @@ export type GatewayProviderRow = {
   label: string;
   detail: string;
   providesEndpoint?: boolean;
+  requiresApiKey: boolean;
+  defaultEndpoint?: string;
   firstPartyClientIds?: string[];
   kind?: string;
+  requiresGatewayId?: boolean;
+  requiresAccountId?: boolean;
+  /**
+   * Regions for an account-scoped key, one of which the user picks. Absent from
+   * a snapshot that publishes none, which is why the picker is conditional: a
+   * provider with no regions to choose between has nothing to ask.
+   */
+  regions?: string[];
+  /** The region the provider prefers, used when the user has not chosen. */
+  regionDefault?: string;
+};
+
+export type CodexProfileRow = {
+  name: string;
+  sourceId: string;
+  sourceLabel: string;
+  modelId: string;
+  /** 'auto' | 'direct' | 'proxy' */
+  transportPolicy: string;
+  launchCommand: string;
+};
+
+export type CodexProfileSourceRow = {
+  sourceId: string;
+  kind: string;
+  label: string;
+  detail: string;
+  selected: boolean;
+  models: string[];
+};
+
+export type UsageWindow = {
+  label: string;
+  remainingPercent: number;
+  resetsAtMs?: number;
+  limitWindowSeconds?: number;
+};
+
+export type UsageSnapshotRow = {
+  client: string;
+  account: string;
+  windows: UsageWindow[];
+};
+
+export type RouteRow = {
+  clientId: string;
+  client: string;
+  /** 'unbound' | 'native' | 'ready' */
+  status: string;
+  source?: string;
+  model?: string;
+};
+
+export type ModelRole = {
+  id: string;
+  label: string;
+};
+
+export type ModelOption = {
+  actionId: string;
+  modelId: string;
+  providerId?: string;
+  sourceLabel?: string;
+};
+
+export type ClientModelConfig = {
+  clientId: string;
+  client: string;
+  roles: ModelRole[];
+  modelRoles: Record<string, string>;
+  options: ModelOption[];
+  editable: boolean;
+  unavailableReason?: string;
+  sourceLabel?: string;
+  /** "provider" means the pins were inherited. "explicit" means this connection customized them. */
+  modelRolesSource?: string;
+  defaultModel?: string;
+};
+
+/** An account attached to a hub. */
+export type HubAccountSource = {
+  id: string;
+  providerId: string;
+  /** The account name, or `pool:<provider>`. */
+  name: string;
+  label: string;
+  detail: string;
+  enabled: boolean;
+  hub: string;
+};
+
+/** A source that points at an account the engine no longer has. */
+export type HubGhostSource = HubAccountSource & {
+  ghost: true;
+  unavailableReason: string;
+};
+
+/** Every account of one provider, rotated as a unit. */
+export type HubPoolSource = {
+  id: string;
+  providerId: string;
+  name: string;
+  label: string;
+  detail: string;
+  enabled: true;
+  hub: string;
+  poolSource: true;
+};
+
+/** Failover versus round-robin, for one hub. */
+export type HubRotationSource = {
+  id: string;
+  providerId: string;
+  name: 'rotation';
+  label: string;
+  detail: string;
+  /** True is round-robin, false is failover. */
+  enabled: boolean;
+  hub: string;
+  rotates: true;
+  accountCount: number;
+};
+
+export type HubSource =
+  | HubAccountSource
+  | HubGhostSource
+  | HubPoolSource
+  | HubRotationSource;
+
+export type HubConflictCandidate = {
+  id: string;
+  providerId: string;
+  label: string;
+  detail: string;
+  actionId: string;
+  providerChoice: boolean;
+};
+
+export type HubConflict = {
+  id: string;
+  /** 'source-choice' | 'model-overlap' */
+  kind: string;
+  title: string;
+  models: string[];
+  candidates: HubConflictCandidate[];
+};
+
+export type HubPublishedModel = {
+  id: string;
+  ownerLabel: string;
+  ownerProviderId: string;
+  needsChoice: boolean;
+  ownerAccountId?: string;
+};
+
+export type HubCatalog = {
+  accountID: string;
+  catalog: string;
+  models: string[];
+};
+
+export type ActivityRow = {
+  id: string;
+  createdAt: string;
+  message: string;
+  isError: boolean;
+  /** 'activation' | 'gateway' | 'proxy' | 'quota' | 'settings' */
+  kind: string;
+  /** Omitted when the event is unbranded. Absent is not a fallback glyph. */
+  provider?: string;
 };
 
 export type Preferences = {
@@ -123,20 +338,24 @@ export type Preferences = {
 export type Snapshot = {
   proxyCount: number;
   revision: number;
-  routes: EngineMap[];
+  routes: RouteRow[];
   actions: ActionRow[];
-  clientModelConfigs: EngineMap[];
+  clientModelConfigs: ClientModelConfig[];
   usage: UsageSnapshotRow[];
   proxies: ProxyRow[];
   accounts: AccountRow[];
-  hubSources: EngineMap[];
-  hubConflicts: EngineMap[];
+  hubSources: HubSource[];
+  hubConflicts: HubConflict[];
+  hubPublishedModels: HubPublishedModel[];
+  hubCatalogs: HubCatalog[];
+  codexProfiles: CodexProfileRow[];
+  codexProfileSources: CodexProfileSourceRow[];
   logSources: LogSourceRow[];
   gateways: GatewayRow[];
   accountProviders: AccountProviderRow[];
   gatewayProviders: GatewayProviderRow[];
   settings: Preferences;
-  activity: EngineMap[];
+  activity: ActivityRow[];
   degradedConditions: DegradedCondition[];
 };
 

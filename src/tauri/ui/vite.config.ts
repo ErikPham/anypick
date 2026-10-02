@@ -10,6 +10,8 @@ const require = createRequire(import.meta.url);
 const reactPath = dirname(require.resolve('react/package.json'));
 const reactDomPath = dirname(require.resolve('react-dom/package.json'));
 
+import { devServicePlugin } from './scripts/dev-service-plugin';
+
 /** Browser bundle for the Tauri helper. Source lives in ui/; output is frontend/. */
 export default defineConfig({
   root,
@@ -17,7 +19,7 @@ export default defineConfig({
   envDir: repoRoot,
   publicDir: resolve(root, 'assets'),
   base: './',
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), devServicePlugin(repoRoot)],
   resolve: {
     // pnpm can surface react under both react@… and react-dom@…/node_modules/react.
     // Without this, the hook dispatcher and the renderer disagree → Invalid hook call.

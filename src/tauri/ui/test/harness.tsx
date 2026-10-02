@@ -1,0 +1,112 @@
+import { act } from '@testing-library/react';
+
+import type { TrayBridge, BridgeEvent } from '../lib/bridge';
+import { encodeBase64Utf8 } from '../lib/wire';
+import { snapshotFixture } from './fixture';
+
+/**
+ * A bridge a test drives, standing in for the Tauri shell.
+ *
+ * The shipped `resolveBridge` throws without `window.__TAURI__`, which is
+ * correct for production and makes the UI unrenderable in a test. This records
+ * every command so an assertion can be about what the pane asked the engine,
+ * not about how it happens to look.
+ */
+export class FakeBridge implements TrayBridge {
+  readonly sent: string[] = [];
+  readonly invokes: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+  private readonly listeners = new Map<string, Array<(event: BridgeEvent) => void>>();
+  private readonly unlisten: Array<() => void> = [];
+  lastLine: string | null = null;
+  /** What the ZCode shell reports. A test sets it to say the app is present. */
+  zcode: { appInstalled: boolean; planWarning?: string } | null = null;
+
+  async invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
+    this.invokes.push({ cmd, args });
+    if (cmd === 'send_command' && typeof args?.command === 'string') {
+      this.sent.push(args.command);
+      return undefined;
+    }
+    if (cmd === 'last_service_line') return this.lastLine;
+    if (cmd === 'zcode_context') return this.zcode;
+    if (cmd === 'stage_auth_paste') {
+      const body = args?.body;
+      if (typeof body !== 'string') throw new Error('AnyPick could not store the pasted auth JSON.');
+      if (new TextEncoder().encode(body).length > 256 * 1024) {
+        throw new Error('Pasted auth JSON is larger than 256 KiB.');
+      }
+      return '/tmp/anypick-auth-paste/paste.json';
+    }
+    if (cmd === 'forget_auth_paste') {
+      const path = args?.path;
+      if (typeof path !== 'string' || !path.startsWith('/tmp/anypick-auth-paste/')) {
+        throw new Error('Refusing to delete a path outside the paste directory.');
+      }
+      return undefined;
+    }
+    return undefined;
+  }
+
+  async listen(event: string, handler: (event: BridgeEvent) => void): Promise<() => void> {
+    const existing = this.listeners.get(event) ?? [];
+    existing.push(handler);
+    this.listeners.set(event, existing);
+    const off = () => {
+      const current = this.listeners.get(event) ?? [];
+      this.listeners.set(event, current.filter((fn) => fn !== handler));
+    };
+    this.unlisten.push(off);
+    return off;
+  }
+
+  /**
+   * Deliver a frame as the service would, on the real wire encoding.
+   *
+   * Wrapped in `act` because a frame drives React state. A test that pushes one
+   * outside `act` asserts against a tree React has not committed yet, and the
+   * resulting warning buries the ones that matter.
+   */
+  push(kind: string, payload: unknown): void {
+    const line = `${kind}\t${encodeBase64Utf8(JSON.stringify(payload))}`;
+    act(() => {
+      for (const handler of this.listeners.get('service-line') ?? []) {
+        handler({ payload: line });
+      }
+    });
+  }
+
+  pushServiceState(phase: string, message = ''): void {
+    act(() => {
+      for (const handler of this.listeners.get('service-state') ?? []) {
+        handler({ payload: { phase, message } as unknown as BridgeEvent['payload'] });
+      }
+    });
+  }
+
+  /** Decode every command the UI sent, in order. */
+  commands(): Array<{ kind: string; payload: Record<string, unknown> | null }> {
+    return this.sent.map((line) => {
+      const tab = line.indexOf('\t');
+      if (tab < 0) return { kind: line, payload: null };
+      const kind = line.slice(0, tab);
+      try {
+        const binary = atob(line.slice(tab + 1));
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        return { kind, payload: JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> };
+      } catch {
+        return { kind, payload: null };
+      }
+    });
+  }
+
+  commandKinds(): string[] {
+    return this.commands().map((entry) => entry.kind);
+  }
+
+  dispose(): void {
+    for (const off of this.unlisten) off();
+    this.unlisten.length = 0;
+  }
+}
+
+export { snapshotFixture };

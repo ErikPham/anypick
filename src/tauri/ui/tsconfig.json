@@ -10,6 +10,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",
     "verbatimModuleSyntax": true,
@@ -20,11 +21,6 @@
     "checkJs": false
   },
   "include": [
-    "./**/*",
-    "../demo/bridge.js",
-    "../../snapshot-types.ts",
-    "../../protocol.ts",
-    "../../activity.ts",
-    "../../settings.ts"
+    "./**/*"
   ]
 }

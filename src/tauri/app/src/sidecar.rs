@@ -580,7 +580,11 @@ pub fn mark_fixture_ready(app: &AppHandle) {
 }
 
 pub fn deliver_fixture_line(app: &AppHandle, line: String) {
-    if line.starts_with("snapshot\t") {
+    // Both state frames are replayed, not just the bare `snapshot`. A
+    // post-mutation `snapshot-event` is the newer state, so caching only the
+    // bare snapshot made a fixture window act on a revision the engine had
+    // already superseded.
+    if line.starts_with("snapshot\t") || line.starts_with("snapshot-event\t") {
         if let Ok(mut current) = app.state::<BridgeState>().last_service_line.lock() {
             *current = Some(line.clone());
         }
@@ -614,9 +618,13 @@ pub fn valid_ui_command(command: &str) -> bool {
             "accounts" | "gateways" | "proxy" | "proxy-hub" | "add-account" | "add-gateway"
         );
     }
+    // `doctor` is here because the engine accepts it
+    // (internal/desktop/protocol.go validateCommand) and the Swift client sends
+    // it. Leaving it out made Run Doctor fail on every Tauri build with
+    // "AnyPick rejected an invalid app command."
     matches!(
         kind,
-        "invoke" | "logs" | "mutate" | "model-roles" | "backup-inspect" | "cancel"
+        "invoke" | "logs" | "mutate" | "model-roles" | "backup-inspect" | "doctor" | "cancel"
     ) && canonical_json_payload(payload)
 }
 
@@ -685,6 +693,9 @@ mod tests {
         assert!(valid_ui_command("invoke\te30="));
         assert!(valid_ui_command("model-roles\te30="));
         assert!(valid_ui_command("backup-inspect\te30="));
+        // The UI's Doctor button sends this. It was rejected here while the
+        // engine accepted it, so the button failed on every build.
+        assert!(valid_ui_command("doctor\te30="));
         assert!(valid_ui_command("cancel\te30="));
         assert!(valid_ui_command("navigate\taccounts"));
         assert!(!valid_ui_command("invoke\te30=\nquit"));

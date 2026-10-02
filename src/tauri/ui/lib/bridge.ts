@@ -1,23 +1,39 @@
-import type { TrayBridge } from './types';
-
 /**
- * The one bridge, and it is real.
+ * The bridge to the Go service, and the seam every test drives.
  *
- * This UI only runs inside the Tauri shell, where it reaches the Go service
- * through the Rust layer. There is deliberately no browser fallback and no
- * fixture data: a preview that is not the real thing renders the wrong thing
- * and hides exactly the bugs that matter — framing, timing, restart, and the
- * shape of the snapshot the engine actually sends.
+ * In the shipped app this resolves the real Tauri shell and there is
+ * deliberately no browser fallback: a preview that is not the real thing
+ * renders the wrong thing and hides exactly the bugs that matter — framing,
+ * timing, restart, and the shape of the snapshot the engine actually sends.
  *
- * To look at the UI, run the app (`make desktop-dev`), not a browser.
+ * The indirection exists so a test can supply frames without a webview. That
+ * is the whole reason the UI is testable at all; `resolveBridge` stays strict
+ * so the shipping path can never silently fall back to a stub.
  */
-export function createBridge(): TrayBridge {
-  const tauri = window.__TAURI__;
+export type BridgeEvent = { payload: string };
+
+export interface TrayBridge {
+  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  listen: (event: string, handler: (event: BridgeEvent) => void) => Promise<() => void>;
+}
+
+declare global {
+  interface Window {
+    __TAURI__?: {
+      core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      event: {
+        listen: (event: string, handler: (event: BridgeEvent) => void) => Promise<() => void>;
+      };
+    };
+  }
+}
+
+import { createBrowserDevBridge } from './browser-bridge';
+
+export function resolveBridge(): TrayBridge {
+  const tauri = globalThis.window?.__TAURI__;
   if (!tauri) {
-    throw new Error(
-      'AnyPick desktop UI requires the Tauri shell: window.__TAURI__ is missing. ' +
-        'Run `make desktop-dev` instead of opening this in a browser.',
-    );
+    return createBrowserDevBridge();
   }
   return {
     invoke: tauri.core.invoke,

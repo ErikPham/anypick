@@ -1,0 +1,412 @@
+import { useState, useRef } from 'react';
+
+import type { AccountRow } from '../lib/contract';
+import { backupImportEntryIDs } from '../lib/desktop-actions';
+import type { BackupPreviewFrame } from '../lib/wire';
+import { Dialog } from '../ui/Dialog';
+import { Button, CheckRow, Field, Group, Row, RowActions, RowText, WarningGlyph } from '../ui/primitives';
+import { ProviderIcon } from '../shell/ProviderIcon';
+
+/**
+ * CreateBackupSheet: mirrors macOS `CreateBackupSheet` (`BackupFlows.swift:10-101`).
+ *
+ * Allows user to select saved accounts to export, set destination path,
+ * and choose whether to replace an existing file.
+ */
+export function CreateBackupSheet({
+  accounts,
+  busy = false,
+  onClose,
+  onExport,
+  onQuickBackup,
+}: {
+  accounts: readonly AccountRow[];
+  busy?: boolean;
+  onClose: () => void;
+  onExport: (path: string, accountIds: string[], overwrite: boolean) => void;
+  onQuickBackup?: () => void;
+}) {
+  const [path, setPath] = useState('');
+  const [selected, setSelected] = useState<string[]>(() => accounts.map((a) => a.id));
+  const [overwrite, setOverwrite] = useState(false);
+
+  const toggleAll = () => {
+    if (selected.length === accounts.length) {
+      setSelected([]);
+    } else {
+      setSelected(accounts.map((a) => a.id));
+    }
+  };
+
+  const handleExport = () => {
+    if (!path.trim() || selected.length === 0 || busy) return;
+    onExport(path.trim(), selected, overwrite);
+  };
+
+  return (
+    <Dialog
+      title="Export Accounts"
+      width="form"
+      onCancel={onClose}
+      testId="backups-export"
+      actions={
+        <>
+          <Button kind="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            kind="primary"
+            disabled={busy || !path.trim() || selected.length === 0}
+            testId="backup-export-submit"
+            onClick={handleExport}
+          >
+            Export
+          </Button>
+        </>
+      }
+    >
+      <Group title="Destination">
+        <Row>
+          <Field
+            label="File"
+            value={path}
+            placeholder="~/Desktop/backup.json"
+            onChange={setPath}
+            testId="backup-export-path"
+          />
+        </Row>
+        <Row>
+          <CheckRow
+            label="Replace an existing file"
+            checked={overwrite}
+            testId="backup-export-overwrite"
+            onChange={setOverwrite}
+          />
+        </Row>
+      </Group>
+
+      <Group
+        title="Saved Accounts"
+        footer={
+          accounts.length === 0
+            ? 'Add a login under Accounts & APIs, then choose accounts here.'
+            : 'These files include working credentials and aren’t encrypted.'
+        }
+      >
+        {accounts.length > 1 ? (
+          <Row>
+            <RowText detail={`${selected.length} of ${accounts.length} accounts selected.`} />
+            <RowActions>
+              <button
+                type="button"
+                className="cursor-default bg-transparent text-[11px] font-medium text-accent hover:underline"
+                onClick={toggleAll}
+              >
+                {selected.length === accounts.length ? 'Deselect All' : 'Select All'}
+              </button>
+            </RowActions>
+          </Row>
+        ) : null}
+        {accounts.length === 0 ? (
+          <Row>
+            <RowText detail="No saved accounts yet." />
+          </Row>
+        ) : (
+          accounts.map((account) => {
+            const checked = selected.includes(account.id);
+            return (
+              <Row key={account.id} testId={`backup-account-${account.id}`}>
+                <label className="flex min-w-0 w-full cursor-default items-center gap-3 text-[13px] text-text">
+                  <input
+                    type="checkbox"
+                    className="m-0 size-4 flex-none rounded-[4px] border border-control-border accent-accent cursor-default"
+                    checked={checked}
+                    onChange={(event) =>
+                      setSelected((current) =>
+                        event.target.checked ? [...current, account.id] : current.filter((id) => id !== account.id),
+                      )
+                    }
+                  />
+                  <span className="grid size-[20px] flex-none place-items-center text-secondary">
+                    <ProviderIcon provider={account.providerId} size={18} />
+                  </span>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="text-[13px] font-medium text-text">{account.label || account.name}</span>
+                    <span className="text-[11px] text-secondary truncate">{account.detail || account.providerId}</span>
+                  </div>
+                </label>
+              </Row>
+            );
+          })
+        )}
+      </Group>
+    </Dialog>
+  );
+}
+
+/**
+ * RestoreBackupSheet: mirrors macOS `RestoreBackupSheet` (`BackupFlows.swift:103-245`).
+ *
+ * Allows inspecting a backup file, previewing accounts contained in the backup,
+ * selecting which accounts to restore/import, and handling replace options.
+ */
+export function RestoreBackupSheet({
+  preview,
+  busy = false,
+  initialPath = '',
+  onClose,
+  onReview,
+  onImport,
+  onDiscard,
+}: {
+  preview: BackupPreviewFrame | null;
+  busy?: boolean;
+  initialPath?: string;
+  onClose: () => void;
+  onReview: (path: string) => void;
+  onImport: (inspectionId: string, entryIds: string[], overwrite: boolean) => void;
+  onDiscard: (inspectionId: string) => void;
+}) {
+  const [path, setPath] = useState(initialPath);
+  const [overwrite, setOverwrite] = useState(false);
+  const [selectedEntries, setSelectedEntries] = useState<string[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const processFile = async (file: File) => {
+    // If native file path is available (Tauri Webview / Node environment)
+    const nativePath = (file as unknown as { path?: string }).path;
+    if (nativePath) {
+      setPath(nativePath);
+      onReview(nativePath);
+      return;
+    }
+
+    // In web preview, read the file and stage to local temp path
+    try {
+      const content = await file.text();
+      let targetPath = '';
+      try {
+        const res = await fetch('/_api/stage-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: file.name, content }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.path) {
+            targetPath = data.path;
+          }
+        }
+      } catch {}
+
+      if (!targetPath) {
+        targetPath = file.name;
+      }
+      setPath(targetPath);
+      onReview(targetPath);
+    } catch (err) {
+      console.error('Failed to read chosen file:', err);
+    }
+  };
+
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    void processFile(file);
+  };
+
+  const isReady = preview?.status === 'ready';
+  const entries = isReady ? preview.entries : [];
+  const dispositions = Object.fromEntries(entries.map((entry) => [entry.id, entry.disposition]));
+  const importIds = backupImportEntryIDs(selectedEntries, dispositions, overwrite);
+
+  const toggleAll = () => {
+    if (selectedEntries.length === entries.length) {
+      setSelectedEntries([]);
+    } else {
+      setSelectedEntries(entries.map((e) => e.id));
+    }
+  };
+
+  const handleImport = () => {
+    if (!isReady || !preview.inspectionId || importIds.length === 0 || busy) return;
+    onImport(preview.inspectionId, importIds, overwrite);
+  };
+
+  return (
+    <Dialog
+      title={isReady ? 'Restore Accounts' : 'Review Backup'}
+      width="form"
+      onCancel={onClose}
+      testId="backups-import"
+      actions={
+        <>
+          <Button kind="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          {isReady && preview.inspectionId ? (
+            <Button
+              kind="quiet"
+              disabled={busy}
+              testId="backup-forget"
+              onClick={() => onDiscard(preview.inspectionId)}
+            >
+              Discard Review
+            </Button>
+          ) : null}
+          {isReady ? (
+            <Button
+              kind="primary"
+              disabled={busy || importIds.length === 0 || !preview.inspectionId}
+              testId="backup-import-submit"
+              onClick={handleImport}
+            >
+              Import
+            </Button>
+          ) : (
+            <Button
+              kind="primary"
+              disabled={busy || !path.trim()}
+              testId="backup-review"
+              onClick={() => onReview(path.trim())}
+            >
+              Review
+            </Button>
+          )}
+        </>
+      }
+    >
+      <Group title="Backup File" footer="Review the file before anything is written.">
+        <Row>
+          <div
+            className={`flex min-w-0 flex-1 items-center gap-3 transition-colors ${
+              isDragging ? 'rounded-control ring-2 ring-accent' : ''
+            }`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) void processFile(file);
+            }}
+          >
+            <span className="shrink-0 text-[13px] text-text">File</span>
+            <input
+              className="min-h-control w-full flex-1 rounded-control border border-control-border bg-field px-2 py-0.5 text-[12px] text-text placeholder:text-tertiary focus:border-accent"
+              type="text"
+              value={path}
+              placeholder="~/Desktop/backup.json"
+              onChange={(e) => setPath(e.target.value)}
+              data-testid="backup-import-path"
+            />
+          </div>
+          <RowActions>
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              accept=".json,.anypick-backup,application/json"
+              onChange={handleFileChosen}
+              data-testid="backup-file-picker"
+            />
+            <Button
+              kind="secondary"
+              testId="backup-choose-file"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose…
+            </Button>
+          </RowActions>
+        </Row>
+      </Group>
+
+      {preview?.status === 'error' ? (
+        <Group>
+          <Row warning testId="backup-review-error">
+            <WarningGlyph />
+            <RowText
+              title="Nothing was imported"
+              detail={preview.message || preview.reason || 'Choose another file.'}
+            />
+          </Row>
+        </Group>
+      ) : null}
+
+      {isReady && entries.length > 0 ? (
+        <>
+          <Group
+            title="Accounts in Backup"
+            footer="Turn off an account to leave it out. Accounts already saved are skipped unless you choose Replace."
+          >
+            {entries.length > 1 ? (
+              <Row>
+                <RowText detail={`${selectedEntries.length} of ${entries.length} accounts selected.`} />
+                <RowActions>
+                  <button
+                    type="button"
+                    className="cursor-default bg-transparent text-[11px] font-medium text-accent hover:underline"
+                    onClick={toggleAll}
+                  >
+                    {selectedEntries.length === entries.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </RowActions>
+              </Row>
+            ) : null}
+            {entries.map((entry) => {
+              const checked = selectedEntries.includes(entry.id);
+              const isReplace = entry.disposition === 'replace';
+              return (
+                <Row key={entry.id} testId={`backup-entry-${entry.id}`}>
+                  <label className="flex min-w-0 w-full cursor-default items-center gap-3 text-[13px] text-text">
+                    <input
+                      type="checkbox"
+                      className="m-0 size-4 flex-none rounded-[4px] border border-control-border accent-accent cursor-default"
+                      checked={checked}
+                      onChange={(event) =>
+                        setSelectedEntries((current) =>
+                          event.target.checked ? [...current, entry.id] : current.filter((id) => id !== entry.id),
+                        )
+                      }
+                    />
+                    <span className="grid size-[20px] flex-none place-items-center text-secondary">
+                      <ProviderIcon provider={entry.providerId} size={18} />
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[13px] font-medium text-text">{entry.label || entry.name}</span>
+                        {isReplace ? (
+                          <span className="rounded-control bg-badge px-1 py-0.2 text-[10px] font-medium text-secondary">
+                            Existing
+                          </span>
+                        ) : null}
+                      </div>
+                      <span className="text-[11px] text-secondary truncate">{entry.providerId}</span>
+                    </div>
+                  </label>
+                </Row>
+              );
+            })}
+          </Group>
+
+          <Group title="Options">
+            <Row>
+              <CheckRow
+                label="Replace saved accounts"
+                checked={overwrite}
+                testId="backup-import-overwrite"
+                onChange={setOverwrite}
+              />
+            </Row>
+          </Group>
+        </>
+      ) : null}
+    </Dialog>
+  );
+}

@@ -2,10 +2,12 @@
 
 This is one of two native front ends. The other is the macOS app in
 `src/macos/` (SwiftUI); this one is Tauri 2 + React and targets Linux and
-Windows (ADR 0020). Release scope starts macOS-only: these apps build and
-verify in CI, but their artifacts stay staged, not published, until
-target-OS smoke testing lands (see the `release-scope` input in
-`.github/workflows/release.yml`).
+Windows (ADR 0020). The release workflow defaults to the all-platform scope:
+these apps build AppImage/deb/rpm, MSI and NSIS artifacts, and each payload is
+smoke-tested on its own OS (`packaging/smoke/`) before it can reach a GitHub
+Release. `macos-only` remains available for a narrowed release. The GUI itself
+is not launched on a hosted runner; the smoke gate extracts the installer and
+runs the bundled Go helper.
 
 **This app owns no AnyPick state and never reads credentials.** It launches,
 handshakes with, supervises and shuts down the bundled Go service, then renders
@@ -15,7 +17,7 @@ what that service sends it (ADR 0019 §1):
 - service → app: filtered `snapshot`, `result`, and `logs` messages.
 
 The transport is a hidden `anypick desktop-service --stdio` process whose stdout
-is protocol-only, behind a version/capability handshake that gates every
+is protocol-only, behind a version/capability handshake that check every
 mutation (ADR 0019 §3). There is no permanent daemon, no localhost HTTP API, no
 socket, and no gRPC — any of those needs a new accepted ADR.
 
@@ -23,11 +25,11 @@ socket, and no gRPC — any of those needs a new accepted ADR.
 
 - **The Go service**, as a Tauri `externalBin` sidecar:
   `binaries/anypick-core` in `app/tauri.conf.json`, resolved per target by
-  `app/build.rs`. If you move a directory under `src/`, run `make paths`
+  `app/build.rs`. If you move a directory under `src/`, run `make check-paths`
   first: that build script is one of the paths it checks.
 - **No Node runtime.** npm and Vite build the UI bundle at build time; the
   shipped artifact contains no Node, npm, pnpm or ESM shim (ADR 0020 §8). Two
-  gates enforce it — `src/macos/scripts/check-node-free-app.sh` and
+  check enforce it — `src/macos/scripts/check-node-free-app.sh` and
   `go run ./cmd/anypick-artifact node-free <root>` — and both must reject the
   same shapes.
 
@@ -35,8 +37,93 @@ socket, and no gRPC — any of those needs a new accepted ADR.
 
 React 19 + Vite + Tailwind v4 under `ui/`, built into `frontend/` (which Tauri
 consumes as `frontendDist`). Do not edit files under `frontend/` by hand.
-Shared design tokens and component styles live in `ui/styles.css`
-(`@import "tailwindcss"` plus the app look).
+There is exactly one stylesheet, `ui/styles.css`: an `@import "tailwindcss"`, an
+`@theme` block holding the System Settings tokens, and a `@layer base` block for
+the handful of element defaults the chrome needs. A pane composes
+`ui/primitives.tsx` and never styles a row itself.
+
+**Do not add a second stylesheet.** There were two (`styles.css` and
+`ui/system-settings.css`) and they collided over seven class names while leaving
+three classes the UI emitted undefined. `styles.css` loaded last, so it won
+every equal-specificity tie and the System Settings metrics lost. Utilities
+cannot do either: there is nothing to collide with and nothing to forget to
+define.
+
+### Layout
+
+```text
+lib/contract.ts   the TypeScript mirror of go/internal/desktop/snapshot.go
+lib/wire.ts       the stdio framing: KIND\tbase64(JSON), both directions
+lib/service.ts    the only place a pane asks the engine to do something
+lib/model.ts      display and derivation rules ported from src/macos/
+lib/bridge.ts     the Tauri boundary, injectable for tests
+panes/            one file per destination, composing ui/primitives.tsx
+shell/            Sidebar, Toolbar, NoticeBanner, Symbol
+ui/               primitives.tsx (the System Settings building blocks) and Dialog.tsx
+```
+
+`lib/contract.ts` is checked against the Go struct by
+`test/contract-drift.test.ts`, which reads `snapshot.go` and fails the build
+when a field exists there and not in the mirror. A contract that drifts from
+the engine is worse than none, because the failure is a blank cell with nothing
+to grep for.
+
+`lib/model.ts` holds the copy rules. They are ported from
+`src/macos/DesignDisplay.swift` and `AppIcon.swift`, and the expectations came
+from the macOS XCTest suite first. That is deliberate: the macOS app's copy is
+the product's copy, so a Linux user reading a Claude proxy row should read the
+same words a macOS user does. A rule that lives in a view instead belongs here,
+where it can be tested without a webview.
+
+### What "matches the macOS app" means here
+
+Structural, metric, and state parity: the same destinations in the same order,
+the same rows with the same labels, the same states, the same flows, and the
+same metrics in `ui/system-settings.css` with a named Swift counterpart beside
+each one.
+
+It is **not** a pixel-exact image diff, and this port will not claim one. macOS
+is SwiftUI on AppKit; this is a webview (WebKitGTK on Linux, WebView2 on
+Windows). Different rasterizers, font engines, text metrics, and window chrome.
+A zero-pixel diff between them is not achievable, so a claim of one would be
+false.
+
+Parity is verified two ways, both in CI. `make test-tauri-ui` asserts behavior
+against the fixture. `make check-parity` reads every macOS
+`accessibilityIdentifier` and checks it against `test/parity-map.ts`, which is
+the definition of "every feature ported" as a machine check rather than a
+claim. `make screenshots-tauri-ui` renders each destination and dialog to
+`.screenshots/` for a human to look at; it needs Playwright, so it is not a
+gate.
+
+### The parity map is the work list
+
+`test/parity-map.ts` has one row per macOS feature: `done` names the Tauri
+element that carries it, `todo` means macOS has it and Tauri does not, and
+`skip` requires a written reason. `test/parity.test.ts` fails when a macOS
+feature has no row, when a `done` row names an element the UI does not emit, or
+when a row names a macOS feature that no longer exists. The map cannot go green
+by accident, which is the property the check exists to provide.
+
+`make check-parity` prints the `todo` set. The port is complete when it is
+empty.
+
+### Tests
+
+`make test-tauri-ui` runs vitest in jsdom. It needs no webview, no Go service,
+and no display, so it runs in CI on the same runner as the Go tests. The panes
+are rendered against `test/fixture.ts`, a snapshot shaped exactly as
+`snapshot.go` serialises, and asserted on through `test/harness.tsx`'s
+`FakeBridge`, which records the commands a pane sent.
+
+`createService` is where a request id is minted and where a control is
+released: on the engine's terminal frame, matched by id, never on a timer. The
+tests assert that directly, because a timeout-based release re-enables a button
+whose mutation has not landed.
+
+Adding a command to a pane means adding it to `lib/service.ts` first. A pane
+never builds a wire line: the engine rejects any key that is not on the
+operation's allowlist with a `MALFORMED_FRAME` that names nothing useful.
 
 ## Commands
 
@@ -44,11 +131,15 @@ From the repository root:
 
 | Command | Purpose |
 | --- | --- |
-| `make tauri-deps` | Install the UI dependencies |
-| `make tauri-check` | Typecheck the UI without emitting output |
-| `make tauri-ui` | Build the UI bundle into `src/tauri/frontend` |
-| `make tauri-build` | Build the packaged desktop app for this platform |
-| `make tauri-dev` | Run the desktop app against the real Go service |
+| `make install-tauri` | Install the UI dependencies |
+| `make typecheck-tauri-ui` | Typecheck the UI without emitting output |
+| `make test-tauri-ui` | Run the desktop UI tests (jsdom, no webview needed) |
+| `make check-tauri-ui` | Typecheck and test the desktop UI |
+| `make check-parity` | Report which macOS features have no Tauri counterpart |
+| `make screenshots-tauri-ui` | Screenshot every pane and dialog (needs Playwright) |
+| `make build-tauri-ui` | Build the UI bundle into `src/tauri/frontend` |
+| `make build-tauri` | Build the packaged desktop app for this platform |
+| `make run-tauri` | Run the desktop app against the real Go service |
 
 Build on the target desktop OS after installing the Tauri platform
 prerequisites (on Linux: `libwebkit2gtk-4.1-dev`,
@@ -58,15 +149,19 @@ prerequisites (on Linux: `libwebkit2gtk-4.1-dev`,
 
 Go (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`) and Swift
 (`src/macos/AppServiceClient.swift`) each declare it independently, and nothing
-links them. `make protocol-sync` asserts all three agree — run it whenever you
+links them. `make check-protocol` asserts all three agree — run it whenever you
 bump the protocol, because bumping it on one platform only produces a failure
 that is otherwise very hard to trace.
 
 ## CI
 
 The `tauri` job in `.github/workflows/ci.yml` (ubuntu) runs on every push and
-PR to `main`: `make paths protocol-sync`, `npm ci`, `make tauri-check`,
-`make tauri-ui`, then `cargo check --locked`.
+PR to `main`: `make check-paths check-protocol`, `npm ci`, `make typecheck-tauri-ui`,
+`make test-tauri-ui`, `make build-tauri-ui`, then `cargo check --locked`.
+
+The UI tests run on the headless Linux runner because they need jsdom and
+nothing else: no webview, no Go service, no display. That is why they are
+enforced here and not left to a developer's machine.
 
 Out of scope for CI (needs a real desktop and installed clients): running
 against a developer's `~/.anypick`, tray-icon click geometry, and OS

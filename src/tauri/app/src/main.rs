@@ -56,10 +56,23 @@ fn write_fixture_command(command: &str) -> Result<(), String> {
 }
 
 fn valid_fixture_line(line: &str) -> bool {
+    // Every frame kind the UI decodes. Dropping `doctor` here meant a fixture
+    // run could not exercise the Doctor report, and dropping the `-event` and
+    // `backup-preview` kinds meant the demo silently replayed stale state.
     line.len() <= MAX_FIXTURE_LINE_BYTES
-        && ["snapshot\t", "result\t", "logs\t", "status\t"]
-            .iter()
-            .any(|prefix| line.starts_with(prefix))
+        && [
+            "snapshot\t",
+            "snapshot-event\t",
+            "usage-event\t",
+            "result\t",
+            "logs\t",
+            "backup-preview\t",
+            "doctor\t",
+            "protocol-error\t",
+            "status\t",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
 }
 
 fn is_protocol_mode(smoke: bool, probe: bool) -> bool {
@@ -70,6 +83,199 @@ fn is_fixture_mode() -> bool {
     std::env::var_os("ANYPICK_TRAY_DEMO").is_some()
 }
 
+const MAX_AUTH_PASTE_BYTES: usize = 256 * 1024;
+
+struct AuthPasteState {
+    dir: std::sync::Mutex<Option<std::path::PathBuf>>,
+}
+
+impl Default for AuthPasteState {
+    fn default() -> Self {
+        Self {
+            dir: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+fn auth_paste_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("anypick-auth-paste-{}", std::process::id()))
+}
+
+fn paste_file_name() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos}-{seq}.json")
+}
+
+fn ensure_auth_paste_dir(state: &AuthPasteState) -> Result<std::path::PathBuf, String> {
+    let mut guard = state
+        .dir
+        .lock()
+        .map_err(|_| "Paste directory is unavailable.".to_string())?;
+    if let Some(dir) = guard.as_ref() {
+        return Ok(dir.clone());
+    }
+    let dir = auth_paste_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| err.to_string())?;
+    }
+    *guard = Some(dir.clone());
+    Ok(dir)
+}
+
+fn stage_auth_paste_file(dir: &std::path::Path, body: &str) -> Result<std::path::PathBuf, String> {
+    if body.len() > MAX_AUTH_PASTE_BYTES {
+        return Err("Pasted auth JSON is larger than 256 KiB.".into());
+    }
+    std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|err| err.to_string())?;
+    }
+    let path = dir.join(paste_file_name());
+    write_private(&path, body.as_bytes())?;
+    Ok(path)
+}
+
+/// Deletes a regular file whose parent is `dir`. A symlink, a sibling
+/// directory that only shares the name prefix, and a missing file are not
+/// deleted. A missing file inside `dir` succeeds.
+fn forget_auth_paste_file(dir: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+    let refused = "Refusing to delete a path outside the paste directory.";
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| refused.to_string())?;
+    let real_dir = std::fs::canonicalize(dir).map_err(|_| refused.to_string())?;
+    let real_parent = std::fs::canonicalize(parent).map_err(|_| refused.to_string())?;
+    if real_parent != real_dir {
+        return Err(refused.into());
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => Err(refused.into()),
+        Ok(_) => std::fs::remove_file(path).map_err(|err| err.to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+#[cfg(unix)]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|err| err.to_string())?;
+    file.write_all(bytes).map_err(|err| err.to_string())
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn stage_auth_paste(body: String, state: State<'_, AuthPasteState>) -> Result<String, String> {
+    let dir = ensure_auth_paste_dir(&state)?;
+    let path = stage_auth_paste_file(&dir, &body)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// What the ZCode desktop app leaves on this Mac, as plan-status context only.
+///
+/// The provider owns reading the encrypted ZCode login. This answers two
+/// questions the sheet cannot answer from a snapshot — is the app installed, and
+/// does its plan cache report a connected plan — because a webview cannot stat
+/// the user's home directory. Both are hints: nothing here blocks a save.
+#[derive(serde::Serialize)]
+pub struct ZcodeContext {
+    pub app_installed: bool,
+    pub plan_warning: Option<String>,
+}
+
+#[tauri::command]
+fn zcode_context() -> ZcodeContext {
+    let home = home_dir();
+    ZcodeContext {
+        app_installed: zcode_app_installed(home.as_deref()),
+        plan_warning: zcode_plan_warning(home.as_deref()),
+    }
+}
+
+/// The ZCode app is present if any of its three install roots exists as a
+/// directory. A file with the same name is not an app.
+fn zcode_app_installed(home: Option<&std::path::Path>) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    [
+        home.join(".zcode"),
+        home.join("Library/Application Support/ZCode"),
+        std::path::PathBuf::from("/Applications/ZCode.app"),
+    ]
+    .iter()
+    .any(|candidate| std::fs::metadata(candidate).is_ok_and(|meta| meta.is_dir()))
+}
+
+/// The plan-status warning from `~/.zcode/v2/coding-plan-cache.json`.
+///
+/// The document is another app's cache, so a read failure is not an error worth
+/// surfacing — the sheet simply has no plan context to show. `home` is a
+/// parameter rather than a read of the environment so a test can point it at a
+/// temp directory instead of the developer's own account.
+fn zcode_plan_warning(home: Option<&std::path::Path>) -> Option<String> {
+    let cache = home?.join(".zcode/v2/coding-plan-cache.json");
+    let body = std::fs::read_to_string(&cache).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let items = json.get("entryStatus")?.get("items")?.as_object()?;
+    if items.is_empty() {
+        return None;
+    }
+    let connected = items.values().any(|entry| {
+        entry
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|status| !status.is_empty() && status != "unavailable")
+    });
+    if connected {
+        return None;
+    }
+    Some(ZCODE_PLAN_WARNING.into())
+}
+
+const ZCODE_PLAN_WARNING: &str = "The ZCode app reports no connected coding plan. You can still use the ZCode login on this Mac, sign in again with Z.ai, or paste a GLM Coding Plan key from the Z.ai dashboard (API Keys).";
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(std::path::PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+#[tauri::command]
+fn forget_auth_paste(path: String, state: State<'_, AuthPasteState>) -> Result<(), String> {
+    let guard = state
+        .dir
+        .lock()
+        .map_err(|_| "Paste directory is unavailable.".to_string())?;
+    let Some(dir) = guard.as_ref() else {
+        return Ok(());
+    };
+    forget_auth_paste_file(dir, std::path::Path::new(&path))
+}
+
 fn command_for_probe(kind: &str) -> Option<&'static str> {
     match kind {
         "refresh" => Some("refresh"),
@@ -77,6 +283,7 @@ fn command_for_probe(kind: &str) -> Option<&'static str> {
         "mutate" => Some("mutate\te30="),
         "invoke" => Some("invoke\te30="),
         "model-roles" => Some("model-roles\te30="),
+        "doctor" => Some("doctor\te30="),
         "navigate" => Some("navigate\taccounts"),
         "quit" => Some("quit"),
         _ => None,
@@ -127,11 +334,15 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(BridgeState::new())
+        .manage(AuthPasteState::default())
         .invoke_handler(tauri::generate_handler![
             send_command,
             last_service_line,
             last_supervisor_line,
-            service_status
+            service_status,
+            stage_auth_paste,
+            forget_auth_paste,
+            zcode_context
         ])
         // App-first, matching the macOS app: the main window is the product.
         // There is no tray icon — on Linux and Windows closing the window quits
@@ -176,6 +387,139 @@ mod tests {
         assert!(valid_fixture_line("result\te30="));
         assert!(!valid_fixture_line("invoke\te30="));
         assert!(!valid_fixture_line(&"x".repeat(MAX_FIXTURE_LINE_BYTES + 1)));
+    }
+
+    #[test]
+    fn auth_paste_file_stays_inside_its_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("anypick-auth-paste-test-{}", std::process::id()));
+        let sibling = std::env::temp_dir().join(format!(
+            "anypick-auth-paste-test-{}-evil",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sibling);
+
+        let path = stage_auth_paste_file(&dir, "{\"tokens\":{}}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"tokens\":{}}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        forget_auth_paste_file(&dir, &path).unwrap();
+        assert!(!path.exists());
+        forget_auth_paste_file(&dir, &path).unwrap();
+
+        std::fs::create_dir_all(&sibling).unwrap();
+        let victim = sibling.join("secret.json");
+        std::fs::write(&victim, b"keep").unwrap();
+        assert!(forget_auth_paste_file(&dir, &victim).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.json");
+            std::os::unix::fs::symlink(&victim, &link).unwrap();
+            assert!(forget_auth_paste_file(&dir, &link).is_err());
+            assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+            let _ = std::fs::remove_file(&link);
+        }
+
+        let too_big = "a".repeat(MAX_AUTH_PASTE_BYTES + 1);
+        assert_eq!(
+            stage_auth_paste_file(&dir, &too_big).unwrap_err(),
+            "Pasted auth JSON is larger than 256 KiB."
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    /// A temp home directory, removed when the guard drops.
+    struct TempHome(std::path::PathBuf);
+
+    impl TempHome {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("anypick-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn zcode_plan_warning_reads_only_its_own_cache() {
+        // The cache is another app's document. Anything unreadable means "no
+        // plan context", never a fabricated warning and never a panic.
+        let home = TempHome::new("zcode-plan");
+        let cache = home.path().join(".zcode/v2/coding-plan-cache.json");
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+
+        assert_eq!(zcode_plan_warning(Some(home.path())), None, "no cache file");
+        std::fs::write(&cache, b"garbage").unwrap();
+        assert_eq!(
+            zcode_plan_warning(Some(home.path())),
+            None,
+            "garbage is not a plan cache"
+        );
+        std::fs::write(&cache, b"{}").unwrap();
+        assert_eq!(
+            zcode_plan_warning(Some(home.path())),
+            None,
+            "an empty document says nothing"
+        );
+        std::fs::write(&cache, br#"{"entryStatus":{"items":{}}}"#).unwrap();
+        assert_eq!(
+            zcode_plan_warning(Some(home.path())),
+            None,
+            "no items is not a stale plan"
+        );
+        std::fs::write(
+            &cache,
+            br#"{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"unavailable"}}}}"#,
+        )
+        .unwrap();
+        let warning = zcode_plan_warning(Some(home.path())).expect("an unavailable plan is stale");
+        assert!(warning.contains("no connected coding plan"), "{warning}");
+        std::fs::write(
+            &cache,
+            br#"{"entryStatus":{"items":{"builtin:zai-coding-plan":{"status":"connected"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            zcode_plan_warning(Some(home.path())),
+            None,
+            "a connected plan is not a warning"
+        );
+        assert_eq!(zcode_plan_warning(None), None, "no home, no warning");
+    }
+
+    #[test]
+    fn zcode_app_installation_looks_for_a_directory() {
+        let home = TempHome::new("zcode-app");
+        assert!(!zcode_app_installed(Some(home.path())), "nothing installed");
+        // A regular file with the app's name is not an app.
+        std::fs::write(home.path().join(".zcode"), b"not a directory").unwrap();
+        assert!(
+            !zcode_app_installed(Some(home.path())),
+            "a file is not an install root"
+        );
+        std::fs::remove_file(home.path().join(".zcode")).unwrap();
+        std::fs::create_dir_all(home.path().join(".zcode")).unwrap();
+        assert!(zcode_app_installed(Some(home.path())));
+        assert!(!zcode_app_installed(None), "no home, nothing installed");
     }
 
     #[test]
