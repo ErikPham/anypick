@@ -350,6 +350,40 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 // preset remove / unlink / reset have no confirmation upstream, so they are
 // deliberately not gated here (divergence from the slice brief, matching the
 // TypeScript authority).
+func TestNoInputConfirmationGate(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	seedRootForParity(t)
+	defer resetGlobals()()
+	code := -1
+	captureBoth(t, func() { code = run([]string{"--no-input", "account", "remove", "deepseek", "ds"}) })
+	if code != int(anyerr.InvalidUsage) {
+		t.Fatalf("--no-input account remove exited %d, want %d", code, int(anyerr.InvalidUsage))
+	}
+	if !strings.Contains(lastStderr, "requires --yes") {
+		t.Fatalf("stderr missing CONFIRMATION_REQUIRED: %.200q", lastStderr)
+	}
+}
+
+func TestJSONUnknownCommandIsOneValue(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	code := -1
+	captureBoth(t, func() { code = run([]string{"--json", "definitely-not-a-command"}) })
+	if code != int(anyerr.InvalidUsage) {
+		t.Fatalf("exited %d, want InvalidUsage", code)
+	}
+	dec := json.NewDecoder(strings.NewReader(lastStdout))
+	var v map[string]any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatalf("stdout is not JSON: %v (%q)", err, lastStdout)
+	}
+	if v["ok"] != false {
+		t.Fatalf("ok = %v", v["ok"])
+	}
+}
+
 func TestNonTTYConfirmationGate(t *testing.T) {
 	seedThenRemove := func(t *testing.T, args []string) int {
 		t.Helper()

@@ -12,6 +12,7 @@ import (
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
@@ -87,7 +88,8 @@ func cmdPresetRemove(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("removed %s\n", fs.Arg(0))
+	emitOK(fmt.Sprintf("removed %s", fs.Arg(0)),
+		kv{Key: "ok", Value: true}, kv{Key: "name", Value: fs.Arg(0)})
 	return int(anyerr.Success)
 }
 
@@ -103,8 +105,13 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	dir := fs.String("dir", "", "project directory (default: cwd)")
 	model := fs.String("model", "", "explicit model for the binding")
 	withFlag := fs.String("with", "", "source reference")
+	// The same consent `use` takes: linking a project rewrites the same client
+	// config, and failing closed with no way to confirm would strand a user who
+	// pointed that client at their own login.
+	allowForeign := fs.Bool("allow-foreign-config", false,
+		"back up and replace client settings AnyPick does not own")
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
-		return usageError("usage: anypick link <client> --with <source> [--model id]")
+		return usageError("usage: anypick link <client> --with <source> [--model id] [--allow-foreign-config]")
 	}
 	clientID := fs.Arg(0)
 	root, rerr := projectRoot(*dir)
@@ -117,6 +124,7 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	// BindingService.link in TypeScript. Planning a fresh source-only request
 	// would silently drop them.
 	var planOpts activation.Options
+	var catalogSource *refs.Ref
 	if *withFlag == "" {
 		global, gerr := a.BindingSvc.GetGlobalContext(ctx, clientID)
 		if gerr != nil {
@@ -129,6 +137,8 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 		}
 		specCopy := global.Spec
 		planOpts.ReapplySpec = &specCopy
+		sourceCopy := specCopy.Source
+		catalogSource = &sourceCopy
 		// TS authority records globalBindingUpdatedAt from the source global
 		// binding — snapshot provenance must survive link-without---with.
 		planOpts.ReapplyProv = &bindings.Provenance{
@@ -152,6 +162,9 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	}
 	if *withFlag != "" {
 		req.Source = &ref
+		req.ModelCatalog, req.ModelCatalogErr = activationModelCatalog(ctx, a, ref)
+	} else if catalogSource != nil {
+		req.ModelCatalog, req.ModelCatalogErr = activationModelCatalog(ctx, a, *catalogSource)
 	}
 	plan, err := activation.PlanActivation(ctx, req, a.Deps, planOpts)
 	if err != nil {
@@ -179,14 +192,19 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 		}
 		return int(anyerr.Success)
 	}
-	if _, err := activation.Execute(ctx, plan, a.Deps, activation.ExecuteOptions{}); err != nil {
+	if _, err := activation.Execute(ctx, plan, a.Deps, activation.ExecuteOptions{
+		AllowForeignConfig: *allowForeign,
+	}); err != nil {
 		return reportErr(err)
 	}
 	display := refs.DisplayRef(ref)
 	if *withFlag == "" {
 		display = refs.DisplayRef(plan.ResolvedSource.Ref)
 	}
-	fmt.Printf("linked %s → %s (project)\n", clientID, display)
+	emitOK(fmt.Sprintf("linked %s → %s (project)", clientID, display),
+		kv{Key: "ok", Value: true},
+		kv{Key: "client", Value: clientID},
+		kv{Key: "source", Value: display})
 	return int(anyerr.Success)
 }
 
@@ -244,11 +262,11 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	if removed == 0 {
-		fmt.Println("Nothing to unlink")
-	} else {
-		fmt.Printf("Removed %d project binding(s)\n", removed)
+	human := "Nothing to unlink"
+	if removed > 0 {
+		human = fmt.Sprintf("Removed %d project binding(s)", removed)
 	}
+	emitOK(human, kv{Key: "ok", Value: true}, kv{Key: "removed", Value: removed})
 	return int(anyerr.Success)
 }
 
@@ -284,40 +302,47 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("reset %s\n", clientID)
+	emitOK(fmt.Sprintf("reset %s", clientID),
+		kv{Key: "ok", Value: true}, kv{Key: "client", Value: clientID})
 	return int(anyerr.Success)
 }
 
 // ---- run (ephemeral launch) ----------------------------------------------
 
 func cmdRun(ctx context.Context, a *appView, args []string) int {
-	sep := -1
-	for i, arg := range args {
-		if arg == "--" {
-			sep = i
-			break
-		}
-	}
-	head, passThrough := args, []string(nil)
-	if sep >= 0 {
-		head, passThrough = args[:sep], args[sep+1:]
-	}
+	head, passThrough := splitRunArgs(args)
 	fs := fsFor(head)
 	with := fs.String("with", "", "source reference")
+	profileName := fs.String("profile", "", "named Codex profile")
 	model := fs.String("model", "", "explicit model id")
 	transportPolicy := fs.String("transport", "auto", "transport policy")
-	if err := fs.Parse(reorder(head)); err != nil || fs.NArg() < 1 || *with == "" {
-		return usageError("usage: anypick run <client> --with <source> [--model id] [--transport p] -- <args…>")
+	if err := fs.Parse(reorder(head)); err != nil || fs.NArg() < 1 ||
+		(*with == "" && *profileName == "") || (*with != "" && *profileName != "") {
+		return usageError("usage: anypick run <client> (--with <source>|--profile <name>) [--model id] [--transport p] -- <args…>")
 	}
-	ref, err := parseSourceRef(a, *with)
-	if err != nil {
-		return reportErr(err)
+	clientID := fs.Arg(0)
+	var ref refs.Ref
+	var err error
+	if *profileName != "" {
+		ref, err = resolveCodexProfileRun(ctx, a, clientID, *profileName, model, transportPolicy)
+		if err != nil {
+			return reportErr(err)
+		}
+	} else {
+		ref, err = parseSourceRef(a, *with)
+		if err != nil {
+			return reportErr(err)
+		}
 	}
+	modelCatalog, modelCatalogErr := activationModelCatalog(ctx, a, ref)
 	plan, err := activation.PlanActivation(ctx, activation.Request{
 		Mode:            activation.ModeEphemeral,
-		Client:          fs.Arg(0),
+		Client:          clientID,
 		Source:          &ref,
+		ProfileName:     *profileName,
 		Model:           *model,
+		ModelCatalog:    modelCatalog,
+		ModelCatalogErr: modelCatalogErr,
 		TransportPolicy: refToPolicy(*transportPolicy),
 	}, a.Deps, activation.Options{})
 	if err != nil {
@@ -327,37 +352,150 @@ func cmdRun(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
+	return runEphemeralCommand(ctx, a, plan, result, passThrough)
+}
+
+func splitRunArgs(args []string) ([]string, []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
+func resolveCodexProfileRun(ctx context.Context, a *appView, clientID, name string, model, policy *string) (refs.Ref, error) {
+	if clientID != "codex" {
+		return refs.Ref{}, anyerr.Newf(
+			"--profile is currently supported only with the codex client.",
+			"UNSUPPORTED_PROFILE", anyerr.WithExitCode(anyerr.CapabilityConflict))
+	}
+	if err := client.ValidateCodexProfileName(name); err != nil {
+		return refs.Ref{}, anyerr.Newf(err.Error(), "INVALID_USAGE",
+			anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
+	if a.CodexProfileSvc == nil {
+		return refs.Ref{}, anyerr.Newf("Codex profile service is unavailable.",
+			"OPERATIONAL", anyerr.WithExitCode(anyerr.Operational))
+	}
+	profile, err := a.CodexProfileSvc.GetContext(ctx, clientID, name)
+	if err != nil {
+		return refs.Ref{}, err
+	}
+	if profile == nil {
+		return refs.Ref{}, anyerr.Newf(
+			"Codex profile "+name+" does not exist.",
+			"CODEX_PROFILE_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound),
+			anyerr.WithSuggestions(
+				"anypick use codex --with <source> --profile "+name,
+				"anypick codex profile list"))
+	}
+	if *model == "" && profile.Spec.Model.Mode == "explicit" {
+		*model = profile.Spec.Model.ID
+	}
+	if *policy == "auto" && profile.Spec.TransportPolicy != "" {
+		*policy = profile.Spec.TransportPolicy
+	}
+	return profile.Spec.Source, nil
+}
+
+func runEphemeralCommand(
+	ctx context.Context,
+	a *appView,
+	plan *activation.Plan,
+	result *activation.ExecuteResult,
+	passThrough []string,
+) int {
+	cleanup := func(code int) int {
+		if result.Cleanup != nil {
+			if cleanupErr := result.Cleanup(ctx); cleanupErr != nil {
+				fmt.Fprintf(os.Stderr, "run cleanup: %v\n", cleanupErr)
+				if code == int(anyerr.Success) {
+					return int(anyerr.Operational)
+				}
+			}
+		}
+		return code
+	}
 	// Ephemeral runs used to drop every warning on the floor: `run` has no
 	// "activated …" summary, so a silent plan warning was simply never seen.
 	for _, w := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 	binary := plan.Client
+	if cad, clientErr := a.Clients.Get(plan.Client); clientErr == nil {
+		if launcher, ok := cad.(client.ExecutableAdapter); ok && launcher.Executable() != "" {
+			binary = launcher.Executable()
+		}
+	}
 	env := map[string]string(nil)
 	if result.Isolated != nil {
 		env = result.Isolated.Environment
-		defer func() { _ = result.Isolated.Cleanup() }()
 	}
 	if len(passThrough) == 0 && result.Isolated == nil {
 		fmt.Fprintln(os.Stderr, "run: nothing to launch (pass the command after --)")
-		return int(anyerr.InvalidUsage)
+		return cleanup(int(anyerr.InvalidUsage))
 	}
-	if len(passThrough) == 0 {
-		passThrough = []string{binary}
+	launchArgs := passThrough
+	if plan.Client == "codex" && plan.ProfileName != "" {
+		if hasCodexProfileFlag(passThrough) {
+			fmt.Fprintln(os.Stderr, "run: do not pass --profile after -- when using AnyPick --profile")
+			return cleanup(int(anyerr.InvalidUsage))
+		}
+		launchArgs = append([]string{"--profile", plan.ProfileName}, passThrough...)
 	}
-	cmd := exec.Command(binary, passThrough...)
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
+	cmd := exec.Command(binary, launchArgs...)
+	cmd.Env = mergedEnvironment(os.Environ(), env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			return ee.ExitCode()
+			return cleanup(ee.ExitCode())
 		}
-		return reportErr(err)
+		return cleanup(reportErr(err))
 	}
-	return int(anyerr.Success)
+	return cleanup(int(anyerr.Success))
+}
+
+func hasCodexProfileFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--profile" || strings.HasPrefix(arg, "--profile=") {
+			return true
+		}
+	}
+	return false
+}
+
+// mergedEnvironment replaces inherited keys instead of appending duplicate
+// entries. execve permits duplicates, but lookup order is platform/runtime
+// dependent; an inherited CODEX_HOME could otherwise win over the isolated
+// profile selected for this run.
+func mergedEnvironment(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	remaining := make(map[string]string, len(overrides))
+	for key, value := range overrides {
+		remaining[key] = value
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		value, replace := remaining[key]
+		if !replace {
+			out = append(out, entry)
+			continue
+		}
+		out = append(out, key+"="+value)
+		delete(remaining, key)
+	}
+	for key, value := range remaining {
+		out = append(out, key+"="+value)
+	}
+	return out
 }
 
 func projectRoot(dir string) (string, error) {

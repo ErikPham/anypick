@@ -13,9 +13,9 @@ import (
 // versionSource is one place a release version is declared.
 //
 // The macOS app ships MARKETING_VERSION, the Tauri app ships Cargo.toml and
-// tauri.conf.json, and the CLI reports VERSION. All four are the same release;
-// a workflow that synced only two of them would silently ship a desktop app
-// labelled with last month's version.
+// tauri.conf.json, and the npm adapter selects the matching CLI archive. All
+// five are the same release; a workflow that synced only some of them would
+// silently ship clients labelled with different versions.
 type versionSource struct {
 	// label appears in check failures.
 	label string
@@ -36,6 +36,11 @@ var cargoPackageBlock = regexp.MustCompile(`(?ms)^\[package\]\n(.*?)(?:^\[|\z)`)
 // tauri.conf.json has exactly one, but the indent keeps the match honest if a
 // nested bundle version is ever added.
 var tauriVersionPattern = regexp.MustCompile(`(?m)^  "version"\s*:\s*"([^"]*)"`)
+
+// npmVersionPattern matches the package's top-level version key. The package
+// is intentionally kept hand-readable, so this avoids reserializing its JSON
+// every time a release version is propagated.
+var npmVersionPattern = regexp.MustCompile(`(?m)^  "version"\s*:\s*"([^"]*)"`)
 
 func readCargoVersion(root string) (string, error) {
 	content, err := readFile(root, cargoToml)
@@ -118,6 +123,30 @@ func writeTauriVersion(root, version string) error {
 	return writeFile(root, tauriConf, updated)
 }
 
+func readNpmVersion(root string) (string, error) {
+	content, err := readFile(root, npmPackage)
+	if err != nil {
+		return "", err
+	}
+	m := npmVersionPattern.FindStringSubmatch(string(content))
+	if m == nil {
+		return "", fmt.Errorf("%s has no top-level \"version\"", npmPackage)
+	}
+	return strings.TrimSpace(m[1]), nil
+}
+
+func writeNpmVersion(root, version string) error {
+	content, err := readFile(root, npmPackage)
+	if err != nil {
+		return err
+	}
+	if !npmVersionPattern.Match(content) {
+		return fmt.Errorf("%s has no top-level \"version\"", npmPackage)
+	}
+	updated := npmVersionPattern.ReplaceAllString(string(content), `  "version": "`+version+`"`)
+	return writeFile(root, npmPackage, updated)
+}
+
 // secondarySources are the declarations that must agree with VERSION.
 // VERSION itself is handled separately because it is the canonical value.
 var secondarySources = []versionSource{
@@ -125,6 +154,7 @@ var secondarySources = []versionSource{
 	{label: "Cargo.toml", rel: cargoToml, read: readCargoVersion, write: writeCargoVersion},
 	{label: "Cargo.lock", rel: cargoLock, read: readCargoLockVersion, write: writeCargoLockVersion},
 	{label: "tauri.conf.json", rel: tauriConf, read: readTauriVersion, write: writeTauriVersion},
+	{label: "npm package.json", rel: npmPackage, read: readNpmVersion, write: writeNpmVersion},
 }
 
 // bumpVersion applies a semver bump to x.y.z. Extracted from cmdBump so the

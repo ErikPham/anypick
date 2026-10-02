@@ -60,7 +60,11 @@ func cmdProxyRestart(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("restarted (%s)\nendpoint: %s\n", res.InstanceID[:8], res.Endpoint)
+	human := fmt.Sprintf("restarted (%s)\nendpoint: %s", res.InstanceID[:8], res.Endpoint)
+	emitOK(human,
+		kv{Key: "ok", Value: true},
+		kv{Key: "instanceId", Value: res.InstanceID[:8]},
+		kv{Key: "endpoint", Value: res.Endpoint})
 	return int(anyerr.Success)
 }
 
@@ -77,22 +81,44 @@ func cmdProxyLogs(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
+	if globals.JSON && *follow {
+		return reportErr(anyerr.Newf(
+			"--follow cannot be combined with --json.",
+			"INVALID_USAGE",
+			anyerr.WithExitCode(anyerr.InvalidUsage)))
+	}
+	if globals.JSON {
+		logLines := []string{}
+		if text != "" {
+			logLines = strings.Split(strings.TrimRight(text, "\n"), "\n")
+		}
+		emitOK("",
+			kv{Key: "ok", Value: true},
+			kv{Key: "lines", Value: logLines})
+		return int(anyerr.Success)
+	}
 	if text != "" {
 		fmt.Println(text)
 	}
 	logPath := filepath.Join(paths.AccountProxyRuntimeDir(a.Root, fs.Arg(0), fs.Arg(1)), "proxy.log")
 	if *follow {
-		followFile(logPath)
+		followFile(logPath, func(chunk string) string {
+			return a.Proxy.ScreenProxyLog(fs.Arg(0), fs.Arg(1), chunk)
+		})
 	}
 	return int(anyerr.Success)
 }
 
-func followFile(path string) {
+func followFile(path string, screen func(string) string) {
 	var offset int64
 	for i := 0; i < 600; i++ { // bounded: ~5 minutes at 500ms
 		data, err := os.ReadFile(path)
 		if err == nil && int64(len(data)) > offset {
-			fmt.Print(string(data[offset:]))
+			chunk := string(data[offset:])
+			if screen != nil {
+				chunk = screen(chunk)
+			}
+			fmt.Print(chunk)
 			offset = int64(len(data))
 		} else if err != nil {
 			return
@@ -207,7 +233,12 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		if err != nil {
 			return reportErr(err)
 		}
-		fmt.Printf("enabled pool for %s (%s/%s)\n", providerID, *mode, *strategy)
+		emitOK(fmt.Sprintf("enabled pool for %s (%s/%s)", providerID, *mode, *strategy),
+			kv{Key: "ok", Value: true},
+			kv{Key: "provider", Value: providerID},
+			kv{Key: "mode", Value: *mode},
+			kv{Key: "strategy", Value: *strategy},
+			kv{Key: "enabled", Value: true})
 		return int(anyerr.Success)
 
 	case "disable":
@@ -233,7 +264,10 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		if serr := a.Proxy.StopPoolProxy(ctx, providerID); serr != nil {
 			return reportErr(serr)
 		}
-		fmt.Printf("disabled pool for %s\n", providerID)
+		emitOK(fmt.Sprintf("disabled pool for %s", providerID),
+			kv{Key: "ok", Value: true},
+			kv{Key: "provider", Value: providerID},
+			kv{Key: "enabled", Value: false})
 		return int(anyerr.Success)
 
 	case "member":
@@ -305,7 +339,11 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 				return reportErr(rerr)
 			}
 		}
-		fmt.Println("members updated")
+		emitOK("members updated",
+			kv{Key: "ok", Value: true},
+			kv{Key: "provider", Value: providerID},
+			kv{Key: "account", Value: accountArg},
+			kv{Key: "enabled", Value: enabled})
 		return int(anyerr.Success)
 
 	case "start", "stop":
@@ -328,7 +366,10 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 			if serr := a.Proxy.StopPoolProxy(ctx, providerID); serr != nil {
 				return reportErr(serr)
 			}
-			fmt.Println("stopped")
+			emitOK("stopped",
+				kv{Key: "ok", Value: true},
+				kv{Key: "state", Value: "stopped"},
+				kv{Key: "provider", Value: providerID})
 			return int(anyerr.Success)
 		}
 		pid, err := spawnDetachedService(a.Root, []string{"_serve-pool", providerID},
@@ -336,7 +377,11 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		if err != nil {
 			return reportErr(err)
 		}
-		fmt.Printf("started (pid %d)\n", pid)
+		emitOK(fmt.Sprintf("started (pid %d)", pid),
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: "started"},
+			kv{Key: "provider", Value: providerID},
+			kv{Key: "pid", Value: pid})
 		return int(anyerr.Success)
 
 	default:

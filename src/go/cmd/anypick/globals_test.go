@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/bindings"
 )
 
@@ -64,6 +65,40 @@ func TestGlobalFlagMatrixRecorded(t *testing.T) {
 	}
 	if !globalJSON {
 		t.Fatal("globalJSON alias not set")
+	}
+}
+
+func TestMergedEnvironmentReplacesInheritedKeys(t *testing.T) {
+	got := mergedEnvironment(
+		[]string{"PATH=/bin", "CODEX_HOME=/live", "ANYPICK_PROXY_API_KEY=old", "MALFORMED"},
+		map[string]string{
+			"CODEX_HOME":            "/isolated/.codex",
+			"ANYPICK_PROXY_API_KEY": "new",
+			"HOME":                  "/isolated/home",
+		},
+	)
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{
+		"CODEX_HOME=/isolated/.codex",
+		"ANYPICK_PROXY_API_KEY=new",
+		"HOME=/isolated/home",
+		"PATH=/bin",
+		"MALFORMED",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("merged environment missing %q: %v", want, got)
+		}
+	}
+	for _, key := range []string{"CODEX_HOME", "ANYPICK_PROXY_API_KEY", "HOME"} {
+		count := 0
+		for _, entry := range got {
+			if strings.HasPrefix(entry, key+"=") {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%s appears %d times: %v", key, count, got)
+		}
 	}
 }
 
@@ -231,6 +266,17 @@ func TestBareInvocationHonoursConfiguredSurface(t *testing.T) {
 	if _, serr := a.Config.SetLaunchSurface(context.Background(), "tui"); serr != nil {
 		t.Fatal(serr)
 	}
+	// A legacy lease (no instance id, no endpoint) is reaped from the PID
+	// alone. This pid is not alive. Bare `anypick` with the terminal surface
+	// and no TTY must leave the row in place.
+	if _, err := a.DB.ExecContext(context.Background(), `
+		INSERT INTO proxy_leases (
+			lease_id, provider, account, port, host, owner_pid,
+			binding_refs_json, created_at, updated_at)
+		VALUES ('lease-canary', 'deepseek', 'ds', 9, '127.0.0.1', 2147483646,
+			'[]', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`); err != nil {
+		t.Fatal(err)
+	}
 	closeFn()
 
 	// Make the precondition explicit instead of relying on it. `go test`
@@ -253,6 +299,24 @@ func TestBareInvocationHonoursConfiguredSurface(t *testing.T) {
 	if tuiCode != int(anyerr.InvalidUsage) {
 		t.Fatalf("bare tui-surface exited %d, want %d (no TTY must fail closed)",
 			tuiCode, anyerr.InvalidUsage)
+	}
+	// Probe with maintenance off. A normal Ready would reap the canary and
+	// hide the fact that the bare invocation already did.
+	probe, probeClose, err := app.Ready(context.Background(), app.Options{
+		SkipMigrate: true, SkipMaintenance: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leases int
+	if err := probe.DB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM proxy_leases WHERE lease_id = ?`, "lease-canary").Scan(&leases); err != nil {
+		probeClose()
+		t.Fatal(err)
+	}
+	probeClose()
+	if leases != 1 {
+		t.Fatalf("bare tui without a TTY reaped lease-canary, count %d", leases)
 	}
 
 	// Persisted tray surface resolves for dispatch (the app run itself needs

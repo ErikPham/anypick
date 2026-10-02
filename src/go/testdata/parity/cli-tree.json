@@ -23,6 +23,7 @@
       "subcommands": [
         "use",
         "run",
+        "codex",
         "current",
         "list",
         "add",
@@ -47,8 +48,8 @@
     },
     {
       "path": "use",
-      "description": "Set what a client uses by default",
-      "flags": ["--with", "--current", "--model", "--save"],
+      "description": "Bind a client to a source (--with required)",
+      "flags": ["--with", "--model", "--transport"],
       "subcommands": [],
       "hidden": false
     },
@@ -68,7 +69,7 @@
     },
     {
       "path": "list",
-      "description": "List accounts, gateways, clients, or presets",
+      "description": "List providers or accounts",
       "flags": [],
       "subcommands": [],
       "hidden": false
@@ -93,7 +94,8 @@
         "--region",
         "--credential",
         "--secret",
-        "--option"
+        "--option",
+        "--auth-file"
       ],
       "subcommands": [],
       "hidden": false
@@ -205,8 +207,8 @@
     },
     {
       "path": "update",
-      "description": "Update AnyPick to the latest npm release",
-      "flags": ["--check"],
+      "description": "Check GitHub Releases for a newer published version",
+      "flags": [],
       "subcommands": [],
       "hidden": false
     },
@@ -234,17 +236,26 @@
         "pool",
         "start",
         "stop",
+        "token",
         "enable",
         "config",
         "disable",
-        "logs"
+        "logs",
+        "restart"
       ],
       "hidden": false
     },
     {
       "path": "proxy status",
-      "description": "Show proxy status (default: all)",
+      "description": "Show a saved account proxy status",
       "flags": [],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy token",
+      "description": "Show or rotate a saved account proxy API key / token",
+      "flags": ["--rotate"],
       "subcommands": [],
       "hidden": false
     },
@@ -252,7 +263,7 @@
       "path": "proxy hub",
       "description": "Unified local Proxy Hub (opt-in)",
       "flags": [],
-      "subcommands": ["status", "enable", "source", "owner", "preview", "start", "stop"],
+      "subcommands": ["status", "enable", "source", "owner", "preview", "start", "stop", "token"],
       "hidden": false
     },
     {
@@ -263,9 +274,16 @@
       "hidden": false
     },
     {
+      "path": "proxy hub token",
+      "description": "Show or rotate unified Proxy Hub API key",
+      "flags": ["--rotate"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
       "path": "proxy hub enable",
       "description": "Enable the unified Hub without changing existing bindings",
-      "flags": ["--port", "-p", "--host", "--start"],
+      "flags": ["--host", "--port"],
       "subcommands": [],
       "hidden": false
     },
@@ -321,7 +339,7 @@
     {
       "path": "proxy pool enable",
       "description": "Opt-in multi-account pool for a provider",
-      "flags": ["--port", "-p", "--host", "--no-start"],
+      "flags": ["--strategy", "--mode", "--port"],
       "subcommands": [],
       "hidden": false
     },
@@ -341,14 +359,14 @@
     },
     {
       "path": "proxy start",
-      "description": "Start proxy (default: active accounts with proxy enabled)",
-      "flags": ["--port", "-p", "--host"],
+      "description": "Start a saved account proxy",
+      "flags": [],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "proxy stop",
-      "description": "Stop proxy (default: running proxies)",
+      "description": "Stop a saved account proxy",
       "flags": [],
       "subcommands": [],
       "hidden": false
@@ -356,14 +374,14 @@
     {
       "path": "proxy enable",
       "description": "Enable proxy for an account",
-      "flags": ["--port", "-p", "--host", "--auth-mode", "--oauth-source", "--no-start"],
+      "flags": ["--port"],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "proxy config",
-      "description": "Set proxy port/host for an account (restarts if running)",
-      "flags": ["--port", "-p", "--host", "--auth-mode", "--oauth-source", "--no-restart"],
+      "description": "Set proxy port for an account (restarts if running)",
+      "flags": ["--port"],
       "subcommands": [],
       "hidden": false
     },
@@ -376,8 +394,15 @@
     },
     {
       "path": "proxy logs",
-      "description": "Show proxy logs (use -f to stream live)",
-      "flags": ["--lines", "-n", "--follow", "-f"],
+      "description": "Show proxy logs (use --follow to stream live)",
+      "flags": ["--lines", "--follow"],
+      "subcommands": [],
+      "hidden": false
+    },
+    {
+      "path": "proxy restart",
+      "description": "Restart a saved account proxy",
+      "flags": [],
       "subcommands": [],
       "hidden": false
     },
@@ -404,22 +429,22 @@
     },
     {
       "path": "account refresh",
-      "description": "Refresh OAuth tokens (live or saved)",
-      "flags": ["--all"],
+      "description": "Refresh a live login (all saved accounts when no provider is given)",
+      "flags": [],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "account export",
       "description": "Export a saved account snapshot",
-      "flags": ["--out", "-o"],
+      "flags": ["--out"],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "account import",
       "description": "Import an account snapshot",
-      "flags": ["--in", "-i", "--force", "-f"],
+      "flags": ["--force"],
       "subcommands": [],
       "hidden": false
     },
@@ -447,7 +472,7 @@
     {
       "path": "gateway edit",
       "description": "Edit gateway fields",
-      "flags": ["--endpoint", "--api-key", "--model", "-m", "--models"],
+      "flags": ["--endpoint", "--model"],
       "subcommands": [],
       "hidden": false
     },
@@ -585,6 +610,10 @@
     {
       "path": "models",
       "reason": "Go-only: list the model ids a bound source serves. TS answers this in the tray Configure Models picker, never on the command line; the MODEL_NOT_PINNED warning tells the user to re-run with --model <id> and this is the only place that lists them"
+    },
+    {
+      "path": "codex",
+      "reason": "Go-only: manage named Codex CLI profile routes"
     }
   ]
 }

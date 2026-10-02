@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/agentbridge"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/lock"
@@ -58,7 +59,10 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 	daemonLock, lockErr := lock.AcquireFileLock(serveLockPath(a), 0)
 	if lockErr != nil {
 		if current := readServeRecord(a); serveRecordOwned(current) {
-			fmt.Printf("serve already running (pid %d)\n", current.PID)
+			emitOK(fmt.Sprintf("serve already running (pid %d)", current.PID),
+				kv{Key: "ok", Value: true},
+				kv{Key: "state", Value: "already running"},
+				kv{Key: "pid", Value: current.PID})
 			return int(anyerr.Success)
 		}
 		return reportErr(lockErr)
@@ -66,7 +70,10 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 	defer func() { _ = daemonLock.Release() }()
 
 	if current := readServeRecord(a); serveRecordOwned(current) {
-		fmt.Printf("serve already running (pid %d)\n", current.PID)
+		emitOK(fmt.Sprintf("serve already running (pid %d)", current.PID),
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: "already running"},
+			kv{Key: "pid", Value: current.PID})
 		return int(anyerr.Success)
 	}
 	removeServePID(a)
@@ -82,15 +89,7 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 	}
 	port = ln.Addr().(*net.TCPAddr).Port
 	addr = fmt.Sprintf("127.0.0.1:%d", port)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"pid":%d,"instanceId":%q}`, os.Getpid(), instanceID)
-	})
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(serveStatusSnapshot(r.Context(), a))
-	})
+	mux := serveMux(a, instanceID)
 
 	record := &serveRecord{PID: os.Getpid(), Port: port, InstanceID: instanceID}
 	if err := writeServeRecord(a, record); err != nil {
@@ -108,19 +107,61 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 		<-ctx.Done()
 		_ = srv.Close()
 	}()
-	fmt.Printf("anypick-go serve → http://%s  (Ctrl-C để dừng)\n", addr)
-	fmt.Printf("  /health   liveness\n  /status   accounts + proxies\n")
+	if globals.JSON {
+		emitOK("",
+			kv{Key: "ok", Value: true},
+			kv{Key: "addr", Value: "http://" + addr},
+			kv{Key: "pid", Value: os.Getpid()})
+	} else {
+		fmt.Printf("anypick-go serve → http://%s  (Ctrl-C để dừng)\n", addr)
+		fmt.Printf("  /health   liveness\n  /status   accounts + proxies\n  /agents   redacted worker manifest\n")
+	}
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return reportErr(err)
 	}
 	return int(anyerr.Success)
 }
 
+func serveMux(a *app.App, instanceID string) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"pid":%d,"instanceId":%q}`, os.Getpid(), instanceID)
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(serveStatusSnapshot(r.Context(), a))
+	})
+	mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
+		manifest, manifestErr := agentbridge.Build(r.Context(), agentbridge.Deps{
+			Activation: a.Deps,
+			Clients:    a.Clients,
+			Bindings:   a.BindingSvc,
+			Proxy:      a.Proxy,
+		})
+		if manifestErr != nil {
+			http.Error(w, "agent manifest unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(manifest)
+	})
+	return mux
+}
+
 // serveDetach spawns self as a setsid child (same pattern as proxy children),
 // waits for /health, prints the endpoint, exits.
 func serveDetach(a *app.App, port int) int {
 	if current := readServeRecord(a); serveRecordOwned(current) {
-		fmt.Printf("serve already running (pid %d)\n%s\n", current.PID, serveEndpoint(current))
+		if globals.JSON {
+			emitOK("",
+				kv{Key: "ok", Value: true},
+				kv{Key: "state", Value: "already running"},
+				kv{Key: "pid", Value: current.PID},
+				kv{Key: "endpoint", Value: serveEndpoint(current)})
+		} else {
+			fmt.Printf("serve already running (pid %d)\n%s\n", current.PID, serveEndpoint(current))
+		}
 		return int(anyerr.Success)
 	}
 	removeServePID(a)
@@ -148,11 +189,27 @@ func serveDetach(a *app.App, port int) int {
 		return reportErr(err)
 	}
 	if record.PID != pid {
-		fmt.Printf("serve already running (pid %d)\n%s\n", record.PID, serveEndpoint(record))
+		if globals.JSON {
+			emitOK("",
+				kv{Key: "ok", Value: true},
+				kv{Key: "state", Value: "already running"},
+				kv{Key: "pid", Value: record.PID},
+				kv{Key: "endpoint", Value: serveEndpoint(record)})
+		} else {
+			fmt.Printf("serve already running (pid %d)\n%s\n", record.PID, serveEndpoint(record))
+		}
 		return int(anyerr.Success)
 	}
-	fmt.Printf("anypick-go serve detached (pid %d)\n%s\nstop: anypick-go serve --stop\n",
-		pid, serveEndpoint(record))
+	if globals.JSON {
+		emitOK("",
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: "started"},
+			kv{Key: "pid", Value: pid},
+			kv{Key: "endpoint", Value: serveEndpoint(record)})
+	} else {
+		fmt.Printf("anypick-go serve detached (pid %d)\n%s\nstop: anypick-go serve --stop\n",
+			pid, serveEndpoint(record))
+	}
 	return int(anyerr.Success)
 }
 
@@ -160,7 +217,9 @@ func serveStop(a *app.App) int {
 	record := readServeRecord(a)
 	if !serveRecordOwned(record) {
 		removeServePID(a)
-		fmt.Println("not running")
+		emitOK("not running",
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: "not running"})
 		return int(anyerr.Success)
 	}
 	if err := signalPID(record.PID); err != nil {
@@ -174,7 +233,10 @@ func serveStop(a *app.App) int {
 		return reportErr(anyerr.Newf("serve process did not stop after SIGTERM", "SERVE_STOP_FAILED"))
 	}
 	removeServeRecord(a, record.InstanceID)
-	fmt.Printf("stopped (pid %d)\n", record.PID)
+	emitOK(fmt.Sprintf("stopped (pid %d)", record.PID),
+		kv{Key: "ok", Value: true},
+		kv{Key: "state", Value: "stopped"},
+		kv{Key: "pid", Value: record.PID})
 	return int(anyerr.Success)
 }
 

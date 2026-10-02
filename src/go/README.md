@@ -31,12 +31,16 @@ src/go/
     pools/           Provider pool store
     transfer/        Account import/export envelopes + multi-account backups (SEC-01)
     client/          Client adapters: claude, codex, gemini, kiro, opencode,
-                     workbuddy, zcode
+                     zcode, dsh, commandcode, cline
+                     (workbuddy.go holds the WorkBuddy models.json adapter:
+                     the app uses its own login directly and switches
+                     accounts natively via its session file)
     provider/        Provider adapters incl. compatible vendors
     catalog/         Vendor metadata, model policies, live model fetch
     discovery/       Model list fallback chain: fresh cache → live → stale → catalog
     modelcache/      Cached vendor model lists
-    src/tauri/         Desktop-app stdio core (snapshots + commands), TS protocol compatible
+    desktop/         Desktop-app stdio core (snapshots + commands); the protocol
+                     version is synchronized across Go, Rust and Swift
     refs/ anyerr/ paths/ …   Resource refs, structured errors, data-root paths
   testdata/parity/   Cross-runtime contract fixtures
 ```
@@ -61,15 +65,21 @@ many minutes. A writable cache turns the same suite into ~2 minutes:
 GOPATH=$HOME/go go test ./... -count=1     # warm once: go mod download all
 ```
 
-CI runs `go vet` + `go test` on every PR (`.github/workflows/ci.yml` `go` job).
-`go vet` must stay clean; `-count=1` avoids cache masking flaky tests.
+CI runs vet, staticcheck and the tests on Ubuntu and Windows
+(`.github/workflows/ci.yml`, jobs `go-linux` and `go-windows`). `go vet` must
+stay clean; `-count=1` avoids cache masking flaky tests.
 
-## Invariants (same as TS)
+## Invariants (AGENTS.md)
 
 - Proxy secrets never cross an output boundary — only endpoints are printed.
 - Activation is planned, journalled, then executed; the journal drives rollback.
 - Every persisted mutation runs under the scoped lock coordinator.
-- Capability pairings follow `transportFor`; registry membership never grants it.
+- Capability pairings come from the adapters in `internal/transport`; registry
+  membership never grants one.
 - Data root is `~/.anypick` (`ANYPICK_HOME` overrides).
 
-See `PARITY_PLAN.md` and `PARITY.md` for the parity contract and its status.
+The Go↔TypeScript port trackers (`PARITY_PLAN.md`, `PARITY.md`) were retired
+with the native cutover: the TypeScript tree they compared against is gone
+(ADR 0020), so there is nothing left to compare, and a tracker that cannot be
+updated is a document that starts lying. The recorded state lives in git
+history (`git log --diff-filter=D -- src/go/PARITY.md`).

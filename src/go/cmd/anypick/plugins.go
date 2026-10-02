@@ -166,10 +166,13 @@ func cmdPluginEnable(ctx context.Context, a *appView, args []string) int {
 		return int(anyerr.Success)
 	}
 	if !globals.JSON && !globals.Quiet && existing != nil {
-		fmt.Printf("Warning: %s runs as executable JavaScript in AnyPick's isolated plugin host.\n", name)
+		// ADR-0021: a native build never loads plugin code, so the legacy
+		// "runs as executable JavaScript" warning would describe a boundary
+		// that does not exist. Keep the trust framing without the execution claim.
+		fmt.Printf("Warning: enabling %s records a trust decision.\n", name)
 		fmt.Printf("  %s\n", existing.Path)
-		fmt.Println("  The host can receive credentials passed to the plugin's registered adapters.")
-		fmt.Println("  Treat enable like installing a shell plugin — not a config toggle.")
+		fmt.Println("  A native build does not load or run plugin code (ADR-0021);")
+		fmt.Println("  if a Go-native executor lands, enabling will mean trusting its author.")
 		fmt.Println("  Package digest is re-checked before every import; changes require trust.")
 	}
 	if err := confirmPluginTrust(
@@ -262,7 +265,7 @@ func confirmPluginTrust(gerund, question string, yes bool) error {
 	if yes {
 		return nil
 	}
-	if !isTTY(os.Stdin) || !isTTY(os.Stdout) {
+	if globals.NoInput || !isTTY(os.Stdin) || !isTTY(os.Stdout) {
 		return anyerr.Newf(
 			gerund+" requires --yes in non-interactive mode.",
 			"CONFIRMATION_REQUIRED",

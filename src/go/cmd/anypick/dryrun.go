@@ -125,19 +125,37 @@ func confirmDelete(label string, yes bool) error {
 	if yes {
 		return nil
 	}
-	if !isTTY(os.Stdin) || !isTTY(os.Stdout) {
+	if globals.NoInput || !isTTY(os.Stdin) || !isTTY(os.Stdout) {
 		return anyerr.Newf(
 			fmt.Sprintf("Deleting %s requires --yes in non-interactive mode.", label),
 			"CONFIRMATION_REQUIRED",
 			anyerr.WithExitCode(anyerr.InvalidUsage),
 			anyerr.WithMutated(false))
 	}
-	fmt.Printf("Delete %s? [y/N] ", label)
+	var output = os.Stdout
+	if globals.JSON {
+		output = os.Stderr
+	}
+	fmt.Fprintf(output, "Delete %s? [y/N] ", label)
 	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	if answer != "y" && answer != "yes" {
-		fmt.Println("Cancelled.")
+		if !globals.JSON {
+			fmt.Fprintln(output, "Cancelled.")
+		}
 		return errDeclined
 	}
 	return nil
+}
+
+// emitOK prints one JSON object under --json, otherwise the human line
+// unless --quiet. Invariant 7: stdout stays a single JSON value in JSON mode.
+func emitOK(human string, fields ...kv) {
+	if globals.JSON {
+		fmt.Println(orderedJSON(fields))
+		return
+	}
+	if !globals.Quiet && human != "" {
+		fmt.Println(human)
+	}
 }

@@ -79,3 +79,45 @@ func TestGatewayAddKeySourcesAndModels(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayAddCloudflareGatewayID(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+
+	runGw := func(args ...string) int {
+		defer resetGlobals()()
+		code := -1
+		captureBoth(t, func() { code = run(args) })
+		return code
+	}
+	getHeaders := func(name string) map[string]string {
+		t.Helper()
+		a, closeFn, err := appReadyForTest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeFn()
+		pr, gerr := a.Runtime.ProfileSvc.GetContext(context.Background(), name)
+		if gerr != nil || pr == nil {
+			t.Fatalf("gateway %s missing: %v", name, gerr)
+		}
+		return pr.Secrets.Headers
+	}
+	ep := "https://api.cloudflare.com/client/v4/accounts/f4b3c2a1e5d647a8b9c0d1e2f3a4b5c6/ai/v1"
+	if code := runGw("gateway", "add", "cf-gw", "--provider", "cloudflare-aigateway",
+		"--endpoint", ep, "--api-key", "sk-cf", "--gateway-id", "prod"); code != int(anyerr.Success) {
+		t.Fatalf("cloudflare add exited %d (stdout=%q stderr=%q)", code, lastStdout, lastStderr)
+	}
+	if got := getHeaders("cf-gw")["gatewayId"]; got != "prod" {
+		t.Fatalf("gatewayId header = %q, want prod", got)
+	}
+	if code := runGw("gateway", "add", "cf-bad", "--provider", "cloudflare-aigateway",
+		"--endpoint", ep, "--api-key", "sk-cf", "--gateway-id", "has space"); code == int(anyerr.Success) {
+		t.Fatalf("bad gateway id must fail (stdout=%q stderr=%q)", lastStdout, lastStderr)
+	}
+	if code := runGw("gateway", "add", "or-gw", "--provider", "openrouter",
+		"--api-key", "sk-or", "--gateway-id", "prod"); code == int(anyerr.Success) {
+		t.Fatalf("--gateway-id for a single-gateway provider must fail (stdout=%q stderr=%q)", lastStdout, lastStderr)
+	}
+}

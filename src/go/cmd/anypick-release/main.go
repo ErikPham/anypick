@@ -1,11 +1,8 @@
 // Command anypick-release keeps release versions synchronized.
 //
-// It replaces scripts/release-plan.mjs. With npm distribution gone, the two
-// version sources that matter are the VERSION file at the repository root
-// (canonical) and MARKETING_VERSION in the Xcode project (what the macOS app
-// ships). Everything the old script checked — package.json, five platform
-// package manifests, Cargo.toml, tauri.conf.json — belonged to distribution
-// paths that no longer exist.
+// VERSION is canonical. Native app manifests and the thin npm launcher carry
+// the same number so a release cannot publish a desktop artifact and a CLI
+// adapter that disagree about which Go binary to download.
 //
 // Usage:
 //
@@ -35,6 +32,7 @@ const xcodeProject = "src/macos/AnyPick.xcodeproj/project.pbxproj"
 const cargoToml = "src/tauri/app/Cargo.toml"
 const cargoLock = "src/tauri/app/Cargo.lock"
 const tauriConf = "src/tauri/app/tauri.conf.json"
+const npmPackage = "npm/anypick/package.json"
 
 var stableVersion = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$`)
 

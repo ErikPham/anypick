@@ -14,12 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/outof0/anypick/go/internal/proxy"
-
+	"github.com/outof0/anypick/go/internal/agentbridge"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/buildinfo"
+	"github.com/outof0/anypick/go/internal/config"
+	"github.com/outof0/anypick/go/internal/doctor"
 	"github.com/outof0/anypick/go/internal/hub"
+	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/ownership"
+	"github.com/outof0/anypick/go/internal/proxy"
 )
 
 func cmdProviders(ctx context.Context, a *appView, args []string) int {
@@ -75,101 +78,17 @@ func cmdClients(ctx context.Context, a *appView, args []string) int {
 
 // cmdDoctor runs read-only health checks over the local installation.
 func cmdDoctor(ctx context.Context, a *appView, args []string) int {
-	type finding struct {
-		Check  string `json:"check"`
-		Status string `json:"status"` // ok | warn | fail
-		Detail string `json:"detail,omitempty"`
-	}
-	findings := []finding{}
-	pluginDiagnostics := a.PluginDiagnostics(ctx)
-
-	if _, err := os.Stat(filepath.Join(a.Root, "anypick.db")); err != nil {
-		findings = append(findings, finding{Check: "database", Status: "fail",
-			Detail: "anypick.db missing under data root"})
-	} else {
-		findings = append(findings, finding{Check: "database", Status: "ok"})
-	}
-
-	// Active pointers must reference existing accounts.
-	for _, providerID := range a.Providers.IDs() {
-		active, _ := a.Accounts.Active(ctx, providerID)
-		if active == "" {
-			continue
-		}
-		acct, gerr := a.Accounts.Get(ctx, providerID, active)
-		switch {
-		case gerr != nil || acct == nil:
-			findings = append(findings, finding{Check: "active-binding", Status: "warn",
-				Detail: fmt.Sprintf("%s points at missing account %q", providerID, active)})
-		default:
-			findings = append(findings, finding{Check: "active-binding", Status: "ok",
-				Detail: providerID + "/" + active})
-		}
-	}
-
-	// Enabled proxies should have persisted state or be restartable.
-	for _, providerID := range a.Providers.IDs() {
-		list, lerr := a.Accounts.List(ctx, providerID)
-		if lerr != nil {
-			continue
-		}
-		for _, acct := range list {
-			cfg, _ := a.Proxy.ProxyConfig(ctx, providerID, acct.Meta.Name)
-			if !cfg.Enabled {
-				continue
-			}
-			st, serr := a.Proxy.StatusContext(ctx, providerID, acct.Meta.Name)
-			if serr == nil && st.Running {
-				findings = append(findings, finding{Check: "proxy", Status: "ok",
-					Detail: fmt.Sprintf("%s/%s running", providerID, acct.Meta.Name)})
-			} else {
-				findings = append(findings, finding{Check: "proxy", Status: "warn",
-					Detail: fmt.Sprintf("%s/%s enabled but not running", providerID, acct.Meta.Name)})
-			}
-		}
-	}
-
-	if pluginDiagnostics.Host.LoadedPlugins > 0 || pluginDiagnostics.Host.State == "degraded" {
-		pluginStatus := "ok"
-		if pluginDiagnostics.Host.State != "running" {
-			pluginStatus = "warn"
-		}
-		detail := fmt.Sprintf(
-			"%d loaded; host %s",
-			pluginDiagnostics.Host.LoadedPlugins,
-			pluginDiagnostics.Host.State,
-		)
-		if pluginDiagnostics.Host.Error != "" {
-			detail += ": " + pluginDiagnostics.Host.Error
-		}
-		findings = append(findings, finding{
-			Check: "plugin-host", Status: pluginStatus, Detail: detail,
-		})
-	}
-	for _, failure := range pluginDiagnostics.Failures {
-		findings = append(findings, finding{
-			Check: "plugin:" + failure.Name, Status: "warn", Detail: failure.Reason,
-		})
-	}
-
-	status := "ok"
-	for _, f := range findings {
-		if f.Status == "warn" && status == "ok" {
-			status = "degraded"
-		}
-		if f.Status == "fail" {
-			status = "unhealthy"
-		}
-	}
+	report := doctor.DiagnoseInstallation(ctx, doctor.InstallationDeps{
+		Root: a.Root, Providers: a.Providers, Clients: a.Clients, Accounts: a.Accounts,
+		Bindings: a.BindingSvc, Proxy: a.Proxy, Environment: currentDoctorEnvironment(),
+		PluginDiagnostics: a.PluginDiagnostics,
+	})
 	if wantJSON(args) {
-		jsonOut(map[string]interface{}{
-			"status": status, "findings": findings, "plugins": pluginDiagnostics,
-		})
+		jsonOut(report)
 		return int(anyerr.Success)
 	}
-	fmt.Printf("anypick doctor — %s\n", status)
-	for _, f := range findings {
-		// TS prints check detail only in verbose human mode.
+	fmt.Printf("anypick doctor — %s\n", report.Status)
+	for _, f := range report.Findings {
 		detail := ""
 		if globals.Verbose {
 			detail = f.Detail
@@ -179,10 +98,20 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
+func currentDoctorEnvironment() doctor.EnvironmentReport {
+	report := agentbridge.InspectEnvironment(os.Environ())
+	return doctor.EnvironmentReport{Proxy: doctor.ProxyEnvironment{
+		Present: report.Proxy.Present, HTTPProxy: report.Proxy.HTTPProxy,
+		HTTPSProxy: report.Proxy.HTTPSProxy, AllProxy: report.Proxy.AllProxy,
+		NoProxySet: report.Proxy.NoProxySet, NoProxySize: report.Proxy.NoProxySize,
+		Warnings: report.Proxy.Warnings,
+	}}
+}
+
 // cmdUpdate checks GitHub Releases for a newer published version (advisory
-// only). There is no npm package: the real channels are GitHub Release assets
-// and source checkouts (ADR-0020), so the check queries the releases API and
-// the guidance points at those two channels.
+// only). The canonical channels are the GitHub Release assets and a source
+// checkout; the thin npm launcher is an optional channel when it is published,
+// so the guidance names all three.
 func cmdUpdate(_ context.Context, a *appView, args []string) int {
 	const releasesAPI = "https://api.github.com/repos/outof0/anypick/releases/latest"
 	const releasesPage = "https://github.com/outof0/anypick/releases/latest"
@@ -238,7 +167,8 @@ func cmdUpdate(_ context.Context, a *appView, args []string) int {
 		return int(anyerr.Success)
 	}
 	fmt.Printf("anypick %s → %s available\n", current, latest)
-	fmt.Println("upgrade: download " + releasesPage + " or update a source checkout with: git pull && make build")
+	fmt.Println("upgrade: npm install --global anypick (when published), download " + releasesPage +
+		", or update a source checkout with: git pull && make build")
 	return int(anyerr.Success)
 }
 
@@ -254,7 +184,7 @@ func cmdCompletion(a *appView, args []string) int {
 	// Static word lists reflect the dispatched tree minus hidden helpers;
 	// positional depth resolves live ids through the hidden `__complete`
 	// helper (mirrors src/cli/completion.ts).
-	const topLevel = "add use run current list link unlink reset account gateway preset proxy plugin tray serve app start status stop stop-proxy update completion doctor providers clients"
+	const topLevel = "add use run codex current list link unlink reset account gateway preset proxy plugin tray serve app start status stop stop-proxy update completion doctor providers clients"
 	switch shell {
 	case "bash":
 		fmt.Printf(`# bash completion for anypick
@@ -267,9 +197,14 @@ _anypick_completions() {
     return
   fi
   case "$cmd" in
-    use|run|link|unlink|reset)
-      [[ ${COMP_CWORD} -eq 2 ]] && COMPREPLY=( $(compgen -W "$(anypick __complete clients 2>/dev/null)" -- "$cur") )
-      ;;
+	    use|run|link|unlink|reset)
+	      [[ ${COMP_CWORD} -eq 2 ]] && COMPREPLY=( $(compgen -W "$(anypick __complete clients 2>/dev/null)" -- "$cur") )
+	      ;;
+	    codex)
+	      if [[ ${COMP_CWORD} -eq 2 ]]; then COMPREPLY=( $(compgen -W 'profile' -- "$cur") )
+	      elif [[ ${COMP_CWORD} -eq 3 && ${COMP_WORDS[2]} == profile ]]; then COMPREPLY=( $(compgen -W 'login list show remove' -- "$cur") )
+	      elif [[ ${COMP_CWORD} -eq 4 && ${COMP_WORDS[2]} == profile && ${COMP_WORDS[3]} != list ]]; then COMPREPLY=( $(compgen -W "$(anypick __complete codex-profiles 2>/dev/null)" -- "$cur") ); fi
+	      ;;
     list)
       COMPREPLY=( $(compgen -W 'accounts gateways clients presets' -- "$cur") )
       ;;
@@ -309,9 +244,14 @@ _anypick() {
     return
   fi
   case $words[2] in
-    (use|run|link|unlink|reset)
-      (( CURRENT == 3 )) && _values 'client' ${(f)"$(anypick __complete clients 2>/dev/null)"}
-      ;;
+	    (use|run|link|unlink|reset)
+	      (( CURRENT == 3 )) && _values 'client' ${(f)"$(anypick __complete clients 2>/dev/null)"}
+	      ;;
+	    (codex)
+	      if (( CURRENT == 3 )); then _values 'action' profile
+	      elif (( CURRENT == 4 )) && [[ $words[3] == profile ]]; then _values 'action' login list show remove
+	      elif (( CURRENT == 5 )) && [[ $words[3] == profile && $words[4] != list ]]; then _values 'profile' ${(f)"$(anypick __complete codex-profiles 2>/dev/null)"}; fi
+	      ;;
     (list)
       _values 'kind' accounts gateways clients presets
       ;;
@@ -348,6 +288,9 @@ compdef _anypick anypick
 		fmt.Println("complete -c anypick -f")
 		fmt.Printf("complete -c anypick -n __fish_use_subcommand -a '%s'\n", topLevel)
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from use run link unlink reset' -a '(anypick __complete clients 2>/dev/null)'")
+		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from codex' -a 'profile'")
+		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from profile' -a 'login list show remove'")
+		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from show remove' -a '(anypick __complete codex-profiles 2>/dev/null)'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from list' -a 'accounts gateways clients presets'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from add' -a 'account gateway'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from plugin' -a 'list add remove enable disable trust'")
@@ -366,7 +309,7 @@ compdef _anypick anypick
 // `__complete` command in src/cli/commands.ts). Never listed in help.
 func cmdComplete(ctx context.Context, a *appView, args []string) int {
 	if len(args) == 0 {
-		return usageError("usage: anypick __complete <providers|clients|gateways|accounts> [<provider>]")
+		return usageError("usage: anypick __complete <providers|clients|gateways|accounts|codex-profiles> [<provider>]")
 	}
 	arg := ""
 	if len(args) > 1 {
@@ -384,6 +327,17 @@ func cmdComplete(ctx context.Context, a *appView, args []string) int {
 			return reportErr(err)
 		}
 		out = append(out, names...)
+	case "codex-profiles":
+		if a.CodexProfileSvc == nil {
+			return int(anyerr.Success)
+		}
+		profiles, err := a.CodexProfileSvc.ListContext(ctx, "codex")
+		if err != nil {
+			return reportErr(err)
+		}
+		for _, p := range profiles {
+			out = append(out, p.Name)
+		}
 	case "accounts":
 		providers := []string{arg}
 		if arg == "" {
@@ -426,11 +380,19 @@ func serveHubChild(ctx context.Context, a *appView, args []string) int {
 		Store:     a.ProxyHub,
 		Resolver:  hubUpstreamResolver{a},
 		PoolRings: hubPoolRings{a},
+		// Rotation spreads a model over every enabled account that can serve
+		// it, so the hub needs to know which providers advertise which models.
+		ModelsForProvider: hubProviderModels{a}.ModelsForProvider,
+		// Hub-only quota guard: an account the vendor refused for quota reasons
+		// cools down and the request moves to the next account that can serve
+		// the model. Pool proxies keep their own guard.
+		Quotas: hubQuotaGuard(a, name),
 	}
 	if err := srv.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "hub start failed:", err)
 		return int(anyerr.Operational)
 	}
+	proxy.Logf("proxy-hub listening on %s", srv.Endpoint())
 	awaitSignal(ctx)
 	_ = srv.Stop()
 	return int(anyerr.Success)
@@ -470,6 +432,42 @@ func (h hubUpstreamResolver) ResolveUpstream(ctx context.Context, providerID, ac
 		return nil, fmt.Errorf("no upstream resolver configured")
 	}
 	return resolver.ResolveUpstream(ctx, providerID, account)
+}
+
+// hubQuotas builds the Proxy Hub's own quota guard from the validated global
+// policy, persisting cooldowns beside the hub's runtime files. A policy with the
+// guard disabled returns nil, which turns the guard off entirely.
+func hubQuotaGuard(a *appView, hubName string) *hub.Quotas {
+	if a == nil || a.Config == nil {
+		return nil
+	}
+	cfg, err := a.Config.Read(context.Background())
+	if err != nil {
+		return nil
+	}
+	guardPolicy := config.QuotaGuardPolicyOf(cfg)
+	if !guardPolicy.Enabled {
+		return nil
+	}
+	hubDir := filepath.Join(a.Root, "runtime", "hub", hubName)
+	return hub.NewQuotas(guardPolicy, filepath.Join(hubDir, "quota-guard.json"))
+}
+
+// hubProviderModels answers "can this provider serve this model" from the model
+// cache the desktop writes. Advisory: a miss narrows rotation to the resolved
+// source's provider instead of failing the request.
+type hubProviderModels struct{ a *appView }
+
+func (h hubProviderModels) ModelsForProvider(providerID string) []string {
+	if h.a == nil || h.a.DB == nil {
+		return nil
+	}
+	store := &modelcache.Store{DB: h.a.DB}
+	models, err := store.ModelsForProvider(context.Background(), providerID)
+	if err != nil {
+		return nil
+	}
+	return models
 }
 
 // hubPoolRings adapts the proxy service's pool ring builder for hub sources

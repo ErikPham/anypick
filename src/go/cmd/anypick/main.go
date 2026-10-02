@@ -33,6 +33,7 @@ import (
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/profile"
+	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/runtime"
 	"github.com/outof0/anypick/go/internal/store"
@@ -78,23 +79,35 @@ func run(args []string) int {
 	// `anypick tui < /dev/null` must not do any of that only to be refused
 	// afterwards, and it must never kill proxies the desktop app is using.
 	//
-	// Only the explicitly named surface is knowable this early. A bare
-	// invocation resolves ui.defaultSurface from config, which cannot be read
-	// until startup has opened the database; that path still reaches the guard
-	// inside tui.Run, one startup later.
+	// An explicit `anypick tui` is knowable before the database opens. A bare
+	// invocation has to open the database to read ui.defaultSurface, so that
+	// path skips maintenance until the surface is known. Opening the database
+	// is unavoidable. Reaping leases and rolling back journals is not.
 	if isExplicitTuiSurface(args) && !isatty.IsTerminal(os.Stdin.Fd()) {
-		fmt.Fprintln(os.Stderr, "error:", tui.ErrNoTTY)
-		return int(anyerr.InvalidUsage)
+		return reportErr(anyerr.Newf(tui.ErrNoTTY.Error(), "NO_TTY",
+			anyerr.WithExitCode(anyerr.InvalidUsage),
+			anyerr.WithSuggestions("Run `anypick tui` from a terminal, or use the desktop app.")))
 	}
+	bareWithoutTTY := len(args) == 0 && !isatty.IsTerminal(os.Stdin.Fd())
 
-	a, closeFn, err := app.Ready(ctx, app.Options{SkipMaintenance: !maintenance})
+	a, closeFn, err := app.Ready(ctx, app.Options{SkipMaintenance: !maintenance || bareWithoutTTY})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return int(anyerr.Operational)
+		// ExitCodeOf, not Operational: a refused startup (an unusable data
+		// directory, an unsupported schema) is already coded, and reporting 1
+		// for all of them hid the documented ranges from scripts.
+		return reportErr(err)
 	}
 	defer closeFn()
 
 	if len(args) == 0 {
+		if bareWithoutTTY && configuredLaunchSurface(ctx, a) == "tui" {
+			return reportErr(anyerr.Newf(tui.ErrNoTTY.Error(), "NO_TTY",
+				anyerr.WithExitCode(anyerr.InvalidUsage),
+				anyerr.WithSuggestions("Run `anypick tui` from a terminal, or use the desktop app.")))
+		}
+		if bareWithoutTTY {
+			app.RunStartupMaintenance(ctx, a)
+		}
 		return bareInvocation(ctx, a)
 	}
 
@@ -104,6 +117,8 @@ func run(args []string) int {
 		code = cmdAdd(ctx, a, args[1:])
 	case "use":
 		code = cmdUse(ctx, a, args[1:])
+	case "codex":
+		code = cmdCodex(ctx, a, args[1:])
 	case "current":
 		code = cmdCurrent(ctx, a, args[1:])
 	case "list":
@@ -180,6 +195,18 @@ func run(args []string) int {
 		usage()
 		return int(anyerr.Success)
 	default:
+		if globals.JSON {
+			// The one error path that does write stdout, kept as it was:
+			// an unknown command never reaches a service, so there is no
+			// partial work to report and no result document to preserve.
+			fmt.Println(orderedJSON([]kv{
+				{Key: "ok", Value: false},
+				{Key: "error", Value: "unknown command " + args[0]},
+				{Key: "code", Value: "UNKNOWN_COMMAND"},
+			}))
+			fmt.Fprintf(os.Stderr, "unknown command %q\n", args[0])
+			return int(anyerr.InvalidUsage)
+		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", args[0])
 		usage()
 		return int(anyerr.InvalidUsage)
@@ -200,13 +227,14 @@ func isExplicitTuiSurface(args []string) bool {
 
 func runTuiSurface(ctx context.Context, a *app.App) int {
 	if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		// Invariant #6: refusing to run without a TTY is a usage problem,
+		// Invariant 7: refusing to run without a TTY is a usage problem,
 		// not a failure of the user's data.
 		if errors.Is(err, tui.ErrNoTTY) {
-			return int(anyerr.InvalidUsage)
+			return reportErr(anyerr.Newf(tui.ErrNoTTY.Error(), "NO_TTY",
+				anyerr.WithExitCode(anyerr.InvalidUsage),
+				anyerr.WithSuggestions("Run `anypick tui` from a terminal, or use the desktop app.")))
 		}
-		return int(anyerr.Operational)
+		return reportErr(err)
 	}
 	return int(anyerr.Success)
 }
@@ -237,11 +265,12 @@ func usage() {
 	fmt.Print(`anypick-go — point AI coding clients at accounts you already have
 
 Usage:
-  anypick add account <provider> --name <name> [--current|--new] [--force]
+  anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
   anypick add gateway <name> --provider <id> [--endpoint url]
   anypick add <provider> --name <name> [--force]   (deprecated alias for add account --current)
-  anypick use <client> --with <source> [--model <id>] [--transport auto|direct|proxy]
-  anypick run <client> --with <source> -- <args…>   ephemeral isolated launch
+	anypick use <client> --with <source> [--profile <name>] [--model <id>] [--transport auto|direct|proxy]
+	anypick run <client> (--with <source>|--profile <name>) -- <args…>   ephemeral isolated launch
+	anypick codex profile login|list|show|remove …
   anypick current <provider>
   anypick models <client> [--with <source>]   ids this connection can serve
   anypick list providers | accounts [<provider>]
@@ -251,9 +280,9 @@ Usage:
   anypick gateway add|list|show|edit|remove|reset …
 	anypick plugin list|add|remove|enable|disable|trust …
   anypick preset list|show|remove …
-  anypick proxy enable|disable|config|start|stop|status|restart|logs …
+  anypick proxy enable|disable|config|start|stop|status|token|restart|logs …
   anypick proxy pool status|enable|disable|member|start|stop …
-  anypick proxy hub status|enable|source|owner|preview|start|stop …
+  anypick proxy hub status|enable|source|owner|preview|start|stop|token …
   anypick serve [--detach|--stop]   core server (status API)
   anypick doctor | update | completion <bash|zsh|fish>
 
@@ -267,7 +296,7 @@ func reorder(args []string) []string { return cli.Reorder(args) }
 
 func cmdAdd(ctx context.Context, a *app.App, args []string) int {
 	// Canonical documented grammar (README, getting-started):
-	//   anypick add account <provider> --name <name> [--current|--new] [--force]
+	//   anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
 	//   anypick add gateway <name> --provider <id> [--endpoint url]
 	// The bare `add <provider>` form predates the docs and stays as a
 	// deprecated alias for `add account --current`.
@@ -285,16 +314,18 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 	// absent) means "prompt on the TTY". The flag package would otherwise
 	// swallow the following token as the value, so detect it first.
 	args, promptSecretFlag, promptAPIKey := splitBareSecretFlags(args)
-	usage := "usage: anypick add account <provider> --name <name> [--current|--new] [--force]\n" +
+	usage := "usage: anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]\n" +
 		"       anypick add account <provider> --new --name <name> [--auth-method <id>] [--source <id>]\n" +
-		"       anypick add account <provider> --name <name> --credential <kind> --secret [--option profile=<id>]"
+		"       anypick add account <provider> --name <name> --credential <kind> --secret [--option profile=<id>]\n" +
+		"       anypick add account <provider> --auth-file <path|-> [--name <name>] [--force]"
 	fs := fsFor(args)
 	name := fs.String("name", "", "account name")
+	authFile := fs.String("auth-file", "", "provider auth JSON file, or - to read stdin")
 	force := fs.Bool("force", false, "overwrite an existing account")
 	current := fs.Bool("current", false, "snapshot the current live login (default)")
 	newLogin := fs.Bool("new", false, "start a fresh provider login, then save it")
-	kind := fs.String("kind", "", "credential kind for compatible vendors (e.g. api-key)")
-	credential := fs.String("credential", "", "credential kind for compatible vendors (e.g. api-key, subscription-key)")
+	kind := fs.String("kind", "", "provider-declared credential kind (e.g. api-key)")
+	credential := fs.String("credential", "", "provider-declared credential kind (e.g. api-key, subscription-key)")
 	secret := fs.String("secret", "", "credential secret; prefer ANYPICK_SECRET (value via --secret is visible in process listing)")
 	apiKey := fs.String("api-key", "", "API key value; bare flag prompts on the TTY (implies --credential api-key)")
 	profileID := fs.String("profile", "", "endpoint profile id (default: first)")
@@ -305,6 +336,11 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 	fs.Var(&options, "option", "provider qualifier as key=value (repeatable; e.g. --option profile=singapore)")
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
+	}
+	if *authFile != "" {
+		return cmdAddAccountAuthFile(ctx, a, fs, *name, *authFile, *force, *current, *newLogin,
+			*authMethod, *source, *kind, *credential, *secret, *apiKey, *profileID, *region,
+			options, promptSecretFlag, promptAPIKey)
 	}
 	if fs.NArg() != 1 || *name == "" {
 		fmt.Fprintln(os.Stderr, usage)
@@ -330,13 +366,15 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 		if err != nil {
 			return reportErr(err)
 		}
-		if !globals.Quiet {
-			if res.Account.Identity != "" {
-				fmt.Printf("saved %s/%s (%s)\n", res.Account.Provider, res.Account.Name, res.Account.Identity)
-			} else {
-				fmt.Printf("saved %s/%s\n", res.Account.Provider, res.Account.Name)
-			}
+		human := fmt.Sprintf("saved %s/%s", res.Account.Provider, res.Account.Name)
+		if res.Account.Identity != "" {
+			human = fmt.Sprintf("saved %s/%s (%s)", res.Account.Provider, res.Account.Name, res.Account.Identity)
 		}
+		emitOK(human,
+			kv{Key: "ok", Value: true},
+			kv{Key: "provider", Value: res.Account.Provider},
+			kv{Key: "name", Value: res.Account.Name},
+			kv{Key: "identity", Value: strOrNil(res.Account.Identity)})
 		return int(anyerr.Success)
 	}
 
@@ -352,9 +390,6 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 		if providerID != "gemini" || (*source != "gemini-cli" && *source != "antigravity") {
 			fmt.Fprintln(os.Stderr, "usage: --source gemini-cli|antigravity is only supported for gemini (with --current), or use --new --source <id>")
 			return int(anyerr.InvalidUsage)
-		}
-		if err := os.Setenv("GEMINI_OAUTH_SOURCE", *source); err != nil {
-			return reportErr(err)
 		}
 	}
 	// --region today only exists for kiro API-key accounts, whose save path
@@ -378,6 +413,10 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 			return int(anyerr.InvalidUsage)
 		}
 		resolvedKind = "api-key"
+	}
+	if *source != "" && resolvedKind != "" {
+		fmt.Fprintln(os.Stderr, "usage: --source selects a native Gemini sign-in and cannot be combined with --credential/--kind/--api-key")
+		return int(anyerr.InvalidUsage)
 	}
 	profile := *profileID
 	if len(options) > 0 {
@@ -422,9 +461,74 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 			rest = append(rest, "--profile", profile)
 		}
 	}
+	if *source != "" {
+		rest = append(rest, "--source", *source)
+	}
 	rest = append(rest, providerID)
 	_ = current
 	return cmdAddAccountCurrent(ctx, a, rest, false)
+}
+
+// cmdAddAccountAuthFile saves a pasted provider auth document. It returns
+// before the Gemini --source branch so this path never grows a provider-id
+// switch: the provider itself accepts or refuses the document.
+func cmdAddAccountAuthFile(ctx context.Context, a *app.App, fs *flag.FlagSet, name, authFile string, force, current, newLogin bool, authMethod, source, kind, credential, secret, apiKey, profileID, region string, options optionFlags, promptSecret, promptAPIKey bool) int {
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: anypick add account <provider> --auth-file <path|-> [--name <name>] [--force]")
+		return int(anyerr.InvalidUsage)
+	}
+	if current || newLogin || authMethod != "" || source != "" || kind != "" || credential != "" ||
+		secret != "" || apiKey != "" || profileID != "" || region != "" || len(options) > 0 ||
+		promptSecret || promptAPIKey {
+		fmt.Fprintln(os.Stderr, "usage: --auth-file cannot be combined with --current, --new, --auth-method, --source, --credential, --secret, --api-key, --kind, --region, --option, or --profile")
+		return int(anyerr.InvalidUsage)
+	}
+	raw, err := readAuthPaste(authFile)
+	if err != nil {
+		return reportErr(err)
+	}
+	metas, err := a.Accounts.SavePastedAuth(ctx, fs.Arg(0), name, raw, force)
+	if err != nil {
+		return reportErr(err)
+	}
+	if len(metas) == 1 {
+		meta := metas[0]
+		human := fmt.Sprintf("saved %s/%s", meta.Provider, meta.Name)
+		if meta.Identity != "" {
+			human = fmt.Sprintf("saved %s/%s (%s)", meta.Provider, meta.Name, meta.Identity)
+		}
+		emitOK(human,
+			kv{Key: "ok", Value: true},
+			kv{Key: "provider", Value: meta.Provider},
+			kv{Key: "name", Value: meta.Name},
+			kv{Key: "identity", Value: strOrNil(meta.Identity)})
+		return int(anyerr.Success)
+	}
+	rows := make([]map[string]string, len(metas))
+	for i, meta := range metas {
+		rows[i] = map[string]string{"name": meta.Name, "identity": meta.Identity}
+	}
+	emitOK(fmt.Sprintf("saved %d accounts for %s", len(metas), fs.Arg(0)),
+		kv{Key: "ok", Value: true},
+		kv{Key: "provider", Value: fs.Arg(0)},
+		kv{Key: "accounts", Value: rows})
+	return int(anyerr.Success)
+}
+
+// readAuthPaste reads one auth document, capped one byte past the service
+// limit so an oversized file still reaches AUTH_PASTE_TOO_LARGE. "-" reads
+// stdin. The path is never removed: --auth-file may be the user's real file.
+func readAuthPaste(path string) ([]byte, error) {
+	limit := int64(provider.MaxAuthPasteBytes) + 1
+	if path == "-" {
+		return io.ReadAll(io.LimitReader(os.Stdin, limit))
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
 }
 
 // splitBareSecretFlags pulls a valueless --secret / --api-key out of argv
@@ -486,9 +590,10 @@ func cmdAddAccountCurrent(ctx context.Context, a *app.App, args []string, deprec
 	fs := fsFor(args)
 	name := fs.String("name", "", "account name")
 	force := fs.Bool("force", false, "overwrite an existing account")
-	kind := fs.String("kind", "", "credential kind for compatible vendors (e.g. api-key)")
+	kind := fs.String("kind", "", "provider-declared credential kind (e.g. api-key)")
 	secret := fs.String("secret", "", "credential secret; prefer ANYPICK_SECRET (value via --secret is visible in process listing)")
 	profileID := fs.String("profile", "", "endpoint profile id (default: first)")
+	source := fs.String("source", "", "provider-owned live sign-in source (e.g. gemini-cli|antigravity)")
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
 	}
@@ -508,6 +613,10 @@ func cmdAddAccountCurrent(ctx context.Context, a *app.App, args []string, deprec
 	if envSecret := os.Getenv("ANYPICK_SECRET"); *kind != "" && envSecret != "" && *secret == "" {
 		*secret = envSecret
 	}
+	if *source != "" && *kind != "" {
+		fmt.Fprintln(os.Stderr, "usage: --source selects a native live sign-in and cannot be combined with --kind")
+		return int(anyerr.InvalidUsage)
+	}
 	if *kind != "" {
 		meta, err = a.Accounts.SaveInput(ctx, fs.Arg(0), *name, accounts.CredentialInput{
 			Kind:    *kind,
@@ -515,18 +624,20 @@ func cmdAddAccountCurrent(ctx context.Context, a *app.App, args []string, deprec
 			Profile: orDefaultStr(*profileID, "global"),
 		}, *force)
 	} else {
-		meta, err = a.Accounts.Save(ctx, fs.Arg(0), *name, *force)
+		meta, err = a.Accounts.SaveWithSource(ctx, fs.Arg(0), *name, *source, *force)
 	}
 	if err != nil {
 		return reportErr(err)
 	}
+	human := fmt.Sprintf("saved %s/%s", meta.Provider, meta.Name)
 	if meta.Identity != "" {
-		if !globals.Quiet { // --quiet suppresses human chatter, not the mutation
-			fmt.Printf("saved %s/%s (%s)\n", meta.Provider, meta.Name, meta.Identity)
-		}
-	} else if !globals.Quiet {
-		fmt.Printf("saved %s/%s\n", meta.Provider, meta.Name)
+		human = fmt.Sprintf("saved %s/%s (%s)", meta.Provider, meta.Name, meta.Identity)
 	}
+	emitOK(human,
+		kv{Key: "ok", Value: true},
+		kv{Key: "provider", Value: meta.Provider},
+		kv{Key: "name", Value: meta.Name},
+		kv{Key: "identity", Value: strOrNil(meta.Identity)})
 	return int(anyerr.Success)
 }
 
@@ -540,14 +651,32 @@ func orDefaultStr(v, fallback string) string {
 func cmdUse(ctx context.Context, a *app.App, args []string) int {
 	fs := fsFor(args)
 	with := fs.String("with", "", "source reference")
+	profileName := fs.String("profile", "", "named Codex profile")
 	model := fs.String("model", "", "explicit model id")
 	transportPolicy := fs.String("transport", "auto", "transport policy")
+	// Consent is per run and never persisted: it answers exactly one failed
+	// activation (CLIENT_CONFIG_FOREIGN), and the next one asks again.
+	allowForeign := fs.Bool("allow-foreign-config", false,
+		"back up and replace client settings AnyPick does not own")
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
 	}
 	if fs.NArg() != 1 || *with == "" {
-		fmt.Fprintln(os.Stderr, "usage: anypick use <client> --with <source>")
+		fmt.Fprintln(os.Stderr,
+			"usage: anypick use <client> --with <source> [--profile <name>] [--allow-foreign-config]")
 		return int(anyerr.InvalidUsage)
+	}
+	clientID := fs.Arg(0)
+	if *profileName != "" {
+		if clientID != "codex" {
+			return reportErr(anyerr.Newf(
+				"--profile is currently supported only with the codex client.",
+				"UNSUPPORTED_PROFILE", anyerr.WithExitCode(anyerr.CapabilityConflict)))
+		}
+		if err := client.ValidateCodexProfileName(*profileName); err != nil {
+			return reportErr(anyerr.Newf(err.Error(), "INVALID_USAGE",
+				anyerr.WithExitCode(anyerr.InvalidUsage)))
+		}
 	}
 	// Known account providers = every registered provider (file-snapshot AND
 	// compatible vendors), mirroring parseAndResolveSourceInput.
@@ -559,12 +688,20 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	tracef("resolving source %q for client %q", *with, fs.Arg(0))
+	tracef("resolving source %q for client %q", *with, clientID)
+	modelCatalog, modelCatalogErr := activationModelCatalog(ctx, a, ref)
+	mode := activation.ModePersistent
+	if *profileName != "" {
+		mode = activation.ModeProfile
+	}
 	plan, err := activation.PlanActivation(ctx, activation.Request{
-		Mode:            activation.ModePersistent,
-		Client:          fs.Arg(0),
+		Mode:            mode,
+		Client:          clientID,
 		Source:          &ref,
+		ProfileName:     *profileName,
 		Model:           *model,
+		ModelCatalog:    modelCatalog,
+		ModelCatalogErr: modelCatalogErr,
 		TransportPolicy: refToPolicy(*transportPolicy),
 	}, a.Deps, activation.Options{})
 	if err != nil {
@@ -584,6 +721,7 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 		if globals.JSON {
 			jsonOut(map[string]any{
 				"client":        plan.Client,
+				"profile":       strOrNil(plan.ProfileName),
 				"source":        display,
 				"model":         plan.Model.ID,
 				"transport":     transportInfo,
@@ -596,27 +734,47 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 		}
 		return int(anyerr.Success)
 	}
-	result, err := activation.Execute(ctx, plan, a.Deps, activation.ExecuteOptions{})
+	result, err := activation.Execute(ctx, plan, a.Deps, activation.ExecuteOptions{
+		AllowForeignConfig: *allowForeign,
+	})
 	if err != nil {
 		return reportErr(err)
 	}
 	// Record a successful source resume for persistent activations. This is a
 	// best-effort DX cache: binding + native config already succeeded.
-	if plan.BindingSpec != nil {
+	if plan.Mode == activation.ModePersistent && plan.BindingSpec != nil {
 		_ = a.BindingSvc.RecordSourceResumeContext(ctx, *plan.BindingSpec)
 	}
-	// --quiet silences human chatter only; JSON mode never printed these.
-	if !globals.Quiet {
-		fmt.Printf("activated %s × %s via %s\n",
+	var human string
+	if plan.Mode == activation.ModeProfile {
+		human = fmt.Sprintf("saved Codex profile %s × %s via %s",
+			plan.ProfileName, plan.ResolvedSource.Display, plan.Transport.Capability)
+	} else {
+		human = fmt.Sprintf("activated %s × %s via %s",
 			plan.Client, plan.ResolvedSource.Display, plan.Transport.Capability)
-		if result.ProxyEndpoint != "" {
-			// Endpoint only — the token never crosses an output boundary.
-			label := "endpoint"
-			if strings.HasPrefix(result.ProxyEndpoint, "http://127.0.0.1:") {
-				label = "proxy"
-			}
-			fmt.Printf("%s: %s\n", label, result.ProxyEndpoint)
+	}
+	if result.ProxyEndpoint != "" && !globals.JSON {
+		label := "endpoint"
+		if strings.HasPrefix(result.ProxyEndpoint, "http://127.0.0.1:") {
+			label = "proxy"
 		}
+		human += fmt.Sprintf("\n%s: %s", label, result.ProxyEndpoint)
+	}
+	emitOK(human,
+		kv{Key: "ok", Value: true},
+		kv{Key: "client", Value: plan.Client},
+		kv{Key: "profile", Value: strOrNil(plan.ProfileName)},
+		kv{Key: "source", Value: plan.ResolvedSource.Display},
+		kv{Key: "capability", Value: string(plan.Transport.Capability)},
+		kv{Key: "endpoint", Value: strOrNil(result.ProxyEndpoint)})
+	if plan.Mode == activation.ModeProfile && !globals.JSON && !globals.Quiet {
+		sourceEnv := plan.ResolvedSource.Ref.Kind != refs.KindAccount ||
+			plan.Transport.Capability != transport.Direct
+		fmt.Printf("\nCODEX_HOME: %s\nauth: %s\nconfig: %s\nlaunch: %s\n",
+			client.CodexProfileHomePath(a.Root, plan.ProfileName),
+			client.CodexProfileAuthPath(a.Root, plan.ProfileName),
+			client.CodexProfileConfigPathForRoot(a.Root, plan.ProfileName),
+			client.CodexProfileLaunchCommand(a.Root, plan.ProfileName, sourceEnv))
 	}
 	for _, w := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
@@ -677,9 +835,25 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 	}
 	switch {
 	case fs.NArg() == 0 || fs.Arg(0) == "providers":
+		type row struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+		}
+		rows := make([]row, 0)
 		for _, id := range a.Providers.IDs() {
 			pv, _ := a.Providers.Get(id)
-			fmt.Printf("%s\t%s\n", id, pv.Description())
+			desc := ""
+			if pv != nil {
+				desc = pv.Description()
+			}
+			if globals.JSON {
+				rows = append(rows, row{ID: id, Description: desc})
+				continue
+			}
+			fmt.Printf("%s\t%s\n", id, desc)
+		}
+		if globals.JSON {
+			jsonOut(rows)
 		}
 		return int(anyerr.Success)
 	case fs.Arg(0) == "accounts":
@@ -687,6 +861,13 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 		if fs.Arg(1) == "" {
 			providerIDs = a.Providers.IDs()
 		}
+		type row struct {
+			Provider string `json:"provider"`
+			Name     string `json:"name"`
+			Identity string `json:"identity,omitempty"`
+			Active   bool   `json:"active"`
+		}
+		rows := make([]row, 0)
 		for _, providerID := range providerIDs {
 			all, err := a.Accounts.List(ctx, providerID)
 			if err != nil {
@@ -694,13 +875,24 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 			}
 			active, _ := a.Accounts.Active(ctx, providerID)
 			for _, acct := range all {
+				isActive := active == acct.Meta.Name
+				if globals.JSON {
+					rows = append(rows, row{
+						Provider: acct.Meta.Provider, Name: acct.Meta.Name,
+						Identity: acct.Meta.Identity, Active: isActive,
+					})
+					continue
+				}
 				marker := ""
-				if active == acct.Meta.Name {
+				if isActive {
 					marker = " *"
 				}
 				fmt.Printf("%s/%s%s\t%s\n", acct.Meta.Provider, acct.Meta.Name,
 					marker, acct.Meta.Identity)
 			}
+		}
+		if globals.JSON {
+			jsonOut(rows)
 		}
 		return int(anyerr.Success)
 	default:
@@ -721,14 +913,45 @@ func cmdStopProxy(ctx context.Context, a *app.App, args []string) int {
 	if err := a.Proxy.Stop(ctx, fs.Arg(0), fs.Arg(1)); err != nil {
 		return reportErr(err)
 	}
-	fmt.Println("stopped")
+	emitOK("stopped", kv{Key: "ok", Value: true},
+		kv{Key: "provider", Value: fs.Arg(0)}, kv{Key: "name", Value: fs.Arg(1)})
 	return int(anyerr.Success)
 }
 
+// reportErr prints one failure and returns the process exit code.
+//
+// It is the only presentation-layer entry point for a failed command: the
+// suggestions and the exit code live on the *anyerr.Error instance, so a caller
+// that formats the error into a string first loses both (see the
+// WithSuggestions note in anyerr).
+//
+// Everything goes to stderr, including under --json. That is the tested
+// contract (dryrun_gate_test.go: "error path must keep stdout machine-pure"):
+// a consumer that reads stdout sees either one success document or nothing at
+// all, and learns what happened from the exit code.
 func reportErr(err error) int {
+	if err == nil {
+		return int(anyerr.Success)
+	}
 	exit := int(anyerr.ExitCodeOf(err))
+	ae := asAnyPick(err)
+	if globals.JSON {
+		// Structured and on stderr: stdout stays machine-pure on the error path,
+		// while a JSON-mode caller still gets the code and the hints instead of
+		// prose it has to scrape.
+		fields := []kv{{Key: "ok", Value: false}, {Key: "error", Value: err.Error()}}
+		if ae != nil && ae.Code != "" {
+			fields = append(fields, kv{Key: "code", Value: ae.Code})
+		}
+		if ae != nil && len(ae.Suggestions) > 0 {
+			fields = append(fields, kv{Key: "suggestions", Value: ae.Suggestions})
+		}
+		fields = append(fields, kv{Key: "exitCode", Value: exit})
+		fmt.Fprintln(os.Stderr, orderedJSON(fields))
+		return exit
+	}
 	fmt.Fprintln(os.Stderr, "error:", err)
-	if ae := asAnyPick(err); ae != nil && len(ae.Suggestions) > 0 {
+	if ae != nil {
 		for _, s := range ae.Suggestions {
 			fmt.Fprintln(os.Stderr, "  →", s)
 		}
@@ -787,6 +1010,7 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 	fs := fsFor(args)
 	providerID := fs.String("provider", "", "catalog provider id (e.g. openrouter)")
 	endpoint := fs.String("endpoint", "", "OpenAI-style base URL (defaults to the vendor's)")
+	gatewayID := fs.String("gateway-id", "", "gateway id for providers addressing several gateways per endpoint (e.g. Cloudflare)")
 	secret := fs.String("secret", "", "API key; prefer ANYPICK_SECRET (value via --secret is visible in process listing)")
 	apiKey := fs.String("api-key", "", "API key value; bare flag prompts on the TTY")
 	apiKeyEnv := fs.String("api-key-env", "", "read the API key from this environment variable")
@@ -797,7 +1021,7 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 		return int(anyerr.InvalidUsage)
 	}
 	if fs.NArg() != 1 || *providerID == "" {
-		fmt.Fprintln(os.Stderr, "usage: anypick gateway add <name> --provider <id> [--endpoint url] [--api-key [key]|--api-key-env <var>|--secret <key>] [--model <id>] [--models <role=id>]")
+		fmt.Fprintln(os.Stderr, "usage: anypick gateway add <name> --provider <id> [--endpoint url] [--api-key [key]|--api-key-env <var>|--secret <key>] [--model <id>] [--models <role=id>] [--gateway-id <id>]")
 		return int(anyerr.InvalidUsage)
 	}
 	cat := catalog.NewIndex(catalog.Builtin())
@@ -848,6 +1072,10 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 		fmt.Fprintln(os.Stderr, "error: this vendor needs an explicit --endpoint")
 		return int(anyerr.InvalidUsage)
 	}
+	headers, herr := gatewayHeadersForProvider(a, *providerID, *gatewayID)
+	if herr != nil {
+		return reportErr(herr)
+	}
 	gatewayName := fs.Arg(0)
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.GatewayRef(gatewayName)), func(c context.Context) error {
 		_, err := a.Runtime.ProfileSvc.UpsertContext(c, profile.Runtime{
@@ -855,19 +1083,58 @@ func cmdGatewayAdd(ctx context.Context, a *app.App, args []string) int {
 				Name: gatewayName, Provider: *providerID, Endpoint: resolvedEndpoint,
 				DefaultModel: *model, Models: map[string]string(models),
 			},
-			Secrets: profile.Secrets{APIKey: *secret},
+			Secrets: profile.Secrets{APIKey: *secret, Headers: headers},
 		})
 		return err
 	})
 	if err != nil {
 		return reportErr(err)
 	}
+	surface := runtime.SmartEndpointFor(&client.Capabilities{
+		ProtocolPreference: transport.Anthropic,
+	}, *providerID, resolvedEndpoint, cat)
+	if globals.JSON {
+		emitOK("",
+			kv{Key: "ok", Value: true},
+			kv{Key: "name", Value: gatewayName},
+			kv{Key: "provider", Value: *providerID},
+			kv{Key: "endpoint", Value: resolvedEndpoint},
+			kv{Key: "anthropicSurface", Value: surface})
+		return int(anyerr.Success)
+	}
 	fmt.Printf("gateway %s (%s) → %s\n", gatewayName, *providerID, resolvedEndpoint)
-	fmt.Printf("anthropic surface: %s\n",
-		runtime.SmartEndpointFor(&client.Capabilities{
-			ProtocolPreference: transport.Anthropic,
-		}, *providerID, resolvedEndpoint, cat))
+	fmt.Printf("anthropic surface: %s\n", surface)
 	return int(anyerr.Success)
+}
+
+// gatewayHeadersForProvider persists the gateway id for providers that
+// address several gateways per endpoint, under the generic "gatewayId"
+// header key. Providers with a single gateway per endpoint reject the flag
+// instead of silently storing a value nothing reads.
+func gatewayHeadersForProvider(a *app.App, providerID, gatewayID string) (map[string]string, error) {
+	pv, perr := a.Providers.Get(providerID)
+	if perr != nil || pv == nil {
+		return nil, nil
+	}
+	gi, ok := pv.(provider.GatewayInfoProvider)
+	if !ok || !gi.GatewayInfo().RequiresGatewayID {
+		if gatewayID != "" {
+			return nil, anyerr.Newf(
+				fmt.Sprintf("provider %q has a single gateway per endpoint; --gateway-id does not apply", providerID),
+				"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+		}
+		return nil, nil
+	}
+	normalizer, ok := pv.(provider.GatewayIDNormalizer)
+	if !ok {
+		return nil, anyerr.Newf("gateway provider cannot validate gateway ids",
+			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
+	gid, nerr := normalizer.NormalizeGatewayID(gatewayID)
+	if nerr != nil {
+		return nil, nerr
+	}
+	return map[string]string{"gatewayId": gid}, nil
 }
 
 func cmdGatewayList(ctx context.Context, a *app.App) int {
@@ -875,12 +1142,25 @@ func cmdGatewayList(ctx context.Context, a *app.App) int {
 	if err != nil {
 		return reportErr(err)
 	}
+	type gatewayRow struct {
+		Name     string `json:"name"`
+		Provider string `json:"provider"`
+		Endpoint string `json:"endpoint"`
+	}
+	rows := []gatewayRow{}
 	for _, name := range names {
 		pr, gerr := a.Runtime.ProfileSvc.GetContext(ctx, name)
 		if gerr != nil || pr == nil {
 			continue
 		}
-		fmt.Printf("%s\t%s\t%s\n", pr.Meta.Name, pr.Meta.Provider, pr.Meta.Endpoint)
+		rows = append(rows, gatewayRow{Name: pr.Meta.Name, Provider: pr.Meta.Provider, Endpoint: pr.Meta.Endpoint})
+	}
+	if globals.JSON {
+		emitOK("", kv{Key: "gateways", Value: rows})
+		return int(anyerr.Success)
+	}
+	for _, row := range rows {
+		fmt.Printf("%s\t%s\t%s\n", row.Name, row.Provider, row.Endpoint)
 	}
 	return int(anyerr.Success)
 }
@@ -915,7 +1195,7 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 	usage := func() int {
 		fmt.Fprintln(os.Stderr,
 			"usage: anypick proxy enable|disable <provider> <account> [--port N]\n"+
-				"       anypick proxy start|stop|status <provider> <account>")
+				"       anypick proxy start|stop|status|token <provider> <account>")
 		return int(anyerr.InvalidUsage)
 	}
 	if len(args) < 2 {
@@ -950,7 +1230,12 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 		if err != nil {
 			return reportErr(err)
 		}
-		fmt.Printf("%s %s/%s (port %d)\n", sub, fs.Arg(0), fs.Arg(1), cfg.Port)
+		emitOK(fmt.Sprintf("%s %s/%s (port %d)", sub, fs.Arg(0), fs.Arg(1), cfg.Port),
+			kv{Key: "ok", Value: true},
+			kv{Key: "action", Value: sub},
+			kv{Key: "provider", Value: fs.Arg(0)},
+			kv{Key: "account", Value: fs.Arg(1)},
+			kv{Key: "port", Value: cfg.Port})
 		return int(anyerr.Success)
 
 	case "start":
@@ -972,7 +1257,12 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 		if !res.StartedNow {
 			state = "already running"
 		}
-		fmt.Printf("proxy %s (%s)\nendpoint: %s\n", state, res.InstanceID[:8], res.Endpoint)
+		human := fmt.Sprintf("proxy %s (%s)\nendpoint: %s", state, res.InstanceID[:8], res.Endpoint)
+		emitOK(human,
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: state},
+			kv{Key: "instanceId", Value: res.InstanceID[:8]},
+			kv{Key: "endpoint", Value: res.Endpoint})
 		return int(anyerr.Success)
 
 	case "stop":
@@ -989,42 +1279,18 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 		if err := a.Proxy.Stop(ctx, fs.Arg(0), fs.Arg(1)); err != nil {
 			return reportErr(err)
 		}
-		fmt.Println("stopped")
+		emitOK("stopped",
+			kv{Key: "ok", Value: true},
+			kv{Key: "state", Value: "stopped"},
+			kv{Key: "provider", Value: fs.Arg(0)},
+			kv{Key: "account", Value: fs.Arg(1)})
 		return int(anyerr.Success)
 
 	case "status":
-		fs := fsFor(rest)
-		if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 2 {
-			return usage()
-		}
-		st, err := a.Proxy.StatusContext(ctx, fs.Arg(0), fs.Arg(1))
-		if err != nil {
-			return reportErr(err)
-		}
-		out := struct {
-			Enabled  bool   `json:"enabled"`
-			Running  bool   `json:"running"`
-			Port     int    `json:"port,omitempty"`
-			Endpoint string `json:"endpoint,omitempty"`
-			PID      int    `json:"pid,omitempty"`
-		}{Enabled: st.Enabled, Running: st.Running, Port: st.Port,
-			Endpoint: st.Endpoint, PID: st.PID}
-		// Human by default like TS printProxyStatus; --json stays machine-only.
-		if globals.JSON {
-			data, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(data))
-			return int(anyerr.Success)
-		}
-		fmt.Printf("%s/%s\n", fs.Arg(0), fs.Arg(1))
-		fmt.Printf("  Enabled:        %v\n", yesNo(st.Enabled))
-		fmt.Printf("  Running:        %v\n", yesNo(st.Running))
-		if st.Endpoint != "" {
-			fmt.Printf("  Endpoint:       %s\n", st.Endpoint)
-		}
-		if st.PID > 0 {
-			fmt.Printf("  PID:            %d\n", st.PID)
-		}
-		return int(anyerr.Success)
+		return cmdProxyStatus(ctx, a, rest)
+
+	case "token":
+		return cmdProxyToken(ctx, a, rest)
 
 	case "config":
 		return cmdProxyConfig(ctx, a, rest)
@@ -1044,6 +1310,97 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 	default:
 		return usage()
 	}
+}
+
+func cmdProxyStatus(ctx context.Context, a *app.App, rest []string) int {
+	usage := func() int {
+		fmt.Fprintln(os.Stderr, "usage: anypick proxy status <provider> <account>")
+		return int(anyerr.InvalidUsage)
+	}
+	fs := fsFor(rest)
+	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 2 {
+		return usage()
+	}
+	st, err := a.Proxy.StatusContext(ctx, fs.Arg(0), fs.Arg(1))
+	if err != nil {
+		return reportErr(err)
+	}
+	// The instance bearer stays on `proxy token`. Status is the read a
+	// script and a CI log capture (ADR 0006 §6).
+	out := struct {
+		Enabled  bool   `json:"enabled"`
+		Running  bool   `json:"running"`
+		Port     int    `json:"port,omitempty"`
+		Endpoint string `json:"endpoint,omitempty"`
+		PID      int    `json:"pid,omitempty"`
+	}{Enabled: st.Enabled, Running: st.Running, Port: st.Port,
+		Endpoint: st.Endpoint, PID: st.PID}
+	if globals.JSON {
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
+		return int(anyerr.Success)
+	}
+	fmt.Printf("%s/%s\n", fs.Arg(0), fs.Arg(1))
+	fmt.Printf("  Enabled:        %v\n", yesNo(st.Enabled))
+	fmt.Printf("  Running:        %v\n", yesNo(st.Running))
+	if st.Endpoint != "" {
+		fmt.Printf("  Endpoint:       %s\n", st.Endpoint)
+	}
+	if st.PID > 0 {
+		fmt.Printf("  PID:            %d\n", st.PID)
+	}
+	return int(anyerr.Success)
+}
+
+func cmdProxyToken(ctx context.Context, a *app.App, rest []string) int {
+	usage := func() int {
+		fmt.Fprintln(os.Stderr, "usage: anypick proxy token <provider> <account> [--rotate]")
+		return int(anyerr.InvalidUsage)
+	}
+	fs := fsFor(rest)
+	rotate := fs.Bool("rotate", false, "rotate and generate a fresh API key")
+	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() < 2 {
+		return usage()
+	}
+	providerID, accountName := fs.Arg(0), fs.Arg(1)
+	isRotate := *rotate
+	if fs.NArg() >= 3 && fs.Arg(2) == "rotate" {
+		isRotate = true
+	}
+	if isRotate {
+		token, err := a.Proxy.RotateToken(ctx, providerID, accountName)
+		if err != nil {
+			return reportErr(err)
+		}
+		if globals.JSON {
+			emitOK(token,
+				kv{Key: "ok", Value: true},
+				kv{Key: "token", Value: token},
+				kv{Key: "rotated", Value: true},
+				kv{Key: "provider", Value: providerID},
+				kv{Key: "account", Value: accountName})
+			return int(anyerr.Success)
+		}
+		fmt.Println(token)
+		return int(anyerr.Success)
+	}
+	rst, err := a.Proxy.RuntimeState(ctx, providerID, accountName)
+	if err != nil {
+		return reportErr(err)
+	}
+	if rst == nil || rst.Token == "" {
+		return reportErr(anyerr.Newf("no active token for proxy (is it running?)", "PROXY_NOT_RUNNING", anyerr.WithExitCode(anyerr.NotFound)))
+	}
+	if globals.JSON {
+		emitOK(rst.Token,
+			kv{Key: "ok", Value: true},
+			kv{Key: "token", Value: rst.Token},
+			kv{Key: "provider", Value: providerID},
+			kv{Key: "account", Value: accountName})
+		return int(anyerr.Success)
+	}
+	fmt.Println(rst.Token)
+	return int(anyerr.Success)
 }
 
 // cmdAppRun is the desktop-app core (supervisor): pushes snapshots over
@@ -1113,8 +1470,10 @@ func runDesktopServer(ctx context.Context, a *app.App, in io.Reader, out io.Writ
 		Journal:           a.Journal,
 		Activation:        a.Deps,
 		Hub:               a.ProxyHub,
+		Pools:             a.PoolSvc,
 		Config:            a.Config,
 		PluginDiagnostics: a.PluginDiagnostics,
+		Environment:       currentDoctorEnvironment(),
 		ShutdownOwned: func(shutdownCtx context.Context) error {
 			return stopDesktopOwnedServices(shutdownCtx, a)
 		},

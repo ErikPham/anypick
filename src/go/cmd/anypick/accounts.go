@@ -103,7 +103,21 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 	if err := a.Accounts.Delete(ctx, providerID, name); err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("removed %s/%s\n", providerID, name)
+	// Hub sources and route pins name accounts by value; without a prune the
+	// deleted row rots into ghosts that fail requests. Best-effort after a
+	// successful delete: the account is gone either way.
+	prunedMsg := ""
+	if a.ProxyHub != nil {
+		if pruned, perr := a.ProxyHub.PruneAccount(ctx, providerID, name); perr != nil {
+			fmt.Fprintf(os.Stderr, "warning: hub cleanup for %s/%s failed: %s\n", providerID, name, perr)
+		} else if len(pruned) > 0 {
+			prunedMsg = fmt.Sprintf(" Hub references dropped: %s.", strings.Join(pruned, ", "))
+		}
+	}
+	emitOK(fmt.Sprintf("removed %s/%s%s", providerID, name, prunedMsg),
+		kv{Key: "ok", Value: true},
+		kv{Key: "provider", Value: providerID},
+		kv{Key: "name", Value: name})
 	return int(anyerr.Success)
 }
 
@@ -127,21 +141,39 @@ func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 		return usageError("usage: anypick account refresh [<provider> [<name>]]")
 	}
 	type result struct {
-		Provider string `json:"provider"`
-		Name     string `json:"name"`
-		Status   string `json:"status"`
+		Provider    string   `json:"provider"`
+		Name        string   `json:"name"`
+		Status      string   `json:"status"`
+		Suggestions []string `json:"suggestions,omitempty"`
 	}
 	var results []result
 	refreshOne := func(providerID, name string) result {
 		meta, err := a.Accounts.RefreshSnapshot(ctx, providerID, name)
 		if err != nil {
-			return result{Provider: providerID, Name: name, Status: "error: " + err.Error()}
+			row := result{Provider: providerID, Name: name, Status: "error: " + err.Error()}
+			var ae *anyerr.Error
+			if errors.As(err, &ae) {
+				row.Suggestions = append([]string(nil), ae.Suggestions...)
+			}
+			return row
 		}
 		return result{Provider: providerID, Name: meta.Name, Status: "refreshed"}
 	}
 	switch fs.NArg() {
 	case 2:
 		results = append(results, refreshOne(fs.Arg(0), fs.Arg(1)))
+	case 1:
+		// A provider alone filters: the documented usage says
+		// `[<provider> [<name>]]`, and silently refreshing every provider when
+		// one was named is the kind of surprise this CLI refuses elsewhere.
+		providerID := fs.Arg(0)
+		list, lerr := a.Accounts.List(ctx, providerID)
+		if lerr != nil {
+			return reportErr(anyerr.Wrapf(lerr, "list "+providerID, "ACCOUNT_LIST_FAILED"))
+		}
+		for _, acct := range list {
+			results = append(results, refreshOne(providerID, acct.Meta.Name))
+		}
 	default:
 		for _, providerID := range a.Providers.IDs() {
 			list, lerr := a.Accounts.List(ctx, providerID)
@@ -153,12 +185,28 @@ func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 			}
 		}
 	}
+	failed := 0
 	if wantJSON(args) {
 		jsonOut(results)
 	} else {
 		for _, r := range results {
 			fmt.Printf("%s/%s: %s\n", r.Provider, r.Name, r.Status)
+			for _, suggestion := range r.Suggestions {
+				fmt.Printf("  %s\n", suggestion)
+			}
 		}
+	}
+	for _, r := range results {
+		if strings.HasPrefix(r.Status, "error:") {
+			failed++
+		}
+	}
+	// A named account is a single contract: failure must be visible as the
+	// process exit. Bulk refresh keeps per-row status and exits 0 so a
+	// proxy-only account that cannot re-detect live auth does not fail the
+	// whole inventory.
+	if fs.NArg() == 2 && failed > 0 {
+		return int(anyerr.Operational)
 	}
 	return int(anyerr.Success)
 }
@@ -303,7 +351,9 @@ func cmdGatewayEdit(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("updated %s\n", name)
+	emitOK(fmt.Sprintf("updated %s", name),
+		kv{Key: "ok", Value: true},
+		kv{Key: "name", Value: name})
 	return int(anyerr.Success)
 }
 
@@ -330,7 +380,8 @@ func cmdGatewayRemove(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("removed %s\n", name)
+	emitOK(fmt.Sprintf("removed %s", name),
+		kv{Key: "ok", Value: true}, kv{Key: "name", Value: name})
 	return int(anyerr.Success)
 }
 
@@ -361,7 +412,8 @@ func cmdGatewayReset(ctx context.Context, a *appView, args []string) int {
 	if err != nil {
 		return reportErr(err)
 	}
-	fmt.Printf("reset %s\n", *clientID)
+	emitOK(fmt.Sprintf("reset %s", *clientID),
+		kv{Key: "ok", Value: true}, kv{Key: "client", Value: *clientID})
 	return int(anyerr.Success)
 }
 

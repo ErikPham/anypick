@@ -14,7 +14,7 @@ import (
 // It fails closed without a TTY (invariant #6): under pipes, CI, or --json
 // the caller must pass --secret or ANYPICK_SECRET instead.
 func promptSecret(label string) (string, error) {
-	if !isTTY(os.Stdin) {
+	if globals.NoInput || !isTTY(os.Stdin) {
 		return "", anyerr.Newf(
 			"Refusing to prompt for "+label+" without a terminal.",
 			"CONFIRMATION_REQUIRED",

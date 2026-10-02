@@ -61,11 +61,17 @@ func TestPlanBump(t *testing.T) {
 	}
 }
 
-// TestSecondarySourcesRoundTrip proves the Cargo and Tauri readers and writers
-// agree, and — more importantly — that they do not touch the neighbouring
-// version-looking keys that share the file.
+// TestSecondarySourcesRoundTrip proves the secondary readers and writers agree,
+// and — more importantly — that they do not touch neighbouring version-looking
+// keys that share a file.
 func TestSecondarySourcesRoundTrip(t *testing.T) {
 	root := t.TempDir()
+	mk(t, root, npmPackage, `{
+  "name": "anypick",
+  "version": "1.0.0",
+  "description": "thin launcher"
+}
+`)
 	mk(t, root, cargoToml, `[package]
 name = "anypick-desktop"
 version = "1.0.0"
