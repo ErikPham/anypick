@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
@@ -119,6 +120,7 @@ type geminiOAuthCredentials struct {
 	ExpiryDate   *int64 `json:"expiry_date"`
 	Scope        string `json:"scope"`
 	ClientID     string `json:"client_id,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 
 	nested *geminiAntigravityFile
 }
@@ -130,9 +132,11 @@ type geminiAntigravityFile struct {
 		RefreshToken string `json:"refresh_token"`
 		TokenType    string `json:"token_type"`
 		Expiry       string `json:"expiry"`
+		IDToken      string `json:"id_token,omitempty"`
 	} `json:"token"`
 	AuthMethod string `json:"auth_method"`
 	Email      string `json:"email"`
+	IDToken    string `json:"id_token,omitempty"`
 }
 
 func geminiExpired(c *geminiOAuthCredentials, now time.Time) bool {
@@ -142,9 +146,10 @@ func geminiExpired(c *geminiOAuthCredentials, now time.Time) bool {
 	return *c.ExpiryDate < now.Add(geminiOAuthRefreshSkew).UnixMilli()
 }
 
-// geminiOAuthCredsPath returns the credential file for a source: the first
-// candidate name that exists on disk, else the canonical name so an error
-// points at the file the user would expect to see.
+// geminiOAuthCredsPath returns the first candidate with a usable OAuth token.
+// If every candidate is corrupt, it still returns the first existing file so
+// the loader can report the real damaged path; otherwise it returns the
+// canonical name so a missing-file error is actionable.
 func geminiOAuthCredsPath(snapshotDir, source string) string {
 	if source == antigravityOAuthSource {
 		if env := os.Getenv("ANTIGRAVITY_OAUTH_FILE"); env != "" {
@@ -152,22 +157,37 @@ func geminiOAuthCredsPath(snapshotDir, source string) string {
 		}
 	}
 	names := geminiCredentialFilesFor(source)
+	var existing string
 	for _, name := range names {
 		path := filepath.Join(snapshotDir, name)
-		if _, err := os.Stat(path); err == nil {
-			return path
+		if _, err := os.Stat(path); err != nil {
+			continue
 		}
+		if existing == "" {
+			existing = path
+		}
+		if raw, err := os.ReadFile(path); err == nil {
+			if _, ok := parseGeminiOAuthCredentials(raw); ok {
+				return path
+			}
+		}
+	}
+	if existing != "" {
+		return existing
 	}
 	return filepath.Join(snapshotDir, names[0])
 }
 
-// geminiHasCredentials reports whether a source has any credential file.
-// Existence only: parsing belongs to the loader, and a corrupt file must read
-// as "present but broken", not as "absent".
+// geminiHasCredentials reports whether a source has a usable credential file.
+// Source inference must not let a corrupt optional file shadow a valid file
+// from the other Gemini sign-in source.
 func geminiHasCredentials(dir, source string) bool {
 	for _, name := range geminiCredentialFilesFor(source) {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return true
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err == nil {
+			if _, ok := parseGeminiOAuthCredentials(raw); ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -219,11 +239,23 @@ func parseGeminiOAuthCredentials(raw []byte) (*geminiOAuthCredentials, bool) {
 
 // geminiEmailFromCredentials extracts a display identity from either
 // credential shape: Antigravity stores the address in clear text at the
-// envelope root, gemini-cli hides it inside the id_token.
+// envelope root or inside id_token; gemini-cli hides it inside id_token.
 func geminiEmailFromCredentials(raw []byte) string {
 	var env geminiAntigravityFile
-	if json.Unmarshal(raw, &env) == nil && strings.Contains(env.Email, "@") {
-		return env.Email
+	if json.Unmarshal(raw, &env) == nil {
+		if strings.Contains(env.Email, "@") {
+			return env.Email
+		}
+		if env.IDToken != "" {
+			if email := jwtEmail(env.IDToken); email != "" {
+				return email
+			}
+		}
+		if env.Token.IDToken != "" {
+			if email := jwtEmail(env.Token.IDToken); email != "" {
+				return email
+			}
+		}
 	}
 	var flat struct {
 		IDToken string `json:"id_token"`
@@ -334,6 +366,7 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 		RefreshToken string `json:"refresh_token"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    *int   `json:"expires_in"`
+		IDToken      string `json:"id_token"`
 		Error        string `json:"error"`
 		ErrorDesc    string `json:"error_description"`
 	}
@@ -355,6 +388,11 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 	}
 	if tok.TokenType != "" {
 		updated.TokenType = tok.TokenType
+	}
+	if tok.IDToken != "" {
+		// The id_token carries the account email; keeping it is what lets the
+		// saved account show an identity instead of falling back to a hash.
+		updated.IDToken = tok.IDToken
 	}
 	updated.ExpiryDate = &expiresAt
 	if werr := writeGeminiOAuthCredentials(path, &updated); werr != nil {
@@ -409,11 +447,17 @@ func writeGeminiNestedCredentials(path string, c *geminiOAuthCredentials) error 
 		return err
 	}
 	data["token"] = body
+	// Antigravity keeps the id_token at the envelope root; it is the only
+	// place its email is readable when the `email` field is absent. A refresh
+	// that returns a new id_token must land here, not only in the nested token.
+	if c.IDToken != "" {
+		data["id_token"] = mustJSON(c.IDToken)
+	}
 	out, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(out, '\n'), 0o600)
+	return atomicfile.Write(path, append(out, '\n'), 0o600)
 }
 
 func mustJSON(v any) json.RawMessage {
@@ -438,8 +482,10 @@ func writeGeminiFlatCredentials(path string, c *geminiOAuthCredentials) error {
 	if b, err := json.Marshal(c.TokenType); err == nil && c.TokenType != "" {
 		data["token_type"] = b
 	}
-	if b, err := json.Marshal(*c.ExpiryDate); err == nil {
-		data["expiry_date"] = b
+	if c.ExpiryDate != nil {
+		if b, err := json.Marshal(*c.ExpiryDate); err == nil {
+			data["expiry_date"] = b
+		}
 	}
 	if c.RefreshToken != "" {
 		if b, err := json.Marshal(c.RefreshToken); err == nil {
@@ -451,11 +497,16 @@ func writeGeminiFlatCredentials(path string, c *geminiOAuthCredentials) error {
 			data["scope"] = b
 		}
 	}
+	if c.IDToken != "" {
+		if b, err := json.Marshal(c.IDToken); err == nil {
+			data["id_token"] = b
+		}
+	}
 	out, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(out, '\n'), 0o600)
+	return atomicfile.Write(path, append(out, '\n'), 0o600)
 }
 
 func derefInt(v *int, fallback int) int {
@@ -465,26 +516,38 @@ func derefInt(v *int, fallback int) int {
 	return *v
 }
 
+// geminiApiKeyFromSnapshot reads the key this saved account carries. A shell
+// GEMINI_API_KEY belongs to the Gemini CLI in that process, not to every
+// snapshot the proxy is serving. Using it here made an account switch send
+// one ambient key and skip the saved refresh token.
 func geminiApiKeyFromSnapshot(snapshotDir string) string {
-	if env := strings.TrimSpace(os.Getenv("GEMINI_API_KEY")); env != "" {
-		return env
-	}
-	if env := strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")); env != "" {
-		return env
-	}
 	envFile := snapshotDir
 	if !strings.HasSuffix(envFile, ".env") {
 		envFile = filepath.Join(snapshotDir, ".env")
 	}
-	if raw, err := os.ReadFile(envFile); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			line = strings.TrimSpace(line)
-			line = strings.TrimPrefix(line, "export ")
-			switch {
-			case strings.HasPrefix(line, "GEMINI_API_KEY="):
-				return strings.Trim(strings.TrimPrefix(line, "GEMINI_API_KEY="), `"`)
-			case strings.HasPrefix(line, "GOOGLE_API_KEY="):
-				return strings.Trim(strings.TrimPrefix(line, "GOOGLE_API_KEY="), `"`)
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		return ""
+	}
+	return geminiAPIKeyFromEnvFile(string(raw))
+}
+
+// geminiAPIKeyFromEnvFile accepts the two variable names the Gemini SDK
+// recognizes. Keep this parser shared by live detection and snapshot
+// resolution so a key that can proxy cannot be missed while saving an account.
+func geminiAPIKeyFromEnvFile(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "export ")
+		for _, key := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"} {
+			prefix := key + "="
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			value = strings.Trim(value, `"'`)
+			if value != "" {
+				return value
 			}
 		}
 	}
@@ -527,20 +590,33 @@ func geminiOAuthSourceFromSnapshot(snapshotDir string) string {
 	return geminiCliOAuthSource
 }
 
-func geminiCodeAssistBase(source string) *url.URL {
-	var s string
-	if env := os.Getenv("GEMINI_CODE_ASSIST_UPSTREAM"); env != "" {
-		s = env
-	} else if source == antigravityOAuthSource {
+func geminiCodeAssistBase(source string) (*url.URL, error) {
+	if overridden, ok, err := loopbackUpstreamOverride("GEMINI_CODE_ASSIST_UPSTREAM"); err != nil || ok {
+		return overridden, err
+	}
+	s := geminiCodeAssistUpstream
+	if source == antigravityOAuthSource {
 		s = antigravityCodeAssistBase
-	} else {
-		s = geminiCodeAssistUpstream
 	}
-	u, err := url.Parse(strings.TrimSuffix(s, "/"))
-	if err != nil {
-		u, _ = url.Parse(geminiCodeAssistUpstream)
+	return url.Parse(strings.TrimSuffix(s, "/"))
+}
+
+// loopbackUpstreamOverride honors a test hook only when it is an http(s)
+// loopback URL. The bearer or API key is sent to that host, so anything else
+// fails closed the same way oauthTokenEndpoint does.
+func loopbackUpstreamOverride(envVar string) (*url.URL, bool, error) {
+	env := strings.TrimSpace(os.Getenv(envVar))
+	if env == "" {
+		return nil, false, nil
 	}
-	return u
+	u, err := url.Parse(strings.TrimSuffix(env, "/"))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !isLoopbackHost(u.Hostname()) {
+		return nil, false, anyerr.Newf(
+			envVar+" must name a loopback URL (test hook); refusing to send credentials elsewhere.",
+			"INVALID_USAGE",
+			anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
+	return u, true, nil
 }
 
 // geminiKeyUpstream builds the API-key Upstream from a key already in memory.
@@ -552,10 +628,10 @@ func geminiKeyUpstream(key string) (*proxy.Upstream, error) {
 	if err != nil {
 		return nil, anyerr.Wrapf(err, "parse Gemini upstream base", "PROXY_START_FAILED")
 	}
-	if env := os.Getenv("GEMINI_API_KEY_UPSTREAM"); env != "" {
-		if ob, perr := url.Parse(strings.TrimSuffix(env, "/")); perr == nil {
-			base = ob
-		}
+	if overridden, ok, oerr := loopbackUpstreamOverride("GEMINI_API_KEY_UPSTREAM"); oerr != nil {
+		return nil, oerr
+	} else if ok {
+		base = overridden
 	}
 	return &proxy.Upstream{
 		BaseURL:         base,
@@ -584,10 +660,14 @@ func geminiUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	provider := func(ctx context.Context) (string, error) {
 		return geminiEnsureAccessToken(snapshotDir, source)
 	}
+	codeAssist, cerr := geminiCodeAssistBase(source)
+	if cerr != nil {
+		return nil, cerr
+	}
 	profile := geminiOAuthProfileFor(source)
 	target := &proxy.GeminiTarget{
 		APIKeyMode:     false,
-		CodeAssistBase: geminiCodeAssistBase(source),
+		CodeAssistBase: codeAssist,
 		IDEType:        profile.ideType,
 		UserAgent:      profile.userAgent,
 	}
@@ -598,7 +678,7 @@ func geminiUpstream(snapshotDir string) (*proxy.Upstream, error) {
 		target.AltRoute = alt
 	}
 	return &proxy.Upstream{
-		BaseURL:         geminiCodeAssistBase(source),
+		BaseURL:         codeAssist,
 		AuthHeader:      "Authorization",
 		AuthValuePrefix: "Bearer ",
 		AuthProvider:    provider,
@@ -619,9 +699,13 @@ func geminiAltRouteFromSnapshot(snapshotDir, source string) *proxy.GeminiAltRout
 	if _, err := loadGeminiOAuthCredentials(altPath, altSource); err != nil {
 		return nil
 	}
+	altBase, aerr := geminiCodeAssistBase(altSource)
+	if aerr != nil {
+		return nil
+	}
 	altProfile := geminiOAuthProfileFor(altSource)
 	return &proxy.GeminiAltRoute{
-		CodeAssistBase: geminiCodeAssistBase(altSource),
+		CodeAssistBase: altBase,
 		IDEType:        altProfile.ideType,
 		UserAgent:      altProfile.userAgent,
 		AuthProvider: func(ctx context.Context) (string, error) {

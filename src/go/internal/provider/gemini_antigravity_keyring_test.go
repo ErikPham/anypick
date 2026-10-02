@@ -2,6 +2,8 @@ package provider
 
 import (
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +24,9 @@ func TestMain(m *testing.M) {
 	antigravityKeyringExec = func(args ...string) (string, error) {
 		return "", exec.ErrNotFound
 	}
+	// Restore tests use a fake provider environment; never mutate the
+	// developer's real Keychain from the package test binary.
+	AntigravityKeyringPut = func(*geminiAntigravityFile) error { return nil }
 	os.Exit(m.Run())
 }
 
@@ -33,6 +38,14 @@ func stubAntigravityKeyring(t *testing.T, fn func(args ...string) (string, error
 		antigravityKeyringExec = func(args ...string) (string, error) {
 			return "", exec.ErrNotFound
 		}
+	})
+}
+
+func stubAntigravityKeyringPut(t *testing.T, fn func(*geminiAntigravityFile) error) {
+	t.Helper()
+	AntigravityKeyringPut = fn
+	t.Cleanup(func() {
+		AntigravityKeyringPut = func(*geminiAntigravityFile) error { return nil }
 	})
 }
 
@@ -162,5 +175,117 @@ func TestGeminiBackupFallsBackToTheOSKeyring(t *testing.T) {
 	}
 	if !strings.Contains(info.Notes, "keyring") {
 		t.Fatalf("notes = %q, want the keyring source named", info.Notes)
+	}
+}
+
+func TestGeminiBackupAddsKeyringAsAlternateToGeminiCLI(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_OAUTH_SOURCE", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "oauth_creds.json"), []byte(
+		`{"access_token":"cli-access","refresh_token":"cli-refresh","token_type":"Bearer"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubAntigravityKeyring(t, func(args ...string) (string, error) {
+		if args[len(args)-1] != "-w" {
+			return "", nil
+		}
+		return antigravityKeyringPrefix +
+			base64.StdEncoding.EncodeToString([]byte(antigravityKeyringTestPayload)), nil
+	})
+
+	dest := t.TempDir()
+	if _, err := newGemini(home).Backup(dest); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "oauth_creds.json")); err != nil {
+		t.Fatalf("Gemini CLI credential missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "antigravity_oauth.json")); err != nil {
+		t.Fatalf("Antigravity fallback credential missing: %v", err)
+	}
+	up, err := geminiUpstream(dest)
+	if err != nil {
+		t.Fatalf("geminiUpstream: %v", err)
+	}
+	if up.Gemini == nil || up.Gemini.AltRoute == nil {
+		t.Fatal("both live sources must configure OAuth fallback")
+	}
+}
+
+// The envelope a refreshed Antigravity login actually writes: access token
+// plus an id_token. Hex-encoding it for `security -i -X` is ~4.5KB, past the
+// tool's line buffer, so the write exits 1 on an unlocked keychain and the
+// rollback write fails the same way. `-w` of the same value fits.
+func TestAntigravityKeyringWriteKeepsAnIDTokenOffTheLineLimit(t *testing.T) {
+	payload := &geminiAntigravityFile{}
+	payload.Token.AccessToken = strings.Repeat("a", 260)
+	payload.Token.RefreshToken = strings.Repeat("r", 103)
+	payload.Token.TokenType = "Bearer"
+	payload.Token.Expiry = "2026-09-29T15:25:18.88+07:00"
+	payload.Email = "user@example.com"
+	payload.IDToken = strings.Repeat("i", 1120)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := antigravityKeyringPrefix + base64.StdEncoding.EncodeToString(raw)
+	stdin, args := antigravityDarwinInvocation(value)
+	if stdin == "" || args != nil {
+		t.Fatal("id_token envelope took the argv path; stdin -w still fits")
+	}
+	if len(stdin) > securityStdinLimit {
+		t.Fatalf("stdin command is %d bytes, limit %d", len(stdin), securityStdinLimit)
+	}
+	if strings.Contains(stdin, " -X ") {
+		t.Fatal("stdin command uses -X, which hex-doubles the envelope past the line buffer")
+	}
+	if !strings.Contains(stdin, " -w "+value) {
+		t.Fatal("stdin command is not the go-keyring -w envelope")
+	}
+	hexForm := "add-generic-password -U -s \"gemini\" -a \"antigravity\" -X " +
+		hex.EncodeToString([]byte(value)) + "\n"
+	if len(hexForm) <= securityStdinLimit {
+		t.Fatalf("fixture is %d bytes as -X, want it past the limit so the regression stays real", len(hexForm))
+	}
+}
+
+func TestAntigravityKeyringWriteUsesArgvWhenStdinWouldTruncate(t *testing.T) {
+	value := antigravityKeyringPrefix + strings.Repeat("A", securityStdinLimit)
+	stdin, args := antigravityDarwinInvocation(value)
+	if stdin != "" {
+		t.Fatalf("oversized value stayed on stdin (%d bytes)", len(stdin))
+	}
+	if len(args) < 2 || args[len(args)-2] != "-X" {
+		t.Fatalf("argv = %v, want a trailing -X", args)
+	}
+	decoded, err := hex.DecodeString(args[len(args)-1])
+	if err != nil || string(decoded) != value {
+		t.Fatalf("argv hex did not round-trip: %v", err)
+	}
+	for _, arg := range args[:len(args)-1] {
+		if strings.Contains(arg, value[:24]) {
+			t.Fatal("plaintext envelope leaked into argv")
+		}
+	}
+}
+
+func TestSecurityFailureHidesTruncatedSecret(t *testing.T) {
+	err := securityFailure(
+		os.ErrClosed,
+		[]byte("security: unknown command \"go-keyring-base64:SECRET\""))
+	if strings.Contains(err.Error(), "SECRET") || strings.Contains(err.Error(), antigravityKeyringPrefix) {
+		t.Fatalf("truncated secret leaked into error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("error = %v, want the truncation reason", err)
 	}
 }

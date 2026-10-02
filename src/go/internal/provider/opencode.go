@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
@@ -9,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
+	"github.com/outof0/anypick/go/internal/catalog"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -23,7 +26,8 @@ import (
 // upstream has one base and no catalog, so the port keeps that fallback rule
 // and reads the entitlement from the credential itself: a key stored under the
 // opencode-go service is the subscription key. Per-model routing, `public`
-// mode and OPENCODE_PROXY_UPSTREAM are not ported (src/go/PARITY.md).
+// mode and OPENCODE_PROXY_UPSTREAM are not ported (the parity trackers that
+// recorded this are retired — see src/go/README.md).
 const (
 	openCodeZenBaseURL      = "https://opencode.ai/zen/v1"
 	openCodeZenAnthropicURL = "https://opencode.ai/zen"
@@ -172,10 +176,8 @@ func (p *opencode) Restore(srcDir string) error {
 		return err
 	}
 	dest := p.authPath()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, data, 0o600)
+	// dest is the user's live auth file (ADR 0004): replace by rename.
+	return atomicfile.Write(dest, data, 0o600)
 }
 
 func (p *opencode) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
@@ -238,7 +240,7 @@ func (p *opencode) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) 
 	if err != nil {
 		return nil, anyerr.Wrapf(err, "parse OpenCode Anthropic base", "PROXY_START_FAILED")
 	}
-	return &proxy.Upstream{
+	up := &proxy.Upstream{
 		BaseURL:         base,
 		Auth:            key,
 		AuthHeader:      "Authorization",
@@ -248,7 +250,14 @@ func (p *opencode) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) 
 			AuthHeader:      "Authorization",
 			AuthValuePrefix: "Bearer ",
 		},
-	}, nil
+	}
+	up.ModelDiscovery = func(ctx context.Context) ([]string, error) {
+		return catalog.FetchLiveModels(ctx, "openai", &catalog.FetchContext{
+			Endpoint: openAI, APIKey: key,
+			AuthHeader: "Authorization", AuthValuePrefix: "Bearer ",
+		})
+	}
+	return up, nil
 }
 
 func (opencode *opencode) ShortName() string { return "OpenCode" }

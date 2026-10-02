@@ -25,8 +25,12 @@ type declaredLogin struct {
 var declaredLoginMethods = map[string]declaredLogin{
 	"claude": {methods: []string{"claude-subscription"}, provenance: "official"},
 	"codex":  {methods: []string{"chatgpt-subscription"}, provenance: "official"},
-	"grok":   {methods: []string{"grok-subscription"}, provenance: "official"},
-	"kiro":   {methods: []string{"builder-id"}, provenance: "official"},
+	"gemini": {
+		methods:    []string{"gemini-subscription", "antigravity-subscription"},
+		provenance: "official",
+	},
+	"grok": {methods: []string{"grok-subscription"}, provenance: "official"},
+	"kiro": {methods: []string{"builder-id"}, provenance: "official"},
 	// Two sites, one preferred: a token issued by one host is rejected by the
 	// other. Community, not official — the device flow behind these is
 	// undocumented and Tencent can change it without notice.
@@ -34,12 +38,19 @@ var declaredLoginMethods = map[string]declaredLogin{
 		methods:    []string{"workbuddy-international", "codebuddy-china"},
 		provenance: "community",
 	},
+	"zai": {methods: []string{"zai-subscription"}, provenance: "official"},
+	// One method: the WorkOS device flow is Cline's own, but reusing its
+	// tokens from another harness is undocumented. Community, not official.
+	"cline": {methods: []string{"cline-pass"}, provenance: "community"},
 }
 
 func TestLoginMethodsDeclaredPerProvider(t *testing.T) {
 	reg := NewRegistry()
 	home := t.TempDir()
 	if err := RegisterBuiltin(reg, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterBuiltinCompatibles(reg, home); err != nil {
 		t.Fatal(err)
 	}
 	seen := make(map[string]bool, len(declaredLoginMethods))

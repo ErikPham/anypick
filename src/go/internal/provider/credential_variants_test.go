@@ -28,9 +28,9 @@ func TestCompatibleIdentityGetters(t *testing.T) {
 		t.Fatal("Definition() must echo the inert definition")
 	}
 
-	// AccountAdapter: only claude/codex may accept this source.
+	// AccountAdapter: claude, codex, pi and omp may accept this source.
 	adapter := pv.AccountAdapter("main", false)
-	for _, clientID := range []string{"claude", "codex"} {
+	for _, clientID := range []string{"claude", "codex", "pi", "omp"} {
 		if got := adapter.TransportFor(clientID); got != transport.ManagedBuiltinProxy {
 			t.Fatalf("TransportFor(%s) = %v", clientID, got)
 		}
@@ -94,7 +94,7 @@ func TestIdentityFromTokenFileVariants(t *testing.T) {
 	}
 }
 
-func TestSameStringMapAndHexEncode(t *testing.T) {
+func TestSameStringMap(t *testing.T) {
 	if !sameStringMap(nil, nil) || !sameStringMap(map[string]string{}, map[string]string{}) {
 		t.Fatal("empty maps are equal")
 	}
@@ -110,9 +110,6 @@ func TestSameStringMapAndHexEncode(t *testing.T) {
 	}
 	if sameStringMap(map[string]string{"k": ""}, map[string]string{}) {
 		t.Fatal("empty value is still a key")
-	}
-	if got := hexEncode("abc"); got != "616263" {
-		t.Fatalf("hexEncode: %q", got)
 	}
 }
 

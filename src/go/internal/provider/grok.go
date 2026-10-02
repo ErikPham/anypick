@@ -183,6 +183,18 @@ func (p *grok) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 
 func (grok *grok) ShortName() string { return "Grok" }
 
+// GatewayInfo makes Grok's live-session gateway capability provider-owned.
+// The gateway has no API-key field because the provider refreshes its OIDC
+// session per request.
+func (p *grok) GatewayInfo() GatewayInfo {
+	return GatewayInfo{
+		ProvidesEndpoint: true,
+		RequiresAPIKey:   false,
+		DefaultEndpoint:  "https://cli-chat-proxy.grok.com",
+		Kind:             "hosted",
+	}
+}
+
 // ResolveUpstream points the engine's shared proxy at cli-chat-proxy.grok.com
 // using this account's saved OIDC session. The token is short-lived, so it is
 // supplied per request by grokEnsureAccessToken (OIDC refresh) rather than

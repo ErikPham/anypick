@@ -5,6 +5,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/catalog"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -37,7 +39,10 @@ type EndpointProfile struct {
 	AnthropicAuth   AuthScheme `json:"anthropicAuth,omitempty"` // default x-api-key
 }
 
-// CredentialDefinition mirrors CompatibleCredentialDefinition.
+// CredentialDefinition describes a provider-owned credential product. The
+// compatible-provider path uses its endpoint profiles for upstream routing;
+// native providers may publish the same picker shape while keeping routing
+// semantics in their own implementation.
 type CredentialDefinition struct {
 	Kind            string            `json:"kind"`
 	Label           string            `json:"label"`
@@ -105,7 +110,7 @@ func (p *Compatible) CanProxy() bool      { return true }
 // 8080).
 func (p *Compatible) DefaultProxyPort() int { return p.Def.DefaultProxyPort }
 
-// AccountAdapter mirrors proxySource: ONLY claude and codex ride the builtin
+// AccountAdapter mirrors proxySource: claude, codex, pi and omp ride the builtin
 // proxy — every other client is unsupported regardless of protocols declared.
 func (p *Compatible) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	a := transport.Adapter{}
@@ -122,10 +127,12 @@ func (p *Compatible) AccountAdapter(accountName string, _ bool) transport.Adapte
 		RequiresNativeAuthWrite: false,
 	}
 	a.TransportFor = func(clientID string) transport.Capability {
-		if clientID == "claude" || clientID == "codex" {
+		switch clientID {
+		case "claude", "codex", "pi", "omp":
 			return transport.ManagedBuiltinProxy
+		default:
+			return transport.Unsupported
 		}
-		return transport.Unsupported
 	}
 	return a
 }
@@ -170,7 +177,18 @@ func credentialClassOf(class string) string {
 	}
 }
 
-// BackupInputer is the optional capability for credential-input saves.
+// CredentialDefinitions returns the public credential products for UI and
+// protocol pickers. It contains no secret material.
+func (p *Compatible) CredentialDefinitions() []CredentialDefinition {
+	out := make([]CredentialDefinition, len(p.Def.Credentials))
+	copy(out, p.Def.Credentials)
+	for i := range out {
+		out[i].Profiles = append([]EndpointProfile(nil), p.Def.Credentials[i].Profiles...)
+	}
+	return out
+}
+
+// BackupInput is the optional capability for credential-input saves.
 func (p *Compatible) BackupInput(kind, secret, profile string, destDir string) (SnapshotInfo, error) {
 	cred := p.credentialDefinition(kind)
 	if cred == nil {
@@ -255,6 +273,9 @@ func (p *Compatible) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error
 		// (backend.ts isExhausted's definition.quotaErrorPatterns branch).
 		QuotaErrorPatterns: p.Def.QuotaErrorPatterns,
 	}
+	// Compatible providers expose an OpenAI-shaped model endpoint even when
+	// their static definition also carries a small convenience list.
+	up.ModelDiscovery = compatibleModelDiscovery(up, ep.OpenAIBase)
 	// The beta CLI's sqlite store is the login that exists right now; a saved
 	// mirror can predate the current subscription. When this gateway is backed
 	// by an OpenCode platform key, the live one outranks the stored secret.
@@ -281,6 +302,23 @@ func (p *Compatible) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error
 		up.TranslateAnthropic = true
 	}
 	return up, nil
+}
+
+func compatibleModelDiscovery(up *proxy.Upstream, endpoint string) func(context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
+		key := up.Auth
+		if up.AuthProvider != nil {
+			refreshed, err := up.AuthProvider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			key = refreshed
+		}
+		return catalog.FetchLiveModels(ctx, "openai", &catalog.FetchContext{
+			Endpoint: endpoint, APIKey: key,
+			AuthHeader: up.AuthHeader, AuthValuePrefix: up.AuthValuePrefix,
+		})
+	}
 }
 
 func schemeHeaders(scheme AuthScheme) (header, prefix string) {
@@ -702,8 +740,35 @@ func BuiltinDefinitions() []CompatibleDefinition {
 }
 
 // RegisterBuiltinCompatibles wires every built-in compatible vendor.
-func RegisterBuiltinCompatibles(r *Registry) error {
+//
+// Z.ai is the one exception to the otherwise declarative table: its coding
+// subscription is also owned by the ZCode desktop app, so it needs a native
+// detector and browser login while retaining the compatible API-key product.
+// The optional home argument keeps the helper source-compatible with the
+// isolated registry fixtures while allowing the app composition root to pass
+// its real user home.
+func RegisterBuiltinCompatibles(r *Registry, homes ...string) error {
+	var zaiHome string
+	if len(homes) > 0 {
+		zaiHome = homes[0]
+	} else {
+		var err error
+		zaiHome, err = os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+	}
 	for _, def := range BuiltinDefinitions() {
+		if def.ID == "zai" {
+			p, err := newZAI(zaiHome)
+			if err != nil {
+				return err
+			}
+			if err := r.Register(p); err != nil {
+				return err
+			}
+			continue
+		}
 		p, err := NewCompatible(def)
 		if err != nil {
 			return err

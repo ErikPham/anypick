@@ -13,6 +13,7 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/atomicfile"
+	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
@@ -314,6 +315,169 @@ func validateGrokTokenEndpoint(value string) (string, bool) {
 	return u.String(), true
 }
 
+// grokSanitizeOpenAIBody removes the OpenAI reasoning_effort knob emitted by
+// subscription clients such as DSH. Grok's subscription chat endpoint rejects
+// that parameter even when the selected model is a reasoning variant; its
+// native thinking field remains supported and model selection is left intact.
+func grokSanitizeOpenAIBody(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	delete(payload, "reasoning_effort")
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// grokSanitizeAnthropicBody normalizes tool schemas for Grok's strict
+// validator. Claude Code omits `required` (or emits it null) when no property
+// is required — valid JSON Schema, but Grok rejects the request with
+// `/required: null is not of type "array"`. An empty required list is the
+// semantically identical valid shape, so null is rewritten to [] and a
+// missing key is inserted, at any depth of each tool's input_schema.
+// Anything that is not valid JSON passes through untouched.
+func grokSanitizeAnthropicBody(body []byte) []byte {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	changed := fixGrokNullRequired(payload)
+	if fixGrokMissingRequired(payload) {
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// fixGrokMissingRequired inserts `"required": []` into every object schema
+// under a tool's input_schema that lacks the key. Only schema subtrees are
+// touched: the walk starts at tools[].input_schema, and a node counts as an
+// object schema when it declares type object or carries properties. Request
+// envelopes, messages, and content blocks are not schemas and keep their
+// shape.
+func fixGrokMissingRequired(v any) bool {
+	root, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	tools, _ := root["tools"].([]any)
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		if tool == nil {
+			continue
+		}
+		schema, _ := tool["input_schema"].(map[string]any)
+		if schema == nil {
+			continue
+		}
+		if ensureGrokRequired(schema) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// ensureGrokRequired reports whether it inserted anything.
+func ensureGrokRequired(schema map[string]any) bool {
+	changed := false
+	if _, ok := schema["required"]; !ok && isGrokObjectSchema(schema) {
+		schema["required"] = []any{}
+		changed = true
+	}
+	for key, val := range schema {
+		switch key {
+		case "properties", "$defs", "definitions":
+			if children, ok := val.(map[string]any); ok {
+				for _, child := range children {
+					if sub, ok := child.(map[string]any); ok {
+						if ensureGrokRequired(sub) {
+							changed = true
+						}
+					}
+				}
+			}
+		case "items", "additionalProperties", "contains":
+			switch sub := val.(type) {
+			case map[string]any:
+				if ensureGrokRequired(sub) {
+					changed = true
+				}
+			case []any:
+				for _, item := range sub {
+					if m, ok := item.(map[string]any); ok {
+						if ensureGrokRequired(m) {
+							changed = true
+						}
+					}
+				}
+			}
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			if items, ok := val.([]any); ok {
+				for _, item := range items {
+					if m, ok := item.(map[string]any); ok {
+						if ensureGrokRequired(m) {
+							changed = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// isGrokObjectSchema reports whether a schema node describes an object, the
+// only shape `required` is meaningful on.
+func isGrokObjectSchema(schema map[string]any) bool {
+	if typ, ok := schema["type"].(string); ok {
+		return typ == "object"
+	}
+	if types, ok := schema["type"].([]any); ok {
+		for _, t := range types {
+			if s, _ := t.(string); s == "object" {
+				return true
+			}
+		}
+	}
+	_, hasProperties := schema["properties"]
+	return hasProperties
+}
+
+// fixGrokNullRequired reports whether it replaced anything.
+func fixGrokNullRequired(v any) bool {
+	changed := false
+	switch node := v.(type) {
+	case map[string]any:
+		for key, val := range node {
+			if key == "required" && val == nil {
+				node[key] = []any{}
+				changed = true
+				continue
+			}
+			if fixGrokNullRequired(val) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, item := range node {
+			if fixGrokNullRequired(item) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
 // setRawString updates one key in the on-disk session object, omitting it when
 // empty (ports the undefined-key omission of JSON.stringify on the TS raw).
 func setRawString(m map[string]json.RawMessage, key, val string) {
@@ -385,11 +549,19 @@ func grokUpstream(authPath string) (*proxy.Upstream, error) {
 	}
 	provider := func(ctx context.Context) (string, error) { return grokEnsureAccessToken(authPath) }
 	return &proxy.Upstream{
-		BaseURL:         base,
-		AuthHeader:      "Authorization",
-		AuthValuePrefix: "Bearer ",
-		AuthProvider:    provider,
-		ExtraHeaders:    headers,
+		BaseURL:            base,
+		AuthHeader:         "Authorization",
+		AuthValuePrefix:    "Bearer ",
+		AuthProvider:       provider,
+		ExtraHeaders:       headers,
+		SanitizeOpenAIBody: grokSanitizeOpenAIBody,
+		// Claude Code emits tool schemas with `"required": null` when no
+		// property is required; Grok's endpoint validates strictly and 400s
+		// (`/required: null is not of type "array"`). An empty required list
+		// is the semantically identical valid shape.
+		SanitizeAnthropicBody: grokSanitizeAnthropicBody,
+		ModelDiscovery:        grokModelDiscovery(authPath),
+		MapModel:              grokMapModel,
 		// Native Anthropic target on the same base — cli-chat-proxy.grok.com
 		// speaks both shapes (ports the default native /v1/messages path).
 		Anthropic: &proxy.UpstreamTarget{
@@ -399,4 +571,113 @@ func grokUpstream(authPath string) (*proxy.Upstream, error) {
 			AuthProvider:    provider,
 		},
 	}, nil
+}
+
+// grokMapModel translates client-requested models (notably Codex native alias
+// slugs such as gpt-5.6-sol) into Grok's subscription models.
+func grokMapModel(model string) string {
+	target := strings.TrimSpace(os.Getenv("GROK_DEFAULT_MODEL"))
+	if target == "" {
+		target = "grok-4.7"
+	}
+	switch model {
+	case "gpt-5.6-sol", "gpt-5.6", "gpt-5", "gpt-default", "gpt":
+		return target
+	case "gpt-5.6-terra", "gpt-balanced", "gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2":
+		return "grok-4.5"
+	case "gpt-5.6-luna", "gpt-fast", "gpt-4.1":
+		return "grok-4.3"
+	default:
+		if strings.HasPrefix(model, "gpt-") {
+			return target
+		}
+		return model
+	}
+}
+
+// grokModelDiscovery is the provider-owned live catalog for a Grok
+// subscription account. Without it DiscoverModels always returns
+// ErrModelDiscoveryUnsupported, so the desktop picker publishes zero options
+// (editable=false, "No models were discovered") and a Claude binding plans
+// with no model pin — Claude Code then sends its native claude-* ids to a
+// Grok upstream that only serves grok-* and every request fails.
+//
+// Live first: GET /v1/models on the subscription base with the current OIDC
+// token and the vendor headers the proxy itself sends. Static fallback: the
+// vendor-published grok-api list (the same fallback `anypick models` uses),
+// which the proxy forwards verbatim and Grok serves. A dead login still
+// publishes the static list so the user can pick a model; the proxy itself
+// keeps failing fast on unusable snapshots and per-request on expired tokens.
+func grokModelDiscovery(authPath string) func(context.Context) ([]string, error) {
+	return func(ctx context.Context) ([]string, error) {
+		if token, err := grokEnsureAccessToken(authPath); err == nil && token != "" {
+			if live, lerr := fetchGrokLiveModels(ctx, token); lerr == nil && len(live) > 0 {
+				return live, nil
+			}
+		}
+		if static := discovery.StaticModels("grok-api"); len(static) > 0 {
+			return static, nil
+		}
+		return nil, fmt.Errorf("provider returned an empty model catalog")
+	}
+}
+
+// fetchGrokLiveModels lists the subscription's entitled models in OpenAI
+// shape. Bounded: the endpoint is outside our trust boundary and its payload
+// must never flow verbatim into errors, logs, or clients.
+func fetchGrokLiveModels(ctx context.Context, token string) ([]string, error) {
+	base := strings.TrimRight(grokDefaultUpstream, "/")
+	// GROK_MODELS_ENDPOINT overrides discovery for tests. Like the OIDC hook
+	// it honors loopback URLs only and fails closed otherwise, so a poisoned
+	// environment cannot redirect the Bearer token elsewhere.
+	if v := strings.TrimSpace(os.Getenv("GROK_MODELS_ENDPOINT")); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !isLoopbackHost(u.Hostname()) {
+			return nil, fmt.Errorf("GROK_MODELS_ENDPOINT must name a loopback URL (test hook)")
+		}
+		base = strings.TrimRight(v, "/")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet,
+		base+"/v1/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-grok-client-version", grokClientVersion)
+	req.Header.Set("x-grok-client-identifier", "anypick-grok-proxy")
+	req.Header.Set("user-agent", "anypick-grok-proxy/"+grokClientVersion)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("grok models HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	var shape struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &shape) != nil {
+		return nil, fmt.Errorf("invalid Grok models JSON")
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, entry := range shape.Data {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
 }

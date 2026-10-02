@@ -27,18 +27,34 @@ package provider
 //  2. So the secret is read only where the user is present and has asked for
 //     exactly this: Backup, i.e. `add account`.
 //
-// Write-back is deliberately not ported. go-keyring's item is a mirror the
-// IDE owns; the reference only rewrites it inside
-// assertAntigravityStateSafeToMutate, which refuses while Antigravity runs.
-// Half-porting that guard is worse than not writing at all.
+// Writes are performed only as part of an explicit account restore/login flow,
+// never from routine detection. That keeps background polling free of Keychain
+// prompts while allowing an intentional switch to update the mirror that older
+// Antigravity builds still read.
+//
+// The write goes through the same `security -i` + `add-generic-password -U -w`
+// shape go-keyring uses. `-X` (hex) on that stdin line looks equivalent and
+// keeps the secret off argv, but hex doubles the line: an ordinary envelope
+// (access token plus id_token) is ~2.3KB as `-w` and ~4.5KB as `-X`.
+// /usr/bin/security reads one interactive command into a 4096-byte buffer.
+// Past that it stores a truncated password and exits 1 ("unknown command"
+// plus the leftover tail). A Gemini switch then fails, and the rollback
+// write fails the same way, on a keychain that is already unlocked.
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
 )
+
+// securityStdinLimit is the interactive line buffer in /usr/bin/security.
+// A command of 4096 bytes including the trailing newline still round-trips;
+// 4098 is split and the tool exits 1. go-keyring refuses at the same bound.
+const securityStdinLimit = 4096
 
 const (
 	antigravityKeyringService = "gemini"
@@ -60,6 +76,137 @@ var antigravityKeyringExec = func(args ...string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// GeminiAntigravityFile names the payload AntigravityKeyringPut receives.
+//
+// It is an alias, not a new type, and it exists for one reason: a replacement
+// written from another package has to spell its parameter type, and cannot name
+// an unexported one. The alternative — renaming the type — is 31 mechanical
+// edits across 9 files, which is a lot of diff to buy a name.
+type GeminiAntigravityFile = geminiAntigravityFile
+
+// AntigravityKeyringPut updates the existing go-keyring item in place. The
+// production implementation keeps the credential off argv for any envelope
+// that fits in security's stdin line; a larger one is passed as hex -X
+// because a longer stdin line is truncated.
+//
+// It is a variable, not a function, so a test can substitute a fake — and it is
+// exported because that substitution has to be possible from outside this
+// package. The item it writes is *global*: service "gemini", account
+// "antigravity", the same entry the Antigravity IDE uses. Unlike every other
+// Antigravity mirror it is not scoped by HOME or ANYPICK_HOME, so the temp
+// directories a test sets up do not protect it.
+//
+// This package guards itself in TestMain. A test in another package that drives
+// the real activation path cannot reach that guard — internal/accounts does
+// exactly this — and without a reachable seam it overwrites the developer's own
+// Antigravity credential with fixture tokens. Exporting the seam is what lets
+// those test binaries install the same guard.
+var AntigravityKeyringPut = writeAntigravityKeyring
+
+func writeAntigravityKeyring(payload *geminiAntigravityFile) error {
+	if payload == nil || strings.TrimSpace(payload.Token.RefreshToken) == "" {
+		return fmt.Errorf("refusing to write Antigravity Keychain without a refresh token")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		value := antigravityKeyringPrefix + base64.StdEncoding.EncodeToString(raw)
+		stdin, args := antigravityDarwinInvocation(value)
+		var runErr error
+		if stdin != "" {
+			runErr = runSecurityStdin(stdin)
+		} else {
+			// Only reached when -w itself would overflow the 4096-byte line.
+			// argv is the channel security still accepts; -X keeps the
+			// envelope out of a plaintext `ps` listing. Truncating stdin
+			// instead corrupts the item and fails the switch.
+			runErr = runSecurityArgs(args)
+		}
+		if runErr != nil {
+			return fmt.Errorf("write Antigravity Keychain item: %w", runErr)
+		}
+		return nil
+	case "linux":
+		cmd := exec.Command("secret-tool", "store", "--label=gemini",
+			"service", antigravityKeyringService, "username", antigravityKeyringAccount)
+		cmd.Stdin = strings.NewReader(string(raw))
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("write Antigravity Secret Service item: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("writing the Antigravity credential is not supported on %s", runtime.GOOS)
+	}
+}
+
+// antigravityDarwinInvocation chooses how to pass value to
+// add-generic-password. stdin is the go-keyring -w command when it fits in
+// security's line buffer; otherwise args is the argv form (service and
+// account in the clear, the envelope hex-encoded as -X).
+func antigravityDarwinInvocation(value string) (stdin string, args []string) {
+	command := fmt.Sprintf(
+		"add-generic-password -U -s %s -a %s -w %s\n",
+		quoteSecurity(antigravityKeyringService),
+		quoteSecurity(antigravityKeyringAccount),
+		quoteSecurity(value))
+	if len(command) <= securityStdinLimit {
+		return command, nil
+	}
+	return "", []string{
+		"add-generic-password", "-U",
+		"-s", antigravityKeyringService,
+		"-a", antigravityKeyringAccount,
+		"-X", hex.EncodeToString([]byte(value)),
+	}
+}
+
+func runSecurityStdin(command string) error {
+	cmd := exec.Command("/usr/bin/security", "-i")
+	cmd.Stdin = strings.NewReader(command)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return securityFailure(err, out)
+	}
+	return nil
+}
+
+func runSecurityArgs(args []string) error {
+	cmd := exec.Command("/usr/bin/security", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return securityFailure(err, out)
+	}
+	return nil
+}
+
+// securityFailure attaches a keychain diagnostic without the secret.
+// A truncated `security -i` line reports the leftover bytes as
+// `unknown command "<tail>"`, and that tail is the credential.
+func securityFailure(err error, output []byte) error {
+	msg := strings.TrimSpace(string(output))
+	if msg == "" || strings.Contains(msg, "unknown command") || strings.Contains(msg, antigravityKeyringPrefix) {
+		if strings.Contains(msg, "unknown command") {
+			return fmt.Errorf("%w (security truncated the command)", err)
+		}
+		return err
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > 240 {
+		msg = msg[:240]
+	}
+	return fmt.Errorf("%w (%s)", err, msg)
+}
+
+// restoreAntigravityKeyring is the mutation boundary used by the provider.
+// Keeping it separate from the read probe makes it impossible for routine
+// detection to accidentally prompt or overwrite the user's credential store.
+func restoreAntigravityKeyring(payload *geminiAntigravityFile) error {
+	return AntigravityKeyringPut(payload)
 }
 
 // antigravityKeyringExists reports whether the item is present, without

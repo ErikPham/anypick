@@ -120,13 +120,12 @@ func TestCompatibleBackupInputAndAdapter(t *testing.T) {
 		t.Fatal("native Backup must fail with NO_LIVE_AUTH")
 	}
 
-	// Pairing: only claude/codex ride the builtin proxy (proxySource).
+	// Pairing: claude, codex, pi and omp ride the builtin proxy (proxySource).
 	adapter := pv.AccountAdapter("work", false)
-	if got := adapter.TransportFor("claude"); got != "managed_builtin_proxy" {
-		t.Errorf("claude = %s", got)
-	}
-	if got := adapter.TransportFor("codex"); got != "managed_builtin_proxy" {
-		t.Errorf("codex = %s", got)
+	for _, client := range []string{"claude", "codex", "pi", "omp"} {
+		if got := adapter.TransportFor(client); got != "managed_builtin_proxy" {
+			t.Errorf("%s = %s", client, got)
+		}
 	}
 	if got := adapter.TransportFor("gemini"); got != "unsupported" {
 		t.Errorf("gemini = %s, want unsupported", got)

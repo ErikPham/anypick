@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/browserlogin"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -34,17 +35,21 @@ func (p *codex) AccountAdapter(accountName string, proxyEnabled bool) transport.
 // loginCommand mirrors CodexProvider.loginCommand (src/providers/codex.ts).
 func (p *codex) loginCommand() browserlogin.Command {
 	names := []string{"codex"}
+	extraPaths := []string{
+		filepath.Join(expandHome(p.home), ".local", "bin", "codex"),
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+	}
 	if env := os.Getenv("CODEX_BINARY"); env != "" {
-		names = []string{env, "codex"}
+		// An explicit test/user override must win over a host-installed Codex
+		// found in ExtraPaths; otherwise a profile login can silently launch a
+		// different binary than the caller selected.
+		extraPaths = append([]string{env}, extraPaths...)
 	}
 	return browserlogin.Command{
-		Names: names,
-		ExtraPaths: []string{
-			filepath.Join(expandHome(p.home), ".local", "bin", "codex"),
-			"/opt/homebrew/bin/codex",
-			"/usr/local/bin/codex",
-		},
-		Args: []string{"login"},
+		Names:      names,
+		ExtraPaths: extraPaths,
+		Args:       []string{"login"},
 	}
 }
 
@@ -215,10 +220,9 @@ func (p *codex) Restore(srcDir string) error {
 		return err
 	}
 	dest := p.authPath()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(dest, data, 0o600)
+	// dest is the user's live ~/.codex/auth.json (ADR 0004): replace by
+	// rename, never truncate in place.
+	return atomicfile.Write(dest, data, 0o600)
 }
 
 // PreflightRestore mirrors CodexProvider.preflightRestore: refuse before any
@@ -240,6 +244,80 @@ func (p *codex) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 		return SnapshotInfo{}, nil
 	}
 	return codexSnapshotInfo(parsed), nil
+}
+
+// SnapshotMatchesLive compares the stable login (account id + id-token
+// identity), ignoring rotated access/refresh material. The Codex desktop app
+// keeps its own signed-in account, so a mismatch here is how callers know
+// the quota read from auth.json belongs to a different login than the
+// active one — and must be suppressed rather than displayed on it.
+func (p *codex) SnapshotMatchesLive(srcDir string) (bool, bool, error) {
+	liveRaw, err := os.ReadFile(p.authPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+	snapRaw, err := os.ReadFile(filepath.Join(srcDir, "auth.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+	var live, snap map[string]json.RawMessage
+	if json.Unmarshal(liveRaw, &live) != nil || json.Unmarshal(snapRaw, &snap) != nil {
+		return false, true, nil
+	}
+	liveFP, snapFP := codexLoginFingerprint(live), codexLoginFingerprint(snap)
+	if liveFP == "" || snapFP == "" {
+		return false, true, nil
+	}
+	return liveFP == snapFP, true, nil
+}
+
+// codexLoginFingerprint reduces a credential document to the material that
+// identifies the login across token refreshes: the API key itself, or the
+// account id plus the id-token identity for OAuth. Empty means the document
+// names no login.
+func codexLoginFingerprint(data map[string]json.RawMessage) string {
+	if keyRaw, ok := data["OPENAI_API_KEY"]; ok {
+		var key string
+		if json.Unmarshal(keyRaw, &key) == nil && strings.TrimSpace(key) != "" {
+			return "api-key:" + strings.TrimSpace(key)
+		}
+	}
+	tokensRaw, ok := data["tokens"]
+	if !ok {
+		return ""
+	}
+	var tokens map[string]json.RawMessage
+	if json.Unmarshal(tokensRaw, &tokens) != nil {
+		return ""
+	}
+	var parts []string
+	if acct := stringField(tokens, "account_id"); acct != "" {
+		parts = append(parts, "acct:"+acct)
+	}
+	idClaims := jwtClaims(stringField(tokens, "id_token"))
+	accessClaims := jwtClaims(stringField(tokens, "access_token"))
+	email := firstNonEmpty(
+		stringClaim(idClaims, "email"),
+		stringClaim(accessClaims, "email"),
+		nestedEmail(accessClaims, "https://api.openai.com/profile"),
+		nestedEmail(idClaims, "https://api.openai.com/profile"),
+	)
+	if email != "" {
+		parts = append(parts, "email:"+strings.ToLower(strings.TrimSpace(email)))
+	}
+	if sub := firstNonEmpty(stringClaim(idClaims, "sub"), stringClaim(accessClaims, "sub")); sub != "" {
+		parts = append(parts, "sub:"+sub)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "|")
 }
 
 // codexSnapshotInfo extracts a best-effort display identity the same way

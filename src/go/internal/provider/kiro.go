@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/browserlogin"
 	"github.com/outof0/anypick/go/internal/db"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -170,10 +170,7 @@ func kiroKeychainWrite(secrets map[string]string) error {
 				quoteSecurity(key), quoteSecurity(currentUsername())))
 			continue
 		}
-		if _, err := runSecurity(fmt.Sprintf(
-			"add-generic-password -U -s %s -a %s -X %s",
-			quoteSecurity(key), quoteSecurity(currentUsername()),
-			hexEncode(value))); err != nil {
+		if err := writeGenericPassword(key, currentUsername(), value); err != nil {
 			return err
 		}
 	}
@@ -483,7 +480,8 @@ func (p *kiro) Restore(srcDir string) error {
 			if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 				return err
 			}
-			if err := os.WriteFile(dest, data, 0o600); err != nil {
+			// dest is a live SSO cache file (ADR 0004): rename, not truncate.
+			if err := atomicfile.Write(dest, data, 0o600); err != nil {
 				return err
 			}
 			restoredSet[name] = true
@@ -583,10 +581,6 @@ func sameStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
-}
-
-func hexEncode(s string) string {
-	return hex.EncodeToString([]byte(s))
 }
 
 func (kiro *kiro) ShortName() string { return "Kiro" }

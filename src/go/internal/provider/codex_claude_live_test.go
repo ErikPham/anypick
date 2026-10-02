@@ -46,8 +46,7 @@ func TestCodexDetectLiveVariants(t *testing.T) {
 	}
 }
 
-func TestCodexBackupRestoreDescribeAndEnvOverride(t *testing.T) {
-	// Test CODEX_AUTH_PATH override
+func TestCodexBackupRestoreDescribeAndEnvOverride(t *testing.T) { // Test CODEX_AUTH_PATH override
 	tmpAuth := filepath.Join(t.TempDir(), "my-auth.json")
 	t.Setenv("CODEX_AUTH_PATH", tmpAuth)
 	t.Setenv("CODEX_HOME", "")
@@ -278,5 +277,70 @@ func TestParseCodexUsage(t *testing.T) {
 	}
 	if clampPercent(150) != 100 || clampPercent(-5) != 0 || clampPercent(33.6) != 34 {
 		t.Fatalf("clampPercent wrong")
+	}
+}
+
+func codexOAuthDoc(t *testing.T, email, accountID, accessSuffix string) string {
+	t.Helper()
+	idToken := fakeJWT(map[string]string{"email": email, "sub": "sub-" + email})
+	return `{"tokens":{"access_token":"at-` + accessSuffix + `","id_token":"` + idToken + `","account_id":"` + accountID + `"}}`
+}
+
+// SnapshotMatchesLive compares the stable login, not rotated token material:
+// the same login with a fresh access token still matches, while a different
+// account id or email does not — that mismatch is what suppresses a quota
+// readout that belongs to another login.
+func TestCodexSnapshotMatchesLive(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	livePath := filepath.Join(t.TempDir(), "live-auth.json")
+	t.Setenv("CODEX_AUTH_PATH", livePath)
+	if err := os.MkdirAll(filepath.Dir(livePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := newCodex(t.TempDir())
+
+	write := func(path, doc string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := t.TempDir()
+
+	// Same login, rotated access token -> match.
+	write(livePath, codexOAuthDoc(t, "a@example.com", "acct-1", "one"))
+	write(filepath.Join(snap, "auth.json"), codexOAuthDoc(t, "a@example.com", "acct-1", "two"))
+	match, known, err := p.SnapshotMatchesLive(snap)
+	if err != nil || !known || !match {
+		t.Fatalf("rotated token = %v,%v,%v, want true,true,nil", match, known, err)
+	}
+
+	// Different account -> known mismatch.
+	write(filepath.Join(snap, "auth.json"), codexOAuthDoc(t, "b@example.com", "acct-2", "three"))
+	match, known, err = p.SnapshotMatchesLive(snap)
+	if err != nil || !known || match {
+		t.Fatalf("other account = %v,%v,%v, want false,true,nil", match, known, err)
+	}
+
+	// API-key shape matches only the same key.
+	write(livePath, `{"OPENAI_API_KEY":"sk-same"}`)
+	write(filepath.Join(snap, "auth.json"), `{"OPENAI_API_KEY":"sk-same"}`)
+	if match, known, err := p.SnapshotMatchesLive(snap); err != nil || !known || !match {
+		t.Fatalf("same key = %v,%v,%v", match, known, err)
+	}
+	write(filepath.Join(snap, "auth.json"), `{"OPENAI_API_KEY":"sk-other"}`)
+	if match, known, err := p.SnapshotMatchesLive(snap); err != nil || !known || match {
+		t.Fatalf("other key = %v,%v,%v", match, known, err)
+	}
+
+	// OAuth live vs API-key snapshot (and back) never match.
+	write(livePath, codexOAuthDoc(t, "a@example.com", "acct-1", "one"))
+	if match, known, err := p.SnapshotMatchesLive(snap); err != nil || !known || match {
+		t.Fatalf("oauth vs key = %v,%v,%v", match, known, err)
+	}
+
+	// Missing snapshot file is a known mismatch, not an error.
+	if match, known, err := p.SnapshotMatchesLive(t.TempDir()); err != nil || !known || match {
+		t.Fatalf("missing snapshot = %v,%v,%v", match, known, err)
 	}
 }

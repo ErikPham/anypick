@@ -261,8 +261,8 @@ func workbuddyServiceMessage(env *workbuddyEnvelope) string {
 }
 
 // workbuddyTokenSubject reads the `sub` claim of an access token. It is the
-// only stable per-account identifier the service returns, and AnyPick uses it
-// to re-save an existing account instead of aliasing a second one.
+// stable per-account identifier the service returns, and AnyPick falls back
+// to it when the token carries no readable identity.
 func workbuddyTokenSubject(token string) string {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -279,6 +279,75 @@ func workbuddyTokenSubject(token string) string {
 		return ""
 	}
 	return claims.Sub
+}
+
+// workbuddyTokenIdentity is the human-readable identity AnyPick saves and
+// shows for a login: the token's email first, then its username, then the
+// sub fallback. Listings key off this, so a uid is only ever a last resort.
+func workbuddyTokenIdentity(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email             string `json:"email"`
+		PreferredUsername string `json:"preferred_username"`
+		Sub               string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	for _, candidate := range []string{claims.Email, claims.PreferredUsername, claims.Sub} {
+		if strings.TrimSpace(candidate) != "" {
+			return strings.TrimSpace(candidate)
+		}
+	}
+	return ""
+}
+
+// workbuddyTokenSessionState reads the `sid` (session id) claim of an access
+// token, used by the desktop app to reconcile its session state.
+func workbuddyTokenSessionState(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sid string `json:"sid"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Sid)
+}
+
+// workbuddyTokenExpiry reads the `exp` claim of an access token. ok is false
+// when the token carries no expiry (fail open: the vendor decides at request
+// time), so only a provably past deadline may block an activation.
+func workbuddyTokenExpiry(token string) (exp time.Time, ok bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp *float64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Exp == nil || *claims.Exp <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(*claims.Exp), 0), true
 }
 
 // openBrowserURL hands a sign-in URL to the desktop browser. Only https URLs

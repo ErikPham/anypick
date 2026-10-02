@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/atomicfile"
 	"github.com/outof0/anypick/go/internal/browserlogin"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -130,17 +131,12 @@ func (p *claude) write(credential string) error {
 		credential += "\n"
 	}
 	if p.useKeychain() {
-		hex := hex.EncodeToString([]byte(credential))
-		_, err := runSecurity(fmt.Sprintf(
-			"add-generic-password -U -s 'Claude Code-credentials' -a %s -X %s",
-			quoteSecurity(p.accountName()), hex))
-		return err
+		return writeGenericPassword("Claude Code-credentials", p.accountName(), credential)
 	}
 	path := p.fileCredentialsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(credential), 0o600)
+	// path is the user's live credential file. Truncating it in place leaves
+	// an empty login on crash (ADR 0004), so replace by rename (atomicfile).
+	return atomicfile.Write(path, []byte(credential), 0o600)
 }
 
 func (p *claude) clearLiveCredential() error {

@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,6 +58,9 @@ func TestGeminiDetectLiveSeesAntigravityToken(t *testing.T) {
 			}
 			if live.Identity != "someone@example.com" {
 				t.Fatalf("identity = %q, want someone@example.com", live.Identity)
+			}
+			if live.Source != antigravityOAuthSource {
+				t.Fatalf("source = %q, want %q", live.Source, antigravityOAuthSource)
 			}
 		})
 	}
@@ -189,4 +195,275 @@ func TestGeminiRejectsACredentialFileWithNoToken(t *testing.T) {
 	if _, err := loadGeminiOAuthCredentials(path, antigravityOAuthSource); err == nil {
 		t.Fatal("a credential file with no token must not load")
 	}
+}
+
+func TestGeminiRestoreSwitchesAntigravityNativeState(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	geminiDir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityState(t, home, antigravityTokenSentinel,
+		antigravityTokenInfo("old-access", "Bearer", "old-refresh", time.Now().Add(time.Hour)))
+	// This is the stale portable mirror that caused AnyPick to display a
+	// different email from the account Antigravity itself still held.
+	antigravityTokenFile(t, geminiDir, "antigravity_oauth.json", "lentaunao@gmail.com")
+	if err := os.WriteFile(filepath.Join(geminiDir, "oauth_creds.json"),
+		[]byte(`{"refresh_token":"old-cli"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := newGemini(home)
+	live, err := provider.DetectLiveSource(antigravityOAuthSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Identity != antigravityIdentity("old-refresh") {
+		t.Fatalf("stale mirror won live detection: %+v", live)
+	}
+
+	snapshot := t.TempDir()
+	newPayload := map[string]any{
+		"token": map[string]any{
+			"access_token":  "new-access",
+			"refresh_token": "new-refresh",
+			"token_type":    "Bearer",
+			"expiry":        time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+		},
+		"auth_method": "consumer",
+		"email":       "lentaunao@gmail.com",
+	}
+	raw, err := json.Marshal(newPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshot, "antigravity_oauth.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var keyringPayload *geminiAntigravityFile
+	stubAntigravityKeyringPut(t, func(payload *geminiAntigravityFile) error {
+		copy := *payload
+		keyringPayload = &copy
+		return nil
+	})
+	if err := provider.Restore(snapshot); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	state := antigravityStateCredential(home)
+	if state == nil || state.Token.RefreshToken != "new-refresh" {
+		t.Fatalf("state token = %+v, want new-refresh", state)
+	}
+	if keyringPayload == nil || keyringPayload.Token.RefreshToken != "new-refresh" {
+		t.Fatalf("keyring token = %+v, want new-refresh", keyringPayload)
+	}
+	if got := antigravityPayloadFromLiveFile(provider); got == nil || got.Token.RefreshToken != "new-refresh" {
+		t.Fatalf("portable token = %+v, want new-refresh", got)
+	}
+	if _, err := os.Stat(filepath.Join(geminiDir, "oauth_creds.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale Gemini CLI credential survived Antigravity restore: %v", err)
+	}
+	live, err = provider.DetectLiveSource(antigravityOAuthSource)
+	if err != nil || live.Identity != "lentaunao@gmail.com" {
+		t.Fatalf("post-restore live = %+v err=%v", live, err)
+	}
+}
+
+// writeAntigravityMirror lays down a nested portable mirror ({"token":{…}})
+// with an optional top-level id_token, the shape Antigravity itself writes.
+func writeAntigravityMirror(t *testing.T, dir, name, refreshToken, email, idToken string) {
+	t.Helper()
+	body := map[string]any{
+		"token": map[string]any{
+			"access_token":  "ya29.mirror",
+			"refresh_token": refreshToken,
+			"token_type":    "Bearer",
+			"expiry":        time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+		},
+		"auth_method": "consumer",
+		"email":       email,
+	}
+	if idToken != "" {
+		body["id_token"] = idToken
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func geminiJWTForEmail(email string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"` + email + `"}`))
+	return header + "." + payload + ".signature"
+}
+
+// Antigravity can leave the `email` field empty and keep the address only in
+// the envelope's id_token. The mirror that carries it is only this login when
+// its refresh token matches the IDE state's grant.
+func TestAntigravityIdentityReadsMatchingMirrorIDToken(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityState(t, home, antigravityTokenSentinel,
+		antigravityTokenInfo("ya29.state", "Bearer", "1//state", time.Now().Add(time.Hour)))
+	writeAntigravityMirror(t, dir, antigravityCredentialFiles[0], "1//state", "",
+		geminiJWTForEmail("lentaunao@gmail.com"))
+
+	live, err := newGemini(home).DetectLiveSource(antigravityOAuthSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Identity != "lentaunao@gmail.com" {
+		t.Fatalf("identity = %q, want the matching mirror's id_token email", live.Identity)
+	}
+}
+
+// A stale mirror for a different Google account must not donate an address
+// (or win detection) just because its file name is probed first.
+func TestAntigravityIdentityIgnoresMismatchedMirrorEmail(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeAntigravityState(t, home, antigravityTokenSentinel,
+		antigravityTokenInfo("ya29.state", "Bearer", "1//state", time.Now().Add(time.Hour)))
+	writeAntigravityMirror(t, dir, antigravityCredentialFiles[0], "1//state", "", "")
+	writeAntigravityMirror(t, dir, antigravityCredentialFiles[1], "1//other", "",
+		geminiJWTForEmail("someone.else@gmail.com"))
+
+	provider := newGemini(home)
+	live, err := provider.DetectLiveSource(antigravityOAuthSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Identity != antigravityIdentity("1//state") {
+		t.Fatalf("identity = %q, want the state grant hash", live.Identity)
+	}
+
+	info, err := provider.Backup(t.TempDir())
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if info.Identity != "" {
+		t.Fatalf("backup identity = %q, want empty (mirror belongs to another grant)", info.Identity)
+	}
+}
+
+// A refresh response can carry an id_token; persisting it is what gives a
+// saved Antigravity account an address instead of a grant hash.
+func TestGeminiRefreshPersistsIDToken(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "ya29.rotated",
+			"refresh_token": "1//rotated",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+			"id_token":      geminiJWTForEmail("lentaunao@gmail.com"),
+		})
+	}))
+	defer tokenServer.Close()
+	t.Setenv("GEMINI_TOKEN_ENDPOINT", tokenServer.URL)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, antigravityCredentialFiles[0])
+	writeAntigravityMirror(t, dir, antigravityCredentialFiles[0], "1//state", "", "")
+
+	c, ok := parseGeminiOAuthCredentials(mustReadFile(t, path))
+	if !ok {
+		t.Fatal("fixture credential did not parse")
+	}
+	if _, err := refreshGeminiOAuth(path, antigravityOAuthSource, c); err != nil {
+		t.Fatalf("refreshGeminiOAuth: %v", err)
+	}
+	reloaded, err := readAntigravityOAuthPayload(path)
+	if err != nil || reloaded == nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Email != "lentaunao@gmail.com" {
+		t.Fatalf("identity after refresh = %q, want the id_token email", reloaded.Email)
+	}
+	if reloaded.Token.RefreshToken != "1//rotated" {
+		t.Fatalf("refresh token = %q", reloaded.Token.RefreshToken)
+	}
+}
+
+// Some grants return no id_token, so hydration falls back to userinfo with
+// the refreshed access token before giving up on an address.
+func TestAntigravityHydrateFallsBackToUserInfo(t *testing.T) {
+	originalUserInfo := geminiOAuthUserInfoEndpoint
+	defer func() { geminiOAuthUserInfoEndpoint = originalUserInfo }()
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "ya29.rotated",
+			"refresh_token": "1//rotated",
+			"token_type":    "Bearer",
+			"expires_in":    3600,
+		})
+	}))
+	defer tokenServer.Close()
+	t.Setenv("GEMINI_TOKEN_ENDPOINT", tokenServer.URL)
+
+	userInfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ya29.rotated" {
+			t.Errorf("userinfo Authorization = %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"email": "lentaunao@gmail.com"})
+	}))
+	defer userInfo.Close()
+	geminiOAuthUserInfoEndpoint = userInfo.URL
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, antigravityCredentialFiles[0])
+	body := map[string]any{
+		"token": map[string]any{
+			"access_token":  "ya29.expired",
+			"refresh_token": "1//state",
+			"token_type":    "Bearer",
+			"expiry":        time.Now().Add(-time.Hour).Format(time.RFC3339Nano),
+		},
+		"auth_method": "consumer",
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := readAntigravityOAuthPayload(path)
+	if err != nil || payload == nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	hydrated, err := hydrateAntigravityOAuthPayload(path, payload)
+	if err != nil || hydrated == nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+	if hydrated.Email != "lentaunao@gmail.com" {
+		t.Fatalf("hydrated email = %q", hydrated.Email)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
