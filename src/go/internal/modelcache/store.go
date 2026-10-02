@@ -43,6 +43,39 @@ func (s *Store) Get(ctx context.Context, provider, endpoint string) (*Entry, err
 }
 
 // Write upserts one cached list.
+// ModelsForProvider returns every model id cached for a provider, across the
+// endpoints and account keys it was discovered on. Rotation uses it to decide
+// which accounts can serve a requested model; a miss is not an error, because
+// the cache is advisory.
+func (s *Store) ModelsForProvider(ctx context.Context, provider string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT models_json FROM model_catalog_cache WHERE provider = ?`, provider)
+	if err != nil {
+		return nil, nil
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var models []string
+	for rows.Next() {
+		var modelsJSON string
+		if rows.Scan(&modelsJSON) != nil {
+			continue
+		}
+		var cached []string
+		if json.Unmarshal([]byte(modelsJSON), &cached) != nil {
+			continue
+		}
+		for _, id := range cached {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			models = append(models, id)
+		}
+	}
+	return models, nil
+}
+
 func (s *Store) Write(ctx context.Context, e *Entry) error {
 	raw, err := json.Marshal(e.Models)
 	if err != nil {

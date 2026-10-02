@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -136,5 +138,50 @@ func TestStopDoesNotHoldTheLockAcrossShutdown(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("Shutdown called %d times after a second Stop, want 1", calls)
+	}
+}
+
+func TestHubRequestLogging(t *testing.T) {
+	var buf bytes.Buffer
+	restore := proxy.SetLogSinkForTest(&buf)
+	defer restore()
+
+	st := newHubStore(t)
+	cfg, err := st.UpsertConfigContext(context.Background(), Config{Name: "default", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tok, err := proxy.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := Route{
+		RouteID: "r1", HubName: "default", ClientID: "c1",
+		Token: tok,
+	}
+	if err := st.AttachRouteContext(context.Background(), route); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{Config: cfg, Store: NewService(st)}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.Endpoint()+"/v1/chat/completions", strings.NewReader(`{}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "POST /v1/chat/completions → 401 in ") {
+		t.Fatalf("expected logged line for 401 request, got: %q", logOutput)
 	}
 }

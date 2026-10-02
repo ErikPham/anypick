@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS client_state (
   state_json TEXT NOT NULL
 );
 
+-- Named client routes are separate from the one active global binding. Codex
+-- CLI profiles use this table to remember which AnyPick source each native
+-- profile file represents.
+CREATE TABLE IF NOT EXISTS client_profiles (
+  client_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  spec_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (client_id, name)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
@@ -92,6 +104,13 @@ CREATE TABLE IF NOT EXISTS source_resumes (
   spec_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (source_ref, client_id)
+);
+
+CREATE TABLE IF NOT EXISTS provider_model_roles (
+  provider_id TEXT PRIMARY KEY NOT NULL,
+  roles_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS presets (
@@ -313,6 +332,40 @@ var migrations = []migration{
           FOREIGN KEY (hub_name) REFERENCES proxy_hubs(name) ON DELETE CASCADE
         );`)
 			return err
+		},
+	},
+	{
+		name: "add provider model-role defaults",
+		up: func(d execer) error {
+			_, err := d.Exec(`
+        CREATE TABLE IF NOT EXISTS provider_model_roles (
+          provider_id TEXT PRIMARY KEY NOT NULL,
+          roles_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );`)
+			return err
+		},
+	},
+	{
+		name: "relational hub sources",
+		up: func(d execer) error {
+			if _, err := d.Exec(`
+        CREATE TABLE IF NOT EXISTS proxy_hub_sources (
+          hub_name TEXT NOT NULL,
+          position INTEGER NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'account',
+          provider TEXT,
+          account TEXT,
+          pool TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          PRIMARY KEY (hub_name, position),
+          FOREIGN KEY (hub_name) REFERENCES proxy_hubs(name) ON DELETE CASCADE,
+          FOREIGN KEY (provider, account) REFERENCES accounts(provider, name) ON DELETE CASCADE
+        );`); err != nil {
+				return err
+			}
+			return backfillHubSources(d)
 		},
 	},
 }

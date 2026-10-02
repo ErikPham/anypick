@@ -18,6 +18,11 @@ func OpenForeign(path string, readOnly bool) (*sql.DB, error) {
 	dsn := "file:" + path
 	if readOnly {
 		dsn += "?mode=ro&_pragma=query_only(1)"
+	} else {
+		// Foreign databases have other writers (the IDE itself). Without a
+		// busy timeout a concurrent write fails immediately with SQLITE_BUSY,
+		// which reads as "AnyPick cannot restore" rather than "try again".
+		dsn += "?_pragma=busy_timeout(5000)"
 	}
 	d, err := sql.Open("sqlite", dsn)
 	if err != nil {

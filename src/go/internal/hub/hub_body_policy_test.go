@@ -74,6 +74,7 @@ func (s *recordingStub) url(t *testing.T) *url.URL {
 func startPinHub(t *testing.T, models []ModelRoute, token string) (*Server, *recordingStub, *recordingStub) {
 	t.Helper()
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "p/a", "p/b")
 	a := newRecordingStub(t)
 	b := newRecordingStub(t)
 	resolver := mapResolver{

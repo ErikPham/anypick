@@ -32,6 +32,20 @@ func (s *Service) SetModelOwner(ctx context.Context, hubName, model, owner strin
 	return s.Store.SetModelOwnerContext(ctx, hubName, model, owner)
 }
 
+// RemoveSource detaches one source and repairs positional pins (see
+// Store.RemoveSourceContext). It returns whether anything was removed and
+// which model pins were dropped.
+func (s *Service) RemoveSource(ctx context.Context, hubName, providerID, account string) (bool, []string, error) {
+	return s.Store.RemoveSourceContext(ctx, hubName, providerID, account)
+}
+
+// PruneAccount removes every hub reference to one deleted account across all
+// hubs. Callers run it after the account row is gone; it only needs the
+// provider/name pair, never the snapshot.
+func (s *Service) PruneAccount(ctx context.Context, providerID, account string) ([]string, error) {
+	return s.Store.PruneAccountContext(ctx, providerID, account)
+}
+
 // PreviewManifest renders the manifest a client would fetch, without serving it.
 func (s *Service) PreviewManifest(ctx context.Context, hubName string) (*ManifestPreview, error) {
 	return s.Store.PreviewManifest(ctx, hubName)
@@ -62,6 +76,11 @@ func (s *Service) AttachRouteContext(ctx context.Context, r Route) error {
 	return s.Store.AttachRouteContext(ctx, r)
 }
 
+// DetachRouteContext removes one client-facing route.
+func (s *Service) DetachRouteContext(ctx context.Context, routeID string) error {
+	return s.Store.DetachRouteContext(ctx, routeID)
+}
+
 // RouteByToken resolves a serving token to its route (ctx-less: the hub server
 // resolves before it has a request context).
 func (s *Service) RouteByToken(token string) (*Route, error) {
@@ -71,4 +90,14 @@ func (s *Service) RouteByToken(token string) (*Route, error) {
 // MigrateRouteTokenContext re-binds a route's serving token.
 func (s *Service) MigrateRouteTokenContext(ctx context.Context, routeID, token string) error {
 	return s.Store.MigrateRouteTokenContext(ctx, routeID, token)
+}
+
+// EnsureHubTokenContext ensures the named hub has an API key configured.
+func (s *Service) EnsureHubTokenContext(ctx context.Context, hubName string) (string, error) {
+	return s.Store.EnsureHubTokenContext(ctx, hubName)
+}
+
+// RotateHubTokenContext replaces the hub's API key with a freshly generated one.
+func (s *Service) RotateHubTokenContext(ctx context.Context, hubName string) (string, error) {
+	return s.Store.RotateHubTokenContext(ctx, hubName)
 }

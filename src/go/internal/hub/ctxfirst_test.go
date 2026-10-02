@@ -14,6 +14,10 @@ import (
 // (Get/List*) keep their ctx-less form because they take no lock.
 func TestMutatingMethodsTakeContext(t *testing.T) {
 	testgate.CheckNoCtxlessMutations(t, ".", map[string]string{
-		// No exceptions: all hub mutations are ctx-first.
+		// attemptWriter implements http.ResponseWriter, whose methods are named
+		// Write/WriteHeader. They write a response, not persisted state, and
+		// take no lock.
+		"Write":       "http.ResponseWriter method; writes a response body, not state",
+		"WriteHeader": "http.ResponseWriter method; writes a response status, not state",
 	})
 }

@@ -144,6 +144,7 @@ func postModel(t *testing.T, endpoint, token, model string) (*http.Response, str
 
 func TestRouteAttachGrantRotateRevoke(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn", "deepseek/ws")
 
 	glm := newStubUpstream(t, http.StatusOK, `{"up":"glm"}`)
 	ds := newStubUpstream(t, http.StatusOK, `{"up":"ds"}`)

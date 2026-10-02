@@ -13,6 +13,15 @@ import (
 	"github.com/outof0/anypick/go/internal/proxy"
 )
 
+func mustNewProxyToken(t *testing.T) string {
+	t.Helper()
+	tok, err := proxy.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
 type fakeResolver struct {
 	saw []string
 }
@@ -37,6 +46,7 @@ func newHubStore(t *testing.T) *Store {
 
 func TestHubRoutesByModelAcrossSources(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn", "deepseek/work")
 
 	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "default", Enabled: true,
@@ -49,7 +59,11 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	token := proxy.MustNewToken()
+	tok, err := proxy.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tok
 	route := Route{
 		RouteID: "global/claude", HubName: "default", ClientID: "claude",
 		Token: token,
@@ -116,6 +130,22 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 		t.Errorf("bad token status = %d, want 401", badResp.StatusCode)
 	}
 
+	// Claude Code sends its own OAuth bearer and the route secret as
+	// x-api-key together. A matching key must authenticate.
+	mixed, _ := http.NewRequest("POST", srv.Endpoint()+"/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-4.7"}`))
+	mixed.Header.Set("Authorization", "Bearer claude-oauth-not-the-hub-token")
+	mixed.Header.Set("x-api-key", token)
+	mixedResp, err := http.DefaultClient.Do(mixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, mixedResp.Body)
+	mixedResp.Body.Close()
+	if mixedResp.StatusCode == http.StatusUnauthorized {
+		t.Fatal("matching x-api-key was ignored because Authorization was also set")
+	}
+
 	// Resolver saw both sources in order: default first? No — requests ran in
 	// sequence deepseek then glm; assert both appeared.
 	joined := strings.Join(resolver.saw, ",")
@@ -126,6 +156,7 @@ func TestHubRoutesByModelAcrossSources(t *testing.T) {
 
 func TestStoreRoundTripAndDetach(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "p/a")
 	cfg, err := st.UpsertConfigContext(context.Background(), Config{Name: "h1", Enabled: true,
 		Sources: []Source{{ProviderID: "p", Account: "a"}}})
 	if err != nil || cfg.Name != "h1" {
@@ -136,7 +167,11 @@ func TestStoreRoundTripAndDetach(t *testing.T) {
 		t.Fatalf("config roundtrip = %+v", got)
 	}
 
-	token := proxy.MustNewToken()
+	tok, err := proxy.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := tok
 	if err := st.AttachRouteContext(context.Background(), Route{RouteID: "r1", HubName: "h1", Token: token}); err != nil {
 		t.Fatal(err)
 	}

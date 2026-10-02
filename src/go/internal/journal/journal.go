@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -35,6 +36,13 @@ type Entry struct {
 	Params            map[string]interface{} `json:"params,omitempty"`
 	StartedAt         string                 `json:"startedAt"`
 	UpdatedAt         string                 `json:"updatedAt"`
+
+	// Corrupt is set when a stored column could not be parsed. The affected
+	// resources are unknown in that case, which is NOT the same as empty: a
+	// recovery that read them as empty would leave a half-applied mutation in
+	// place while reporting that it had nothing to undo. It is not serialized —
+	// it describes this read, not the row.
+	Corrupt bool `json:"-"`
 }
 
 // OperationJournal is the CRUD surface over operation_journal.
@@ -153,10 +161,19 @@ func scanEntry(row rowScanner) (*Entry, error) {
 		return nil, err
 	}
 	e.State = State(state)
-	_ = json.Unmarshal([]byte(affectedRaw), &e.AffectedResources)
-	_ = json.Unmarshal([]byte(backupRaw), &e.BackupPaths)
+	// A column that parses fails the whole entry's trustworthiness. Unparsable
+	// JSON is corruption, not an empty list: the two mean opposite things to
+	// recovery (ADR 0004).
+	if !decodeStoredList(affectedRaw, &e.AffectedResources) {
+		e.Corrupt = true
+	}
+	if !decodeStoredList(backupRaw, &e.BackupPaths) {
+		e.Corrupt = true
+	}
 	if paramsRaw.Valid && paramsRaw.String != "" {
-		_ = json.Unmarshal([]byte(paramsRaw.String), &e.Params)
+		if err := json.Unmarshal([]byte(paramsRaw.String), &e.Params); err != nil {
+			e.Corrupt = true
+		}
 	}
 	if e.AffectedResources == nil {
 		e.AffectedResources = []string{}
@@ -165,6 +182,15 @@ func scanEntry(row rowScanner) (*Entry, error) {
 		e.BackupPaths = []string{}
 	}
 	return &e, nil
+}
+
+// decodeStoredList reports whether a stored JSON array column parsed. An empty
+// column is a row written before that field existed, which is not corruption.
+func decodeStoredList(raw string, into *[]string) bool {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "null" {
+		return true
+	}
+	return json.Unmarshal([]byte(raw), into) == nil
 }
 
 // Patch mirrors update(): zero-value fields keep the stored value.

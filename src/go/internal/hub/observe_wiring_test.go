@@ -40,6 +40,7 @@ func fetchHubHealth(t *testing.T, endpoint string) hubHealth {
 
 func TestHubCountsItsServedRequests(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn")
 	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name:    "counted",
 		Enabled: true,

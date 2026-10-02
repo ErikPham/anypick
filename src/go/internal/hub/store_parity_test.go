@@ -63,6 +63,7 @@ func TestHubConfigRowFromTypeScriptDecodes(t *testing.T) {
 	}
 
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn", "off/acct")
 	insertHubRow(t, st, "default", tsHubConfigFixture)
 
 	cfg, err := st.GetConfig("default")
@@ -123,6 +124,7 @@ func TestHubConfigCorruptRowFailsClosed(t *testing.T) {
 
 func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn", "off/acct")
 	off := false
 	if _, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "default", Enabled: true, Port: 4919,

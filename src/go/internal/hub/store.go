@@ -18,8 +18,12 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/proxy"
+	"github.com/outof0/anypick/go/internal/refs"
 )
 
 // Source names one upstream account. A TS-authored row persists sources as
@@ -38,29 +42,66 @@ type Source struct {
 // IsEnabled reports whether the source participates in routing.
 func (s Source) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
+// Hub-wide request modes (Config.Strategy).
+const (
+	StrategyFailover   = "failover"
+	StrategyRoundRobin = "round-robin"
+)
+
+// SpreadsRequests reports whether this hub spreads requests across the
+// accounts that can serve them. (Not "Rotates": that verb reads as a persisted
+// mutation to the ctx-first gate, and this is a pure predicate.)
+func (c Config) SpreadsRequests() bool { return c.Strategy == StrategyRoundRobin }
+
 const defaultHubHost = "127.0.0.1"
 
 // Config mirrors the essential fields of ProxyHubConfig.
 type Config struct {
-	Name      string   `json:"name"`
-	Enabled   bool     `json:"enabled"`
-	Host      string   `json:"host,omitempty"` // default 127.0.0.1
-	Port      int      `json:"port,omitempty"` // 0 → kernel-assigned
-	Sources   []Source `json:"sources"`
-	Revision  int      `json:"revision"` // positive integer per the TS decoder
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	Name    string   `json:"name"`
+	Enabled bool     `json:"enabled"`
+	Host    string   `json:"host,omitempty"` // default 127.0.0.1
+	Port    int      `json:"port,omitempty"` // 0 → kernel-assigned
+	Sources []Source `json:"sources"`
+	// Strategy is the hub-wide request mode: "" / "failover" pins each request
+	// to the source the model resolves to, "round-robin" spreads it across the
+	// enabled sources that can serve that model (the resolved source's
+	// provider — one provider's accounts are interchangeable for its models,
+	// which is the same assumption the pool ring is built on). It is a Go-side
+	// extension: the TS config had no hub-level mode.
+	Strategy string `json:"strategy,omitempty"`
+	// Token is the hub listener bearer. The row is written through
+	// tsHubConfig, which keeps the field. Marshaling Config itself is the
+	// status path, and that path must not carry the bearer (ADR 0006 §6,
+	// ADR 0013 decision 2).
+	Token     string `json:"-"`
+	Revision  int    `json:"revision"` // positive integer per the TS decoder
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 	// modelOwners carries the TS-only field verbatim across read-modify-write
 	// cycles so a Go save never drops TS data it does not model.
 	modelOwners json.RawMessage
 }
 
 // ModelRoute pins a model id to a source (ProxyHubRouteTarget essence).
+// Owner names the source by value ("provider/account", pools as
+// "provider/pool:provider") instead of by position: positions shift on
+// removal and silently re-pointed pins at the wrong account (ADR-0029).
+// SourceIndex survives for rows the relational migration never saw and
+// resolves bounds-checked as a fallback.
 type ModelRoute struct {
 	Model         string `json:"model"`
 	SourceIndex   int    `json:"sourceIndex"`
+	Owner         string `json:"owner,omitempty"`
 	UpstreamModel string `json:"upstreamModel,omitempty"`
 }
+
+// sourceOwnerKey is the canonical value-pin identity for one hub source.
+// The relational migration (internal/db) freezes the same format; the two
+// must never drift.
+func sourceOwnerKey(providerID, account string) string { return providerID + "/" + account }
+
+// ownerOf resolves a source to its pin identity.
+func ownerOf(src Source) string { return sourceOwnerKey(src.ProviderID, src.Account) }
 
 // Route is one client-facing attachment: its secret authenticates requests;
 // its manifest routes requested models onto sources.
@@ -71,6 +112,10 @@ type Route struct {
 	Protocol string       `json:"protocol,omitempty"`
 	Models   []ModelRoute `json:"models,omitempty"`
 	Token    string       `json:"-"` // never serialized to output boundaries
+	// proven is set only after the stored secret matched the presented token.
+	// Echoing the token onto Token and comparing those two copies does not
+	// authenticate anything (ADR 0006).
+	proven bool
 }
 
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
@@ -87,8 +132,31 @@ type Store struct {
 	Root string
 }
 
+func (s *Store) withHubLock(ctx context.Context, name string, fn func(context.Context) error) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return anyerr.Newf("hub name is required", "INVALID_REFERENCE")
+	}
+	if s.Root == "" {
+		// The comment on Store is the contract: a missing root cannot take the
+		// coordinator lock, so the write does not run at all (invariant #5).
+		return anyerr.Newf("hub store has no data root; refusing uncoordinated write", "STATE_CONFLICT")
+	}
+	return lock.WithMutationLock(ctx, s.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), fn)
+}
+
 // UpsertConfig inserts or updates the hub configuration row.
 func (s *Store) UpsertConfigContext(ctx context.Context, cfg Config) (Config, error) {
+	var out Config
+	err := s.withHubLock(ctx, cfg.Name, func(c context.Context) error {
+		got, err := s.upsertConfigLocked(c, cfg)
+		out = got
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) upsertConfigLocked(ctx context.Context, cfg Config) (Config, error) {
 	now := nowISO()
 	existing, err := s.GetConfigContext(ctx, cfg.Name)
 	if err != nil {
@@ -127,7 +195,33 @@ func (s *Store) UpsertConfigContext(ctx context.Context, cfg Config) (Config, er
 	if err != nil {
 		return Config{}, err
 	}
+	// Membership rows mirror the persisted sources atomically: a ghost
+	// fails the foreign key here, and the previous document is restored so
+	// a refused upsert leaves no partial state behind.
+	if err := s.syncSourcesLocked(ctx, cfg); err != nil {
+		if existing != nil {
+			_, _ = s.DB.ExecContext(ctx,
+				`UPDATE proxy_hubs SET config_json = ?, updated_at = ? WHERE name = ?`,
+				string(marshalConfigJSON(existing)), now, cfg.Name)
+		} else {
+			_, _ = s.DB.ExecContext(ctx, `DELETE FROM proxy_hubs WHERE name = ?`, cfg.Name)
+		}
+		// The row sync already restored its own partial inserts; report the
+		// refusal, not the cleanup.
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// marshalConfigJSON re-encodes a stored config without touching membership.
+// It exists only for upsert rollback above; normal writes go through
+// marshalTSConfig so the TypeScript wire shape never drifts.
+func marshalConfigJSON(cfg *Config) []byte {
+	data, err := marshalTSConfig(*cfg, cfg.modelOwners)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
 }
 
 func (s *Store) GetConfig(name string) (*Config, error) {
@@ -183,7 +277,135 @@ func (s *Store) GetConfigContext(ctx context.Context, name string) (*Config, err
 	if err != nil {
 		return nil, err
 	}
-	return decodeHubConfig([]byte(data), name)
+	cfg, err := decodeHubConfig([]byte(data), name)
+	if err != nil {
+		return nil, err
+	}
+	// Membership is relational (ADR-0029): the document shape stays
+	// TypeScript-compatible, but rows win. A hub whose rows are absent while
+	// the document names sources is pre-migration or foreign-written; reading
+	// the document then is the only way not to lose members.
+	rows, rerr := s.loadSources(ctx, name)
+	if rerr != nil {
+		return nil, rerr
+	}
+	// Rows win once this hub has been written with relational membership,
+	// including an empty row set: the last account delete cascades the rows
+	// and must not fall back to the stale document. A document that has never
+	// carried that marker is pre-migration or foreign-written; reading it is
+	// the only way not to lose members.
+	if len(rows) > 0 || !hasDocSources([]byte(data)) || sourcesRelational([]byte(data)) {
+		cfg.Sources = rows
+	}
+	return cfg, nil
+}
+
+// sourcesRelational reports a Go-written hub whose membership rows are the
+// authority, even when a cascade has left the row set empty.
+func sourcesRelational(data []byte) bool {
+	var doc struct {
+		SourcesRelational bool `json:"sourcesRelational"`
+	}
+	return json.Unmarshal(data, &doc) == nil && doc.SourcesRelational
+}
+
+// hasDocSources reports whether the persisted document names any sources.
+func hasDocSources(data []byte) bool {
+	var doc struct {
+		Sources []json.RawMessage `json:"sources"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	return len(doc.Sources) > 0
+}
+
+// loadSources reads one hub's membership in stable position order.
+func (s *Store) loadSources(ctx context.Context, hubName string) ([]Source, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT kind, provider, account, pool, enabled FROM proxy_hub_sources
+		  WHERE hub_name = ? ORDER BY position`, hubName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Source{}
+	for rows.Next() {
+		var kind string
+		var provider, account, pool sql.NullString
+		var enabled int
+		if err := rows.Scan(&kind, &provider, &account, &pool, &enabled); err != nil {
+			return nil, err
+		}
+		src := Source{}
+		if kind == "pool" && pool.Valid {
+			src.ProviderID = provider.String
+			src.Account = "pool:" + pool.String
+		} else {
+			src.ProviderID = provider.String
+			src.Account = account.String
+		}
+		if enabled == 0 {
+			disabled := false
+			src.Enabled = &disabled
+		}
+		out = append(out, src)
+	}
+	return out, rows.Err()
+}
+
+// syncSourcesLocked replaces one hub's membership rows from the config the
+// caller is persisting. A ghost source fails the foreign key here, before
+// the document is touched; on any failure the previous rows are restored so
+// a refused upsert leaves no partial state behind.
+func (s *Store) syncSourcesLocked(ctx context.Context, cfg Config) error {
+	prev, err := s.loadSources(ctx, cfg.Name)
+	if err != nil {
+		return err
+	}
+	restore := func() {
+		_, _ = s.DB.ExecContext(ctx, `DELETE FROM proxy_hub_sources WHERE hub_name = ?`, cfg.Name)
+		for i, src := range prev {
+			_ = s.insertSourceRow(ctx, cfg.Name, i, src)
+		}
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`DELETE FROM proxy_hub_sources WHERE hub_name = ?`, cfg.Name); err != nil {
+		return err
+	}
+	for i, src := range cfg.Sources {
+		if err := s.insertSourceRow(ctx, cfg.Name, i, src); err != nil {
+			restore()
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) insertSourceRow(ctx context.Context, hubName string, position int, src Source) error {
+	kind, provider, account, pool := "account", src.ProviderID, src.Account, ""
+	if p, ok := PoolSourceProvider(src); ok {
+		// The provider rides along for an exact round-trip; the NULL
+		// account opts the row out of the accounts foreign key, which only
+		// governs account membership.
+		kind, provider, account, pool = "pool", src.ProviderID, "", p
+	}
+	enabled := 1
+	if src.Enabled != nil && !*src.Enabled {
+		enabled = 0
+	}
+	var accountArg, poolArg any
+	if account != "" {
+		accountArg = account
+	}
+	if pool != "" {
+		poolArg = pool
+	}
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO proxy_hub_sources (hub_name, position, kind, provider, account, pool, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		hubName, position, kind, provider, accountArg, poolArg, enabled)
+	return err
 }
 
 // ---- cross-runtime config_json boundary ----
@@ -249,6 +471,8 @@ func decodeHubConfig(data []byte, name string) (*Config, error) {
 		Port        int             `json:"port"`
 		Sources     []wireSource    `json:"sources"`
 		ModelOwners json.RawMessage `json:"modelOwners"`
+		Strategy    string          `json:"strategy"`
+		Token       string          `json:"token"`
 		Revision    int             `json:"revision"`
 		CreatedAt   string          `json:"createdAt"`
 		UpdatedAt   string          `json:"updatedAt"`
@@ -256,10 +480,13 @@ func decodeHubConfig(data []byte, name string) (*Config, error) {
 	if err := json.Unmarshal(data, &w); err != nil {
 		return fail(err.Error())
 	}
+	if w.Strategy != "" && w.Strategy != StrategyFailover && w.Strategy != StrategyRoundRobin {
+		return fail("unknown strategy " + w.Strategy)
+	}
 	cfg := &Config{
 		Name: w.Name, Enabled: w.Enabled, Host: w.Host, Port: w.Port,
 		Sources: make([]Source, 0, len(w.Sources)), Revision: w.Revision,
-		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+		Strategy: w.Strategy, Token: w.Token, CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
 	if len(w.ModelOwners) > 0 {
 		cfg.modelOwners = json.RawMessage(string(w.ModelOwners))
@@ -278,10 +505,8 @@ func decodeHubConfig(data []byte, name string) (*Config, error) {
 // every key decodeProxyHubConfig requires is present, so TypeScript reading a
 // Go-written row decodes it natively (round-trip without protocol drift).
 //
-// Known one-field gap: a kernel-assigned port (0) is persisted as absent,
-// which the TS decoder rejects — deliberately, because inventing a concrete
-// port here collides with the managed builtin proxy's default listener. A
-// TS reader treats such a row as unconfigured (fail closed); once a hub is
+// TS does not model Strategy: it is a Go-side extension. An absent port is
+// treated as kernel-assigned (the 0 value). Host defaults to 127.0.0.1; when
 // given an explicit port the row is fully TS-readable.
 type tsSource struct {
 	Ref     wireRef `json:"ref"`
@@ -293,11 +518,16 @@ type tsHubConfig struct {
 	Enabled     bool            `json:"enabled"`
 	Host        string          `json:"host"`
 	Port        int             `json:"port,omitempty"` // absent = kernel-assigned (gap note above)
+	Strategy    string          `json:"strategy,omitempty"`
+	Token       string          `json:"token,omitempty"`
 	Sources     []tsSource      `json:"sources"`
 	ModelOwners json.RawMessage `json:"modelOwners"`
 	Revision    int             `json:"revision"`
 	CreatedAt   string          `json:"createdAt"`
 	UpdatedAt   string          `json:"updatedAt"`
+	// SourcesRelational marks a Go-written document whose proxy_hub_sources
+	// rows are authoritative. Foreign and pre-migration documents omit it.
+	SourcesRelational bool `json:"sourcesRelational,omitempty"`
 }
 
 func marshalTSConfig(cfg Config, modelOwners json.RawMessage) ([]byte, error) {
@@ -311,10 +541,12 @@ func marshalTSConfig(cfg Config, modelOwners json.RawMessage) ([]byte, error) {
 	}
 	wire := tsHubConfig{
 		Name: cfg.Name, Enabled: cfg.Enabled,
-		Host: host, Port: cfg.Port,
+		Host: host, Port: cfg.Port, Strategy: cfg.Strategy,
+		Token:       cfg.Token,
 		Sources:     make([]tsSource, 0, len(cfg.Sources)),
 		ModelOwners: owners, Revision: cfg.Revision,
 		CreatedAt: cfg.CreatedAt, UpdatedAt: cfg.UpdatedAt,
+		SourcesRelational: true,
 	}
 	for _, s := range cfg.Sources {
 		ref := wireRef{Kind: "account", Provider: s.ProviderID, Name: s.Account}
@@ -332,25 +564,61 @@ func marshalTSConfig(cfg Config, modelOwners json.RawMessage) ([]byte, error) {
 // and is generated lazily on first use; deleting that row rotates the key
 // and invalidates all existing HMAC tokens (re-attach required).
 func (s *Store) AttachRouteContext(ctx context.Context, r Route) error {
+	return s.withHubLock(ctx, r.HubName, func(c context.Context) error {
+		return s.attachRouteLocked(c, r)
+	})
+}
+
+func (s *Store) attachRouteLocked(ctx context.Context, r Route) error {
 	data, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	hashed, err := s.hashToken(ctx, r.Token)
+	now := nowISO()
+	if strings.TrimSpace(r.Token) != "" {
+		hashed, err := s.hashToken(ctx, r.Token)
+		if err != nil {
+			return err
+		}
+		_, err = s.DB.ExecContext(ctx,
+			`INSERT INTO proxy_hub_routes
+			   (route_id, hub_name, manifest_json, token_secret, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(route_id) DO UPDATE SET
+			   manifest_json = excluded.manifest_json,
+			   token_secret = excluded.token_secret,
+			   updated_at = excluded.updated_at`,
+			r.RouteID, r.HubName, string(data), hashed, now, now)
+		return err
+	}
+	// A manifest-only write (a model pin before any bearer exists) must not
+	// store HMAC(""). That digest is the authenticator for an empty presented
+	// token. A fresh row gets an unusable unique placeholder; an update leaves
+	// the existing secret alone.
+	placeholder, err := unusableRouteSecret()
 	if err != nil {
 		return err
 	}
-	now := nowISO()
 	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO proxy_hub_routes
 		   (route_id, hub_name, manifest_json, token_secret, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(route_id) DO UPDATE SET
 		   manifest_json = excluded.manifest_json,
-		   token_secret = excluded.token_secret,
 		   updated_at = excluded.updated_at`,
-		r.RouteID, r.HubName, string(data), hashed, now, now)
+		r.RouteID, r.HubName, string(data), placeholder, now, now)
 	return err
+}
+
+// unusableRouteSecret is stored for a route that has no bearer yet. It is not
+// a hash of any token a client can present, and the "unset:" prefix keeps it
+// out of the hex digest space RouteByToken queries.
+func unusableRouteSecret() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "unset:" + hex.EncodeToString(raw), nil
 }
 
 const hubHMACKeyName = "hub_token_hmac_key"
@@ -422,6 +690,23 @@ const defaultRouteIDSuffix = "/default"
 // DefaultRouteID returns the implicit route id for a hub name.
 func DefaultRouteID(hubName string) string { return hubName + defaultRouteIDSuffix }
 
+// ClientRouteID returns the stable route used by a client's default config.
+// Named profiles and one-shot runs use separate ids so rotating one token
+// cannot invalidate another config that points at this hub.
+func ClientRouteID(hubName, clientID string) string {
+	return hubName + "/route-" + clientID
+}
+
+// ClientProfileRouteID returns the stable route for one native client profile.
+func ClientProfileRouteID(hubName, clientID, profileName string) string {
+	return ClientRouteID(hubName, clientID) + "/profile-" + profileName
+}
+
+// ClientRunRouteID returns an isolated route for one ephemeral activation.
+func ClientRunRouteID(hubName, clientID, operationID string) string {
+	return ClientRouteID(hubName, clientID) + "/run-" + operationID
+}
+
 // routeByRow mirrors RouteByTokenContext but keyed by id.
 // RouteRowSnapshot captures one persisted route row verbatim (manifest,
 // token hash, timestamps) so activation compensation can restore EXACTLY what
@@ -453,6 +738,12 @@ func (s *Store) SnapshotRouteContext(ctx context.Context, routeID string) (*Rout
 
 // RestoreRouteRowContext reinstates a snapshotted row byte-for-byte.
 func (s *Store) RestoreRouteRowContext(ctx context.Context, snap *RouteRowSnapshot) error {
+	return s.withHubLock(ctx, routeHubName(snap.ManifestJSON), func(c context.Context) error {
+		return s.restoreRouteRowLocked(c, snap)
+	})
+}
+
+func (s *Store) restoreRouteRowLocked(ctx context.Context, snap *RouteRowSnapshot) error {
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO proxy_hub_routes
 		   (route_id, hub_name, manifest_json, token_secret, created_at, updated_at)
@@ -494,6 +785,203 @@ func (s *Store) routeByID(ctx context.Context, routeID string) (*Route, error) {
 	return &r, nil
 }
 
+// RemoveSourceContext detaches one source. Pins name their owner by value,
+// so removal only ever drops pins that named the removed member — there is
+// no index to shift and nothing to re-point. It returns whether anything
+// was removed and which model pins were dropped.
+func (s *Store) RemoveSourceContext(ctx context.Context, hubName, providerID, account string) (bool, []string, error) {
+	var removed bool
+	var dropped []string
+	err := s.withHubLock(ctx, hubName, func(c context.Context) error {
+		cfg, err := s.GetConfigContext(c, hubName)
+		if err != nil {
+			return err
+		}
+		if cfg == nil {
+			return anyerr.Newf("Proxy Hub not found: "+hubName, "HUB_NOT_FOUND")
+		}
+		owner := sourceOwnerKey(providerID, account)
+		removedIdx := -1
+		kept := make([]Source, 0, len(cfg.Sources))
+		for i, src := range cfg.Sources {
+			if ownerOf(src) == owner {
+				removedIdx = i
+				continue
+			}
+			kept = append(kept, src)
+		}
+		if removedIdx < 0 {
+			return nil
+		}
+		cfg.Sources = kept
+		if _, err := s.upsertConfigLocked(c, *cfg); err != nil {
+			return err
+		}
+		dropped, err = s.dropPinsLocked(c, hubName, owner, removedIdx)
+		if err != nil {
+			return err
+		}
+		removed = true
+		return nil
+	})
+	return removed, dropped, err
+}
+
+// PruneAccountContext drops every route pin that named one deleted account,
+// across all hubs, and rewrites config_json so a cascade-deleted member
+// cannot be read back from the stale document. Source rows themselves need
+// no pruning: the foreign key on proxy_hub_sources cascades the account
+// delete. Pins live inside route manifests (JSON takes no foreign keys), so
+// they are swept here by value. It returns "hub: model, ..." entries
+// describing what was dropped so callers can report it.
+func (s *Store) PruneAccountContext(ctx context.Context, providerID, account string) ([]string, error) {
+	configs, err := s.ListConfigsContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner := sourceOwnerKey(providerID, account)
+	var pruned []string
+	for _, cfg := range configs {
+		var dropped []string
+		derr := s.withHubLock(ctx, cfg.Name, func(c context.Context) error {
+			var err error
+			dropped, err = s.dropPinsLocked(c, cfg.Name, owner, -1)
+			if err != nil {
+				return err
+			}
+			return s.rewriteHubDocAfterAccountDelete(c, cfg.Name, providerID, account)
+		})
+		if derr != nil {
+			return pruned, derr
+		}
+		for _, model := range dropped {
+			pruned = append(pruned, cfg.Name+": "+model)
+		}
+	}
+	return pruned, nil
+}
+
+// rewriteHubDocAfterAccountDelete persists membership rows back into
+// config_json when the document still names the deleted account. An empty
+// row set is authoritative for that removal: filtering only the deleted
+// member keeps any pre-migration sibling that was never given a row.
+func (s *Store) rewriteHubDocAfterAccountDelete(ctx context.Context, hubName, providerID, account string) error {
+	var data string
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT config_json FROM proxy_hubs WHERE name = ?`, hubName).Scan(&data)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cfg, err := decodeHubConfig([]byte(data), hubName)
+	if err != nil {
+		return err
+	}
+	mentioned := false
+	for _, src := range cfg.Sources {
+		if sourceIsAccount(src, providerID, account) {
+			mentioned = true
+			break
+		}
+	}
+	if !mentioned {
+		return nil
+	}
+	rows, err := s.loadSources(ctx, hubName)
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		cfg.Sources = rows
+	} else {
+		kept := make([]Source, 0, len(cfg.Sources))
+		for _, src := range cfg.Sources {
+			if sourceIsAccount(src, providerID, account) {
+				continue
+			}
+			kept = append(kept, src)
+		}
+		cfg.Sources = kept
+	}
+	encoded, err := marshalTSConfig(*cfg, cfg.modelOwners)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`UPDATE proxy_hubs SET config_json = ?, updated_at = ? WHERE name = ?`,
+		string(encoded), nowISO(), hubName)
+	return err
+}
+
+func sourceIsAccount(src Source, providerID, account string) bool {
+	if _, isPool := PoolSourceProvider(src); isPool {
+		return false
+	}
+	return src.ProviderID == providerID && src.Account == account
+}
+
+// dropPinsLocked removes every pin naming owner across all routes of one
+// hub and reports the dropped model ids. Legacy positional pins to the
+// removed index drop with it; later legacy pins are unreachable after the
+// relational migration rewrote them, so there is nothing to shift.
+// Callers hold the hub lock.
+func (s *Store) dropPinsLocked(ctx context.Context, hubName, owner string, removedIdx int) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT route_id, manifest_json FROM proxy_hub_routes WHERE hub_name = ?`, hubName)
+	if err != nil {
+		return nil, err
+	}
+	type row struct{ id, manifest string }
+	var list []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.manifest); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		list = append(list, r)
+	}
+	rows.Close()
+	var dropped []string
+	for _, r := range list {
+		var route Route
+		if json.Unmarshal([]byte(r.manifest), &route) != nil || len(route.Models) == 0 {
+			continue
+		}
+		kept := route.Models[:0]
+		changed := false
+		for _, m := range route.Models {
+			if m.Owner != "" && m.Owner == owner {
+				dropped = append(dropped, m.Model)
+				changed = true
+				continue
+			}
+			if m.Owner == "" && m.SourceIndex == removedIdx {
+				dropped = append(dropped, m.Model)
+				changed = true
+				continue
+			}
+			kept = append(kept, m)
+		}
+		if !changed {
+			continue
+		}
+		route.Models = kept
+		encoded, merr := json.Marshal(route)
+		if merr != nil {
+			return dropped, merr
+		}
+		if _, merr := s.DB.ExecContext(ctx,
+			`UPDATE proxy_hub_routes SET manifest_json = ?, updated_at = ? WHERE route_id = ?`,
+			string(encoded), nowISO(), r.id); merr != nil {
+			return dropped, merr
+		}
+	}
+	return dropped, nil
+}
+
 // SetModelOwnerContext pins a model id to the source whose provider/account
 // matches owner on the hub's default route (explicit model owner).
 func (s *Store) SetModelOwnerContext(ctx context.Context, hubName, model, owner string) error {
@@ -505,14 +993,14 @@ func (s *Store) SetModelOwnerContext(ctx context.Context, hubName, model, owner 
 		return anyerr.Newf("Proxy Hub not found: "+hubName, "HUB_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound))
 	}
-	ownerIndex := -1
-	for i, src := range cfg.Sources {
+	ownerKey := ""
+	for _, src := range cfg.Sources {
 		if src.ProviderID+"/"+src.Account == owner || src.Account == owner || src.ProviderID == owner {
-			ownerIndex = i
+			ownerKey = ownerOf(src)
 			break
 		}
 	}
-	if ownerIndex < 0 {
+	if ownerKey == "" {
 		return anyerr.Newf("source not attached to this hub: "+owner, "HUB_SOURCE_MISSING")
 	}
 	routeID := DefaultRouteID(hubName)
@@ -526,12 +1014,13 @@ func (s *Store) SetModelOwnerContext(ctx context.Context, hubName, model, owner 
 	replaced := false
 	for i := range route.Models {
 		if route.Models[i].Model == model {
-			route.Models[i].SourceIndex = ownerIndex
+			route.Models[i].Owner = ownerKey
+			route.Models[i].SourceIndex = -1
 			replaced = true
 		}
 	}
 	if !replaced {
-		route.Models = append(route.Models, ModelRoute{Model: model, SourceIndex: ownerIndex})
+		route.Models = append(route.Models, ModelRoute{Model: model, Owner: ownerKey, SourceIndex: -1})
 	}
 	return s.AttachRouteContext(ctx, *route)
 }
@@ -560,9 +1049,11 @@ func (s *Store) PreviewManifest(ctx context.Context, hubName string) (*ManifestP
 	if route != nil {
 		for _, m := range route.Models {
 			target := "default"
-			if m.SourceIndex >= 0 && m.SourceIndex < len(cfg.Sources) {
-				s := cfg.Sources[m.SourceIndex]
+			if idx := ResolveOwnerIndex(cfg.Sources, m); idx >= 0 {
+				s := cfg.Sources[idx]
 				target = s.ProviderID + "/" + s.Account
+			} else if m.Owner != "" {
+				target = m.Owner + " (missing)"
 			}
 			line := fmt.Sprintf("model %s → %s", m.Model, target)
 			if m.UpstreamModel != "" && m.UpstreamModel != m.Model {
@@ -582,15 +1073,25 @@ type ManifestPreview struct {
 }
 
 func (s *Store) DetachRouteContext(ctx context.Context, routeID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM proxy_hub_routes WHERE route_id = ?`, routeID)
-	return err
+	route, err := s.routeByID(ctx, routeID)
+	if err != nil {
+		return err
+	}
+	if route == nil {
+		return nil
+	}
+	return s.withHubLock(ctx, route.HubName, func(c context.Context) error {
+		_, err := s.DB.ExecContext(c, `DELETE FROM proxy_hub_routes WHERE route_id = ?`, routeID)
+		return err
+	})
 }
 
 // RouteByToken resolves the route owning a presented credential. Token secrets
 // are stored as HMAC-SHA256 hex (AttachRoute hashes them with a per-install
 // key); lookup tries HMAC, then SHA-256, then plaintext for legacy rows. The
-// returned Route echoes the presented token on match so callers can do
-// constant-time comparison without exposing the stored hash.
+// returned Route echoes the presented token on match and sets proven only
+// after the stored secret matched the computed digest. Callers must check
+// proven: comparing Token with the presented bearer compares a value to itself.
 //
 // This is a pure read: it never migrates rows and never provisions the HMAC
 // key. Legacy-row migration is an explicit write via MigrateRouteTokenContext,
@@ -600,6 +1101,11 @@ func (s *Store) RouteByToken(token string) (*Route, error) {
 }
 
 func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, error) {
+	// An empty presented token is not a credential. Returning before the
+	// lookup means a stored digest of "" cannot authenticate one (ADR 0006).
+	if token == "" {
+		return nil, nil
+	}
 	// HMAC path — only if a key has been provisioned (RouteByToken must not
 	// auto-create the key; AttachRoute is the writer that provisions it).
 	if key, ok, err := s.hmacKeyExisting(ctx); err != nil {
@@ -608,46 +1114,32 @@ func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, 
 		mac := hmac.New(sha256.New, key)
 		_, _ = mac.Write([]byte(token))
 		hashed := hex.EncodeToString(mac.Sum(nil))
-		var data, secret string
-		err := s.DB.QueryRowContext(ctx,
-			`SELECT manifest_json, token_secret FROM proxy_hub_routes WHERE token_secret = ?`, hashed).
-			Scan(&data, &secret)
-		if err == nil {
-			var r Route
-			if json.Unmarshal([]byte(data), &r) != nil {
-				return nil, anyerr.Newf("corrupt route manifest", "STATE_CONFLICT")
-			}
-			r.Token = token
-			return &r, nil
-		}
-		if err != sql.ErrNoRows {
-			return nil, err
+		route, err := s.routeByStoredSecret(ctx, hashed)
+		if route != nil || err != nil {
+			return provenRoute(route, token, hashed), err
 		}
 	}
 	// Legacy SHA-256 rows (pre-HMAC) — returned as-is; the caller migrates
 	// explicitly via MigrateRouteTokenContext after authenticating.
-	{
-		sha := legacySHA256(token)
-		var data, secret string
-		err := s.DB.QueryRowContext(ctx,
-			`SELECT manifest_json, token_secret FROM proxy_hub_routes WHERE token_secret = ?`, sha).
-			Scan(&data, &secret)
-		if err == nil {
-			var r Route
-			if json.Unmarshal([]byte(data), &r) != nil {
-				return nil, anyerr.Newf("corrupt route manifest", "STATE_CONFLICT")
-			}
-			r.Token = token
-			return &r, nil
-		}
-		if err != sql.ErrNoRows {
-			return nil, err
-		}
+	sha := legacySHA256(token)
+	if route, err := s.routeByStoredSecret(ctx, sha); route != nil || err != nil {
+		return provenRoute(route, token, sha), err
 	}
 	// Earliest plaintext rows — returned as-is; see above.
+	route, err := s.routeByStoredSecret(ctx, token)
+	if route == nil || err != nil {
+		return nil, err
+	}
+	return provenRoute(route, token, token), nil
+}
+
+// routeByStoredSecret reads the row whose token_secret equals probe and
+// accepts it only when the stored bytes match probe in constant time. A SQL
+// hit alone is not the authentication (ADR 0006).
+func (s *Store) routeByStoredSecret(ctx context.Context, probe string) (*Route, error) {
 	var data, secret string
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT manifest_json, token_secret FROM proxy_hub_routes WHERE token_secret = ?`, token).
+		`SELECT manifest_json, token_secret FROM proxy_hub_routes WHERE token_secret = ?`, probe).
 		Scan(&data, &secret)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -655,12 +1147,25 @@ func (s *Store) RouteByTokenContext(ctx context.Context, token string) (*Route, 
 	if err != nil {
 		return nil, err
 	}
+	if !proxy.SafeEqual(secret, probe) {
+		return nil, nil
+	}
 	var r Route
 	if json.Unmarshal([]byte(data), &r) != nil {
 		return nil, anyerr.Newf("corrupt route manifest", "STATE_CONFLICT")
 	}
-	r.Token = token
 	return &r, nil
+}
+
+// provenRoute publishes the presented token only after routeByStoredSecret
+// has matched probe. The echo is not itself a credential check.
+func provenRoute(route *Route, token, probe string) *Route {
+	if route == nil || token == "" || probe == "" {
+		return nil
+	}
+	route.Token = token
+	route.proven = true
+	return route
 }
 
 // MigrateRouteTokenContext moves one route's stored secret to the current HMAC
@@ -694,7 +1199,14 @@ func (s *Store) MigrateRouteTokenContext(ctx context.Context, routeID, token str
 	if subtle.ConstantTimeCompare([]byte(current), []byte(migrated)) == 1 {
 		return nil
 	}
-	return lock.WithMutationLock(ctx, s.Root, "hub/routes", func(c context.Context) error {
+	route, rerr := s.routeByID(ctx, routeID)
+	if rerr != nil {
+		return rerr
+	}
+	if route == nil {
+		return nil
+	}
+	return s.withHubLock(ctx, route.HubName, func(c context.Context) error {
 		var rechecked string
 		if err := s.DB.QueryRowContext(c,
 			`SELECT token_secret FROM proxy_hub_routes WHERE route_id = ?`, routeID).Scan(&rechecked); err != nil {
@@ -719,4 +1231,111 @@ func NewRouteToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// NewHubApiKey generates a fresh user-facing API key for the hub (aph_ prefix + 32-char hex).
+func NewHubApiKey() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "aph_" + hex.EncodeToString(b), nil
+}
+
+// EnsureHubTokenContext ensures the named hub has an API key configured.
+// If not yet set, it generates a fresh key, saves it in the hub's config,
+// and attaches the default route.
+func (s *Store) EnsureHubTokenContext(ctx context.Context, hubName string) (string, error) {
+	var token string
+	err := s.withHubLock(ctx, hubName, func(c context.Context) error {
+		cfg, err := s.GetConfigContext(c, hubName)
+		if err != nil {
+			return err
+		}
+		if cfg == nil {
+			return anyerr.Newf("Proxy Hub not found: "+hubName, "HUB_NOT_FOUND",
+				anyerr.WithExitCode(anyerr.NotFound))
+		}
+		if cfg.Token != "" {
+			token = cfg.Token
+			routeID := DefaultRouteID(hubName)
+			route, rerr := s.routeByID(c, routeID)
+			if rerr == nil && route == nil {
+				_ = s.attachRouteLocked(c, Route{
+					RouteID:  routeID,
+					HubName:  hubName,
+					ClientID: "default",
+					Token:    token,
+				})
+			}
+			return nil
+		}
+		fresh, ferr := NewHubApiKey()
+		if ferr != nil {
+			return ferr
+		}
+		cfg.Token = fresh
+		if _, uerr := s.upsertConfigLocked(c, *cfg); uerr != nil {
+			return uerr
+		}
+		routeID := DefaultRouteID(hubName)
+		route, _ := s.routeByID(c, routeID)
+		var models []ModelRoute
+		if route != nil {
+			models = route.Models
+		}
+		if aerr := s.attachRouteLocked(c, Route{
+			RouteID:  routeID,
+			HubName:  hubName,
+			ClientID: "default",
+			Models:   models,
+			Token:    fresh,
+		}); aerr != nil {
+			return aerr
+		}
+		token = fresh
+		return nil
+	})
+	return token, err
+}
+
+// RotateHubTokenContext replaces the hub's API key with a freshly generated one.
+func (s *Store) RotateHubTokenContext(ctx context.Context, hubName string) (string, error) {
+	var token string
+	err := s.withHubLock(ctx, hubName, func(c context.Context) error {
+		cfg, err := s.GetConfigContext(c, hubName)
+		if err != nil {
+			return err
+		}
+		if cfg == nil {
+			return anyerr.Newf("Proxy Hub not found: "+hubName, "HUB_NOT_FOUND",
+				anyerr.WithExitCode(anyerr.NotFound))
+		}
+		fresh, ferr := NewHubApiKey()
+		if ferr != nil {
+			return ferr
+		}
+		cfg.Token = fresh
+		if _, uerr := s.upsertConfigLocked(c, *cfg); uerr != nil {
+			return uerr
+		}
+		routeID := DefaultRouteID(hubName)
+		route, _ := s.routeByID(c, routeID)
+		var models []ModelRoute
+		if route != nil {
+			models = route.Models
+		}
+		if aerr := s.attachRouteLocked(c, Route{
+			RouteID:  routeID,
+			HubName:  hubName,
+			ClientID: "default",
+			Models:   models,
+			Token:    fresh,
+		}); aerr != nil {
+			return aerr
+		}
+		token = fresh
+		return nil
+	})
+	return token, err
 }

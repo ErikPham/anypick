@@ -41,8 +41,17 @@ type Result struct {
 type Request struct {
 	ProviderID string
 	Endpoint   string
-	APIKey     string
-	Refresh    bool
+	// CacheKey overrides Endpoint as the persisted identity of the catalog.
+	// Account-backed subscriptions need this because two accounts can share the
+	// same upstream origin while having different entitlements. It is a cache
+	// identity only and is never dialed.
+	CacheKey string
+	APIKey   string
+	// LiveStyle overrides the catalog policy's wire shape for an endpoint
+	// whose provider is discovered at runtime (for example a custom gateway).
+	// It is still limited to the catalog fetchers owned by internal/catalog.
+	LiveStyle string
+	Refresh   bool
 	// NoLive skips the vendor fetch: fresh cache → stale cache → static.
 	// Snapshot ticks set it — a cold cache must never trigger per-tick
 	// egress. Live warming is an explicit user action (hub start, model
@@ -64,13 +73,12 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 	policy := catalog.Policy(req.ProviderID)
 	fallback := staticModels(policy)
 	endpoint := normalizeEndpoint(firstNonEmpty(req.Endpoint, catalogDefaultEndpoint(req.ProviderID)))
+	cacheKey := normalizeEndpoint(firstNonEmpty(req.CacheKey, endpoint))
 
-	if endpoint == "" || policy == nil || policy.LiveFetch == "" {
-		return Result{Models: fallback, Source: SourceCatalog,
-			Note: "no live discovery for this provider"}
+	var cached *modelcache.Entry
+	if s.Cache != nil && cacheKey != "" {
+		cached, _ = s.Cache.Get(ctx, req.ProviderID, cacheKey)
 	}
-
-	cached, _ := s.Cache.Get(ctx, req.ProviderID, endpoint)
 	now := s.now()
 	if !req.Refresh && cached != nil && isFresh(cached.FetchedAt, now) {
 		return Result{Models: cached.Models, Source: SourceCache, FetchedAt: cached.FetchedAt}
@@ -82,6 +90,18 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 		}
 		return Result{Models: fallback, Source: SourceCatalog,
 			Note: "snapshot tick never fetches live"}
+	}
+	style := req.LiveStyle
+	if style == "" && policy != nil {
+		style = policy.LiveFetch
+	}
+	if style == "" {
+		return Result{Models: fallback, Source: SourceCatalog,
+			Note: "no live discovery for this provider"}
+	}
+	if endpoint == "" {
+		return Result{Models: fallback, Source: SourceCatalog,
+			Note: "no live endpoint for this provider"}
 	}
 
 	u, err := url.Parse(endpoint)
@@ -95,7 +115,7 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
-	models, err := catalog.FetchLiveModels(fetchCtx, policy.LiveFetch, &catalog.FetchContext{
+	models, err := catalog.FetchLiveModels(fetchCtx, style, &catalog.FetchContext{
 		Endpoint: endpoint, APIKey: req.APIKey,
 	})
 	_ = origin // allowlist is enforced by construction: only `endpoint` is queried
@@ -115,7 +135,7 @@ func (s *Service) List(ctx context.Context, req Request) Result {
 	}
 
 	fetchedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
-	if err := s.StoreLive(ctx, req.ProviderID, endpoint, models); err != nil {
+	if err := s.StoreLive(ctx, req.ProviderID, cacheKey, models); err != nil {
 		return Result{Models: models, Source: SourceLive, FetchedAt: fetchedAt}
 	}
 	return Result{Models: models, Source: SourceLive, FetchedAt: fetchedAt}

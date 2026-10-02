@@ -68,6 +68,30 @@ func TestListLiveFetchThenCache(t *testing.T) {
 	}
 }
 
+func TestListLiveStyleDiscoversProviderModelsWithoutStaticPolicy(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]string{{"id": "model-added-after-release"}},
+		})
+	}))
+	defer srv.Close()
+
+	svc, _ := newTestService(t)
+	res := svc.List(context.Background(), Request{
+		ProviderID: "future-provider", Endpoint: srv.URL, APIKey: "key",
+		LiveStyle: "openai",
+	})
+	if res.Source != SourceLive || len(res.Models) != 1 || res.Models[0] != "model-added-after-release" {
+		t.Fatalf("live provider catalog = %+v", res)
+	}
+	if gotAuth != "Bearer key" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+}
+
 func TestListVendorFailureFallsBackToStaleThenCatalog(t *testing.T) {
 	up := true
 	var srvURL string
@@ -147,5 +171,22 @@ func TestListNoLiveNeverFetches(t *testing.T) {
 	res = svc.List(ctx, Request{ProviderID: "openai", Endpoint: srv.URL, NoLive: true})
 	if hits != 1 || res.Source != SourceStale {
 		t.Fatalf("NoLive stale cache wrong: hits=%d res=%+v", hits, res)
+	}
+}
+
+func TestListUsesAccountScopedCacheWithoutAnEndpoint(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	key := "account/gemini/work"
+	models := []string{"gemini-new-model"}
+	if err := svc.StoreLive(ctx, "gemini-api", key, models); err != nil {
+		t.Fatal(err)
+	}
+
+	res := svc.List(ctx, Request{
+		ProviderID: "gemini-api", CacheKey: key, NoLive: true,
+	})
+	if res.Source != SourceCache || len(res.Models) != 1 || res.Models[0] != models[0] {
+		t.Fatalf("account cache was not used: %+v", res)
 	}
 }

@@ -166,7 +166,7 @@ func seedLegacyRoute(t *testing.T, st *Store, routeID, secret string) {
 
 func TestRouteByTokenMigratesLegacySHA256(t *testing.T) {
 	st := newHubStore(t)
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	seedLegacyRoute(t, st, "r-sha", legacySHA256(token))
 
 	found, err := st.RouteByToken(token)
@@ -206,7 +206,7 @@ func TestRouteByTokenMigratesLegacySHA256(t *testing.T) {
 
 func TestRouteByTokenMigratesPlaintextRow(t *testing.T) {
 	st := newHubStore(t)
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	seedLegacyRoute(t, st, "r-plain", token)
 
 	found, err := st.RouteByToken(token)
@@ -240,12 +240,12 @@ func TestRouteByTokenUnknownAndCorruptManifest(t *testing.T) {
 	st := newHubStore(t)
 
 	// Unknown token → (nil, nil).
-	if r, err := st.RouteByToken(proxy.MustNewToken()); r != nil || err != nil {
+	if r, err := st.RouteByToken(mustNewProxyToken(t)); r != nil || err != nil {
 		t.Fatalf("unknown token = %+v, %v", r, err)
 	}
 
 	// Corrupt manifest behind the HMAC secret surfaces as STATE_CONFLICT.
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	if _, err := st.DB.Exec(
 		`INSERT INTO proxy_hubs (name, config_json, created_at, updated_at) VALUES ('legacy', '{}', 't', 't')
 		 ON CONFLICT(name) DO NOTHING`); err != nil {
@@ -271,7 +271,7 @@ func TestRouteByTokenUnknownAndCorruptManifest(t *testing.T) {
 
 func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 	st := newHubStore(t)
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	if _, err := st.UpsertConfigContext(context.Background(), Config{Name: "d", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +319,7 @@ func TestServeRouteDisabledNoSourceUpstreamError(t *testing.T) {
 
 func TestServeRoutePinsSourceByModelIndex(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "glm/cn", "deepseek/work")
 	cfg, err := st.UpsertConfigContext(context.Background(), Config{
 		Name: "pin", Enabled: true,
 		Sources: []Source{
@@ -329,7 +330,7 @@ func TestServeRoutePinsSourceByModelIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	if err := st.AttachRouteContext(context.Background(), Route{RouteID: "global/c", HubName: "pin", ClientID: "claude", Token: token,
 		Models: []ModelRoute{{Model: "deepseek-chat", SourceIndex: 1}}}); err != nil {
 		t.Fatal(err)
@@ -367,6 +368,7 @@ func TestStopIdempotentWithoutStart(t *testing.T) {
 
 func TestUpsertConfigPreservesCreatedAt(t *testing.T) {
 	st := newHubStore(t)
+	seedHubAccounts(t, st, "p/a")
 	first, err := st.UpsertConfigContext(context.Background(), Config{Name: "keep", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +405,7 @@ func TestGetConfigCorruptJSONIsStateConflict(t *testing.T) {
 
 func TestMigrateSkipsCurrentRowsAndRequiresRoot(t *testing.T) {
 	st := newHubStore(t)
-	token := proxy.MustNewToken()
+	token := mustNewProxyToken(t)
 	seedLegacyRoute(t, st, "r-cur", legacySHA256(token))
 	if err := st.MigrateRouteTokenContext(context.Background(), "r-cur", token); err != nil {
 		t.Fatal(err)
@@ -429,5 +431,235 @@ func TestMigrateSkipsCurrentRowsAndRequiresRoot(t *testing.T) {
 	rootless := &Store{DB: st.DB}
 	if err := rootless.MigrateRouteTokenContext(context.Background(), "r-cur", token); err == nil {
 		t.Fatal("rootless migration must fail closed")
+	}
+}
+
+// buildHubRotationRoute attaches one route to a hub whose sources are all
+// enabled, so a test can watch which source each request resolves to.
+func buildHubRotationRoute(t *testing.T, st *Store, cfg Config) (*Server, string, *fakeResolver) {
+	t.Helper()
+	saved, err := st.UpsertConfigContext(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := mustNewProxyToken(t)
+	if err := st.AttachRouteContext(context.Background(), Route{
+		RouteID: DefaultRouteID(cfg.Name), HubName: cfg.Name, ClientID: "claude", Token: token,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{}
+	return &Server{Config: saved, Store: NewService(st), Resolver: resolver}, token, resolver
+}
+
+func rotationRequest(t *testing.T, srv *Server, token, model string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"`+model+`"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	srv.serveRoute(httptest.NewRecorder(), req)
+}
+
+// The hub-wide mode: with strategy round-robin, successive requests spread
+// across the enabled accounts of the provider the model resolves to.
+func TestHubRoundRobinSpreadsAcrossProviderAccounts(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "gemini/a", "gemini/b", "gemini/c", "grok/only")
+	srv, token, resolver := buildHubRotationRoute(t, st, Config{
+		Name: "rot", Enabled: true, Strategy: StrategyRoundRobin,
+		Sources: []Source{
+			{ProviderID: "gemini", Account: "a"},
+			{ProviderID: "gemini", Account: "b"},
+			{ProviderID: "gemini", Account: "c"},
+			{ProviderID: "grok", Account: "only"},
+		},
+	})
+
+	// No pin: the model falls to the default source, whose provider is gemini.
+	for i := 0; i < 4; i++ {
+		rotationRequest(t, srv, token, "gemini-2.5-pro")
+	}
+	got := strings.Join(resolver.saw, ",")
+	if got != "gemini/a,gemini/b,gemini/c,gemini/a" {
+		t.Fatalf("rotation order = %s", got)
+	}
+}
+
+// Failover is the default and stays exactly what it was: one account answers
+// every request for a model until it is rejected.
+func TestHubFailoverStaysSticky(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "gemini/a", "gemini/b")
+	srv, token, resolver := buildHubRotationRoute(t, st, Config{
+		Name: "sticky", Enabled: true,
+		Sources: []Source{
+			{ProviderID: "gemini", Account: "a"},
+			{ProviderID: "gemini", Account: "b"},
+		},
+	})
+	for i := 0; i < 3; i++ {
+		rotationRequest(t, srv, token, "gemini-2.5-pro")
+	}
+	if got := strings.Join(resolver.saw, ","); got != "gemini/a,gemini/a,gemini/a" {
+		t.Fatalf("failover order = %s, want the first account every time", got)
+	}
+}
+
+// A recorded model owner picks the provider; rotation changes which account of
+// that provider answers, never which vendor does. Disabled accounts are not
+// rotation candidates, and a provider with a single enabled account is a no-op.
+func TestHubRoundRobinHonorsOwnerAndEnabledSets(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "gemini/a", "gemini/b", "codex/work", "codex/home")
+	off := false
+	srv, token, resolver := buildHubRotationRoute(t, st, Config{
+		Name: "owner", Enabled: true, Strategy: StrategyRoundRobin,
+		Sources: []Source{
+			{ProviderID: "gemini", Account: "a"},
+			{ProviderID: "gemini", Account: "b", Enabled: &off},
+			{ProviderID: "codex", Account: "work"},
+			{ProviderID: "codex", Account: "home"},
+		},
+	})
+	// A recorded owner is a route pin (the same row `hub owner` writes). It is
+	// attached here directly so this test's known token stays on the row:
+	// SetModelOwner reloads the route without its bearer (Token is not stored
+	// in the manifest) and would not carry this token onto a new row.
+	if err := st.AttachRouteContext(context.Background(), Route{
+		RouteID: DefaultRouteID("owner"), HubName: "owner", ClientID: "claude", Token: token,
+		Models: []ModelRoute{{Model: "gpt-5.1", SourceIndex: 2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		rotationRequest(t, srv, token, "gpt-5.1")
+	}
+	if got := strings.Join(resolver.saw, ","); got != "codex/work,codex/home,codex/work,codex/home" {
+		t.Fatalf("owner rotation = %s", got)
+	}
+
+	// The gemini group has one enabled member, so it is served as-is — and the
+	// paused account never becomes a candidate just because rotation is on.
+	resolver.saw = nil
+	for i := 0; i < 2; i++ {
+		rotationRequest(t, srv, token, "gemini-2.5-pro")
+	}
+	if got := strings.Join(resolver.saw, ","); got != "gemini/a,gemini/a" {
+		t.Fatalf("single-member group = %s, want the enabled account twice", got)
+	}
+}
+
+// The mode is persisted with the rest of the hub config and survives the TS
+// wire round trip; an unknown value is a corrupt row, not a silent failover.
+func TestHubStrategyRoundTripsAndRejectsUnknown(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "gemini/a")
+	saved, err := st.UpsertConfigContext(context.Background(), Config{
+		Name: "mode", Enabled: true, Strategy: StrategyRoundRobin,
+		Sources: []Source{{ProviderID: "gemini", Account: "a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.SpreadsRequests() {
+		t.Fatalf("saved config lost the strategy: %+v", saved)
+	}
+	back, err := st.GetConfigContext(context.Background(), "mode")
+	if err != nil || back == nil || back.Strategy != StrategyRoundRobin {
+		t.Fatalf("round trip = %+v, %v", back, err)
+	}
+	var stored string
+	if err := st.DB.QueryRow(`SELECT config_json FROM proxy_hubs WHERE name='mode'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, `"strategy":"round-robin"`) {
+		t.Fatalf("stored config = %s", stored)
+	}
+	if _, err := st.DB.Exec(`UPDATE proxy_hubs SET config_json=? WHERE name='mode'`,
+		strings.Replace(stored, `"round-robin"`, `"random"`, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetConfigContext(context.Background(), "mode"); err == nil ||
+		!strings.Contains(err.Error(), "unknown strategy") {
+		t.Fatalf("unknown strategy = %v, want a fail-closed read", err)
+	}
+}
+
+// The global mode spreads a model over every enabled account that can serve it,
+// not only the account the model resolves to: two providers advertising the same
+// model id both take turns, and an account that cannot serve it is never chosen.
+func TestHubRoundRobinSpreadsAcrossCapableProviders(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "codex/work", "codex/home", "workbuddy/shared", "gemini/unrelated")
+	saved, err := st.UpsertConfigContext(context.Background(), Config{
+		Name: "wide", Enabled: true, Strategy: StrategyRoundRobin,
+		Sources: []Source{
+			{ProviderID: "codex", Account: "work"},
+			{ProviderID: "codex", Account: "home"},
+			{ProviderID: "workbuddy", Account: "shared"},
+			{ProviderID: "gemini", Account: "unrelated"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := mustNewProxyToken(t)
+	if err := st.AttachRouteContext(context.Background(), Route{
+		RouteID: DefaultRouteID("wide"), HubName: "wide", ClientID: "claude", Token: token,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{}
+	srv := &Server{
+		Config: saved, Store: NewService(st), Resolver: resolver,
+		ModelsForProvider: func(providerID string) []string {
+			switch providerID {
+			case "codex", "workbuddy":
+				return []string{"gpt-5.1"}
+			case "gemini":
+				return []string{"gemini-2.5-pro"}
+			}
+			return nil
+		},
+	}
+
+	for i := 0; i < 3; i++ {
+		rotationRequest(t, srv, token, "gpt-5.1")
+	}
+	if got := strings.Join(resolver.saw, ","); got != "codex/work,codex/home,workbuddy/shared" {
+		t.Fatalf("capable-provider rotation = %s", got)
+	}
+}
+
+// A model nobody advertises falls back to the resolved source's provider, so
+// rotation keeps working before a catalog has been warmed.
+func TestHubRoundRobinFallsBackToTheResolvedProvider(t *testing.T) {
+	st := newHubStore(t)
+	seedHubAccounts(t, st, "codex/work", "codex/home", "gemini/unrelated")
+	saved, err := st.UpsertConfigContext(context.Background(), Config{
+		Name: "fallback", Enabled: true, Strategy: StrategyRoundRobin,
+		Sources: []Source{
+			{ProviderID: "codex", Account: "work"},
+			{ProviderID: "codex", Account: "home"},
+			{ProviderID: "gemini", Account: "unrelated"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := mustNewProxyToken(t)
+	if err := st.AttachRouteContext(context.Background(), Route{
+		RouteID: DefaultRouteID("fallback"), HubName: "fallback", ClientID: "claude", Token: token,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &fakeResolver{}
+	srv := &Server{Config: saved, Store: NewService(st), Resolver: resolver}
+
+	for i := 0; i < 4; i++ {
+		rotationRequest(t, srv, token, "unknown-model")
+	}
+	if got := strings.Join(resolver.saw, ","); got != "codex/work,codex/home,codex/work,codex/home" {
+		t.Fatalf("fallback rotation = %s, want the resolved provider's accounts", got)
 	}
 }

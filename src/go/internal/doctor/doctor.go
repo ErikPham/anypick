@@ -6,10 +6,15 @@ package doctor
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/client"
+	"github.com/outof0/anypick/go/internal/plugins"
 	"github.com/outof0/anypick/go/internal/presets"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
@@ -31,6 +36,22 @@ type Finding struct {
 	Check  string `json:"check"`
 	Status string `json:"status"` // ok | warn | fail
 	Detail string `json:"detail,omitempty"`
+}
+
+// EnvironmentReport contains only the redacted proxy environment state that
+// is safe to display in a diagnostic report.
+type EnvironmentReport struct {
+	Proxy ProxyEnvironment `json:"proxy"`
+}
+
+type ProxyEnvironment struct {
+	Present     []string `json:"present,omitempty"`
+	HTTPProxy   string   `json:"httpProxy,omitempty"`
+	HTTPSProxy  string   `json:"httpsProxy,omitempty"`
+	AllProxy    string   `json:"allProxy,omitempty"`
+	NoProxySet  bool     `json:"noProxySet"`
+	NoProxySize int      `json:"noProxyEntries,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
 }
 
 // Report is the per-client diagnosis shown by the TUI.
@@ -176,4 +197,188 @@ func joinIssues(issues []string) string {
 		out += s
 	}
 	return out
+}
+
+// InstallationReport is a read-only health report for the local AnyPick data
+// root. The CLI and desktop settings pane share this implementation.
+type InstallationReport struct {
+	Status      string              `json:"status"`
+	Findings    []Finding           `json:"findings"`
+	Plugins     plugins.Diagnostics `json:"plugins"`
+	Environment EnvironmentReport   `json:"environment"`
+}
+
+// InstallationDeps is the service slice required to diagnose one data root.
+type InstallationDeps struct {
+	Root              string
+	Providers         *provider.Registry
+	Clients           *client.Registry
+	Accounts          *accounts.Service
+	Bindings          *bindings.Service
+	Proxy             *proxy.Service
+	Environment       EnvironmentReport
+	PluginDiagnostics func(context.Context) plugins.Diagnostics
+}
+
+// DiagnoseInstallation checks persistent references and local service state.
+// It never writes or repairs anything; callers can present specific repair
+// actions once the user has reviewed the findings.
+func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) InstallationReport {
+	report := InstallationReport{Findings: []Finding{}}
+	if deps.PluginDiagnostics != nil {
+		report.Plugins = deps.PluginDiagnostics(ctx)
+	}
+	report.Environment = deps.Environment
+	environmentStatus := StatusOK
+	if len(report.Environment.Proxy.Warnings) > 0 {
+		environmentStatus = "warn"
+	}
+	add := func(check, status, detail string) {
+		report.Findings = append(report.Findings, Finding{Check: check, Status: status, Detail: detail})
+	}
+	add("proxy-environment", environmentStatus, proxyEnvironmentDetail(report.Environment))
+
+	if _, err := os.Stat(filepath.Join(deps.Root, "anypick.db")); err != nil {
+		add("database", "fail", "anypick.db missing under data root")
+	} else {
+		add("database", StatusOK, "")
+	}
+
+	if deps.Providers != nil && deps.Accounts != nil {
+		// Active pointers must reference existing accounts.
+		for _, providerID := range deps.Providers.IDs() {
+			active, _ := deps.Accounts.Active(ctx, providerID)
+			if active == "" {
+				continue
+			}
+			acct, err := deps.Accounts.Get(ctx, providerID, active)
+			if err != nil || acct == nil {
+				add("active-binding", "warn", fmt.Sprintf("%s points at missing account %q", providerID, active))
+			} else {
+				add("active-binding", StatusOK, providerID+"/"+active)
+			}
+		}
+
+		// Enabled proxies should have persisted state or be restartable.
+		if deps.Proxy != nil {
+			for _, providerID := range deps.Providers.IDs() {
+				list, err := deps.Accounts.List(ctx, providerID)
+				if err != nil {
+					continue
+				}
+				for _, acct := range list {
+					cfg, _ := deps.Proxy.ProxyConfig(ctx, providerID, acct.Meta.Name)
+					if !cfg.Enabled {
+						continue
+					}
+					st, err := deps.Proxy.StatusContext(ctx, providerID, acct.Meta.Name)
+					if err == nil && st.Running {
+						add("proxy", StatusOK, fmt.Sprintf("%s/%s running", providerID, acct.Meta.Name))
+					} else {
+						add("proxy", "warn", fmt.Sprintf("%s/%s enabled but not running", providerID, acct.Meta.Name))
+					}
+				}
+			}
+		}
+	}
+
+	if deps.Clients != nil && deps.Bindings != nil {
+		boundClients := map[string][]string{}
+		for _, clientID := range deps.Clients.IDs() {
+			binding, err := deps.Bindings.GetGlobalContext(ctx, clientID)
+			if err != nil || binding == nil || binding.Spec.Source.Kind != refs.KindAccount {
+				continue
+			}
+			ref := binding.Spec.Source.Provider + "/" + binding.Spec.Source.Name
+			boundClients[ref] = append(boundClients[ref], clientID)
+		}
+		if deps.Accounts != nil {
+			groups, err := deps.Accounts.DuplicateSnapshotGroups(ctx)
+			for _, group := range groups {
+				keepRef := group.Provider + "/" + group.Keep
+				refsInGroup := make([]string, 0, len(group.Names))
+				inUse := make([]string, 0, len(group.Names))
+				removable := make([]string, 0, len(group.Names))
+				for _, name := range group.Names {
+					ref := group.Provider + "/" + name
+					refsInGroup = append(refsInGroup, ref)
+					clients := boundClients[ref]
+					switch {
+					case ref == keepRef:
+						inUse = append(inUse, ref)
+					case len(clients) > 0:
+						inUse = append(inUse, ref+" (bound to "+strings.Join(clients, ", ")+")")
+					default:
+						removable = append(removable, ref)
+					}
+				}
+				detail := fmt.Sprintf("%s share one snapshot", strings.Join(refsInGroup, ", "))
+				if len(inUse) > 1 {
+					detail += fmt.Sprintf(" — in use: %s; re-bind clients to one account before removing the rest", strings.Join(inUse, ", "))
+				} else {
+					detail += " — keep " + keepRef
+					for _, ref := range removable {
+						detail += "; anypick account remove " + ref
+					}
+				}
+				add("duplicate-snapshot", "warn", detail)
+			}
+			if err != nil {
+				add("duplicate-snapshot", "warn", "snapshot audit incomplete: "+err.Error())
+			}
+		}
+	}
+
+	if report.Plugins.Host.LoadedPlugins > 0 || report.Plugins.Host.State == "degraded" {
+		pluginStatus := StatusOK
+		if report.Plugins.Host.State != "running" {
+			pluginStatus = "warn"
+		}
+		detail := fmt.Sprintf("%d loaded; host %s", report.Plugins.Host.LoadedPlugins, report.Plugins.Host.State)
+		if report.Plugins.Host.Error != "" {
+			detail += ": " + report.Plugins.Host.Error
+		}
+		add("plugin-host", pluginStatus, detail)
+	}
+	for _, failure := range report.Plugins.Failures {
+		add("plugin:"+failure.Name, "warn", failure.Reason)
+	}
+
+	report.Status = StatusOK
+	for _, finding := range report.Findings {
+		if finding.Status == "warn" && report.Status == StatusOK {
+			report.Status = StatusDegraded
+		}
+		if finding.Status == "fail" {
+			report.Status = StatusUnhealthy
+		}
+	}
+	return report
+}
+
+func proxyEnvironmentDetail(report EnvironmentReport) string {
+	proxy := report.Proxy
+	if len(proxy.Present) == 0 {
+		return "no proxy environment variables configured"
+	}
+	parts := make([]string, 0, 5)
+	if proxy.HTTPProxy != "" {
+		parts = append(parts, "HTTP_PROXY="+proxy.HTTPProxy)
+	}
+	if proxy.HTTPSProxy != "" {
+		parts = append(parts, "HTTPS_PROXY="+proxy.HTTPSProxy)
+	}
+	if proxy.AllProxy != "" {
+		parts = append(parts, "ALL_PROXY="+proxy.AllProxy)
+	}
+	if proxy.NoProxySet {
+		parts = append(parts, fmt.Sprintf("NO_PROXY=%d entries", proxy.NoProxySize))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "proxy variables are empty")
+	}
+	if len(proxy.Warnings) > 0 {
+		parts = append(parts, "warnings: "+strings.Join(proxy.Warnings, "; "))
+	}
+	return strings.Join(parts, ", ")
 }
