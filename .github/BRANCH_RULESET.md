@@ -29,6 +29,7 @@ check names GitHub reports (the job `name:` fields), grouped by workflow.
 - `Tauri app / Linux check & UI build`
 - `macOS app / Xcode & universal helper`
 - `Docs / Typecheck / Lint / Build`
+- `Distribution adapters / npm and packaging`
 
 Strict requirement: the check names above must match the jobs in
 `.github/workflows/ci.yml` and `.github/workflows/review-metadata.yml`. If a job

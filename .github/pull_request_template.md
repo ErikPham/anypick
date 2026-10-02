@@ -51,7 +51,7 @@ severity, evidence, and merge criteria. Complete every applicable field.
 - [ ] Findings include path, authority, failure mode, and required regression
 - [ ] Every P0/P1 is closed; P0/P1 was not deferred
 - [ ] Every deferred P2 has a linked follow-up, owner, and due date
-- [ ] Changed hunks were re-reviewed and affected gates re-run after fixes
+- [ ] Changed hunks were re-reviewed and affected check re-run after fixes
 
 ## Gate evidence
 
@@ -65,9 +65,9 @@ severity, evidence, and merge criteria. Complete every applicable field.
 | Gate | Exit status | Raw output or CI URL |
 | --- | --- | --- |
 | `make ci` — review + lint + race |  |  |
-| macOS: `make app-test` |  |  |
+| macOS: `make test-macos` |  |  |
 | Tauri: full CI job — typecheck, UI build, Rust check/format/test/clippy/audit |  |  |
-| Docs: `make docs-check docs-build` |  |  |
+| Docs: `make check-docs build-docs` |  |  |
 
 ## Regression evidence
 
@@ -115,7 +115,7 @@ severity, evidence, and merge criteria. Complete every applicable field.
 
 - [ ] CLI/TUI prompts are TTY-gated before service access; JSON stays machine-readable
 - [ ] Protocol version is synchronized across Go, Rust, and Swift
-- [ ] Version changes use `make release-set` / `make release-bump`
+- [ ] Version changes use `make set-version` / `make bump-version`
 - [ ] macOS UI follows `src/macos/README.md` and uses native controls
 - [ ] Both Node-free bundle checks agree
 

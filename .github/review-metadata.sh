@@ -93,7 +93,7 @@ fi
 
 requires_high=false
 if [[ -n "$changed_files" ]] && printf '%s\n' "$changed_files" | grep -Eq \
-  '^(\.github/review-metadata\.sh|\.github/workflows/|Makefile$|VERSION$|adr/|src/go/internal/(activation|atomicfile|bindings|compensation|db|journal|lock|ownership|protocol|proxy|pubgate|store|transfer|transport)/|src/go/cmd/anypick-release/|src/macos/AppServiceClient\.swift$|src/macos/scripts/)'; then
+  '^(\.github/review-metadata\.sh|\.github/workflows/|Makefile$|VERSION$|adr/|src/go/internal/(activation|accounts|agentbridge|anyerr|app|artifact|atomicfile|bindings|catalog|cli|client|compensation|config|db|desktop|discovery|doctor|egress|hub|journal|lock|modelcache|observe|ownership|paths|plugins|pools|presets|profile|protocol|provider|proxy|pubgate|refs|runtime|store|transfer|transport|tui|upstream)/|src/go/cmd/anypick-release/|src/macos/AppServiceClient\.swift$|src/macos/scripts/)'; then
   requires_high=true
 fi
 
@@ -122,7 +122,7 @@ if selected 'High' || selected 'Architectural'; then
     'Reviewer received the exact diff plus the authority paths' \
     'Findings include path, authority, failure mode, and required regression' \
     'Every P0/P1 is closed; P0/P1 was not deferred' \
-    'Changed hunks were re-reviewed and affected gates re-run after fixes'; do
+    'Changed hunks were re-reviewed and affected check re-run after fixes'; do
     checked "$item" || error "required high-risk confirmation is unchecked: $item"
   done
 else
@@ -133,9 +133,9 @@ fi
 
 if [[ -n "$changed_files" ]]; then
   if printf '%s\n' "$changed_files" | grep -Eq '^src/macos/'; then
-    value=$(row_value 'macOS: `make app-test`')
+    value=$(row_value 'macOS: `make test-macos`')
     [[ -n "$value" && ! "$value" =~ ^(not[[:space:]]+applicable|gate[[:space:]]+not[[:space:]]+run) ]] \
-      || error "macOS changes require app-test evidence"
+      || error "macOS changes require test-macos evidence"
   fi
   if printf '%s\n' "$changed_files" | grep -Eq '^src/tauri/'; then
     value=$(row_value 'Tauri: full CI job — typecheck, UI build, Rust check/format/test/clippy/audit')
@@ -143,9 +143,9 @@ if [[ -n "$changed_files" ]]; then
       || error "Tauri changes require the full Tauri CI evidence"
   fi
   if printf '%s\n' "$changed_files" | grep -Eq '^(docs/|README\.md$)'; then
-    value=$(row_value 'Docs: `make docs-check docs-build`')
+    value=$(row_value 'Docs: `make check-docs build-docs`')
     [[ -n "$value" && ! "$value" =~ ^(not[[:space:]]+applicable|gate[[:space:]]+not[[:space:]]+run) ]] \
-      || error "docs changes require docs-check and docs-build evidence"
+      || error "docs changes require check-docs and build-docs evidence"
   fi
 fi
 

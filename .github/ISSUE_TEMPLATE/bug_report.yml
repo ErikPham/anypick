@@ -51,10 +51,10 @@ body:
   - type: input
     id: go
     attributes:
-      label: Go version
-      description: Output of `go version` (AnyPick requires the toolchain in AGENTS.md)
+      label: Go version (source builds only)
+      description: Output of `go version`. Leave blank when you installed a release binary.
     validations:
-      required: true
+      required: false
 
   - type: dropdown
     id: os

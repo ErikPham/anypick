@@ -4,21 +4,41 @@ name: Release
 # sign them, and only then commit the version, push the tag, and publish the
 # GitHub Release (ADR 0020). Nothing public moves before all green.
 #
-# The first release is macOS-only (release-scope=macos-only, the default):
-# Linux/Windows keep building and verifying in CI so drift is caught, but
-# their artifacts are staged, not published, until target-OS smoke testing
-# lands. Scope=all publishes every staged platform. There is no npm package:
-# the JavaScript toolchain was removed in e59509d and ADR-0020 makes npm
-# optional, so the only channels are the GitHub Release and the docs site.
+# GitHub Releases are the canonical source. The same run also prepares package
+# manager metadata for Homebrew, WinGet and Scoop, and can publish the thin npm
+# adapter through npm trusted publishing when that channel is enabled.
+#
+# release-scope=all (the default) publishes the signed macOS app, the staged
+# Tauri Linux/Windows installers and the cross-platform CLI archives. Each
+# desktop payload is smoke-tested on its own OS before staging: the Linux deb/
+# AppImage/rpm and the Windows MSI are extracted, and the bundled Go helper must
+# answer with the planned version. The GUI itself is not launched (no display on
+# a hosted runner), so this is an installer-payload gate, not a UI test.
+# release-scope=macos-only narrows a release to macOS plus the CLI archives.
 on:
   workflow_dispatch:
     inputs:
       release-scope:
-        description: "Platforms to publish (macos-only keeps Linux/Windows staged, not published)"
+        description: "Desktop platforms to publish"
         required: false
-        default: "macos-only"
+        default: "all"
         type: choice
         options: [macos-only, all]
+      publish-npm:
+        description: "Publish the thin npm launcher (requires npm trusted publishing)"
+        required: false
+        default: false
+        type: boolean
+      publish-homebrew:
+        description: "Update the configured external Homebrew tap"
+        required: false
+        default: false
+        type: boolean
+      publish-scoop:
+        description: "Update the configured external Scoop bucket"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -72,6 +92,72 @@ jobs:
         id: sha
         run: echo "sha=$(git rev-parse HEAD)" | tee "$GITHUB_OUTPUT"
 
+  build-cli:
+    name: Build the cross-platform CLI archives
+    needs: plan
+    if: needs.plan.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c5ad0272d90 # v5.2.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
+
+      - name: Apply the planned version (staged, not pushed)
+        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
+
+      - name: Verify release version sources
+        run: make check-release
+
+      - name: Build and archive every supported CLI target
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/anypick-cli"
+          work="$RUNNER_TEMP/anypick-cli-work"
+          mkdir -p "$stage" "$work"
+          for target in \
+            darwin-amd64 darwin-arm64 \
+            linux-amd64 linux-arm64 \
+            windows-amd64 windows-arm64; do
+            goos="${target%-*}"
+            goarch="${target#*-}"
+            executable="anypick"
+            archive="anypick-${RELEASE_VERSION}-${target}"
+            if [[ "$goos" == windows ]]; then
+              executable="anypick.exe"
+              archive="$archive.zip"
+            else
+              archive="$archive.tar.gz"
+            fi
+            rm -f "$work/anypick" "$work/anypick.exe"
+            (
+              cd src/go
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -trimpath -ldflags "-s -w -X github.com/outof0/anypick/go/internal/buildinfo.Version=${RELEASE_VERSION}" \
+                -o "$work/$executable" ./cmd/anypick
+            )
+            if [[ "$goos" == windows ]]; then
+              (cd "$work" && zip -q "$stage/$archive" "$executable")
+            else
+              tar -C "$work" -czf "$stage/$archive" "$executable"
+            fi
+          done
+          test "$(find "$stage" -maxdepth 1 -type f | wc -l)" -eq 6
+
+      - uses: actions/upload-artifact@65c4c4a6d8253fb7a58e3234b0240c33b982565207 # v4.6.0
+        with:
+          name: anypick-cli
+          path: ${{ runner.temp }}/anypick-cli
+          if-no-files-found: error
+
   build-linux:
     name: Verify and stage the Linux app
     needs: plan
@@ -104,7 +190,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            rpm
 
       - name: Select stable Rust with rustfmt
         run: |
@@ -122,12 +209,12 @@ jobs:
 
       - name: Reject unexpected version edits
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
+          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
           test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
 
       # ── verification gate: nothing is staged until this is green ──
-      - name: Cross-language gates
-        run: make gates
+      - name: Cross-language check
+        run: make check
 
       - name: Go vet and test
         run: |
@@ -137,10 +224,10 @@ jobs:
       - name: Tauri UI typecheck and bundle build
         run: |
           cd src/tauri/ui && npm ci
-          make tauri-check
+          make typecheck-tauri-ui
           # The Rust bin embeds frontendDist (../frontend) at compile time, so
           # the bundle must exist before cargo check/test/clippy/build run.
-          make tauri-ui
+          make build-tauri-ui
 
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version 2.11.4 --locked
@@ -154,19 +241,23 @@ jobs:
           cd src/tauri/app && cargo audit
 
       - name: Build the Linux desktop app
-        run: make tauri-build
+        run: make build-tauri
 
       - name: Stage the Linux bundles
         run: |
           shopt -s nullglob
           assets=(src/tauri/app/target/release/bundle/appimage/*.AppImage
-                  src/tauri/app/target/release/bundle/deb/*.deb)
+                  src/tauri/app/target/release/bundle/deb/*.deb
+                  src/tauri/app/target/release/bundle/rpm/*.rpm)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "::error::the Linux desktop app produced no bundle"
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/anypick-stage"
           cp "${assets[@]}" "$RUNNER_TEMP/anypick-stage/"
+
+      - name: Smoke-test the staged installer payloads
+        run: packaging/smoke/linux-payload.sh "$RUNNER_TEMP/anypick-stage" "${{ needs.plan.outputs.version }}"
 
       - uses: actions/upload-artifact@65c4c4a6d8253fb7a58e3234b0240c33b982565207 # v4.6.0
         with:
@@ -214,19 +305,19 @@ jobs:
 
       - name: Reject unexpected version edits
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
+          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
           test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
 
-      - name: Cross-language gates
-        run: make gates
+      - name: Cross-language check
+        run: make check
 
       - name: Tauri UI typecheck and bundle build
         run: |
           cd src/tauri/ui && npm ci
-          make tauri-check
+          make typecheck-tauri-ui
           # The Rust bin embeds frontendDist (../frontend) at compile time, so
           # the bundle must exist before cargo test/clippy/build run.
-          make tauri-ui
+          make build-tauri-ui
 
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version 2.11.4 --locked
@@ -240,19 +331,29 @@ jobs:
           cd src/tauri/app && cargo audit
 
       - name: Build the Windows desktop app
-        run: make tauri-build
+        run: make build-tauri
 
       - name: Stage the Windows installers
         run: |
           shopt -s nullglob
-          assets=(src/tauri/app/target/release/bundle/msi/*.msi
-                  src/tauri/app/target/release/bundle/nsis/*.exe)
+          msi_assets=(src/tauri/app/target/release/bundle/msi/*.msi)
+          nsis_assets=(src/tauri/app/target/release/bundle/nsis/*.exe)
+          assets=("${msi_assets[@]}" "${nsis_assets[@]}")
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "::error::the Windows desktop app produced no bundle"
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/anypick-stage"
           cp "${assets[@]}" "$RUNNER_TEMP/anypick-stage/"
+          if [ "${#msi_assets[@]}" -eq 0 ]; then
+            echo "::error::the Windows desktop app produced no MSI for WinGet"
+            exit 1
+          fi
+          cp "${msi_assets[0]}" "$RUNNER_TEMP/anypick-stage/AnyPick-${{ needs.plan.outputs.version }}-windows-x64.msi"
+
+      - name: Smoke-test the staged installer payloads
+        shell: pwsh
+        run: packaging/smoke/windows-payload.ps1 -Stage "${{ runner.temp }}/anypick-stage" -Version "${{ needs.plan.outputs.version }}"
 
       - uses: actions/upload-artifact@65c4c4a6d8253fb7a58e3234b0240c33b982565207 # v4.6.0
         with:
@@ -338,20 +439,32 @@ jobs:
           test -n "$app"
           test -x "$app/Contents/Helpers/anypick-core"
           src/macos/scripts/check-node-free-app.sh "$app"
+          GOPATH="${HOME}/go" GOTOOLCHAIN=auto go run ./src/go/cmd/anypick-artifact node-free "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/AnyPick-macos-universal.zip"
+          hdiutil create -volname AnyPick -srcfolder "$app" -ov -format UDZO \
+            "$RUNNER_TEMP/AnyPick-macos-universal.dmg"
+
+      - name: Smoke-test the signed artifact on a clean account
+        run: |
+          app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/AnyPick.app' -print -quit)"
+          src/macos/scripts/smoke-installed-artifact.sh "$app" "${{ needs.plan.outputs.version }}"
+          src/macos/scripts/smoke-app-service.sh "$app"
 
       - uses: actions/upload-artifact@65c4c4a6d8253fb7a58e3234b0240c33b982565207 # v4.6.0
         with:
           name: anypick-macos
-          path: ${{ runner.temp }}/AnyPick-macos-universal.zip
+          path: |
+            ${{ runner.temp }}/AnyPick-macos-universal.zip
+            ${{ runner.temp }}/AnyPick-macos-universal.dmg
           if-no-files-found: error
 
   publish:
     name: Tag, release and deploy
-    needs: [plan, build-linux, build-windows, build-macos]
+    needs: [plan, build-cli, build-linux, build-windows, build-macos]
     # Skipped platform builds (out-of-scope inputs) do not block: only the
-    # in-scope builds must be green, and macOS is always in scope.
-    if: needs.plan.outputs.mode != 'none' && needs.build-macos.result == 'success' && (inputs.release-scope != 'all' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success'))
+    # in-scope builds must be green. The CLI archives are always built because
+    # they power npm and Homebrew even when a desktop scope is narrowed.
+    if: always() && needs.plan.outputs.mode != 'none' && needs.build-cli.result == 'success' && needs.build-macos.result == 'success' && (inputs.release-scope != 'all' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -382,7 +495,7 @@ jobs:
 
       - name: Validate release infrastructure
         env:
-          REPOSITORY_VISIBILITY: ${{ github.repository_visibility }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
@@ -400,12 +513,18 @@ jobs:
           }
           cd docs && pnpm install --frozen-lockfile && pnpm exec wrangler whoami
 
+      - name: Validate requested package-manager scope
+        if: (inputs.publish-scoop || vars.SCOOP_PUBLISH_ENABLED == 'true') && inputs.release-scope != 'all'
+        run: |
+          echo "::error::Scoop publishing requires release-scope=all so the Windows CLI and MSI are present."
+          exit 1
+
       - name: Apply the planned version
         run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
 
       - name: Reject unexpected version edits
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
+          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
           test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
 
       - name: Docs typecheck, lint and build
@@ -414,6 +533,11 @@ jobs:
           cd docs && pnpm lint:docs
           cd docs && pnpm build
           cd docs && pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
+
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e6f0f14271f33cc4e1f # v4.3.0
+        with:
+          name: anypick-cli
+          path: ${{ runner.temp }}/anypick-stage
 
       - uses: actions/download-artifact@fa0a91b85d4f404e444e00e6f0f14271f33cc4e1f # v4.3.0
         if: needs.build-linux.result == 'success'
@@ -432,6 +556,27 @@ jobs:
           name: anypick-macos
           path: ${{ runner.temp }}/anypick-stage
 
+      - name: Render package-manager metadata
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/anypick-stage"
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          (cd "$stage" && sha256sum -- *) > "$RUNNER_TEMP/anypick-input-sums.txt"
+          mkdir -p "$RUNNER_TEMP/package-manifests/winget" "$RUNNER_TEMP/package-manifests/scoop"
+          if [[ -f "$stage/AnyPick-${RELEASE_VERSION}-windows-x64.msi" ]]; then
+            bash packaging/winget/render.sh "$RELEASE_VERSION" "$base" \
+              "$RUNNER_TEMP/anypick-input-sums.txt" "$RUNNER_TEMP/package-manifests/winget"
+            bash packaging/scoop/render.sh "$RELEASE_VERSION" "$base" \
+              "$RUNNER_TEMP/anypick-input-sums.txt" "$RUNNER_TEMP/package-manifests/scoop"
+          else
+            echo "Windows desktop scope is disabled; skipping WinGet and Scoop manifests."
+          fi
+          find "$RUNNER_TEMP/package-manifests" -type f -print -quit | grep -q . && \
+            (cd "$RUNNER_TEMP/package-manifests" && zip -qr "$stage/AnyPick-package-manager-manifests.zip" .) || true
+
       # Every in-scope platform is staged and green at this point (macOS
       # always; Linux/Windows only under release-scope=all). Only now does
       # anything public move: version commit, tag, Release, assets.
@@ -444,6 +589,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           version_files=(
             VERSION
+            npm/anypick/package.json
             src/tauri/app/Cargo.toml
             src/tauri/app/Cargo.lock
             src/tauri/app/tauri.conf.json
@@ -485,6 +631,41 @@ jobs:
           fi
           (cd "$RUNNER_TEMP/anypick-stage" && sha256sum -- *) > "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
           gh release upload "$RELEASE_TAG" "${assets[@]}" "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt" --clobber
+
+      # npm's trusted publisher uses GitHub's OIDC identity; no long-lived
+      # npm token is stored in the repository. The package is only the thin
+      # launcher in npm/anypick — native bundles remain Node-free.
+      - name: Publish the npm launcher
+        if: inputs.publish-npm || vars.NPM_PUBLISH_ENABLED == 'true'
+        run: |
+          npm install --global npm@11.5.1
+          npm --version
+          npm publish --access public --provenance
+        working-directory: npm/anypick
+
+      - name: Publish the Homebrew tap
+        if: inputs.publish-homebrew || vars.HOMEBREW_PUBLISH_ENABLED == 'true'
+        env:
+          HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          packaging/homebrew/publish.sh "$RELEASE_VERSION" "$base" \
+            "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
+
+      - name: Publish the Scoop bucket
+        if: (inputs.publish-scoop || vars.SCOOP_PUBLISH_ENABLED == 'true') && inputs.release-scope == 'all'
+        env:
+          SCOOP_BUCKET_REPOSITORY: ${{ vars.SCOOP_BUCKET_REPOSITORY }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          packaging/scoop/publish.sh "$RELEASE_VERSION" "$base" \
+            "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
 
       - name: Generate the release SBOM
         uses: anchore/sbom-action@aa0e114b2e19480f157109b9922bda359bd98b90 # v0.20.8

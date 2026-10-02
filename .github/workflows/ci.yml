@@ -26,19 +26,6 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
 
-      - name: gofmt
-        run: |
-          cd src/go
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "::error::these files are not gofmt-clean:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: Vet
-        run: cd src/go && go vet ./...
-
       # Pinned: a new staticcheck release can add checks, and an unpinned
       # `go install ...@latest` would then fail CI for reasons unrelated to the
       # change under review. Bump it deliberately.
@@ -48,13 +35,15 @@ jobs:
       - name: Staticcheck
         run: make lint
 
-      # Cross-language gates: repository layout, script root resolution,
-      # GitHub Actions working-directories, and the desktop protocol version
-      # that Go, Rust and Swift each declare independently. Cheap, and they
-      # fail in seconds on the class of break a directory move introduces.
-      # Also asserts VERSION agrees with the Xcode MARKETING_VERSION.
-      - name: Cross-language gates
-        run: make gates
+      # `make check` is the same aggregate the pre-push hook runs, so the two
+      # cannot drift: gofmt, vet, and the cross-language gates (repository
+      # references, the desktop protocol version Go/Rust/Swift each declare
+      # independently, and VERSION against the Xcode MARKETING_VERSION). Cheap,
+      # and it fails in seconds on the class of break a directory move
+      # introduces. Staticcheck stays separate above: it needs a tool this job
+      # installs deliberately.
+      - name: Static gates
+        run: make check
 
   go:
     name: Go / Vet & Test
@@ -126,17 +115,26 @@ jobs:
       # ADR 0020 ships this app on Linux and Windows, so it needs a gate. The
       # Go sidecar path in build.rs is exactly the kind of assumption that a
       # directory move breaks silently.
-      - name: Cross-language gates
-        run: make paths protocol-sync
+      - name: Cross-language check
+        run: make check-paths check-protocol
 
       - name: Install UI dependencies
         run: cd src/tauri/ui && npm ci
 
       - name: Typecheck the UI
-        run: make tauri-check
+        run: make typecheck-tauri-ui
+
+      # The macOS feature map. It is a report today rather than a gate,
+      # because 71 rows are still `todo`, but it fails if the map drifts from
+      # either source tree, which is what would let it go stale.
+      - name: macOS to Tauri feature parity
+        run: make check-parity
+
+      - name: Test the UI
+        run: make test-tauri-ui
 
       - name: Build the UI bundle
-        run: make tauri-ui
+        run: make build-tauri-ui
 
       - name: cargo check the app and its Go sidecar
         run: cd src/tauri/app && cargo check --locked
@@ -225,3 +223,29 @@ jobs:
       - name: Validate Cloudflare Pages configuration
         run: cd docs && pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
 
+  distribution:
+    name: Distribution adapters / npm and packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.17.1'
+
+      - name: Check the thin npm launcher
+        run: |
+          cd npm/anypick
+          npm test
+          npm pack --dry-run
+
+      - name: Check package-manager generators
+        run: |
+          bash -n packaging/homebrew/render.sh packaging/homebrew/publish.sh
+          bash -n packaging/winget/render.sh
+          bash -n packaging/scoop/render.sh packaging/scoop/publish.sh
+
+      - name: Check the release payload smoke scripts
+        run: |
+          bash -n packaging/smoke/linux-payload.sh
+          pwsh -NoProfile -Command '[void][System.Management.Automation.Language.Parser]::ParseFile("packaging/smoke/windows-payload.ps1", [ref]$null, [ref]$null)'

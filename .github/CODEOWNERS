@@ -30,6 +30,13 @@
 /src/go/internal/store/        @outof0
 /src/go/internal/db/           @outof0
 /src/go/internal/journal/      @outof0
+/src/go/internal/bindings/     @outof0
+
+# Release tooling: editing these changes what ships as a version.
+/src/go/cmd/anypick-release/   @outof0
+
+# User-facing contract: capability claims must match the adapters.
+/docs/src/content/docs/        @outof0
 
 # Native apps.
 /src/macos/                    @outof0
