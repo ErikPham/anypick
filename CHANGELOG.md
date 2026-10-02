@@ -1,12 +1,15 @@
 # Changelog
 
-**Releases after 1.0.0 are not written here.** `changelogithub` builds the notes
-from the commits between two tags and publishes them to
-[GitHub Releases](https://github.com/hotplug-dev/hotplug/releases), so the commit
-message *is* the changelog entry — see `CONTRIBUTING.md` for the format.
+**This file is frozen at the 1.0.0 JavaScript release.** Later notes are
+generated from Conventional Commits by `changelogithub` and published on
+[GitHub Releases](https://github.com/outof0/anypick/releases). Do not append
+here.
 
-This file is the record of everything that shipped in 1.0.0, which predates that
-tooling and predates the repository's own history. It is kept, not regenerated.
+The 1.0.0 section below is **historical**: it describes the pre-cutover
+JavaScript CLI (then named `hotplug`). Native builds today are the Go
+engine in `src/go/` (ADR 0020). They do not load plugin entry modules
+(ADR 0021). Current command names use `anypick`, and the data directory is
+`~/.anypick`.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
