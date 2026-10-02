@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/refs"
 )
 
 // Meta mirrors RuntimeProfileMeta (subset the core layer consumes).
@@ -45,7 +47,22 @@ type Runtime struct {
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
 // Store owns the profiles table.
-type Store struct{ DB *sql.DB }
+//
+// Root is the AnyPick data directory: mutating methods take the coordinator
+// lock under it themselves (invariant #5), so callers must not depend on an
+// ambient lock. A Store without Root cannot take the lock and its mutating
+// methods fail closed instead of writing uncoordinated.
+type Store struct {
+	DB   *sql.DB
+	Root string
+}
+
+func (s *Store) mutate(ctx context.Context, scope string, fn func(context.Context) error) error {
+	if s.Root == "" {
+		return anyerr.Newf("profile store has no data root; refusing uncoordinated write", "STATE_CONFLICT")
+	}
+	return lock.WithMutationLock(ctx, s.Root, scope, fn)
+}
 
 func (s *Store) Get(name string) (*Runtime, error) {
 	return s.GetContext(context.Background(), name)
@@ -76,6 +93,16 @@ func (s *Store) GetContext(ctx context.Context, name string) (*Runtime, error) {
 }
 
 func (s *Store) UpsertContext(ctx context.Context, r Runtime) (Runtime, error) {
+	var out Runtime
+	err := s.mutate(ctx, refs.MutationScopeForRef(refs.GatewayRef(r.Meta.Name)), func(c context.Context) error {
+		got, err := s.upsertLocked(c, r)
+		out = got
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) upsertLocked(ctx context.Context, r Runtime) (Runtime, error) {
 	now := nowISO()
 	existing, err := s.GetContext(ctx, r.Meta.Name)
 	if err != nil {
@@ -110,8 +137,10 @@ func (s *Store) UpsertContext(ctx context.Context, r Runtime) (Runtime, error) {
 }
 
 func (s *Store) DeleteContext(ctx context.Context, name string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM profiles WHERE name = ?`, name)
-	return err
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.GatewayRef(name)), func(c context.Context) error {
+		_, err := s.DB.ExecContext(c, `DELETE FROM profiles WHERE name = ?`, name)
+		return err
+	})
 }
 
 // List returns stored profile names, sorted.

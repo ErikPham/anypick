@@ -7,6 +7,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/refs"
 )
 
 // Member mirrors PoolMember.
@@ -28,7 +32,22 @@ type Pool struct {
 }
 
 // Store owns the pools table.
-type Store struct{ DB *sql.DB }
+//
+// Root is the AnyPick data directory: mutating methods take the coordinator
+// lock under it themselves (invariant #5), so callers must not depend on an
+// ambient lock. A Store without Root cannot take the lock and its mutating
+// methods fail closed instead of writing uncoordinated.
+type Store struct {
+	DB   *sql.DB
+	Root string
+}
+
+func (s *Store) mutate(ctx context.Context, scope string, fn func(context.Context) error) error {
+	if s.Root == "" {
+		return anyerr.Newf("pools store has no data root; refusing uncoordinated write", "STATE_CONFLICT")
+	}
+	return lock.WithMutationLock(ctx, s.Root, scope, fn)
+}
 
 func (s *Store) Get(providerID string) (*Pool, error) {
 	return s.GetContext(context.Background(), providerID)
@@ -70,6 +89,12 @@ func (s *Store) GetContext(ctx context.Context, providerID string) (*Pool, error
 
 // SetMulti enables multi-account pooling for a provider.
 func (s *Store) SetMultiContext(ctx context.Context, providerID string, members []Member, host string, port int) error {
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.AccountPoolRef(providerID)), func(c context.Context) error {
+		return s.setMultiLocked(c, providerID, members, host, port)
+	})
+}
+
+func (s *Store) setMultiLocked(ctx context.Context, providerID string, members []Member, host string, port int) error {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	if members == nil {
 		members = []Member{}
@@ -94,6 +119,12 @@ func (s *Store) SetMultiContext(ctx context.Context, providerID string, members 
 // CLI so `enable` can persist non-default modes and strategies instead of
 // silently dropping them.
 func (s *Store) Set(ctx context.Context, pool Pool) error {
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.AccountPoolRef(pool.Provider)), func(c context.Context) error {
+		return s.setLocked(c, pool)
+	})
+}
+
+func (s *Store) setLocked(ctx context.Context, pool Pool) error {
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")
 	members := pool.Members
 	if members == nil {
@@ -124,12 +155,14 @@ func boolInt(b bool) int {
 }
 
 func (s *Store) DisableContext(ctx context.Context, providerID string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO pools (provider, mode, enabled, strategy, members_json, updated_at)
-		 VALUES (?, 'single', 0, 'failover', '[]', ?)
-		 ON CONFLICT(provider) DO UPDATE SET enabled = 0, updated_at = excluded.updated_at`,
-		providerID, time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"))
-	return err
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.AccountPoolRef(providerID)), func(c context.Context) error {
+		_, err := s.DB.ExecContext(c,
+			`INSERT INTO pools (provider, mode, enabled, strategy, members_json, updated_at)
+			 VALUES (?, 'single', 0, 'failover', '[]', ?)
+			 ON CONFLICT(provider) DO UPDATE SET enabled = 0, updated_at = excluded.updated_at`,
+			providerID, time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"))
+		return err
+	})
 }
 
 func nullIfEmpty(s string) interface{} {

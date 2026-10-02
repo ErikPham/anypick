@@ -6,10 +6,11 @@ import (
 
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-func testDB(t *testing.T) *db.DB {
+func testDB(t *testing.T) (*db.DB, string) {
 	t.Helper()
 	root := t.TempDir()
 	database, err := db.Open(root)
@@ -17,7 +18,7 @@ func testDB(t *testing.T) *db.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return database
+	return database, root
 }
 
 func specFor(provider, account string) bindings.Spec {
@@ -30,8 +31,8 @@ func specFor(provider, account string) bindings.Spec {
 }
 
 func TestUpsertNewAndGet(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	spec := specFor("grok", "work")
 	saved, err := s.UpsertContext(context.Background(), "my-preset", spec)
 	if err != nil {
@@ -59,8 +60,8 @@ func TestUpsertNewAndGet(t *testing.T) {
 }
 
 func TestUpsertBumpsRevision(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	spec1 := specFor("grok", "work")
 	saved1, _ := s.UpsertContext(context.Background(), "p", spec1)
 	spec2 := specFor("grok", "personal")
@@ -83,8 +84,8 @@ func TestUpsertBumpsRevision(t *testing.T) {
 }
 
 func TestMarkUsed(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	saved, _ := s.UpsertContext(context.Background(), "p", specFor("grok", "work"))
 	if err := s.MarkUsedContext(context.Background(), saved.ID); err != nil {
 		t.Fatal(err)
@@ -103,8 +104,8 @@ func TestMarkUsed(t *testing.T) {
 }
 
 func TestDeleteByName(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	if _, err := s.UpsertContext(context.Background(), "p", specFor("grok", "work")); err != nil {
 		t.Fatal(err)
 	}
@@ -121,5 +122,43 @@ func TestSourceRefOf(t *testing.T) {
 	ref := SourceRefOf(p)
 	if ref.Kind != refs.KindAccount || ref.Provider != "claude" || ref.Name != "work" {
 		t.Fatalf("SourceRefOf=%#v", ref)
+	}
+}
+
+func TestMutationsSelfLockWhenCallerDoesNot(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	saved, err := s.UpsertContext(context.Background(), "p", specFor("grok", "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkUsedContext(context.Background(), saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteByNameContext(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNestedMutationReentersHeldScope(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	ctx := context.Background()
+	scope := refs.MutationScopeForRef(refs.PresetRef("p"))
+	err := lock.WithMutationLock(ctx, root, scope, func(held context.Context) error {
+		_, err := s.UpsertContext(held, "p", specFor("grok", "work"))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMutateFailsClosedWithoutRoot(t *testing.T) {
+	database, _ := testDB(t)
+	s := &Store{DB: database.DB}
+	_, err := s.UpsertContext(context.Background(), "p", specFor("grok", "work"))
+	if err == nil {
+		t.Fatal("want fail-closed without Root")
 	}
 }

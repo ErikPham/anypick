@@ -10,6 +10,7 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -29,7 +30,22 @@ type Saved struct {
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
 // Store owns the presets table.
-type Store struct{ DB *sql.DB }
+//
+// Root is the AnyPick data directory: mutating methods take the coordinator
+// lock under it themselves (invariant #5), so callers must not depend on an
+// ambient lock. A Store without Root cannot take the lock and its mutating
+// methods fail closed instead of writing uncoordinated.
+type Store struct {
+	DB   *sql.DB
+	Root string
+}
+
+func (s *Store) mutate(ctx context.Context, scope string, fn func(context.Context) error) error {
+	if s.Root == "" {
+		return anyerr.Newf("presets store has no data root; refusing uncoordinated write", "STATE_CONFLICT")
+	}
+	return lock.WithMutationLock(ctx, s.Root, scope, fn)
+}
 
 const columns = `id, name, revision, spec_json, created_at, updated_at, last_used_at, use_count`
 
@@ -111,6 +127,16 @@ func (s *Store) ExistsContext(ctx context.Context, name string) (bool, error) {
 
 // Upsert creates or bumps the revision of a named preset.
 func (s *Store) UpsertContext(ctx context.Context, name string, spec bindings.Spec) (Saved, error) {
+	var out Saved
+	err := s.mutate(ctx, refs.MutationScopeForRef(refs.PresetRef(name)), func(c context.Context) error {
+		got, err := s.upsertLocked(c, name, spec)
+		out = got
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) upsertLocked(ctx context.Context, name string, spec bindings.Spec) (Saved, error) {
 	now := nowISO()
 	existing, err := s.GetByNameContext(ctx, name)
 	if err != nil {
@@ -148,6 +174,20 @@ func (s *Store) UpsertContext(ctx context.Context, name string, spec bindings.Sp
 
 // MarkUsed records a successful activation of a preset.
 func (s *Store) MarkUsedContext(ctx context.Context, id string) error {
+	var name string
+	err := s.DB.QueryRowContext(ctx, `SELECT name FROM presets WHERE id = ?`, id).Scan(&name)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.PresetRef(name)), func(c context.Context) error {
+		return s.markUsedLocked(c, id)
+	})
+}
+
+func (s *Store) markUsedLocked(ctx context.Context, id string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`UPDATE presets SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?`,
 		nowISO(), id)
@@ -155,8 +195,10 @@ func (s *Store) MarkUsedContext(ctx context.Context, id string) error {
 }
 
 func (s *Store) DeleteByNameContext(ctx context.Context, name string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM presets WHERE name = ?`, name)
-	return err
+	return s.mutate(ctx, refs.MutationScopeForRef(refs.PresetRef(name)), func(c context.Context) error {
+		_, err := s.DB.ExecContext(c, `DELETE FROM presets WHERE name = ?`, name)
+		return err
+	})
 }
 
 // SourceRefOf returns the preset's source ref convenience helper.

@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/refs"
 )
 
-func testDB(t *testing.T) *db.DB {
+func testDB(t *testing.T) (*db.DB, string) {
 	t.Helper()
 	root := t.TempDir()
 	database, err := db.Open(root)
@@ -16,12 +18,12 @@ func testDB(t *testing.T) *db.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return database
+	return database, root
 }
 
 func TestSetMultiAndGet(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	members := []Member{{Account: "a", Enabled: true}, {Account: "b", Enabled: false}}
 	if err := s.SetMultiContext(context.Background(), "claude", members, "127.0.0.1", 4000); err != nil {
 		t.Fatal(err)
@@ -42,8 +44,8 @@ func TestSetMultiAndGet(t *testing.T) {
 }
 
 func TestDisable(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	if err := s.SetMultiContext(context.Background(), "claude", []Member{{Account: "a"}}, "", 0); err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +64,45 @@ func TestDisable(t *testing.T) {
 }
 
 func TestGetMissingReturnsNil(t *testing.T) {
-	database := testDB(t)
-	s := &Store{DB: database.DB}
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
 	got, err := s.Get("nope")
 	if err != nil || got != nil {
 		t.Fatalf("Get missing = %#v %v want nil,nil", got, err)
+	}
+}
+
+func TestMutationsSelfLockWhenCallerDoesNot(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	if err := s.SetMultiContext(context.Background(), "claude", []Member{{Account: "a", Enabled: true}}, "127.0.0.1", 4000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(context.Background(), Pool{Provider: "claude", Mode: "multi", Enabled: true, Strategy: "failover", Members: []Member{{Account: "a", Enabled: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DisableContext(context.Background(), "claude"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNestedMutationReentersHeldScope(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	ctx := context.Background()
+	scope := refs.MutationScopeForRef(refs.AccountPoolRef("claude"))
+	err := lock.WithMutationLock(ctx, root, scope, func(held context.Context) error {
+		return s.SetMultiContext(held, "claude", []Member{{Account: "a", Enabled: true}}, "", 0)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMutateFailsClosedWithoutRoot(t *testing.T) {
+	database, _ := testDB(t)
+	s := &Store{DB: database.DB}
+	if err := s.DisableContext(context.Background(), "claude"); err == nil {
+		t.Fatal("want fail-closed without Root")
 	}
 }
