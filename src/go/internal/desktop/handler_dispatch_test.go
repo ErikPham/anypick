@@ -112,7 +112,8 @@ func TestHandleInvokeBranches(t *testing.T) {
 		t.Fatalf("want stale action, got %#v", res)
 	}
 
-	roleRaw, _ := json.Marshal(modelRolesPayload{Version: 1, RequestID: "r-roles", Revision: 1, ClientID: "claude"})
+	roleRaw, _ := json.Marshal(modelRolesPayload{Version: 1, RequestID: "r-roles", Revision: 1, ClientID: "claude",
+		RoleActionIDs: map[string]string{"sonnet": "a1"}})
 	out.Reset()
 	_ = srv.handle(ctx, &Command{Kind: "model-roles", Payload: roleRaw})
 	decoded = decodeFramePayload(t, firstFrameLine(out.String()))
@@ -121,6 +122,16 @@ func TestHandleInvokeBranches(t *testing.T) {
 	// required Default slot is rejected before any activation is planned.
 	if !strings.Contains(res.Message, "Default model") {
 		t.Fatalf("model-roles without a default role must be rejected: %#v", res)
+	}
+	// Empty roles mean reset: with no binding there is nothing to clear, so
+	// it fails closed instead of planning against a missing source.
+	roleRaw, _ = json.Marshal(modelRolesPayload{Version: 1, RequestID: "r-reset", Revision: 1, ClientID: "claude"})
+	out.Reset()
+	_ = srv.handle(ctx, &Command{Kind: "model-roles", Payload: roleRaw})
+	decoded = decodeFramePayload(t, firstFrameLine(out.String()))
+	_ = json.Unmarshal(decoded, &res)
+	if res.Status != "error" || !strings.Contains(res.Message, "no connection") {
+		t.Fatalf("model-roles reset without a binding must fail closed: %#v", res)
 	}
 	out.Reset()
 	staleRoleRaw, _ := json.Marshal(modelRolesPayload{
@@ -172,27 +183,33 @@ func TestHandleMutateOperations(t *testing.T) {
 	env.writeCodexLive("mut@example.com")
 
 	cases := []struct {
-		name string
-		m    Mutate
+		name   string
+		m      Mutate
+		before func()
 	}{
-		{"account-save-current", Mutate{Version: 1, RequestID: "m1", Operation: "account-save-current", ProviderID: "codex"}},
-		{"account-save", Mutate{Version: 1, RequestID: "m2", Operation: "account-save", ProviderID: "codex", Name: "m2-acc"}},
-		{"account-remove-missing", Mutate{Version: 1, RequestID: "m3", Operation: "account-remove", ProviderID: "codex", Name: "nope"}},
-		{"gateway-create-missing", Mutate{Version: 1, RequestID: "m4", Operation: "gateway-create", ProviderID: "", Name: ""}},
-		{"gateway-create-ok", Mutate{Version: 1, RequestID: "m5", Operation: "gateway-create", ProviderID: "custom", Name: "gw1", Endpoint: "https://api.example/v1", APIKey: "sk-123"}},
-		{"gateway-edit-ok", Mutate{Version: 1, RequestID: "m6", Operation: "gateway-edit", ProviderID: "custom", Name: "gw1", Endpoint: "https://api2.example/v1", Label: "Edited"}},
-		{"gateway-remove-ok", Mutate{Version: 1, RequestID: "m7", Operation: "gateway-remove", Name: "gw1"}},
-		{"gateway-remove-missing-name", Mutate{Version: 1, RequestID: "m8", Operation: "gateway-remove", Name: ""}},
-		{"gateway-edit-missing", Mutate{Version: 1, RequestID: "m9", Operation: "gateway-edit", Name: "nope-gw", Label: "x"}},
-		{"client-reset-ok", Mutate{Version: 1, RequestID: "m10", Operation: "client-reset", ProviderID: "claude"}},
-		{"client-reset-bad", Mutate{Version: 1, RequestID: "m11", Operation: "client-reset", ProviderID: "nope"}},
-		{"proxy-stop-all", Mutate{Version: 1, RequestID: "m12", Operation: "proxy-stop-all"}},
-		{"proxy-restart-all", Mutate{Version: 1, RequestID: "m13", Operation: "proxy-restart-all"}},
-		{"account-refresh-missing", Mutate{Version: 1, RequestID: "m14", Operation: "account-refresh", ProviderID: "codex", Name: "nope"}},
-		{"unsupported", Mutate{Version: 1, RequestID: "m15", Operation: "nope-op"}},
+		{"account-save-current", Mutate{Version: 1, RequestID: "m1", Operation: "account-save-current", ProviderID: "codex"}, nil},
+		// One login saves once: give the named save its own identity so the
+		// case still exercises the account-save success branch.
+		{"account-save", Mutate{Version: 1, RequestID: "m2", Operation: "account-save", ProviderID: "codex", Name: "m2-acc"}, func() { env.writeCodexLive("m2@example.com") }},
+		{"account-remove-missing", Mutate{Version: 1, RequestID: "m3", Operation: "account-remove", ProviderID: "codex", Name: "nope"}, nil},
+		{"gateway-create-missing", Mutate{Version: 1, RequestID: "m4", Operation: "gateway-create", ProviderID: "", Name: ""}, nil},
+		{"gateway-create-ok", Mutate{Version: 1, RequestID: "m5", Operation: "gateway-create", ProviderID: "custom", Name: "gw1", Endpoint: "https://api.example/v1", APIKey: "sk-123"}, nil},
+		{"gateway-edit-ok", Mutate{Version: 1, RequestID: "m6", Operation: "gateway-edit", ProviderID: "custom", Name: "gw1", Endpoint: "https://api2.example/v1", Label: "Edited"}, nil},
+		{"gateway-remove-ok", Mutate{Version: 1, RequestID: "m7", Operation: "gateway-remove", Name: "gw1"}, nil},
+		{"gateway-remove-missing-name", Mutate{Version: 1, RequestID: "m8", Operation: "gateway-remove", Name: ""}, nil},
+		{"gateway-edit-missing", Mutate{Version: 1, RequestID: "m9", Operation: "gateway-edit", Name: "nope-gw", Label: "x"}, nil},
+		{"client-reset-ok", Mutate{Version: 1, RequestID: "m10", Operation: "client-reset", ProviderID: "claude"}, nil},
+		{"client-reset-bad", Mutate{Version: 1, RequestID: "m11", Operation: "client-reset", ProviderID: "nope"}, nil},
+		{"proxy-stop-all", Mutate{Version: 1, RequestID: "m12", Operation: "proxy-stop-all"}, nil},
+		{"proxy-restart-all", Mutate{Version: 1, RequestID: "m13", Operation: "proxy-restart-all"}, nil},
+		{"account-refresh-missing", Mutate{Version: 1, RequestID: "m14", Operation: "account-refresh", ProviderID: "codex", Name: "nope"}, nil},
+		{"unsupported", Mutate{Version: 1, RequestID: "m15", Operation: "nope-op"}, nil},
 	}
 
 	for _, c := range cases {
+		if c.before != nil {
+			c.before()
+		}
 		out.Reset()
 		raw, _ := json.Marshal(c.m)
 		if err := srv.handleMutate(ctx, raw); err != nil {
@@ -212,6 +229,7 @@ func TestHandleMutateOperations(t *testing.T) {
 		}
 	}
 
+	env.writeCodexLive("ref@example.com")
 	if _, err := env.Svc.Save(ctx, "codex", "ref-acc", true); err != nil {
 		t.Fatal(err)
 	}

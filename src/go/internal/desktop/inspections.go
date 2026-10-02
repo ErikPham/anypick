@@ -189,7 +189,7 @@ func (m *InspectionManager) Restore(
 		}
 	}
 
-	metas, rerr := transfer.RestoreSelected(m.store, reg, record.stagedPath, selected,
+	metas, rerr := transfer.RestoreSelectedContext(ctx, m.store, reg, record.stagedPath, selected,
 		transfer.RestoreOptions{Replace: replace})
 	m.mu.Lock()
 	m.deleteLocked(inspectionID)

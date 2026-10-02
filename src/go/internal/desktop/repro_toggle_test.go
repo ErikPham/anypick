@@ -237,7 +237,9 @@ func TestStartReappliesBoundClaudeToken(t *testing.T) {
 	if _, err := env.Deps.Proxy.StartProxy(ctx, "workbuddy", "main"); err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.reapplyClientsBoundTo(ctx, source); err != nil {
+	// The stored binding is a re-apply, not a user confirmation: a config the
+	// user pointed elsewhere must still be refused here (see the ownership tests).
+	if err := srv.reapplyClientsBoundTo(ctx, source, false); err != nil {
 		t.Fatal(err)
 	}
 

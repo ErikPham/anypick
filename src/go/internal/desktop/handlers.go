@@ -15,20 +15,18 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 	result := Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success"}
-	fail := func(err error) Result {
-		return Result{Version: ProtocolVersion, RequestID: m.RequestID,
-			Status: "error", Message: err.Error()}
-	}
+	fail := func(err error) Result { return errorResult(m.RequestID, err) }
 	switch m.Operation {
 	case "account-import":
 		if m.Path == "" || m.ProviderID == "" || m.Name == "" {
-			return fail(anyerr.Newf("account-import needs providerId, name and path", "INVALID_USAGE"))
+			return fail(payloadErr("account-import", "providerId, name and path"))
 		}
 		err := lock.WithMutationLock(ctx, s.Deps.Root,
 			refs.ProviderScope(m.ProviderID), func(c context.Context) error {
@@ -41,7 +39,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 	case "account-export":
 		outPath := m.Path
 		if outPath == "" || m.ProviderID == "" || m.Name == "" {
-			return fail(anyerr.Newf("account-export needs providerId, name and path", "INVALID_USAGE"))
+			return fail(payloadErr("account-export", "providerId, name and path"))
 		}
 		if err := lock.WithMutationLock(ctx, s.Deps.Root,
 			refs.ProviderScope(m.ProviderID), func(c context.Context) error {
@@ -61,17 +59,22 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 				selection = append(selection, transfer.BackupEntry{Provider: providerID, Name: acct.Meta.Name})
 			}
 		}
-		_, err := s.Deps.Accounts.ExportSelectedBackup(ctx, selection, dest, m.Overwrite)
+		count, err := s.Deps.Accounts.ExportSelectedBackup(ctx, selection, dest, m.Overwrite)
 		if err != nil {
 			return fail(err)
 		}
+		// The Tauri shell has no file picker and only renders Result.Message,
+		// so the written path has to be in the sentence the user sees.
+		result.Message = backupWrittenMessage(count, dest)
 	case "account-backup-export":
 		// Selective export: the native client sends the exact account list.
 		if m.Path == "" {
-			return fail(anyerr.Newf("account-backup-export needs a destination path", "INVALID_USAGE"))
+			return fail(payloadErr("account-backup-export", "a destination path"))
 		}
 		if len(m.Accounts) == 0 {
-			return fail(anyerr.Newf("account-backup-export needs at least one account", "BACKUP_EMPTY"))
+			return fail(anyerr.Newf("account-backup-export needs at least one account",
+				"BACKUP_EMPTY",
+				anyerr.WithSuggestions("Select at least one account to export.")))
 		}
 		selection := make([]transfer.BackupEntry, 0, len(m.Accounts))
 		for _, ref := range m.Accounts {
@@ -208,25 +211,55 @@ func backupDestination(p string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("anypick-backup-%d.anypick-backup", time.Now().Unix()))
 }
 
+func backupWrittenMessage(count int, dest string) string {
+	noun := "accounts"
+	if count == 1 {
+		noun = "account"
+	}
+	return fmt.Sprintf("Saved %d %s to %s. The file contains account credentials.", count, noun, dest)
+}
+
 // handleGatewayTest probes a gateway endpoint with the profile's key. Only a
-// status code is reported — the key never appears in output. When no saved
-// profile matches (pre-create test from Add Gateway), the supplied endpoint
-// and key are probed directly instead of failing with "gateway not found".
+// status code is reported — the key never appears in output. A pre-create
+// test carries the endpoint, key, or account id the user just typed; those
+// win over a saved gateway that happens to share the sentinel name. A saved
+// gateway retest sends only the name, and the stored credential is probed.
 func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 	result := Result{Version: ProtocolVersion, RequestID: m.RequestID}
 	endpoint, apiKey := strings.TrimSpace(m.Endpoint), m.APIKey
-	if s.Deps.Profiles != nil {
+	supplied := endpoint != "" || apiKey != "" || strings.TrimSpace(m.Profile) != ""
+	if !supplied && s.Deps.Profiles != nil {
 		pr, err := s.Deps.Profiles.GetContext(ctx, m.Name)
 		if err != nil {
-			result.Status, result.Message = "error", err.Error()
+			result = result.Fail(err)
 			return result
 		}
 		if pr != nil {
 			endpoint, apiKey = pr.Meta.Endpoint, pr.Secrets.APIKey
 		}
 	}
+	if endpoint == "" && m.ProviderID != "" {
+		// Account-derived providers (Cloudflare): the sheet probes before
+		// anything is saved, so derive from the supplied profile. A saved
+		// gateway already resolved above and never reaches here.
+		if pv, perr := s.Deps.Providers.Get(m.ProviderID); perr == nil && pv != nil {
+			if gi, ok := pv.(provider.GatewayInfoProvider); ok && gi.GatewayInfo().RequiresAccountID {
+				derived, derr := deriveGatewayEndpoint(s.Deps.Providers, m.ProviderID, m.Profile)
+				if derr != nil {
+					result = result.Fail(derr)
+					return result
+				}
+				endpoint = derived
+			}
+		}
+	}
 	if endpoint == "" {
-		result.Status, result.Message = "error", "gateway not found"
+		// Pre-save probe with nothing typed yet: name the missing field,
+		// not a stored object the user never created.
+		result = result.Fail(anyerr.Newf("Please enter an endpoint URL and API key above, then test again",
+			"GATEWAY_NOT_FOUND",
+			anyerr.WithExitCode(anyerr.NotFound),
+			anyerr.WithSuggestions("Check that the Endpoint and API Key fields are filled before testing.")))
 		return result
 	}
 	client := &http.Client{Timeout: 6 * time.Second}
@@ -235,29 +268,46 @@ func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 		req.Header.Set("authorization", "Bearer "+apiKey)
 	}
 	if rerr != nil {
-		result.Status, result.Message = "error", rerr.Error()
+		result = result.Fail(rerr)
 		return result
 	}
 	resp, derr := client.Do(req)
 	if derr != nil {
-		result.Status, result.Message = "error", "endpoint unreachable"
+		result = result.Fail(anyerr.Newf("endpoint unreachable: could not connect to the gateway server", "GATEWAY_UNREACHABLE",
+			anyerr.WithCause(derr),
+			anyerr.WithSuggestions(
+				"Verify the endpoint URL is spelled correctly and includes https://.",
+				"Check that your internet connection is active and the host is online.")))
 		return result
 	}
 	defer resp.Body.Close()
-	// An auth rejection answers the test's question directly (C7): the
-	// endpoint is reachable but the stored key is dead. Only the status
-	// crosses the boundary — never the key.
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		result.Status, result.Message = "error", fmt.Sprintf(
-			"endpoint rejected the API key (HTTP %d)", resp.StatusCode)
-		return result
-	}
-	if resp.StatusCode >= 500 {
-		result.Status, result.Message = "error", fmt.Sprintf("gateway returned HTTP %d", resp.StatusCode)
+	if statusErr := evaluateGatewayStatus(resp.StatusCode); statusErr != nil {
+		result = result.Fail(statusErr)
 		return result
 	}
 	result.Status = "success"
+	result.Message = "Gateway connection verified. Models were loaded successfully."
 	return result
+}
+
+func evaluateGatewayStatus(statusCode int) error {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		return anyerr.Newf(
+			fmt.Sprintf("endpoint rejected the API key (HTTP %d)", statusCode),
+			"GATEWAY_AUTH_REJECTED",
+			anyerr.WithSuggestions(
+				"Check that your API key is valid and has not expired.",
+				"Ensure the key has permission to list models and make requests."))
+	}
+	if statusCode >= 500 {
+		return anyerr.Newf(
+			fmt.Sprintf("gateway returned HTTP %d", statusCode),
+			"GATEWAY_HTTP_ERROR",
+			anyerr.WithSuggestions(
+				"The gateway service may be experiencing high load or temporary downtime.",
+				"Please wait a moment and try testing the connection again."))
+	}
+	return nil
 }
 
 // handleHubSourceToggle lives in hub_snapshot.go: explicit Enabled is

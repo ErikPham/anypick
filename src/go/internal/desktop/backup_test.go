@@ -70,6 +70,37 @@ func TestBackupExportHonoursSelectedAccounts(t *testing.T) {
 	}
 }
 
+func TestBackupAllReportsTheWrittenPath(t *testing.T) {
+	env := newTrayEnv(t)
+	writeTestAccount(t, env, "codex", "alpha")
+	dest := filepath.Join(t.TempDir(), "all.anypick-backup")
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+	payload, _ := json.Marshal(Mutate{
+		Version: 1, RequestID: "all1", Operation: "account-backup-all", Path: dest,
+	})
+	if err := srv.handle(context.Background(), &Command{Kind: "mutate", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("backup file: %v", err)
+	}
+	var result Result
+	if err := json.Unmarshal(decodeFramePayload(t, firstFrameLine(out.String())), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "success" || !strings.Contains(result.Message, dest) ||
+		!strings.Contains(result.Message, "account credentials") {
+		t.Fatalf("result = %+v", result)
+	}
+	if backupDestination("") == "" || !strings.HasPrefix(backupDestination(""), os.TempDir()) {
+		t.Fatal("empty path must fall back to a temp file")
+	}
+	if backupDestination(dest) != dest {
+		t.Fatal("an explicit path must be kept")
+	}
+}
+
 func TestBackupImportViaInspectionFlow(t *testing.T) {
 	env := newTrayEnv(t)
 	writeTestAccount(t, env, "codex", "alpha")

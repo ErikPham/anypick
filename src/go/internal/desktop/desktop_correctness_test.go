@@ -7,12 +7,15 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/plugins"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/proxy"
@@ -145,6 +148,34 @@ func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	}
 }
 
+func TestSnapshotPublishesSavedAccountIdentity(t *testing.T) {
+	env := newTrayEnv(t)
+	env.writeCodexLive("identity@example.com")
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+
+	save := mutationPayload("save-identity", "account-save", "work")
+	save["providerId"] = "codex"
+	save["label"] = "Work"
+	if result := runCorrectnessMutation(t, srv, &out, save); result.Status != "success" {
+		t.Fatalf("save account = %+v", result)
+	}
+
+	snapshot, err := srv.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, account := range snapshot.Accounts {
+		if account.ProviderID == "codex" && account.Name == "work" {
+			if account.Detail != "identity@example.com" {
+				t.Fatalf("account detail = %q, want identity", account.Detail)
+			}
+			return
+		}
+	}
+	t.Fatal("saved account was not published in the desktop snapshot")
+}
+
 func TestDesktopAccountSaveUsesExplicitCredentialAndOverwrite(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
@@ -235,6 +266,77 @@ func TestSnapshotPublishesProviderLoginMethods(t *testing.T) {
 	t.Fatal("codex provider row missing")
 }
 
+func TestSnapshotPublishesGeminiLiveSource(t *testing.T) {
+	env := newTrayEnv(t)
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(env.Home, ".gemini"))
+	geminiDir := filepath.Join(env.Home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "antigravity_oauth.json"), []byte(
+		`{"token":{"access_token":"access","refresh_token":"refresh","expiry":"2099-01-01T00:00:00Z"},"email":"anti@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := New(env.Deps, strings.NewReader(""), &bytes.Buffer{}).
+		buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gemini := findAccountProvider(t, snapshot, "gemini")
+	if !gemini.LivePresent || gemini.LiveIdentity != "anti@example.com" ||
+		gemini.SourceID != "antigravity" || gemini.CanClear {
+		t.Fatalf("Gemini live source = %+v", gemini)
+	}
+}
+
+func TestSnapshotMapsZAIToZCodeAndPublishesZCodeRoute(t *testing.T) {
+	env := newTrayEnv(t)
+	livePath := filepath.Join(env.Home, "zai-live.json")
+	t.Setenv("ANYPICK_ZAI_CREDENTIALS_PATH", filepath.Join(env.Home, "zai-credentials.json"))
+	t.Setenv("ANYPICK_ZAI_LIVE_PATH", livePath)
+	if err := os.WriteFile(livePath, []byte(
+		`{"version":1,"source":"zcode","oauthAccessToken":"oauth","identity":"zai@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	snapshot, err := srv.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	zai := findAccountProvider(t, snapshot, "zai")
+	if zai.ClientID != "zcode" || zai.Label != "ZCode" || !zai.LivePresent || zai.LiveIdentity != "zai@example.com" {
+		t.Fatalf("Z.ai provider presentation = %+v", zai)
+	}
+
+	if _, err := env.Deps.Accounts.SaveInput(context.Background(), "zai", "work", accounts.CredentialInput{
+		Kind: "subscription-key", Profile: "global", Secret: "test-plan-key",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = srv.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zcodeRoutes, legacyZaiRoutes int
+	var zcodeRouteClient string
+	for _, action := range snapshot.Actions {
+		if action.SourceID != "account/zai/work" {
+			continue
+		}
+		switch action.ClientID {
+		case "zcode":
+			zcodeRoutes++
+			zcodeRouteClient = action.Client
+		case "zai":
+			legacyZaiRoutes++
+		}
+	}
+	if zcodeRoutes != 1 || legacyZaiRoutes != 0 || zcodeRouteClient != "ZCode" {
+		t.Fatalf("Z.ai route presentation = zcode:%d legacy-zai:%d client:%q", zcodeRoutes, legacyZaiRoutes, zcodeRouteClient)
+	}
+}
+
 func TestSnapshotPublishesPluginDegradedConditions(t *testing.T) {
 	env := newTrayEnv(t)
 	env.Deps.PluginDiagnostics = func(context.Context) plugins.Diagnostics {
@@ -281,8 +383,8 @@ func TestInvokePublishesExactlyOneTerminalResult(t *testing.T) {
 	srv := New(env.Deps, strings.NewReader(""), &out)
 	srv.revision = 1
 	var calls atomic.Int32
-	srv.actions = map[string]func(context.Context) error{
-		"once": func(context.Context) error {
+	srv.actions = map[string]actionHandler{
+		"once": func(context.Context, actionOptions) error {
 			calls.Add(1)
 			return nil
 		},

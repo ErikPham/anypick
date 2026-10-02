@@ -1,13 +1,15 @@
 package desktop
 
 // account-save-input: the native Add Account sheet's typed-credential path
-// for compatible vendors (API keys / plan keys). These tests pin the
+// for provider-declared credentials (API keys / plan keys). These tests pin the
 // contract: snapshot advertises kinds+profiles, the handler saves through
 // Accounts.SaveInput, and malformed payloads are rejected at the boundary.
 
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,6 +47,11 @@ func TestAccountSaveInputSnapshotExposesCredentialKinds(t *testing.T) {
 		t.Fatalf("mimo kinds = %+v, want api-key + subscription-key", mimo.CredentialKinds)
 	}
 
+	gemini := findAccountProvider(t, snap, "gemini")
+	if len(gemini.CredentialKinds) != 1 || gemini.CredentialKinds[0].Kind != "api-key" {
+		t.Fatalf("gemini kinds = %+v, want native api-key input", gemini.CredentialKinds)
+	}
+
 	// Native-only providers publish no credential input: their accounts come
 	// from a live login or a browser sign-in.
 	claude := findAccountProvider(t, snap, "claude")
@@ -78,13 +85,31 @@ func TestAccountSaveInputHandler(t *testing.T) {
 		t.Fatalf("saved account = %+v, %v", acct, err)
 	}
 
-	// An omitted profile selects the kind's first endpoint profile.
+	// An omitted profile selects the kind's first endpoint profile. A distinct
+	// key keeps the snapshot distinct from `work`.
 	res = save("save-input-2", map[string]interface{}{
 		"providerId": "deepseek", "name": "second",
-		"kind": "api-key", "apiKey": "sk-test",
+		"kind": "api-key", "apiKey": "sk-second",
 	})
 	if res.Status != "success" {
 		t.Fatalf("save-input without profile = %+v", res)
+	}
+
+	// Native providers may expose a typed key in addition to their local
+	// login. Gemini's provider-owned snapshot must keep the key in .env.
+	res = save("save-input-gemini", map[string]interface{}{
+		"providerId": "gemini", "name": "api", "kind": "api-key", "apiKey": "gemini-key",
+	})
+	if res.Status != "success" {
+		t.Fatalf("Gemini save-input = %+v", res)
+	}
+	geminiAccount, err := env.Deps.Store.Get(context.Background(), "gemini", "api")
+	if err != nil || geminiAccount == nil {
+		t.Fatalf("Gemini account = %+v, %v", geminiAccount, err)
+	}
+	envFile, err := os.ReadFile(filepath.Join(geminiAccount.SnapshotDir, ".env"))
+	if err != nil || string(envFile) != "GEMINI_API_KEY=gemini-key\n" {
+		t.Fatalf("Gemini snapshot .env = %q, %v", envFile, err)
 	}
 
 	// Duplicates fail without overwrite, exactly like account-save.
@@ -147,5 +172,138 @@ func TestAccountSaveInputContract(t *testing.T) {
 				t.Fatalf("%s: payload accepted", tc.name)
 			}
 		})
+	}
+}
+
+func TestAccountSaveInputSnapshotExposesCloudflareGateway(t *testing.T) {
+	env := newTrayEnv(t)
+	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	snap, err := srv.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cf := findAccountProvider(t, snap, "cloudflare-aigateway")
+	if cf.Label != "Cloudflare AI Gateway" {
+		t.Fatalf("cloudflare label = %q", cf.Label)
+	}
+	if len(cf.CredentialKinds) != 1 || cf.CredentialKinds[0].Kind != "api-token" {
+		t.Fatalf("cloudflare kinds = %+v, want one api-token kind", cf.CredentialKinds)
+	}
+}
+
+func TestAccountSaveInputHandlerCloudflareGateway(t *testing.T) {
+	env := newTrayEnv(t)
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+
+	payload := map[string]interface{}{
+		"version": 1, "requestId": "save-input-cf", "operation": "account-save-input",
+		"providerId": "cloudflare-aigateway", "name": "work",
+		"kind":    "api-token",
+		"profile": "f4b3c2a1e5d647a8b9c0d1e2f3a4b5c6/default",
+		"apiKey":  "cf-test-token",
+	}
+	res := runCorrectnessMutation(t, srv, &out, payload)
+	if res.Status != "success" {
+		t.Fatalf("cloudflare save-input = %+v", res)
+	}
+	acct, err := env.Deps.Store.Get(context.Background(), "cloudflare-aigateway", "work")
+	if err != nil || acct == nil {
+		t.Fatalf("cloudflare account = %+v, %v", acct, err)
+	}
+
+	// The routing pair is required: without it the provider's coded error
+	// reaches the sheet instead of a silent save.
+	bad := map[string]interface{}{
+		"version": 1, "requestId": "save-input-cf-bad", "operation": "account-save-input",
+		"providerId": "cloudflare-aigateway", "name": "bad",
+		"kind": "api-token", "profile": "global", "apiKey": "cf-test-token",
+	}
+	res = runCorrectnessMutation(t, srv, &out, bad)
+	if res.Status != "error" || !strings.Contains(res.Message, "<account_id>/<gateway_id>") {
+		t.Fatalf("cloudflare bad profile = %+v, want routing hint", res)
+	}
+}
+
+func TestAccountSaveCurrentGeminiUsesRequestedSource(t *testing.T) {
+	env := newTrayEnv(t)
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(env.Home, ".gemini"))
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("GEMINI_OAUTH_SOURCE", "")
+	geminiDir := filepath.Join(env.Home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "oauth_creds.json"),
+		[]byte(`{"access_token":"cli","refresh_token":"cli-refresh","token_type":"Bearer"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "antigravity_oauth.json"),
+		[]byte(`{"token":{"access_token":"anti","refresh_token":"anti-refresh","token_type":"Bearer","expiry":"2026-09-13T00:00:00Z"},"email":"anti@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+	result := runCorrectnessMutation(t, srv, &out, map[string]interface{}{
+		"version": 1, "requestId": "gemini-scoped", "operation": "account-save-current",
+		"providerId": "gemini", "sourceId": "antigravity", "name": "anti",
+	})
+	if result.Status != "success" {
+		t.Fatalf("scoped Gemini save = %+v", result)
+	}
+	account, err := env.Deps.Store.Get(context.Background(), "gemini", "anti")
+	if err != nil || account == nil {
+		t.Fatalf("scoped Gemini account = %+v, %v", account, err)
+	}
+	marker, err := os.ReadFile(filepath.Join(account.SnapshotDir, ".env"))
+	if err != nil || string(marker) != "GEMINI_OAUTH_SOURCE=antigravity\n" {
+		t.Fatalf("scoped Gemini marker = %q, %v", marker, err)
+	}
+	anti, err := os.ReadFile(filepath.Join(account.SnapshotDir, "antigravity_oauth.json"))
+	if err != nil || !strings.Contains(string(anti), "anti-refresh") {
+		t.Fatalf("scoped Gemini credential = %q, %v", anti, err)
+	}
+	if _, err := os.Stat(filepath.Join(account.SnapshotDir, "oauth_creds.json")); !os.IsNotExist(err) {
+		t.Fatalf("scoped Gemini snapshot contains CLI credential: %v", err)
+	}
+}
+
+func TestAccountSaveGeminiUsesRequestedSource(t *testing.T) {
+	env := newTrayEnv(t)
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(env.Home, ".gemini"))
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("GEMINI_OAUTH_SOURCE", "")
+	geminiDir := filepath.Join(env.Home, ".gemini")
+	if err := os.MkdirAll(geminiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "oauth_creds.json"),
+		[]byte(`{"access_token":"cli","refresh_token":"cli-refresh","token_type":"Bearer"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "antigravity_oauth.json"),
+		[]byte(`{"token":{"access_token":"anti","refresh_token":"anti-refresh","token_type":"Bearer","expiry":"2026-09-13T00:00:00Z"},"email":"anti@example.com"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+	result := runCorrectnessMutation(t, srv, &out, map[string]interface{}{
+		"version": 1, "requestId": "gemini-scoped-save", "operation": "account-save",
+		"providerId": "gemini", "sourceId": "antigravity", "name": "anti",
+	})
+	if result.Status != "success" {
+		t.Fatalf("scoped account-save = %+v", result)
+	}
+	account, err := env.Deps.Store.Get(context.Background(), "gemini", "anti")
+	if err != nil || account == nil {
+		t.Fatalf("scoped account-save account = %+v, %v", account, err)
+	}
+	anti, err := os.ReadFile(filepath.Join(account.SnapshotDir, "antigravity_oauth.json"))
+	if err != nil || !strings.Contains(string(anti), "anti-refresh") {
+		t.Fatalf("scoped account-save credential = %q, %v", anti, err)
+	}
+	if _, err := os.Stat(filepath.Join(account.SnapshotDir, "oauth_creds.json")); !os.IsNotExist(err) {
+		t.Fatalf("scoped account-save snapshot contains CLI credential: %v", err)
 	}
 }

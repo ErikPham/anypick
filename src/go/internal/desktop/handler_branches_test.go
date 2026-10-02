@@ -235,6 +235,9 @@ func TestHandleMutateErrorBranches(t *testing.T) {
 	}
 
 	// restart-all with an enabled config walks the real stop/start loop.
+	// A distinct live identity: a login may only be saved once, so reusing
+	// br@example.com here would (correctly) be refused as a duplicate.
+	env.writeCodexLive("rf@example.com")
 	if _, err := env.Svc.Save(ctx, "codex", "rf-acc", true); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +248,58 @@ func TestHandleMutateErrorBranches(t *testing.T) {
 	res = run(Mutate{Version: 1, RequestID: "e9", Operation: "proxy-restart-all"})
 	if res.Status != "success" {
 		t.Fatalf("restart-all: %+v", res)
+	}
+}
+
+func TestProxyStartAllStartsStoppedProxiesAndLeavesRunningOnes(t *testing.T) {
+	env := newTrayEnv(t)
+	var out bytes.Buffer
+	srv := New(env.Deps, strings.NewReader(""), &out)
+	ctx := context.Background()
+
+	env.writeCodexLive("start-all-idle@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "idle", true); err != nil {
+		t.Fatal(err)
+	}
+	env.writeCodexLive("start-all-live@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "live", true); err != nil {
+		t.Fatal(err)
+	}
+	live := fakeHealthyProxy(t, env, "codex", "live", "inst-live")
+	t.Cleanup(func() {
+		_ = env.Deps.Proxy.Stop(context.Background(), "codex", "idle")
+	})
+
+	// The proxies pane sends this exact object. A full Mutate marshal would
+	// add an empty path, which the default mutate contract rejects.
+	raw, err := json.Marshal(map[string]any{
+		"version": 1, "requestId": "start-all", "operation": "proxy-start-all", "name": "all",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := DecodeLine("mutate\t" + base64.StdEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatalf("proxy-start-all must be a real operation: %v", err)
+	}
+	out.Reset()
+	if err := srv.handle(ctx, cmd); err != nil {
+		t.Fatal(err)
+	}
+	res := decodeMutateResult(t, out.String())
+	if res.Status != "success" {
+		t.Fatalf("start-all: %+v", res)
+	}
+	if strings.Contains(firstFrameLine(out.String()), "apiKey") {
+		t.Fatalf("start-all result carries a bearer: %s", firstFrameLine(out.String()))
+	}
+	idleStatus, err := env.Deps.Proxy.StatusContext(ctx, "codex", "idle")
+	if err != nil || idleStatus == nil || !idleStatus.Running {
+		t.Fatalf("stopped proxy was not started: %+v %v", idleStatus, err)
+	}
+	liveStatus, err := env.Deps.Proxy.StatusContext(ctx, "codex", "live")
+	if err != nil || liveStatus == nil || !liveStatus.Running || liveStatus.Endpoint != live.URL {
+		t.Fatalf("running proxy was disturbed: %+v %v", liveStatus, err)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/discovery"
+	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -17,9 +19,19 @@ import (
 func bindClaudeToCodexAccount(t *testing.T, env *trayEnv, srv *Server) {
 	t.Helper()
 	ctx := context.Background()
+	if env.Deps.Discovery == nil {
+		env.Deps.Discovery = &discovery.Service{Root: env.Root, Cache: env.Deps.ModelCache}
+	}
+	// Some callers construct the server before seeding the account. Keep the
+	// copied dependency graph pointed at the same discovery service.
+	srv.Deps.Discovery = env.Deps.Discovery
 	env.writeCodexLive("models@example.com")
 	if _, err := env.Svc.Save(ctx, "codex", "models-acc", true); err != nil {
 		t.Fatalf("save account: %v", err)
+	}
+	if err := env.Deps.Discovery.StoreLive(ctx, "openai", "account/codex/models-acc",
+		[]string{"gpt-5.6-sol", "gpt-5.6-terra"}); err != nil {
+		t.Fatalf("seed account catalog: %v", err)
 	}
 	if _, err := env.Deps.Bindings.UpsertGlobalContext(ctx, bindings.Global{
 		Client: "claude",
@@ -73,6 +85,9 @@ func TestSnapshotPublishesModelConfigForBoundClient(t *testing.T) {
 		if model, _ := option["modelId"].(string); model == "" {
 			t.Fatalf("option without a modelId: %#v", option)
 		}
+		if provider, _ := option["providerId"].(string); provider != "codex" {
+			t.Fatalf("option providerId = %q, want codex: %#v", provider, option)
+		}
 	}
 	// Every published option id must resolve back to this client + source.
 	first, _ := options[0]["actionId"].(string)
@@ -82,6 +97,89 @@ func TestSnapshotPublishesModelConfigForBoundClient(t *testing.T) {
 	}
 	if target.ClientID != "claude" || target.Source != refs.AccountRef("codex", "models-acc") {
 		t.Fatalf("target = %#v want claude bound to the codex account", target)
+	}
+}
+
+func TestSnapshotPublishesAccountScopedLiveCatalog(t *testing.T) {
+	env := newTrayEnv(t)
+	env.Deps.Discovery = &discovery.Service{Root: env.Root, Cache: env.Deps.ModelCache}
+	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	bindClaudeToCodexAccount(t, env, srv)
+	futureModel := "model-added-after-release"
+	if err := env.Deps.Discovery.StoreLive(
+		context.Background(), "openai", "account/codex/models-acc", []string{futureModel}); err != nil {
+		t.Fatal(err)
+	}
+	if cached, _ := env.Deps.ModelCache.Get(context.Background(), "openai", "account/codex/models-acc"); cached == nil {
+		t.Fatal("test catalog was not stored")
+	}
+	if got := srv.catalogList(context.Background(), "openai", "", "account/codex/models-acc"); len(got) != 1 || got[0] != futureModel {
+		t.Fatalf("catalogList = %v", got)
+	}
+
+	snap, err := srv.buildSnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	row := modelConfigFor(snap, "claude")
+	if row == nil {
+		t.Fatal("no client model config")
+	}
+	for _, option := range row["options"].([]map[string]any) {
+		if option["modelId"] == futureModel {
+			return
+		}
+	}
+	t.Fatalf("account-scoped live model %q was not published: %#v", futureModel, row)
+}
+
+func TestSnapshotPublishesModelsForAHubBoundClientBeforeAnyPin(t *testing.T) {
+	env := hubTestEnv(t)
+	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	ctx := context.Background()
+	env.writeCodexLive("hub-models@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "hub-models", true); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	enabled := true
+	if _, err := env.Deps.Hub.UpsertConfigContext(ctx, hub.Config{
+		Name: "default", Enabled: true,
+		Sources: []hub.Source{{ProviderID: "codex", Account: "hub-models", Enabled: &enabled}},
+	}); err != nil {
+		t.Fatalf("configure hub: %v", err)
+	}
+	if _, err := env.Deps.Bindings.UpsertGlobalContext(ctx, bindings.Global{
+		Client: "claude",
+		Spec: bindings.Spec{
+			Client: "claude",
+			Source: refs.ProxyHubRef("default"),
+			Model:  bindings.OmittedModel(),
+		},
+	}); err != nil {
+		t.Fatalf("bind claude to hub: %v", err)
+	}
+
+	snap, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	row := modelConfigFor(snap, "claude")
+	if row == nil {
+		t.Fatal("no model config for claude")
+	}
+	options, _ := row["options"].([]map[string]any)
+	if len(options) == 0 {
+		t.Fatalf("hub-bound app has no model options before a route pin: %#v", row)
+	}
+	if editable, _ := row["editable"].(bool); !editable {
+		t.Fatalf("hub-bound app is not editable: %#v", row)
+	}
+	for _, option := range options {
+		id, _ := option["actionId"].(string)
+		target, ok := srv.snapshotModelRoleTargets()[id]
+		if !ok || target.Source != refs.ProxyHubRef("default") {
+			t.Fatalf("hub option %q target = %#v, exists = %v", id, target, ok)
+		}
 	}
 }
 
@@ -156,7 +254,7 @@ func TestApplyModelRolesRejectsForeignRoles(t *testing.T) {
 		"a1": {ClientID: "codex", Source: refs.AccountRef("codex", "x"), ModelID: "m1"},
 	}
 	err := srv.applyModelRoles(context.Background(), "codex",
-		map[string]string{"default": "a1", "haiku": "a1"})
+		map[string]string{"default": "a1", "haiku": "a1"}, "")
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("a claude-only role must be rejected, got %v", err)
 	}
@@ -170,7 +268,7 @@ func TestApplyModelRolesRejectsMixedConnections(t *testing.T) {
 		"a2": {ClientID: "claude", Source: refs.GatewayRef("gw"), ModelID: "m2"},
 	}
 	err := srv.applyModelRoles(context.Background(), "claude",
-		map[string]string{"default": "a1", "sonnet": "a2"})
+		map[string]string{"default": "a1", "sonnet": "a2"}, "")
 	if err == nil || !strings.Contains(err.Error(), "one connection") {
 		t.Fatalf("roles from two sources must be rejected, got %v", err)
 	}
@@ -182,9 +280,20 @@ func TestApplyModelRolesRejectsAnotherClientsOption(t *testing.T) {
 	srv.modelRoleTargets = map[string]modelRoleTarget{
 		"a1": {ClientID: "codex", Source: refs.AccountRef("codex", "x"), ModelID: "m1"},
 	}
-	err := srv.applyModelRoles(context.Background(), "claude", map[string]string{"default": "a1"})
+	err := srv.applyModelRoles(context.Background(), "claude", map[string]string{"default": "a1"}, "")
 	if err == nil || !strings.Contains(err.Error(), "model list changed") {
 		t.Fatalf("an option published for another app must be rejected, got %v", err)
+	}
+}
+
+func TestApplyModelRolesResetNeedsABinding(t *testing.T) {
+	env := newTrayEnv(t)
+	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	// Empty roles with no binding must fail closed, never nil-deref the
+	// missing source.
+	err := srv.applyModelRoles(context.Background(), "codex", map[string]string{}, "")
+	if err == nil || !strings.Contains(err.Error(), "no connection") {
+		t.Fatalf("reset without binding = %v", err)
 	}
 }
 

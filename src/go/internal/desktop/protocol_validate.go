@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 // decodeStrict unmarshals with unknown-field rejection.
@@ -122,12 +124,14 @@ var mutationOperations = map[string]bool{
 	"account-backup-all": true, "account-backup-export": true, "account-backup-import": true,
 	"account-backup-forget": true,
 	"account-login":         true, "account-save-current": true, "account-save": true,
-	"account-save-input": true,
-	"account-edit":       true, "account-refresh": true, "account-remove": true,
+	"account-save-input": true, "account-save-auth": true,
+	"account-edit": true, "account-refresh": true, "account-remove": true,
 	"account-clear": true, "gateway-create": true, "gateway-test": true,
 	"gateway-edit": true, "gateway-refresh": true, "gateway-remove": true,
-	"client-reset": true, "hub-source-toggle": true,
-	"proxy-restart-all": true, "proxy-stop-all": true,
+	"client-reset": true, "codex-profile-save": true, "codex-profile-update": true,
+	"codex-profile-remove": true, "codex-profile-sync": true,
+	"hub-source-toggle": true, "hub-rotation": true,
+	"proxy-restart-all": true, "proxy-start-all": true, "proxy-stop-all": true, "proxy-token": true,
 	"setting-launch-at-login": true, "setting-auto-start-proxies": true,
 	"setting-show-quota": true, "setting-quota-guard": true,
 }
@@ -156,11 +160,26 @@ func validatePayload(kind string, raw json.RawMessage) error {
 		if !safeStr(actionID, 256) {
 			return fmt.Errorf("invalid actionId")
 		}
+		// Consent is optional, and a non-boolean value is rejected rather than
+		// coerced: `"allowForeignConfig": "yes"` must not read as consent.
+		if err := boolField(fields, "allowForeignConfig"); err != nil {
+			return err
+		}
+		if !keysSubset(fields, "version", "requestId", "revision", "actionId",
+			"allowForeignConfig") {
+			return fmt.Errorf("invalid invoke payload")
+		}
 	case "model-roles":
 		clientID := ""
 		_ = json.Unmarshal(fields["clientId"], &clientID)
 		if !safeStr(clientID, 64) {
 			return fmt.Errorf("invalid clientId")
+		}
+		if scope, ok := fields["scope"]; ok {
+			var scopeStr string
+			if json.Unmarshal(scope, &scopeStr) != nil || (scopeStr != "connection" && scopeStr != "provider") {
+				return fmt.Errorf("invalid scope")
+			}
 		}
 		roles := map[string]string{}
 		if raw, ok := fields["roleActionIds"]; ok {
@@ -182,6 +201,10 @@ func validatePayload(kind string, raw json.RawMessage) error {
 		if !safeStr(providerID, 64) || !safeStr(name, 128) ||
 			lines < 1 || lines > 200 {
 			return fmt.Errorf("invalid logs request")
+		}
+	case "doctor":
+		if !keysSubset(fields, "version", "requestId") {
+			return fmt.Errorf("invalid doctor request")
 		}
 	case "backup-inspect":
 		path := ""
@@ -213,9 +236,10 @@ func validateMutate(fields map[string]json.RawMessage) error {
 		}
 	}
 	for key, limit := range map[string]int{
-		"providerId": 64, "sourceId": 64, "methodId": 128, "name": 128,
+		"providerId": 64, "sourceId": 256, "methodId": 128, "name": 128,
 		"label": 160, "endpoint": 2048, "apiKey": 8192, "region": 64,
-		"defaultModel": 256, "kind": 64, "profile": 64,
+		"defaultModel": 256, "kind": 64, "profile": 128, "gatewayId": 64,
+		"transportPolicy": 16,
 	} {
 		if _, err := optionalStringField(fields, key, limit); err != nil {
 			return err
@@ -257,9 +281,9 @@ func validateMutate(fields map[string]json.RawMessage) error {
 		var entryIDs []string
 		_ = json.Unmarshal(fields["entryIds"], &entryIDs)
 		if !safeStr(inspectionID, 128) ||
-			// TS authority: isUniqueSafeStrings(entryIds, 64, 16) — at most 64
-			// entries, each at most 16 characters (src/tray/protocol.ts).
-			len(entryIDs) == 0 || len(entryIDs) > 64 ||
+			// The count matches the backup file. Each id is still a short
+			// inspection index, at most 16 characters.
+			len(entryIDs) == 0 || len(entryIDs) > MaxBackupAccountRefs ||
 			!hasKey(fields, "overwriteConfirmed") ||
 			!keysSubset(fields, "version", "requestId", "operation",
 				"inspectionId", "entryIds", "overwriteConfirmed") {
@@ -338,8 +362,21 @@ func validateMutate(fields map[string]json.RawMessage) error {
 			!keysSubset(fields, "version", "requestId", "operation", "providerId", "sourceId", "name") {
 			return fmt.Errorf("invalid account-save-current payload")
 		}
+	case "account-save-auth":
+		// The auth document stays in a file. name may be empty: the provider
+		// names a document that carries an email or account id. apiKey is a
+		// different secret field and must not ride along.
+		providerID, authName, authPath := "", "", ""
+		_ = json.Unmarshal(fields["providerId"], &providerID)
+		_ = json.Unmarshal(fields["name"], &authName)
+		_ = json.Unmarshal(fields["path"], &authPath)
+		if !safeStr(providerID, 64) || !safeOptional(authName, 128) || !safePath(authPath) ||
+			!keysSubset(fields, "version", "requestId", "operation",
+				"providerId", "name", "path", "overwrite") {
+			return fmt.Errorf("invalid account-save-auth payload")
+		}
 	case "account-save-input":
-		// Typed credential save for compatible vendors: the secret travels
+		// Typed credential save for provider-declared products: the secret travels
 		// in apiKey (the same field gateway-create uses for profile
 		// secrets), while kind/profile name the credential product from the
 		// provider's published credentialKinds. An empty profile selects the
@@ -355,6 +392,38 @@ func validateMutate(fields map[string]json.RawMessage) error {
 				"providerId", "name", "kind", "profile", "apiKey") {
 			return fmt.Errorf("invalid account-save-input payload")
 		}
+	case "codex-profile-save", "codex-profile-update":
+		name, sourceID, policy := "", "", ""
+		_ = json.Unmarshal(fields["name"], &name)
+		_ = json.Unmarshal(fields["sourceId"], &sourceID)
+		_ = json.Unmarshal(fields["transportPolicy"], &policy)
+		if !safeStr(name, 64) || !safeStr(sourceID, 256) ||
+			(policy != "" && policy != "auto" && policy != "direct" && policy != "proxy") ||
+			!keysSubset(fields, "version", "requestId", "operation", "name", "sourceId",
+				"defaultModel", "transportPolicy") {
+			return fmt.Errorf("invalid %s payload", operation)
+		}
+	case "codex-profile-sync":
+		var sourceIDs []string
+		_ = json.Unmarshal(fields["sourceIds"], &sourceIDs)
+		if len(sourceIDs) == 0 || len(sourceIDs) > 64 ||
+			!keysSubset(fields, "version", "requestId", "operation", "sourceIds") {
+			return fmt.Errorf("invalid codex-profile-sync payload")
+		}
+		seen := make(map[string]bool, len(sourceIDs))
+		for _, sourceID := range sourceIDs {
+			if !safeStr(sourceID, 256) || seen[sourceID] {
+				return fmt.Errorf("invalid codex-profile-sync source")
+			}
+			seen[sourceID] = true
+		}
+	case "codex-profile-remove":
+		name := ""
+		_ = json.Unmarshal(fields["name"], &name)
+		if !safeStr(name, 64) ||
+			!keysSubset(fields, "version", "requestId", "operation", "name") {
+			return fmt.Errorf("invalid codex-profile-remove payload")
+		}
 	default:
 		name := ""
 		_ = json.Unmarshal(fields["name"], &name)
@@ -368,6 +437,7 @@ func validateMutate(fields map[string]json.RawMessage) error {
 			"account-detect": true, "account-save": true, "account-edit": true,
 			"account-refresh": true, "account-remove": true, "account-clear": true,
 			"gateway-create": true, "gateway-test": true, "hub-source-toggle": true,
+			"proxy-token": true,
 		}[operation]
 		if needsProvider {
 			providerID := ""
@@ -377,7 +447,7 @@ func validateMutate(fields map[string]json.RawMessage) error {
 			}
 		}
 		isSetting := len(operation) > 8 && operation[:8] == "setting-"
-		if isSetting || operation == "hub-source-toggle" {
+		if isSetting || operation == "hub-source-toggle" || operation == "hub-rotation" {
 			if !hasKey(fields, "enabled") {
 				return fmt.Errorf("%s requires enabled", operation)
 			}
@@ -386,7 +456,8 @@ func validateMutate(fields map[string]json.RawMessage) error {
 	return nil
 }
 
-// MaxBackupAccountRefs mirrors the sane upper bound on one export selection.
-// MaxBackupAccountRefs mirrors isBackupAccountRefs in src/tray/protocol.ts:
-// a desktop backup-export selection carries at most 64 accounts.
-const MaxBackupAccountRefs = 64
+// MaxBackupAccountRefs is how many accounts one desktop export or import
+// selection may name. It is the backup file limit, so a package the CLI can
+// write can be reviewed and restored from the app. A selection that does not
+// fit in MaxCommandBytes is still rejected as a frame, not as a count.
+const MaxBackupAccountRefs = transfer.MaxBackupAccounts

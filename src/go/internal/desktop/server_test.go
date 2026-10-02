@@ -91,6 +91,37 @@ func (r *trayUpstreamResolver) ResolveUpstream(context.Context, string, string) 
 	return &proxy.Upstream{BaseURL: base, Auth: "x"}, nil
 }
 
+// delegatingUpstreamResolver mirrors internal/app's snapshot resolver: it
+// dispatches ResolveUpstream to the real provider, so tests exercise
+// provider-owned discovery instead of the tray stub's discovery-less
+// upstream (which would hide a missing ModelDiscovery behind
+// ErrModelDiscoveryUnsupported).
+type delegatingUpstreamResolver struct{ env *trayEnv }
+
+func (r *delegatingUpstreamResolver) ResolveUpstream(ctx context.Context, providerID, accountName string) (*proxy.Upstream, error) {
+	pv, err := r.env.Deps.Providers.Get(providerID)
+	if err != nil {
+		return nil, err
+	}
+	acct, err := r.env.Deps.Store.Get(ctx, providerID, accountName)
+	if err != nil {
+		return nil, err
+	}
+	if acct == nil {
+		return nil, &snapshotMissingError{label: providerID + "/" + accountName}
+	}
+	if compat, ok := pv.(interface {
+		ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
+	}); ok {
+		return compat.ResolveUpstream(acct.SnapshotDir)
+	}
+	return nil, &snapshotMissingError{label: "upstream for " + providerID}
+}
+
+type snapshotMissingError struct{ label string }
+
+func (e *snapshotMissingError) Error() string { return "no snapshot: " + e.label }
+
 func (e *trayEnv) writeCodexLive(email string) {
 	e.t.Helper()
 	data, _ := json.Marshal(map[string]interface{}{

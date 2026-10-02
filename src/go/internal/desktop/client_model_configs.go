@@ -71,6 +71,10 @@ func (b *snapshotBuilder) clientModelConfigs(ctx context.Context, appIDs []strin
 				current[id] = model
 			}
 		}
+		// Provenance for the editor; see modelRolesSourceOf.
+		if source := modelRolesSourceOf(spec); source != "" {
+			row["modelRolesSource"] = source
+		}
 		if primary := primaryModelOf(spec); primary != "" {
 			row["defaultModel"] = primary
 			if current["default"] == "" {
@@ -88,6 +92,7 @@ func (b *snapshotBuilder) clientModelConfigs(ctx context.Context, appIDs []strin
 			row["options"] = append(row["options"].([]map[string]any), map[string]any{
 				"actionId":    id,
 				"modelId":     model,
+				"providerId":  source.Provider,
 				"sourceLabel": refs.DisplayRef(source),
 			})
 		}
@@ -95,7 +100,11 @@ func (b *snapshotBuilder) clientModelConfigs(ctx context.Context, appIDs []strin
 		row["editable"] = len(options) > 0
 		switch {
 		case len(options) == 0:
-			row["unavailableReason"] = "No models were discovered for this connection."
+			if source.Kind == refs.KindProxyHub {
+				row["unavailableReason"] = "Enable a source in Proxy Hub and resolve model routing first."
+			} else {
+				row["unavailableReason"] = "No models were discovered for this connection."
+			}
 		case source.Kind == refs.KindAccount && source.Provider == clientID:
 			// Same-family account: the client keeps its own login and its own
 			// model picker, so AnyPick must not offer a second one.
@@ -139,9 +148,21 @@ func (b *snapshotBuilder) modelOptionsFor(ctx context.Context, source refs.Ref, 
 				push(id)
 			}
 		}
+		// A fresh Hub has no pinned route yet. Its unique catalog entries are
+		// already safe to publish, and making them options is what lets Apps
+		// configure a Hub route before the first client attachment. Conflicting
+		// ids stay out until the Proxy Hub owner picker pins their source.
+		_, publishable := compileHubRouting(b.snap)
+		for model := range publishable {
+			push(model)
+		}
 	} else {
-		catalogID, endpoint := b.sourceCatalog(ctx, source)
-		for _, model := range b.srv.catalogList(ctx, catalogID, endpoint) {
+		catalogID, endpoint, cacheKey := b.sourceCatalog(ctx, source)
+		models := b.srv.catalogList(ctx, catalogID, endpoint, cacheKey)
+		if source.Kind == refs.KindAccount {
+			models = b.srv.accountCatalogList(ctx, source)
+		}
+		for _, model := range models {
 			push(model)
 		}
 	}
@@ -170,31 +191,46 @@ func capModelOptions(models, pinned []string) []string {
 }
 
 // sourceCatalog maps a bound source onto the (catalog id, endpoint) pair the
-// model catalog is keyed by. The catalog id is the *model* provider, not the
-// account provider: a saved codex account serves the OpenAI catalog
-// (catalog.CatalogProviderFor), same as the hub catalogs do.
+// model catalog is keyed by. Known account ids normalize to the model
+// provider (a saved codex account serves the OpenAI catalog); providers with
+// no static policy retain their own live-discovery namespace.
 //
-// Endpoint is best-effort: a stopped proxy or an unknown provider simply
-// resolves to the static list.
-func (b *snapshotBuilder) sourceCatalog(ctx context.Context, source refs.Ref) (string, string) {
+// Account catalogs use a stable account-scoped cache key. A local proxy
+// endpoint is not a sufficient identity: Gemini/Antigravity accounts can
+// share the same Code Assist origin while exposing different entitlements.
+// The cache key is never used as a network endpoint.
+func accountCatalogCacheKey(source refs.Ref) string {
+	return catalog.AccountCatalogKey(source.Provider, source.Name)
+}
+
+// Endpoint is best-effort for gateways. Account catalog refreshes resolve the
+// provider upstream directly and persist under accountCatalogCacheKey.
+func (b *snapshotBuilder) sourceCatalog(ctx context.Context, source refs.Ref) (string, string, string) {
 	switch source.Kind {
-	case refs.KindAccount, refs.KindAccountPool:
-		endpoint := ""
-		if st, err := b.srv.Deps.Proxy.StatusContext(ctx, source.Provider, source.Name); err == nil && st != nil && st.Running {
-			endpoint = st.Endpoint
-		}
-		return catalog.CatalogProviderFor(source.Provider), endpoint
+	case refs.KindAccount:
+		return catalog.CatalogIdentityFor(source.Provider), "", accountCatalogCacheKey(source)
+	case refs.KindAccountPool:
+		return catalog.CatalogIdentityFor(source.Provider), "", ""
 	case refs.KindGateway:
 		if pr, err := b.srv.Deps.Profiles.GetContext(ctx, source.Name); err == nil && pr != nil {
-			return catalog.CatalogProviderFor(pr.Meta.Provider), pr.Meta.Endpoint
+			return catalog.CatalogIdentityFor(pr.Meta.Provider), pr.Meta.Endpoint, ""
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // modelRolesFromSpec reads the persisted clientOptions.modelRoles map. It is
 // the single reader of that shape — primaryModelOf and this file share it so
 // the two can never disagree about what "current" means.
+// modelRolesSourceOf reads the pin provenance the editor needs: "provider"
+// pins were inherited from the provider default (reset hides itself),
+// anything else pinned is a per-connection customization. Absent on legacy
+// bindings, which were all written explicitly.
+func modelRolesSourceOf(spec bindings.Spec) string {
+	source, _ := spec.ClientOptions["modelRolesSource"].(string)
+	return source
+}
+
 func modelRolesFromSpec(spec bindings.Spec) map[string]string {
 	out := map[string]string{}
 	raw, ok := spec.ClientOptions["modelRoles"].(map[string]interface{})

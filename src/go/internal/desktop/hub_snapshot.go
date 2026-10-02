@@ -35,9 +35,9 @@ import (
 //     guessing) and creates the hub config on first enable.
 //   Hub proxy row: id "proxy-hub/<hub>", providerId "proxy-hub". Toggle =
 //     start/stop, restart = stop-then-start with real errors (no swallowing).
-//   HubConflicts stays []: without per-account model catalogs any conflict
-//     would be fabricated. Published models come from the hub's pinned
-//     routes, which is ground truth.
+//   HubConflicts and model-owner actions are compiled from the cache/static
+//     per-account catalogs. Published models still come from pinned routes;
+//     unambiguous catalog entries are derived by the native host.
 
 func hubDir(root, name string) string { return filepath.Join(root, "runtime", "hub", name) }
 
@@ -97,7 +97,7 @@ func (s *Server) hubConfigs(ctx context.Context) ([]hub.Config, error) {
 // LogSources (hub entries) and appends one proxy row per hub with lifecycle
 // actions registered in the caller's registry.
 func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
-	registry map[string]func(context.Context) error, actionID func() string) error {
+	registry map[string]actionHandler, actionID func() string) error {
 	configs, err := s.hubConfigs(ctx)
 	if err != nil {
 		return err
@@ -123,6 +123,11 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 
 	pinned := s.hubPinnedCatalogs(ctx, names)
 
+	// present tracks every live account so config sources that name a
+	// deleted account surface as ghost rows below instead of vanishing:
+	// the loop above only visits live accounts, which is exactly how a
+	// stale source stays invisible until a request trips over it.
+	present := map[string]bool{}
 	for _, providerID := range s.Deps.Providers.IDs() {
 		_, err := s.Deps.Providers.Get(providerID)
 		if err != nil || s.Deps.Accounts == nil {
@@ -136,10 +141,7 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 		for _, acc := range list {
 			name := acc.Meta.Name
 			label := labelOr(acc.Meta.Label, name)
-			detail := acc.Meta.Identity
-			if detail == "" {
-				detail = providerID + "/" + name
-			}
+			detail := displaySafeIdentity(acc.Meta.Identity)
 			for _, hubName := range names {
 				enabled := false
 				if cfg := byHub[hubName]; cfg != nil {
@@ -159,24 +161,38 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 					"enabled":    enabled,
 					"hub":        hubName,
 				})
+				present[providerID+"/"+name] = true
 			}
 			snap.HubCatalogs = append(snap.HubCatalogs, s.hubCatalogRows(ctx, names, pinned, providerID, name, acc.SnapshotDir)...)
 		}
+		if len(list) > 0 {
+			for _, hubName := range names {
+				if row, ok := s.hubPoolSourceRow(ctx, hubName, providerID, byHub[hubName]); ok {
+					snap.HubSources = append(snap.HubSources, row)
+				}
+			}
+		}
 	}
 
+	rotatingAccounts := s.hubRotatableAccounts(ctx, names, byHub)
+	for _, hubName := range names {
+		snap.HubSources = append(snap.HubSources, s.hubGhostRows(byHub[hubName], hubName, present)...)
+	}
 	for _, hubName := range names {
 		var cfg *hub.Config
 		if c := byHub[hubName]; c != nil {
 			cp := *c
 			cfg = &cp
 		}
+		snap.HubSources = append(snap.HubSources,
+			s.hubRotationRow(hubName, cfg, rotatingAccounts[hubName]))
 		port, host := 0, ""
 		cfgEnabled := false
 		if cfg != nil {
 			port, host, cfgEnabled = cfg.Port, cfg.Host, cfg.Enabled
 		}
 		running, address := s.hubLive(hubName, port, host)
-		toggleID, restartID := actionID(), actionID()
+		toggleID, restartID, rotateID := actionID(), actionID(), actionID()
 		label := "Proxy Hub"
 		if hubName != "default" {
 			label += " " + hubName
@@ -185,6 +201,8 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 		if running {
 			detail = fmt.Sprintf("running on port %d", port)
 		}
+		// A configured hub can mint a key when the user copies it. Display must
+		// not mint, and must not carry the bearer (ADR 0006).
 		snap.Proxies = append(snap.Proxies, ProxyRow{
 			ID: rowIDHub(hubName), ProviderID: "proxy-hub",
 			Label: label, Detail: detail, Address: address,
@@ -192,9 +210,23 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 			LogsAvailable:   true,
 			ToggleActionID:  toggleID,
 			RestartActionID: restartID,
+			RotateActionID:  rotateID,
+			HasToken:        cfg != nil,
 		})
 		registry[toggleID] = s.hubToggleActivator(hubName)
 		registry[restartID] = s.hubRestartActivator(hubName)
+		registry[rotateID] = func(c context.Context, opts actionOptions) error {
+			if s.Deps.Hub == nil {
+				return nil
+			}
+			if _, err := s.Deps.Hub.RotateHubTokenContext(c, hubName); err != nil {
+				return err
+			}
+			if running {
+				return s.hubRestartActivator(hubName)(c, opts)
+			}
+			return nil
+		}
 		snap.LogSources = append(snap.LogSources, LogSourceRow{
 			ID: rowIDHub(hubName), ProviderID: "proxy-hub",
 			Name: hubName, Label: label, Detail: detail,
@@ -203,9 +235,44 @@ func (s *Server) buildHubSections(ctx context.Context, snap *Snapshot,
 			s.logErr(err)
 		}
 	}
-	// No fabricated conflicts: without per-account model catalogs any
-	// conflict row would be invented. The slice stays as initialized.
+	// Catalog rows are now available in the same snapshot, so publish the
+	// exact conflict groups the native app renders and register the durable
+	// owner actions behind their candidate ids.
+	s.registerHubRoutingActions(snap, registry)
 	return nil
+}
+
+// hubGhostRows publishes one row per hub source whose account no longer
+// exists. The live-account loop above can never emit these (it visits live
+// accounts only), so without this a deleted account rots in the config while
+// the UI looks healthy — until serving resolves it and fails the request.
+// Pool refs name a pool, not an account, and are owned by the pool lifecycle.
+func (s *Server) hubGhostRows(cfg *hub.Config, hubName string, present map[string]bool) []map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	var out []map[string]any
+	for _, src := range cfg.Sources {
+		if strings.HasPrefix(src.Account, "pool:") {
+			continue
+		}
+		if present[src.ProviderID+"/"+src.Account] {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id":         "hub/" + hubName + "/" + src.ProviderID + "/" + src.Account,
+			"providerId": src.ProviderID,
+			"name":       src.Account,
+			"label":      src.Account,
+			"detail":     "Account missing",
+			"enabled":    src.IsEnabled(),
+			"hub":        hubName,
+			"ghost":      true,
+			"unavailableReason": "Account " + src.ProviderID + "/" + src.Account +
+				" no longer exists. Hub requests routed here fail; remove the source.",
+		})
+	}
+	return out
 }
 
 func rowIDHub(hubName string) string { return "proxy-hub/" + hubName }
@@ -230,13 +297,20 @@ func (s *Server) appendHubPublished(ctx context.Context, snap *Snapshot, hubName
 	}
 	for _, m := range models {
 		ownerLabel, ownerProvider, ownerRef := "", "", ""
-		if cfg != nil && m.SourceIndex >= 0 && m.SourceIndex < len(cfg.Sources) {
-			src := cfg.Sources[m.SourceIndex]
-			ownerProvider = src.ProviderID
-			ownerRef = src.ProviderID + "/" + src.Account
-			ownerLabel = src.Account
-			if acc, aerr := s.Deps.Accounts.Get(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
-				ownerLabel = acc.Meta.Label
+		if cfg != nil {
+			if idx := hub.ResolveOwnerIndex(cfg.Sources, m); idx >= 0 {
+				src := cfg.Sources[idx]
+				ownerProvider = src.ProviderID
+				// The native routing compiler keys candidates by the complete hub
+				// source id. Keep that identity on the wire so a pinned owner can
+				// be restored without guessing which hub owns the account.
+				ownerRef = "hub/" + hubName + "/" + src.ProviderID + "/" + src.Account
+				ownerLabel = src.Account
+				if acc, aerr := s.Deps.Accounts.Get(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
+					ownerLabel = acc.Meta.Label
+				}
+			} else if m.Owner != "" {
+				ownerLabel = m.Owner + " (missing)"
 			}
 		}
 		row := map[string]any{
@@ -256,8 +330,14 @@ func (s *Server) appendHubPublished(ctx context.Context, snap *Snapshot, hubName
 // before framing.
 func tailHubLog(root, hubName string, lines int) (string, error) {
 	raw, err := os.ReadFile(hubLogPath(root, hubName))
-	if err != nil || len(raw) == 0 {
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
 		return "", err
+	}
+	if len(raw) == 0 {
+		return "", nil
 	}
 	all := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	if lines > 0 && len(all) > lines {
@@ -269,8 +349,9 @@ func tailHubLog(root, hubName string, lines int) (string, error) {
 // hubToggleActivator flips the hub: running → verified stop (+Enabled=false
 // so it stays stopped, matching account proxies after PX1); stopped →
 // enable the config (creating "default") and spawn the child.
-func (s *Server) hubToggleActivator(hubName string) func(context.Context) error {
-	return func(c context.Context) error {
+func (s *Server) hubToggleActivator(hubName string) actionHandler {
+	// Hub start/stop does not touch a client config: no actionOptions here.
+	return func(c context.Context, _ actionOptions) error {
 		cfg, err := s.hubConfigOrNil(c, hubName)
 		if err != nil {
 			return err
@@ -286,8 +367,9 @@ func (s *Server) hubToggleActivator(hubName string) func(context.Context) error 
 	}
 }
 
-func (s *Server) hubRestartActivator(hubName string) func(context.Context) error {
-	return func(c context.Context) error {
+func (s *Server) hubRestartActivator(hubName string) actionHandler {
+	// Like the toggle: no client config is written, so no actionOptions.
+	return func(c context.Context, _ actionOptions) error {
 		if err := s.stopHub(c, hubName); err != nil {
 			return err
 		}
@@ -322,10 +404,10 @@ func (s *Server) hubPinnedCatalogs(ctx context.Context, hubs []string) map[strin
 			continue
 		}
 		for _, m := range models {
-			if m.SourceIndex < 0 || m.SourceIndex >= len(cfg.Sources) {
+			if hub.ResolveOwnerIndex(cfg.Sources, m) < 0 {
 				continue
 			}
-			src := cfg.Sources[m.SourceIndex]
+			src := cfg.Sources[hub.ResolveOwnerIndex(cfg.Sources, m)]
 			id := "hub/" + hubName + "/" + src.ProviderID + "/" + src.Account
 			out[id] = append(out[id], m.Model)
 		}
@@ -338,13 +420,10 @@ func (s *Server) hubPinnedCatalogs(ctx context.Context, hubs []string) map[strin
 // Only model ids cross the boundary — endpoints and keys never do.
 // Resolution is cache-or-static (discovery NoLive): a cold cache never
 // triggers per-tick egress. Live models warm the cache explicitly on hub
-// start. Accounts whose provider maps to no catalog, and empty results,
-// emit no row: absence reads as "no catalog", never as an error.
+// start. Accounts with no discovered models emit no row: absence reads as
+// "no catalog", never as an error.
 func (s *Server) hubCatalogRows(ctx context.Context, hubs []string, pinned map[string][]string, providerID, name, snapshotDir string) []map[string]any {
-	catalogID := catalog.CatalogProviderFor(providerID)
-	if catalogID == "" {
-		return nil
-	}
+	catalogID := catalog.CatalogIdentityFor(providerID)
 	models := map[string]bool{}
 	if providerID == "opencode" {
 		for _, id := range provider.OpenCodeSnapshotCatalog(snapshotDir) {
@@ -355,12 +434,13 @@ func (s *Server) hubCatalogRows(ctx context.Context, hubs []string, pinned map[s
 			if endpoint == "" {
 				continue
 			}
-			for _, id := range s.catalogList(ctx, catalogID, endpoint) {
+			for _, id := range s.catalogList(ctx, catalogID, endpoint, "") {
 				models[id] = true
 			}
 		}
 	} else {
-		for _, id := range s.catalogList(ctx, catalogID, "") {
+		cacheKey := accountCatalogCacheKey(refs.AccountRef(providerID, name))
+		for _, id := range s.catalogList(ctx, catalogID, "", cacheKey) {
 			models[id] = true
 		}
 	}
@@ -401,11 +481,13 @@ func (s *Server) hubCatalogRows(ctx context.Context, hubs []string, pinned map[s
 // catalogList resolves one provider/endpoint pair without egress: fresh or
 // stale cache, else the static policy list. A legacy composition without the
 // injected discovery service falls back to static only.
-func (s *Server) catalogList(ctx context.Context, catalogID, endpoint string) []string {
+func (s *Server) catalogList(ctx context.Context, catalogID, endpoint, cacheKey string) []string {
 	if s.Deps.Discovery == nil {
 		return discovery.StaticModels(catalogID)
 	}
-	return s.Deps.Discovery.List(ctx, discovery.Request{ProviderID: catalogID, Endpoint: endpoint, NoLive: true}).Models
+	return s.Deps.Discovery.List(ctx, discovery.Request{
+		ProviderID: catalogID, Endpoint: endpoint, CacheKey: cacheKey, NoLive: true,
+	}).Models
 }
 
 // openCodeWarmTimeout bounds one catalog fetch during hub start.
@@ -489,12 +571,20 @@ func (s *Server) startHub(ctx context.Context, hubName string) error {
 	if err != nil {
 		return err
 	}
-	// Warm opencode catalogs after spawn: explicit start is the one user
-	// action allowed live egress, so the next snapshot ticks read warmed
-	// cache instead of cold emptiness. Advisory — never fails the start.
-	s.warmOpenCodeCatalogs(ctx, func(c context.Context, endpoint, key string) ([]string, error) {
-		return catalog.FetchLiveModels(c, "openai", &catalog.FetchContext{Endpoint: endpoint, APIKey: key})
-	})
+	// Warm opencode catalogs after spawn: explicit start is the one user action
+	// allowed live egress, so the next snapshot ticks read warmed cache instead
+	// of cold emptiness. Advisory — never fails the start, and never blocks it:
+	// the warming budget is per source (8s) plus per job (6s), which is longer
+	// than the host's confirm window, so doing it inline made a successful hub
+	// start look like a service that never confirmed.
+	s.inFlight.Add(1)
+	go func() {
+		defer s.inFlight.Done()
+		s.warmAccountCatalogsForHub(ctx, hubName)
+		s.warmOpenCodeCatalogs(ctx, func(c context.Context, endpoint, key string) ([]string, error) {
+			return catalog.FetchLiveModels(c, "openai", &catalog.FetchContext{Endpoint: endpoint, APIKey: key})
+		})
+	}()
 	return spawnErr
 }
 
@@ -544,6 +634,126 @@ func (s *Server) stopHub(ctx context.Context, hubName string) error {
 // handleHubSourceToggle honors the explicit Enabled flag: true attaches the
 // source (creating the hub config on first use), false detaches it. The old
 // presence-toggle ignored Enabled and misread Name, inverting the switch.
+// hubRotationRow is the hub-wide request mode: one row per hub, not one per
+// provider. Enabling it makes every request spread across the accounts that
+// can serve it (the resolved source's provider), which is what a hub with
+// several saved accounts of one provider is for.
+//
+// The row is not a source: it carries no account value, so it is rendered and
+// toggled through hub-rotation rather than hub-source-toggle.
+// hubPoolSourceRow describes a provider whose hub source is an account pool
+// ("pool:<provider>") instead of one account. A hub keeps exactly one source per
+// provider, so this row is the only way the app can show — and clear — that
+// choice: without it the provider's accounts look switchable while every attempt
+// to enable one is refused.
+func (s *Server) hubPoolSourceRow(
+	ctx context.Context, hubName, providerID string, cfg *hub.Config,
+) (map[string]any, bool) {
+	account := hub.PoolSourceAccount(providerID)
+	if cfg == nil {
+		return nil, false
+	}
+	enabled := false
+	for _, src := range cfg.Sources {
+		if src.ProviderID == providerID && src.Account == account {
+			enabled = src.IsEnabled()
+			break
+		}
+	}
+	if !enabled {
+		return nil, false
+	}
+	poolEnabled := false
+	if s.Deps.Pools != nil {
+		if pool, err := s.Deps.Pools.GetContext(ctx, providerID); err == nil && pool != nil &&
+			pool.Enabled && pool.Mode == "multi" {
+			poolEnabled = true
+		}
+	}
+	detail := "Legacy: turn this off, then switch accounts on individually"
+	if !poolEnabled {
+		detail += " (its account pool is also switched off in Proxies)"
+	}
+	return map[string]any{
+		"id":         "hub/" + hubName + "/" + providerID + "/" + account,
+		"providerId": providerID,
+		"name":       account,
+		"label":      "All " + providerID + " accounts (pool)",
+		"detail":     detail,
+		"enabled":    true,
+		"hub":        hubName,
+		"poolSource": true,
+	}, true
+}
+
+// hubRotatableAccounts counts, per hub, the enabled sources that share a
+// provider with at least one other enabled source. Those are the accounts the
+// mode actually rotates over; a lone account per provider adds nothing.
+func (s *Server) hubRotatableAccounts(
+	ctx context.Context, names []string, byHub map[string]*hub.Config,
+) map[string]int {
+	counts := make(map[string]int, len(names))
+	groups := map[string]map[string]int{}
+	for _, providerID := range s.Deps.Providers.IDs() {
+		if _, err := s.Deps.Providers.Get(providerID); err != nil || s.Deps.Accounts == nil {
+			continue
+		}
+		list, err := s.Deps.Accounts.List(ctx, providerID)
+		if err != nil || len(list) < 2 {
+			continue
+		}
+		for _, hubName := range names {
+			if groups[hubName] == nil {
+				groups[hubName] = map[string]int{}
+			}
+			groups[hubName][providerID] = len(list)
+		}
+	}
+	for _, hubName := range names {
+		cfg := byHub[hubName]
+		if cfg == nil {
+			continue
+		}
+		enabled := 0
+		for _, src := range cfg.Sources {
+			if !src.IsEnabled() {
+				continue
+			}
+			if groups[hubName][src.ProviderID] > 1 {
+				enabled++
+			}
+		}
+		counts[hubName] = enabled
+	}
+	return counts
+}
+
+func (s *Server) hubRotationRow(hubName string, cfg *hub.Config, accounts int) map[string]any {
+	enabled := cfg != nil && cfg.SpreadsRequests()
+	detail := "Spread each model across the accounts that serve it"
+	if cfg != nil && cfg.SpreadsRequests() && accounts < 2 {
+		detail = "Needs two or more accounts in this hub"
+	}
+	return map[string]any{
+		"id":           "hub/" + hubName + "/rotation",
+		"providerId":   "",
+		"name":         "rotation",
+		"label":        "Rotate across accounts",
+		"detail":       detail,
+		"enabled":      enabled,
+		"hub":          hubName,
+		"rotates":      true,
+		"accountCount": accounts,
+	}
+}
+
+// handleHubRotation is the hub-wide mode switch (operation "hub-rotation").
+func (s *Server) handleHubRotation(ctx context.Context, m Mutate) Result {
+	result := Result{Version: ProtocolVersion, RequestID: m.RequestID}
+	name := orString(strings.TrimSpace(m.Name), "default")
+	return s.toggleHubRotation(ctx, m, result, name)
+}
+
 func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 	result := Result{Version: ProtocolVersion, RequestID: m.RequestID}
 	name := orString(strings.TrimSpace(m.Name), "default")
@@ -551,6 +761,9 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 	if m.ProviderID == "" || account == "" {
 		return errorResult(m.RequestID, anyerr.Newf(
 			"hub-source-toggle needs providerId and sourceId", "INVALID_USAGE"))
+	}
+	if poolProvider, isPool := hubPoolSourceProvider(account); isPool {
+		return s.toggleHubPoolSource(ctx, m, result, name, poolProvider)
 	}
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
 		cfg, gerr := s.hubConfigOrNil(c, name)
@@ -563,6 +776,23 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 			}
 			cfg = &hub.Config{Name: name, Sources: []hub.Source{}}
 		}
+		// Rotation owns the provider's source row: an individual account added
+		// beside it would give the same models two owners, and the manifest
+		// refuses to route a model whose owner is ambiguous.
+		if m.Enabled {
+			for _, src := range cfg.Sources {
+				if src.ProviderID == m.ProviderID && src.IsEnabled() {
+					if _, pooled := hubPoolSourceProvider(src.Account); pooled {
+						return anyerr.Newf(
+							"This hub serves every "+m.ProviderID+" account through one pool.",
+							"POOL_SOURCE_ACTIVE",
+							anyerr.WithSuggestions(
+								"Turn off \"All "+m.ProviderID+" accounts (pool)\" in Proxy Hub to pick one account instead.",
+								"Or use the hub-wide Rotate across accounts switch to spread requests over all of them."))
+					}
+				}
+			}
+		}
 		kept := make([]hub.Source, 0, len(cfg.Sources))
 		for _, src := range cfg.Sources {
 			if src.ProviderID == m.ProviderID && src.Account == account {
@@ -571,6 +801,22 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 			kept = append(kept, src)
 		}
 		if m.Enabled {
+			// Attaching a source for an account that does not exist would
+			// fail later at the foreign key with a raw constraint error;
+			// fail here with the account named. Toggling off is always
+			// allowed: detaching a missing source is a no-op success.
+			if s.Deps.Accounts != nil {
+				acc, aerr := s.Deps.Accounts.Get(ctx, m.ProviderID, account)
+				if aerr != nil {
+					return aerr
+				}
+				if acc == nil {
+					return anyerr.Newf(
+						"Account "+m.ProviderID+"/"+account+" does not exist; nothing was attached.",
+						"ACCOUNT_NOT_FOUND",
+						anyerr.WithExitCode(anyerr.NotFound))
+				}
+			}
 			enabled := true
 			kept = append(kept, hub.Source{ProviderID: m.ProviderID, Account: account, Enabled: &enabled})
 		}
@@ -579,8 +825,14 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 		return uerr
 	})
 	if err != nil {
-		result.Status, result.Message = "error", err.Error()
-		return result
+		return result.Fail(err)
+	}
+	if err := s.hubReload(ctx, name); err != nil {
+		// The source list is written; only applying it to the running hub
+		// failed. Saying "nothing changed" would be a lie.
+		return result.Fail(anyerr.Wrapf(err,
+			"Saved the source, but the running hub did not restart",
+			"HUB_RELOAD_FAILED", anyerr.WithMutated(true)))
 	}
 	if m.Enabled {
 		result.Status, result.Message = "success", "Added to the hub."
@@ -588,4 +840,142 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 		result.Status, result.Message = "success", "Removed from the hub."
 	}
 	return result
+}
+
+// toggleHubPoolSource retires a legacy pooled source.
+//
+// A hub keeps exactly one source per provider, so a pool source replaces every
+// account toggle for that provider with a single ring — the opposite of
+// per-account state. Rotation is the hub-wide switch now, so this row can only
+// be turned off: turning it on is refused with the two things to do instead.
+func (s *Server) toggleHubPoolSource(
+	ctx context.Context, m Mutate, result Result, hubName, providerID string,
+) Result {
+	if providerID != m.ProviderID {
+		return result.Fail(anyerr.Newf(
+			"That source does not belong to provider "+m.ProviderID, "INVALID_USAGE"))
+	}
+	if m.Enabled {
+		// A hub keeps one source per provider, so this row would replace every
+		// account toggle with one ring — the opposite of per-account state.
+		return result.Fail(anyerr.Newf(
+			"Proxy Hub rotates across the accounts you switch on; it does not pool them.",
+			"POOL_SOURCE_RETIRED",
+			anyerr.WithSuggestions(
+				"Turn this row off, then switch on the "+providerID+" accounts you want.",
+				"Use the hub-wide Rotate across accounts switch to spread requests over all of them.")))
+	}
+	err := lock.WithMutationLock(ctx, s.Deps.Root,
+		refs.SerializeRef(refs.ProxyHubRef(hubName)), func(c context.Context) error {
+			cfg, gerr := s.hubConfigOrNil(c, hubName)
+			if gerr != nil {
+				return gerr
+			}
+			if cfg == nil {
+				return nil
+			}
+			account := hub.PoolSourceAccount(providerID)
+			kept := make([]hub.Source, 0, len(cfg.Sources))
+			for _, src := range cfg.Sources {
+				if src.ProviderID == providerID && src.Account == account {
+					continue
+				}
+				kept = append(kept, src)
+			}
+			cfg.Sources = kept
+			_, uerr := s.Deps.Hub.UpsertConfigContext(c, *cfg)
+			return uerr
+		})
+	if err != nil {
+		return result.Fail(err)
+	}
+	if err := s.hubReload(ctx, hubName); err != nil {
+		return result.Fail(anyerr.Wrapf(err,
+			"Removed the pooled source, but the running hub did not restart",
+			"HUB_RELOAD_FAILED", anyerr.WithMutated(true)))
+	}
+	result.Status = "success"
+	result.Message = fmt.Sprintf("Stopped pooling %s accounts; switch on the ones you want.", providerID)
+	return result
+}
+
+// hubPoolSourceProvider splits a pool source value ("pool:<provider>").
+func hubPoolSourceProvider(account string) (string, bool) {
+	const prefix = "pool:"
+	if !strings.HasPrefix(account, prefix) || len(account) == len(prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(account, prefix), true
+}
+
+// toggleHubRotation flips the hub-wide request mode.
+//
+// The mode lives in the hub config, not in a per-provider row: the hub resolves
+// each request to a source and then spreads it across that source's provider,
+// so "which accounts rotate" is a property of the request, not of a switch the
+// user has to set per provider. A running hub is restarted because its config
+// is a start-time snapshot.
+func (s *Server) toggleHubRotation(
+	ctx context.Context, m Mutate, result Result, hubName string,
+) Result {
+	enabled := m.Enabled
+	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.SerializeRef(refs.ProxyHubRef(hubName)), func(c context.Context) error {
+		cfg, gerr := s.hubConfigOrNil(c, hubName)
+		if gerr != nil {
+			return gerr
+		}
+		if cfg == nil {
+			if !enabled {
+				return nil
+			}
+			cfg = &hub.Config{Name: hubName, Sources: []hub.Source{}}
+		}
+		if enabled {
+			cfg.Strategy = hub.StrategyRoundRobin
+		} else {
+			cfg.Strategy = hub.StrategyFailover
+		}
+		_, uerr := s.Deps.Hub.UpsertConfigContext(c, *cfg)
+		return uerr
+	})
+	if err != nil {
+		return result.Fail(err)
+	}
+	if err := s.hubReload(ctx, hubName); err != nil {
+		return result.Fail(anyerr.Wrapf(err,
+			"Saved the mode, but the running hub did not restart",
+			"HUB_RELOAD_FAILED", anyerr.WithMutated(true)))
+	}
+	if enabled {
+		result.Status, result.Message = "success", "Spreading requests across this hub's accounts."
+	} else {
+		result.Status, result.Message = "success", "Each model is served by one account again."
+	}
+	return result
+}
+
+// hubReload applies a source change to a hub that is already serving. The route
+// manifest — which source index each model is pinned to — is compiled when the
+// hub starts, so a config write alone changes nothing for running requests and a
+// switch that appeared to work would route nothing new. Stop+start is the honest
+// apply: rebuilding the manifest in place would renumber the indices the
+// already-published routes are pinned to.
+func (s *Server) hubReload(ctx context.Context, hubName string) error {
+	if !s.hubServing(ctx, hubName) {
+		return nil
+	}
+	if err := s.stopHub(ctx, hubName); err != nil {
+		return err
+	}
+	return s.startHub(ctx, hubName)
+}
+
+// hubServing reports whether a hub process is answering its own health echo.
+func (s *Server) hubServing(ctx context.Context, hubName string) bool {
+	cfg, err := s.hubConfigOrNil(ctx, hubName)
+	if err != nil || cfg == nil {
+		return false
+	}
+	running, _ := s.hubLive(hubName, cfg.Port, cfg.Host)
+	return running
 }

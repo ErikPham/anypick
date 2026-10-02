@@ -28,6 +28,7 @@ const MaxServiceFrameBytes = 4 * 1024 * 1024
 var serviceCapabilities = []string{
 	"cancel-v1",
 	"command-dto-v1",
+	"doctor-v1",
 	"explicit-refresh",
 	"host-effects-v1",
 	"post-mutation-events",
@@ -35,6 +36,10 @@ var serviceCapabilities = []string{
 	"usage-events-v1",
 }
 
+// doctor-v1 is negotiated, not required. A host without it still connects
+// because the engine sends a doctor frame only as the answer to that host's
+// own doctor command. serviceCapabilities still advertises doctor-v1, so a
+// host that wants doctor still negotiates it.
 var requiredHostCapabilities = []string{"command-dto-v1", "snapshot-dto-v1"}
 
 // EngineHello is the first frame emitted by desktop-service. InstanceID is a
@@ -78,6 +83,11 @@ type ProtocolError struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 	Code            string `json:"code"`
 	Message         string `json:"message"`
+	// RequestID names the command this answers, when one is known. Without it
+	// the host cannot settle the row whose action died, so its spinner runs to
+	// the host's confirm timeout and the user sees "did not confirm in time"
+	// instead of the reason.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 type SnapshotEvent struct {
@@ -131,7 +141,17 @@ func newDiagnosticInstanceID() string {
 }
 
 func frameService(prefix string, value any) string {
-	raw, _ := json.Marshal(value)
+	raw, err := json.Marshal(value)
+	if err != nil {
+		// Every payload here is a plain struct, so this cannot happen for one —
+		// but the old code ignored the error and sent a frame with an empty
+		// body, which the app can only reject. A rejection it can name beats a
+		// frame it cannot parse.
+		return frame("protocol-error", json.RawMessage(fmt.Sprintf(
+			`{"protocolVersion":%d,"code":"FRAME_ENCODE_FAILED",`+
+				`"message":"the engine could not encode that frame"}`,
+			ServiceProtocolVersion)))
+	}
 	return frame(prefix, json.RawMessage(raw))
 }
 
@@ -148,6 +168,9 @@ func FrameHandshakeRejected(rejected HandshakeRejected) string {
 }
 
 func FrameProtocolError(protocolErr ProtocolError) string {
+	// The same display rule as FrameResult: a rejection may quote input the
+	// client sent, and input is exactly where a pasted credential turns up.
+	protocolErr.Message = displaySafeMessage(protocolErr.Message)
 	return frameService("protocol-error", protocolErr)
 }
 

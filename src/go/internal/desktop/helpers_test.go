@@ -36,13 +36,14 @@ func TestTernary(t *testing.T) {
 
 func TestDesignAppName(t *testing.T) {
 	cases := map[string]string{
-		"claude":   "Claude Code",
-		"codex":    "Codex",
-		"gemini":   "Gemini",
-		"kiro":     "Kiro",
-		"grok":     "Grok",
-		"opencode": "OpenCode",
-		"custom":   "Custom",
+		"claude":      "Claude Code",
+		"codex":       "Codex",
+		"gemini":      "Gemini",
+		"kiro":        "Kiro",
+		"grok":        "Grok",
+		"opencode":    "OpenCode",
+		"commandcode": "Command Code",
+		"custom":      "Custom",
 	}
 	for in, want := range cases {
 		if got := designAppName(in); got != want {

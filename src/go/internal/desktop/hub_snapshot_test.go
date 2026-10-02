@@ -11,6 +11,7 @@ import (
 	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/modelcache"
+	"github.com/outof0/anypick/go/internal/pools"
 )
 
 func hubTestEnv(t *testing.T) *trayEnv {
@@ -22,10 +23,22 @@ func hubTestEnv(t *testing.T) *trayEnv {
 
 func toggleHub(t *testing.T, srv *Server, reqID, hubName, provider, account string, enabled bool) Result {
 	t.Helper()
-	raw, err := json.Marshal(Mutate{
-		Version: 1, RequestID: reqID, Operation: "hub-source-toggle",
-		Name: hubName, ProviderID: provider, SourceID: account, Enabled: enabled,
-	})
+	return toggleHubOperation(t, srv, reqID, "hub-source-toggle", hubName, account, enabled, provider)
+}
+
+// toggleHubOperation drives one hub mutation; provider may be empty.
+func toggleHubOperation(
+	t *testing.T, srv *Server, reqID, operation, hubName, account string, enabled bool, provider ...string,
+) Result {
+	t.Helper()
+	req := Mutate{
+		Version: 1, RequestID: reqID, Operation: operation,
+		Name: hubName, SourceID: account, Enabled: enabled,
+	}
+	if len(provider) > 0 {
+		req.ProviderID = provider[0]
+	}
+	raw, err := json.Marshal(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +60,17 @@ func TestHubSourceToggleHonorsEnabled(t *testing.T) {
 	if res := toggleHub(t, srv, "h-off-1", "default", "codex", "a", false); res.Status != "success" {
 		t.Fatalf("disable on missing hub = %+v, want success no-op", res)
 	}
-	if res := toggleHub(t, srv, "h-on-1", "default", "codex", "a", true); res.Status != "success" {
+	// Attaching a source for an account that does not exist fails closed
+	// with the account named (the foreign key would refuse it anyway with
+	// a raw constraint error). Ghosts are never writable.
+	if res := toggleHub(t, srv, "h-on-1", "default", "codex", "a", true); res.Status == "success" {
+		t.Fatalf("enable missing account = %+v, want ACCOUNT_NOT_FOUND", res)
+	}
+	env.writeCodexLive("hub-toggle@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "a", true); err != nil {
+		t.Fatal(err)
+	}
+	if res := toggleHub(t, srv, "h-on-live", "default", "codex", "a", true); res.Status != "success" {
 		t.Fatalf("enable = %+v", res)
 	}
 	cfg, err := env.Deps.Hub.GetConfigContext(ctx, "default")
@@ -120,6 +143,72 @@ func TestSnapshotEmitsHubSections(t *testing.T) {
 	}
 	if len(snap.HubConflicts) != 0 {
 		t.Fatalf("conflicts must stay empty without catalogs: %+v", snap.HubConflicts)
+	}
+}
+
+func TestHubRoutingRegistersConflictActionsAndPersistsOwner(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	env.writeCodexLive("hub-a@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "hub-a", true); err != nil {
+		t.Fatal(err)
+	}
+	env.writeCodexLive("hub-b@example.com")
+	if _, err := env.Svc.Save(ctx, "codex", "hub-b", true); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	if _, err := env.Deps.Hub.UpsertConfigContext(ctx, hub.Config{
+		Name: "default", Enabled: true,
+		Sources: []hub.Source{
+			{ProviderID: "codex", Account: "hub-a", Enabled: &enabled},
+			{ProviderID: "codex", Account: "hub-b", Enabled: &enabled},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+	snap, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	if len(snap.HubConflicts) != 1 {
+		t.Fatalf("hub conflicts = %+v, want one same-catalog choice", snap.HubConflicts)
+	}
+	candidates, _ := snap.HubConflicts[0]["candidates"].([]map[string]any)
+	if len(candidates) != 2 {
+		t.Fatalf("conflict candidates = %+v", candidates)
+	}
+	actionID, _ := candidates[0]["actionId"].(string)
+	ownerID, _ := candidates[0]["id"].(string)
+	if actionID == "" || ownerID == "" {
+		t.Fatalf("incomplete candidate = %+v", candidates[0])
+	}
+	handler, ok := srv.actionHandler(actionID)
+	if !ok {
+		t.Fatalf("no engine action registered for %q", actionID)
+	}
+	if err := handler(ctx, actionOptions{}); err != nil {
+		t.Fatalf("choose hub owner: %v", err)
+	}
+
+	updated, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("buildSnapshot after owner choice: %v", err)
+	}
+	if len(updated.HubConflicts) != 0 {
+		t.Fatalf("conflict remained after owner choice: %+v", updated.HubConflicts)
+	}
+	found := false
+	for _, row := range updated.HubPublishedModels {
+		if row["ownerAccountId"] == ownerID && row["needsChoice"] == false {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("owner pin missing from published models: %+v", updated.HubPublishedModels)
 	}
 }
 
@@ -302,4 +391,251 @@ func TestSnapshotMergesPinnedModelsIntoCatalogs(t *testing.T) {
 	if !found {
 		t.Fatalf("hub catalog missing: %+v", snap.HubCatalogs)
 	}
+}
+
+// seedCodexAccounts saves n accounts so the hub has something to rotate.
+func seedCodexAccounts(t *testing.T, env *trayEnv, names ...string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, name := range names {
+		env.writeCodexLive(name + "@example.com")
+		if _, err := env.Svc.Save(ctx, "codex", name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The mode is one row for the whole hub — never one row per provider — and it
+// reports how many accounts actually rotate.
+func TestHubRotationRowIsHubWide(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	seedCodexAccounts(t, env, "work", "home")
+	if _, err := env.Deps.Hub.UpsertConfigContext(ctx, hub.Config{
+		Name: "default",
+		Sources: []hub.Source{
+			{ProviderID: "codex", Account: "work"},
+			{ProviderID: "codex", Account: "home"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := New(env.Deps, strings.NewReader(""), &strings.Builder{}).buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotations := 0
+	var row map[string]any
+	for _, candidate := range snap.HubSources {
+		if candidate["rotates"] == true {
+			rotations++
+			row = candidate
+		}
+	}
+	if rotations != 1 {
+		t.Fatalf("rotation rows = %d, want exactly one hub-wide row: %+v", rotations, snap.HubSources)
+	}
+	if row["id"] != "hub/default/rotation" || row["enabled"] != false || row["accountCount"] != 2 {
+		t.Fatalf("rotation row = %+v", row)
+	}
+}
+
+// Turning it on writes the hub's strategy — no pool rows, no per-provider
+// source surgery — and turning it off restores the sticky default.
+func TestHubRotationToggleWritesStrategy(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	seedCodexAccounts(t, env, "work", "home")
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+
+	res := toggleHubOperation(t, srv, "rot-on", "hub-rotation", "default", "", true)
+	if res.Status != "success" {
+		t.Fatalf("enable rotation = %+v", res)
+	}
+	cfg, err := env.Deps.Hub.GetConfigContext(ctx, "default")
+	if err != nil || cfg == nil {
+		t.Fatal(err)
+	}
+	if !cfg.SpreadsRequests() {
+		t.Fatalf("strategy after enable = %q", cfg.Strategy)
+	}
+	snap, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range snap.HubSources {
+		if row["rotates"] == true && row["enabled"] != true {
+			t.Fatalf("rotation row after enable = %+v", row)
+		}
+	}
+
+	if res := toggleHubOperation(t, srv, "rot-off", "hub-rotation", "default", "", false); res.Status != "success" {
+		t.Fatalf("disable rotation = %+v", res)
+	}
+	cfg, err = env.Deps.Hub.GetConfigContext(ctx, "default")
+	if err != nil || cfg == nil {
+		t.Fatal(err)
+	}
+	if cfg.Strategy != hub.StrategyFailover {
+		t.Fatalf("strategy after disable = %q, want failover", cfg.Strategy)
+	}
+}
+
+// A hub source toggle restarts a hub that is already serving: the manifest and
+// the config are read when it starts, so a switch that appeared to work would
+// otherwise route nothing new.
+func TestHubSourceToggleLeavesAStoppedHubAlone(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	seedCodexAccounts(t, env, "work")
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+
+	if res := toggleHub(t, srv, "h-on", "default", "codex", "work", true); res.Status != "success" {
+		t.Fatalf("enable = %+v", res)
+	}
+	cfg, err := env.Deps.Hub.GetConfigContext(ctx, "default")
+	if err != nil || cfg == nil || len(cfg.Sources) != 1 {
+		t.Fatalf("config = %+v, %v", cfg, err)
+	}
+}
+
+// hubRotateEnv adds the pools table the pool-source rows and toggles write.
+func hubRotateEnv(t *testing.T) *trayEnv {
+	t.Helper()
+	env := hubTestEnv(t)
+	env.Deps.Pools = pools.NewService(&pools.Store{DB: env.Deps.Store.DB.DB})
+	return env
+}
+
+// seedPoolSource points one provider's hub source at its account pool, the way
+// the CLI (and an older build of the app) does.
+func seedPoolSource(t *testing.T, env *trayEnv, providerID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := env.Deps.Hub.UpsertConfigContext(ctx, hub.Config{
+		Name: "default",
+		Sources: []hub.Source{
+			{ProviderID: providerID, Account: hub.PoolSourceAccount(providerID)},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Deps.Pools.Set(ctx, pools.Pool{
+		Provider: providerID, Mode: "multi", Enabled: true, Strategy: hub.StrategyRoundRobin,
+		Members: []pools.Member{{Account: "work", Enabled: true}, {Account: "home", Enabled: true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A pool source must be visible in the Hub pane: it is the only source for that
+// provider, so an app that cannot see it offers account switches that are all
+// refused ("this hub serves codex through its account pool").
+func TestHubPoolSourceIsVisibleAndToggleable(t *testing.T) {
+	env := hubRotateEnv(t)
+	ctx := context.Background()
+	seedCodexAccounts(t, env, "work", "home")
+	seedPoolSource(t, env, "codex")
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+
+	snap, err := srv.buildSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	for _, candidate := range snap.HubSources {
+		if candidate["id"] == "hub/default/codex/pool:codex" {
+			row = candidate
+		}
+	}
+	if row == nil {
+		t.Fatalf("the pool source has no row: %+v", snap.HubSources)
+	}
+	if row["poolSource"] != true || row["enabled"] != true {
+		t.Fatalf("pool row = %+v", row)
+	}
+	if label, _ := row["label"].(string); !strings.Contains(label, "All codex accounts") {
+		t.Fatalf("pool row label = %q, want it to name the pool", label)
+	}
+	if detail, _ := row["detail"].(string); !strings.Contains(detail, "Legacy") {
+		t.Fatalf("pool row detail = %q, want it to say the row must go", detail)
+	}
+
+	// Enabling one account while the pool owns the provider is refused, with a
+	// next step the user can actually perform in the app.
+	res := toggleHub(t, srv, "acct-on", "default", "codex", "work", true)
+	if res.Status != "error" || res.Code != "POOL_SOURCE_ACTIVE" {
+		t.Fatalf("account toggle during a pool source = %+v", res)
+	}
+	joined := strings.Join(res.Suggestions, " ")
+	if !strings.Contains(joined, "All codex accounts (pool)") {
+		t.Fatalf("refusal suggestions = %v, want the row to turn off", res.Suggestions)
+	}
+
+	// Turning the legacy row back on is refused: rotation is the hub-wide
+	// switch, and one ring per provider is what the user rejected.
+	res = toggleHub(t, srv, "pool-on-legacy", "default", "codex", "pool:codex", true)
+	if res.Status != "error" || res.Code != "POOL_SOURCE_RETIRED" {
+		t.Fatalf("re-enabling a retired pool source = %+v", res)
+	}
+
+	// Turning the pool row off clears both halves: the source and the pool row.
+	if res := toggleHub(t, srv, "pool-off", "default", "codex", "pool:codex", false); res.Status != "success" {
+		t.Fatalf("pool toggle off = %+v", res)
+	}
+	cfg, err := env.Deps.Hub.GetConfigContext(ctx, "default")
+	if err != nil || cfg == nil {
+		t.Fatal(err)
+	}
+	for _, src := range cfg.Sources {
+		if src.ProviderID == "codex" {
+			t.Fatalf("codex source survived the pool toggle: %+v", src)
+		}
+	}
+	// The pool row itself is a separate feature (CLI-managed pool proxies), so
+	// retiring a legacy hub source must not disable it behind the user's back.
+	pool, err := env.Deps.Pools.GetContext(ctx, "codex")
+	if err != nil || pool == nil || !pool.Enabled {
+		t.Fatalf("pool row after toggle off = %+v, %v", pool, err)
+	}
+
+	// With the pool gone, an individual account is switchable again.
+	if res := toggleHub(t, srv, "acct-on2", "default", "codex", "work", true); res.Status != "success" {
+		t.Fatalf("account toggle after the pool was cleared = %+v", res)
+	}
+}
+
+// A hub source whose account no longer exists must surface as a ghost row.
+// Relational rows make this unreachable through the API (the foreign key
+// refuses the upsert), so the test stages a foreign-written document
+// directly: the row covers pre-migration and foreign states, where the
+// GetConfig fallback reads the document because no rows exist.
+func TestSnapshotEmitsGhostRowForDeletedHubSource(t *testing.T) {
+	env := hubTestEnv(t)
+	ctx := context.Background()
+	config := `{"name":"default","enabled":true,"host":"127.0.0.1","sources":[
+		{"ref":{"kind":"account","provider":"workbuddy","name":"ghost"}}],
+		"modelOwners":[],"revision":1,"createdAt":"t","updatedAt":"t"}`
+	if _, err := env.Deps.Store.DB.DB.ExecContext(ctx,
+		`INSERT INTO proxy_hubs (name, config_json, created_at, updated_at)
+		 VALUES ('default', ?, 't', 't')`, config); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := New(env.Deps, strings.NewReader(""), &strings.Builder{}).buildSnapshot(ctx)
+	if err != nil {
+		t.Fatalf("buildSnapshot: %v", err)
+	}
+	for _, row := range snap.HubSources {
+		if id, _ := row["id"].(string); id == "hub/default/workbuddy/ghost" {
+			if row["ghost"] != true {
+				t.Fatalf("ghost flag missing: %+v", row)
+			}
+			if reason, _ := row["unavailableReason"].(string); reason == "" {
+				t.Fatalf("ghost row needs unavailableReason: %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatalf("no ghost row for deleted hub source: %+v", snap.HubSources)
 }

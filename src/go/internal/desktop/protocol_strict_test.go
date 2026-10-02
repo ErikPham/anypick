@@ -106,19 +106,19 @@ func TestStrictBackupImportContract(t *testing.T) {
 		t.Fatalf("valid import rejected: %v", err)
 	}
 
-	// TS authority boundary (isUniqueSafeStrings(entryIds, 64, 16)): exactly 64
-	// entries of exactly 16 characters must be accepted.
+	// A full backup file is importable: exactly MaxBackupAccountRefs ids, each
+	// exactly 16 characters, and the framed command still fits.
 	boundary := map[string]interface{}{}
 	for k, v := range valid {
 		boundary[k] = v
 	}
-	ids := make([]string, 64)
+	ids := make([]string, MaxBackupAccountRefs)
 	for i := range ids {
 		ids[i] = fmt.Sprintf("%03d%s", i, strings.Repeat("e", 13)) // unique, exactly 16
 	}
 	boundary["entryIds"] = ids
 	if _, err := DecodeLine("mutate\t" + b64(t, boundary)); err != nil {
-		t.Fatalf("64×16-char entryIds rejected (TS accepts): %v", err)
+		t.Fatalf("%d×16-char entryIds rejected: %v", MaxBackupAccountRefs, err)
 	}
 
 	mutations := []struct {
@@ -131,7 +131,7 @@ func TestStrictBackupImportContract(t *testing.T) {
 		{"duplicate entryIds", func(m map[string]interface{}) { m["entryIds"] = []string{"0", "0"} }},
 		{"oversized entryId", func(m map[string]interface{}) { m["entryIds"] = []string{strings.Repeat("e", 17)} }},
 		{"too many entryIds", func(m map[string]interface{}) {
-			ids := make([]string, 65)
+			ids := make([]string, MaxBackupAccountRefs+1)
 			for i := range ids {
 				ids[i] = fmt.Sprintf("%03d", i)
 			}
@@ -194,14 +194,14 @@ func TestStrictBackupExportContract(t *testing.T) {
 		})
 	}
 
-	// TS boundary: exactly 64 account refs are valid.
+	// Exactly the file limit is a valid selection, and it still fits the frame.
 	boundaryRefs := make([]map[string]string, MaxBackupAccountRefs)
 	for i := range boundaryRefs {
 		boundaryRefs[i] = map[string]string{"provider": "codex", "name": fmt.Sprintf("a%d", i)}
 	}
 	valid["accounts"] = boundaryRefs
 	if _, err := DecodeLine("mutate\t" + b64(t, valid)); err != nil {
-		t.Fatalf("64-account selection rejected (TS accepts): %v", err)
+		t.Fatalf("%d-account selection rejected: %v", MaxBackupAccountRefs, err)
 	}
 }
 

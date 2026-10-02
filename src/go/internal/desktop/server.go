@@ -8,32 +8,72 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/catalog"
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/discovery"
+	"github.com/outof0/anypick/go/internal/doctor"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/journal"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/plugins"
+	"github.com/outof0/anypick/go/internal/pools"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/runtime"
 	"github.com/outof0/anypick/go/internal/slug"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
 // RefreshInterval mirrors the supervisor's 2.5s snapshot cadence.
 const RefreshInterval = 2500 * time.Millisecond
+
+// maxAnsweredRequests bounds the requestIds a server remembers as answered. A
+// duplicate only matters while a host could still retry the same command, so a
+// small window is enough and the map cannot grow for the life of a session.
+const maxAnsweredRequests = 256
+
+// loginTimeout is the engine's own backstop for a sign-in. The browser launcher
+// already bounds itself (10 minutes by default), so this sits just past it: a
+// cooperative adapter reports its own reason first, and an adapter that never
+// returns is answered instead of holding the host's slot forever.
+const loginTimeout = 12 * time.Minute
+
+// inflightShutdownWait bounds how long a graceful exit waits for work that is
+// still running. The native host owns the outer kill timeout, so an adapter that
+// ignores cancellation must not pin the process.
+const inflightShutdownWait = 10 * time.Second
+
+// maxCancelLedger bounds the cancels with no target yet. A burst of unique ids
+// (only reachable from a misbehaving host on a local pipe) must not grow the
+// map without limit.
+const maxCancelLedger = 128
+
+// cancelLedgerTTL bounds how long a cancel with no target is remembered. Long
+// enough for a handler to start, short enough that a re-used request id cannot
+// be cancelled by history.
+const cancelLedgerTTL = 2 * time.Minute
+
+// DesktopActionTimeout bounds mutations initiated from the native app. The
+// app has no useful way to distinguish a slow activation from a dead proxy
+// child, so an unbounded handler leaves its sheet in Applying… forever. The
+// activation executor still owns rollback; this deadline only makes the
+// terminal result reach the host when a dependency never settles.
+const DesktopActionTimeout = 60 * time.Second
 
 // UsageRefreshInterval is intentionally much slower than the legacy full
 // snapshot loop. App-service mode emits only a bounded usage event on this
@@ -61,6 +101,9 @@ type Deps struct {
 	// Activation drives model-role re-activation and other planned mutations.
 	Activation *activation.Deps
 	Hub        *hub.Service
+	// Pools is the pools table's service boundary. Rotation is a pool config
+	// change plus a hub config change, and both belong behind a service.
+	Pools *pools.Service
 	// Config owns global-config mutations; nil in legacy compositions only.
 	Config *config.ConfigService
 	// Discovery owns model-cache reads and writes for snapshot/catalog paths.
@@ -82,6 +125,7 @@ type Deps struct {
 	// PluginDiagnostics supplies redacted dynamic host health. It is a callback
 	// so the desktop package does not own or restart the private Node process.
 	PluginDiagnostics func(context.Context) plugins.Diagnostics
+	Environment       doctor.EnvironmentReport
 }
 
 // HostStateProvider exposes platform state only the native host can know.
@@ -96,10 +140,14 @@ type Server struct {
 	In   io.Reader
 	Out  io.Writer
 
+	// revision is the snapshot counter embedded in action ids. It is written by
+	// buildSnapshot (which can run in a mutation's own goroutine) and read by
+	// currentRevision, so both hold actionsMu: a plain ++ there was a real data
+	// race, found by -race once a test stopped draining the handler goroutine.
 	revision    int
 	actionRows  map[string]ActionRow
-	prevActions map[string]func(context.Context) error
-	actions     map[string]func(context.Context) error
+	prevActions map[string]actionHandler
+	actions     map[string]actionHandler
 	actionOrder []string
 	actionsMu   sync.Mutex
 	inspections *InspectionManager
@@ -109,13 +157,40 @@ type Server struct {
 	// two revisions.
 	modelRoleTargets map[string]modelRoleTarget
 
-	// In-flight cancellable mutations (account-login) keyed by requestId.
+	// In-flight cancellable mutations (account-login) keyed by requestId, and
+	// cancels that arrived before their target registered.
 	cancelMu     sync.Mutex
 	cancellables map[string]context.CancelFunc
+	cancelLedger map[string]time.Time
+
+	// actionTimeout is DesktopActionTimeout unless a test narrows it.
+	actionTimeout time.Duration
+	// loginBudget is loginTimeout unless a test narrows it.
+	loginBudget time.Duration
+	// loginAttempt runs one sign-in; nil uses the accounts service. A test
+	// supplies one that ignores cancellation to exercise the deadline.
+	loginAttempt func(ctx context.Context, providerID string, opts accounts.LoginOptions) (accounts.LoginResult, error)
 
 	writeMu   sync.Mutex
 	refreshMu sync.Mutex
 	inFlight  sync.WaitGroup
+	// snapshotDirty marks a failed state snapshot that the ticker must retry.
+	snapshotDirty atomic.Bool
+	// stopCh closes when a graceful shutdown starts, so background helpers can
+	// stop waiting without being part of inFlight.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	// answered remembers the requestIds that already received a terminal frame,
+	// and reserved remembers the ones a dispatch has claimed. They are separate
+	// on purpose: a dispatch reservation must not look like an answer, or the
+	// watchdog and the panic recovery would stay silent for the very requests
+	// that need them.
+	answeredMu    sync.Mutex
+	answered      map[string]struct{}
+	answeredOrder []string
+	reserved      map[string]struct{}
+	reservedOrder []string
 
 	serviceMode  bool
 	snapshotSent bool
@@ -126,6 +201,15 @@ type Server struct {
 	launchAtLoginEnabled bool
 	hostEffectMu         sync.Mutex
 	pendingHostEffects   map[string]config.HostEffectRequest
+
+	// clientConfigIssues records the clients whose live config could not be
+	// brought back to their saved route. Startup used to log these into the
+	// void: the app went on showing the route as active while Claude Code or
+	// Codex actually read something else. They ride the snapshot as degraded
+	// conditions so the user is told, and they clear when a later activation
+	// of that client succeeds.
+	clientConfigMu     sync.Mutex
+	clientConfigIssues map[string]DegradedCondition
 }
 
 // New builds a server. In/Out are the pipes to the native app; when the host
@@ -133,7 +217,54 @@ type Server struct {
 func New(deps Deps, in io.Reader, out io.Writer) *Server {
 	return &Server{Deps: deps, In: in, Out: out, inspections: deps.Inspections,
 		cancellables:       map[string]context.CancelFunc{},
-		pendingHostEffects: map[string]config.HostEffectRequest{}}
+		pendingHostEffects: map[string]config.HostEffectRequest{},
+		clientConfigIssues: map[string]DegradedCondition{},
+		stopCh:             make(chan struct{})}
+}
+
+// recordClientConfigIssue publishes one client whose config AnyPick could not
+// restore or take over. The detail is the engine's own refusal text, run
+// through the same display rule as every other message that reaches the app.
+func (s *Server) recordClientConfigIssue(clientID string, err error) {
+	if clientID == "" || err == nil {
+		return
+	}
+	condition := DegradedCondition{
+		ID:    "client-config:" + clientID,
+		Kind:  "client-config",
+		Title: "AnyPick left " + clientID + " config untouched",
+		Detail: displaySafeMessage(
+			err.Error() + " AnyPick did not change it; confirm the takeover to manage it."),
+	}
+	s.clientConfigMu.Lock()
+	defer s.clientConfigMu.Unlock()
+	s.clientConfigIssues[clientID] = condition
+}
+
+// clearClientConfigIssue drops the condition once an activation of that client
+// succeeds, so a stale warning cannot outlive the state it described.
+func (s *Server) clearClientConfigIssue(clientID string) {
+	s.clientConfigMu.Lock()
+	defer s.clientConfigMu.Unlock()
+	delete(s.clientConfigIssues, clientID)
+}
+
+func (s *Server) clientConfigConditions() []DegradedCondition {
+	s.clientConfigMu.Lock()
+	defer s.clientConfigMu.Unlock()
+	if len(s.clientConfigIssues) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(s.clientConfigIssues))
+	for id := range s.clientConfigIssues {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]DegradedCondition, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.clientConfigIssues[id])
+	}
+	return out
 }
 
 // NewService builds the app-owned protocol-v2 service. Unlike New (the legacy
@@ -154,6 +285,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.serviceMode {
 		if err := s.handshake(ctx, lines); err != nil {
 			return err
+		}
+		// A desktop restart intentionally stops child proxies during shutdown.
+		// Rehydrate persisted managed routes before publishing the first
+		// snapshot, otherwise clients keep a stale loopback URL and their first
+		// request fails even though the binding still points at a valid account.
+		if err := s.rehydrateManagedBindings(ctx); err != nil {
+			s.logErr(err)
 		}
 	} else {
 		// Compatibility bridge only. App-owned desktop-service has a real
@@ -179,6 +317,14 @@ func (s *Server) Run(ctx context.Context) error {
 			var err error
 			if s.serviceMode {
 				err = s.refreshUsage(ctx)
+				// A failed state snapshot leaves the host waiting for a change
+				// it never receives (a switch that never confirms). Usage ticks
+				// keep it fresh; this retries the snapshot itself.
+				if s.snapshotRetryNeeded() {
+					if rerr := s.refresh(ctx); rerr != nil {
+						s.logErr(rerr)
+					}
+				}
 			} else {
 				err = s.refresh(ctx)
 			}
@@ -194,6 +340,8 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			if scanned.Err != nil {
 				if s.serviceMode {
+					// bufio.ErrTooLong means the line was never completed, so
+					// there is no payload to attribute this to.
 					s.write(FrameProtocolError(ProtocolError{ProtocolVersion: ServiceProtocolVersion,
 						Code: "FRAME_TOO_LARGE", Message: "input frame exceeded the configured bound"}))
 				}
@@ -204,7 +352,10 @@ func (s *Server) Run(ctx context.Context) error {
 				result, derr := decodeHostEffectResult(line)
 				if derr != nil {
 					s.write(FrameProtocolError(ProtocolError{ProtocolVersion: ServiceProtocolVersion,
-						Code: "MALFORMED_HOST_EFFECT_RESULT", Message: "host-effect result was rejected"}))
+						Code:      "MALFORMED_HOST_EFFECT_RESULT",
+						Message:   "host-effect result was rejected",
+						RequestID: RequestIDFromLine(line),
+					}))
 					continue
 				}
 				s.handleHostEffectResult(ctx, result)
@@ -213,19 +364,308 @@ func (s *Server) Run(ctx context.Context) error {
 			cmd, derr := DecodeLine(line)
 			if derr != nil {
 				if s.serviceMode {
+					// A rejected frame still names the command it answered
+					// when the payload is readable: the app can then settle
+					// that row instead of waiting out its confirm timeout.
 					s.write(FrameProtocolError(ProtocolError{ProtocolVersion: ServiceProtocolVersion,
-						Code: "MALFORMED_FRAME", Message: "command frame was rejected"}))
+						Code:      "MALFORMED_FRAME",
+						Message:   "command frame was rejected",
+						RequestID: RequestIDFromLine(line),
+					}))
 				}
 				continue // malformed input is ignored, never fatal
 			}
-			if err := s.handle(ctx, cmd); err != nil {
-				if err == errShutdown {
-					return s.shutdown(ctx)
+			// Commands that can take seconds run off the loop so a slow one
+			// cannot delay the user's next command or their cancel, and so the
+			// host is answered by a deadline even if the handler blocks.
+			switch cmd.Kind {
+			case "mutate", "model-roles", "backup-inspect", "logs", "doctor":
+				s.dispatchBounded(ctx, cmd)
+			default:
+				if err := s.handleSafely(ctx, cmd); err != nil {
+					if err == errShutdown {
+						return s.shutdown(ctx)
+					}
+					s.logErr(err)
+					s.answerFailedCommand(err, cmd.RequestID())
 				}
-				s.logErr(err)
 			}
 		}
 	}
+}
+
+// handleSafely runs one command with panic containment.
+//
+// The invoke path already recovers, but the synchronous commands (mutate,
+// model-roles, backup-inspect, logs) did not: a panic in a provider adapter
+// reached from one of them killed the engine process with no frame for the
+// in-flight requestId, so the host held its mutation slot and the proxies died
+// with the engine. A panicking provider must cost one attributed failure, not
+// the process.
+// snapshotRetryNeeded reports whether the last state snapshot failed. The
+// service ticker sends usage only, so without this a failed buildSnapshot left
+// the host without the state change it was waiting for.
+func (s *Server) snapshotRetryNeeded() bool { return s.snapshotDirty.Load() }
+
+// waitForInFlight waits for running work and reports whether it finished inside
+// the limit.
+func (s *Server) waitForInFlight(limit time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.inFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(limit):
+		return false
+	}
+}
+
+// actionBudget is DesktopActionTimeout, or the narrowed test budget.
+func (s *Server) actionBudget() time.Duration {
+	if s.actionTimeout > 0 {
+		return s.actionTimeout
+	}
+	return DesktopActionTimeout
+}
+
+// budgetFor is the budget of one command. `logs` is deliberately shorter than
+// the host's own log timeout, so the host gets an attributed engine failure
+// instead of its generic "the log request timed out".
+func (s *Server) budgetFor(kind string) time.Duration {
+	if kind == "logs" {
+		return 8 * time.Second
+	}
+	if kind == "doctor" {
+		return 20 * time.Second
+	}
+	return s.actionBudget()
+}
+
+// loginDeadline is loginTimeout, or the narrowed test budget.
+func (s *Server) loginDeadline() time.Duration {
+	if s.loginBudget > 0 {
+		return s.loginBudget
+	}
+	return loginTimeout
+}
+
+// dispatchBounded runs a potentially slow command with panic containment and a
+// budget, naming the operation for the failure message.
+func (s *Server) dispatchBounded(ctx context.Context, cmd *Command) {
+	operation := cmd.Kind
+	mutated := cmd.Kind == "mutate" || cmd.Kind == "model-roles"
+	if cmd.Kind == "mutate" && len(cmd.Payload) > 0 {
+		var m Mutate
+		if json.Unmarshal(cmd.Payload, &m) == nil && m.Operation != "" {
+			operation = m.Operation
+		}
+	}
+	s.runBoundedWithBudget(ctx, cmd.RequestID(), operation, mutated, s.budgetFor(cmd.Kind),
+		func(c context.Context) error {
+			return s.handleSafely(c, cmd)
+		})
+}
+
+// runBounded runs one command off the select loop with an absolute budget and a
+// watchdog that answers the request even when the handler never returns.
+//
+// Two problems made this necessary. The loop is serial, so a long mutation
+// delayed every later command — including the user's cancel. And a handler that
+// blocks past its deadline published nothing at all, which left the host's
+// single mutation slot held with no way out. The handler still runs to
+// completion (cancelling it mid-write is what ADR 0024's pre-commit rule
+// forbids); what changes is that the host is answered on time.
+func (s *Server) runBounded(
+	ctx context.Context, requestID, operation string, mutated bool, run func(context.Context) error,
+) {
+	s.runBoundedWithBudget(ctx, requestID, operation, mutated, s.actionBudget(), run)
+}
+
+func (s *Server) runBoundedWithBudget(
+	ctx context.Context, requestID, operation string, mutated bool, budget time.Duration,
+	run func(context.Context) error,
+) {
+	s.inFlight.Add(1)
+	go func() {
+		defer s.inFlight.Done()
+		handlerCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+		defer cancel()
+		if err := run(handlerCtx); err != nil && err != errShutdown {
+			s.logErr(err)
+			s.answerFailedCommand(err, requestID)
+		}
+	}()
+	if requestID == "" {
+		return
+	}
+	// Deliberately not counted in inFlight: a graceful quit must not wait for a
+	// watchdog that only exists to answer a request, and a late write into a
+	// closed pipe is harmless.
+	go func() {
+		timer := time.NewTimer(budget + time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-timer.C:
+		}
+		// Mutated=true is honest here: for a write action the handler may have
+		// written before it stopped answering. `write` drops this if the handler
+		// answered in the meantime.
+		s.write(FrameResult(errorResult(requestID, actionTimeoutErr(operation, mutated))))
+	}()
+}
+
+func (s *Server) handleSafely(ctx context.Context, cmd *Command) (err error) {
+	requestID := cmd.RequestID()
+	defer func() {
+		panicked := recover()
+		if panicked == nil {
+			return
+		}
+		s.logErr(fmt.Errorf("command %s panicked: %v\n%s", cmd.Kind, panicked, debug.Stack()))
+		if !s.serviceMode {
+			return
+		}
+		if requestID != "" {
+			// `write` drops a second terminal frame for the same request, so this
+			// never doubles up; it must not pre-mark, or the frame it is about to
+			// send would look like the duplicate.
+			s.write(FrameResult(errorResult(requestID, panicErr(panicked))))
+			return
+		}
+		s.write(FrameProtocolError(ProtocolError{
+			ProtocolVersion: ServiceProtocolVersion,
+			Code:            "INTERNAL_PANIC",
+			Message:         "the engine hit an internal error running that command",
+		}))
+	}()
+	return s.handle(ctx, cmd)
+}
+
+// answerFailedCommand tells the app that a command died before it could publish
+// a result. The native client holds the mutation slot until a terminal frame
+// names its requestId, so a logged error alone left its sheet disabled with no
+// way out but a relaunch.
+func (s *Server) answerFailedCommand(err error, requestID string) {
+	if !s.serviceMode {
+		return
+	}
+	s.write(FrameProtocolError(ProtocolError{
+		ProtocolVersion: ServiceProtocolVersion,
+		Code:            "COMMAND_FAILED",
+		Message:         displaySafeMessage(err.Error()),
+		RequestID:       requestID,
+	}))
+}
+
+// rehydrateManagedBindings restores managed global routes after the app-owned
+// service stops its children at shutdown. Direct account routes are left
+// alone so startup cannot switch a user's shared native login.
+func (s *Server) rehydrateManagedBindings(ctx context.Context) error {
+	if s.Deps.Accounts == nil || s.Deps.Bindings == nil || s.Deps.Clients == nil || s.Deps.Providers == nil {
+		return nil
+	}
+	var errs []error
+	codexGlobalFailed := false
+	for _, clientID := range s.Deps.Clients.IDs() {
+		binding, err := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read %s binding: %w", clientID, err))
+			continue
+		}
+		if binding == nil {
+			continue
+		}
+		source := binding.Spec.Source
+		switch source.Kind {
+		case refs.KindAccount:
+			pv, err := s.Deps.Providers.Get(source.Provider)
+			if err != nil || pv == nil {
+				continue
+			}
+			account, err := s.Deps.Accounts.Get(ctx, source.Provider, source.Name)
+			if err != nil || account == nil {
+				continue
+			}
+			if routeKindForAccount(pv, clientID, source.Name, account.Proxy.Enabled) != "managed-account" {
+				continue
+			}
+		case refs.KindProxyHub:
+			// Hub children are stopped with the desktop service. Replaying the
+			// saved binding reattaches its stable default route and fresh token.
+		default:
+			continue
+		}
+		if err := s.reapplyBinding(ctx, clientID, binding, false); err != nil {
+			// One client's refusal must not hide the others: record it for the
+			// snapshot and keep restoring.
+			s.recordClientConfigIssue(clientID, err)
+			if clientID == "codex" {
+				codexGlobalFailed = true
+			}
+			errs = append(errs, fmt.Errorf("restore %s from %s: %w",
+				clientID, refs.DisplayRef(source), err))
+			continue
+		}
+		s.clearClientConfigIssue(clientID)
+	}
+	if err := s.rehydrateCodexProfiles(ctx); err != nil {
+		s.recordClientConfigIssue("codex", err)
+		errs = append(errs, err)
+	} else if !codexGlobalFailed {
+		s.clearClientConfigIssue("codex")
+	}
+	return errors.Join(errs...)
+}
+
+// rehydrateCodexProfiles restores profile-specific proxy and Hub credentials.
+// Native direct profiles need no service process and remain isolated from the
+// desktop login, so only routes that own a managed child are replayed.
+func (s *Server) rehydrateCodexProfiles(ctx context.Context) error {
+	if s.Deps.Activation == nil || s.Deps.Activation.ClientProfiles == nil {
+		return nil
+	}
+	profiles, err := s.Deps.Activation.ClientProfiles.ListContext(ctx, "codex")
+	if err != nil {
+		return fmt.Errorf("read Codex profiles: %w", err)
+	}
+	var errs []error
+	for _, named := range profiles {
+		source := named.Spec.Source
+		managed := source.Kind == refs.KindProxyHub || source.Kind == refs.KindAccountPool
+		if source.Kind == refs.KindAccount {
+			// Codex's own account is direct by default. Other account providers
+			// route through a managed proxy when paired with the Codex client.
+			managed = source.Provider != "codex" || named.Spec.TransportPolicy == "proxy"
+		}
+		if !managed {
+			continue
+		}
+		spec := named.Spec
+		plan, err := activation.PlanActivation(ctx, activation.Request{
+			Mode:         activation.ModeProfile,
+			Client:       "codex",
+			ProfileName:  named.Name,
+			ModelCatalog: s.sourceModelCatalog(ctx, source),
+		}, s.Deps.Activation, activation.Options{
+			ReapplySpec: &spec,
+			ReapplyProv: &bindings.Provenance{Kind: "client_profile_snapshot"},
+		})
+		if err == nil {
+			_, err = activation.Execute(ctx, plan, s.Deps.Activation, activation.ExecuteOptions{})
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("restore Codex profile %s from %s: %w",
+				named.Name, refs.DisplayRef(source), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 type scannedLine struct {
@@ -390,6 +830,11 @@ func (s *Server) Wait() { s.inFlight.Wait() }
 // the stream closes.
 func (s *Server) shutdown(_ context.Context) error {
 	ctx := context.Background()
+	s.stopOnce.Do(func() {
+		if s.stopCh != nil {
+			close(s.stopCh)
+		}
+	})
 	s.cancelMu.Lock()
 	for _, cancel := range s.cancellables {
 		cancel()
@@ -397,8 +842,11 @@ func (s *Server) shutdown(_ context.Context) error {
 	s.cancelMu.Unlock()
 	s.cancelPendingHostEffects()
 	// A graceful service exit cannot return while an operation can still emit
-	// a late terminal result. The native host owns the outer kill timeout.
-	s.inFlight.Wait()
+	// a late terminal result. The native host owns the outer kill timeout, and
+	// an adapter that ignores cancellation must not pin the process past it.
+	if !s.waitForInFlight(inflightShutdownWait) {
+		s.logErr(fmt.Errorf("shutdown: work still running after %s", inflightShutdownWait))
+	}
 	if s.Deps.ShutdownOwned != nil {
 		if err := s.Deps.ShutdownOwned(ctx); err != nil {
 			// Quit remains best-effort like the TypeScript supervisor. A verified
@@ -429,8 +877,10 @@ func (s *Server) refresh(ctx context.Context) error {
 	defer s.refreshMu.Unlock()
 	snap, err := s.buildSnapshot(ctx)
 	if err != nil {
+		s.snapshotDirty.Store(true)
 		return err
 	}
+	s.snapshotDirty.Store(false)
 	if s.serviceMode && s.snapshotSent {
 		s.write(FrameSnapshotEvent(SnapshotEvent{
 			ProtocolVersion: ServiceProtocolVersion,
@@ -457,16 +907,84 @@ func (s *Server) refreshUsage(ctx context.Context) error {
 }
 
 func (s *Server) write(line string) {
+	if s.serviceMode {
+		if prefix, _, _ := strings.Cut(line, "\t"); prefix == "result" || prefix == "protocol-error" {
+			// A terminal frame is the one answer a request gets. A handler that
+			// finishes after its watchdog, or after the panic recovery, must not
+			// add a second one: the host drops it, but it can only mislead.
+			if requestID := RequestIDFromLine(line); requestID != "" && s.markAnswered(requestID) {
+				s.logErr(fmt.Errorf("dropped a second terminal frame for %s", requestID))
+				return
+			}
+		}
+	}
 	if s.serviceMode && len(line) > MaxServiceFrameBytes {
+		// The oversized frame may be the only answer a request will ever get,
+		// so the replacement keeps its requestId: an unattributed rejection
+		// leaves that row spinning.
 		line = FrameProtocolError(ProtocolError{
 			ProtocolVersion: ServiceProtocolVersion,
 			Code:            "FRAME_TOO_LARGE",
 			Message:         "output frame exceeded the configured bound",
+			RequestID:       RequestIDFromLine(line),
 		})
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, _ = io.WriteString(s.Out, line+"\n")
+}
+
+// markAnswered records that a request has received its terminal frame and
+// reports whether it had one already. Two situations depend on it: a recovery
+// path must not answer a request twice (the host would show an internal error
+// after a success), and a duplicate command must not run its handler twice.
+func (s *Server) markAnswered(requestID string) bool {
+	if requestID == "" {
+		return false
+	}
+	s.answeredMu.Lock()
+	defer s.answeredMu.Unlock()
+	if _, seen := s.answered[requestID]; seen {
+		return true
+	}
+	if s.answered == nil {
+		s.answered = map[string]struct{}{}
+	}
+	s.answered[requestID] = struct{}{}
+	s.answeredOrder = append(s.answeredOrder, requestID)
+	// Bounded: only a duplicate of a recent command matters, and an unbounded
+	// map would grow for the life of an app session.
+	if len(s.answeredOrder) > maxAnsweredRequests {
+		oldest := s.answeredOrder[0]
+		s.answeredOrder = s.answeredOrder[1:]
+		delete(s.answered, oldest)
+	}
+	return false
+}
+
+// reserveRequest claims a requestId for one dispatch and reports whether another
+// dispatch already has it. A retried command must not run its handler twice;
+// unlike markAnswered this says nothing about whether a frame was written.
+func (s *Server) reserveRequest(requestID string) bool {
+	if requestID == "" {
+		return false
+	}
+	s.answeredMu.Lock()
+	defer s.answeredMu.Unlock()
+	if _, seen := s.reserved[requestID]; seen {
+		return true
+	}
+	if s.reserved == nil {
+		s.reserved = map[string]struct{}{}
+	}
+	s.reserved[requestID] = struct{}{}
+	s.reservedOrder = append(s.reservedOrder, requestID)
+	if len(s.reservedOrder) > maxAnsweredRequests {
+		oldest := s.reservedOrder[0]
+		s.reservedOrder = s.reservedOrder[1:]
+		delete(s.reserved, oldest)
+	}
+	return false
 }
 
 func (s *Server) logErr(err error) {
@@ -481,7 +999,24 @@ func (s *Server) currentRevision() int {
 	return s.revision
 }
 
-func (s *Server) actionHandler(id string) (func(context.Context) error, bool) {
+// actionOptions carries the request-scoped choices one invoke command made.
+//
+// It is a parameter rather than a context value on purpose: consent to replace
+// a client config AnyPick does not own is a security-relevant decision, and a
+// context value is silently lost the moment a service in the chain hands the
+// handler a detached context (`context.WithoutCancel`, a PostSwitch callback)
+// for good reasons of its own. Every handler takes it, so the compiler — not a
+// reviewer's memory — guarantees an action cannot run without seeing it.
+type actionOptions struct {
+	// AllowForeignConfig is the user's answer to a CLIENT_CONFIG_FOREIGN
+	// refusal. It is set only by invoke.allowForeignConfig and never persisted.
+	AllowForeignConfig bool
+}
+
+// actionHandler runs one action row the snapshot published.
+type actionHandler func(context.Context, actionOptions) error
+
+func (s *Server) actionHandler(id string) (actionHandler, bool) {
 	s.actionsMu.Lock()
 	defer s.actionsMu.Unlock()
 	if h, ok := s.actions[id]; ok {
@@ -495,38 +1030,311 @@ func (s *Server) actionHandler(id string) (func(context.Context) error, bool) {
 // persistent planner/executor — the desktop counterpart of invokeTrayAction's
 // app.bindingService.use(target.clientId, { with: target.source }). Route
 // actions must never mutate a provider's active account directly and never
-// succeed silently.
-func (s *Server) routeActivator(clientID string, source refs.Ref) func(context.Context) error {
-	return func(c context.Context) error { return s.activateRoute(c, clientID, source) }
+// succeed silently. Re-selecting the source a client already has re-applies the
+// stored spec, so model roles and the transport policy are not reset.
+//
+// Both branches forward the command's takeover consent. Dropping it on the
+// re-apply branch made the app's own "confirm the takeover" offer a dead end:
+// a client with a saved route plus a config the user pointed elsewhere always
+// resolves to the re-apply branch, so the refusal repeated forever.
+func (s *Server) routeActivator(clientID string, source refs.Ref) actionHandler {
+	return func(c context.Context, opts actionOptions) error {
+		if s.Deps.Bindings != nil {
+			if b, err := s.Deps.Bindings.GetGlobalContext(c, clientID); err == nil &&
+				b != nil && refs.SerializeRef(b.Spec.Source) == refs.SerializeRef(source) {
+				return s.reapplyBinding(c, clientID, b, opts.AllowForeignConfig)
+			}
+		}
+		return s.activateRouteWith(c, clientID, source, activateRouteOptions{
+			allowForeignConfig: opts.AllowForeignConfig,
+		})
+	}
+}
+
+type activateRouteOptions struct {
+	// restoreOnly rebuilds an already-configured route after a service
+	// restart. It must not run live model discovery, and it must not rewrite a
+	// native login the user may have changed since the binding was created.
+	restoreOnly bool
+	// allowForeignConfig is the user's consent to replace client settings
+	// AnyPick does not own (activateRouteOptions → activation.ExecuteOptions).
+	allowForeignConfig bool
 }
 
 func (s *Server) activateRoute(ctx context.Context, clientID string, source refs.Ref) error {
+	return s.activateRouteWith(ctx, clientID, source, activateRouteOptions{})
+}
+
+func (s *Server) activateRouteWith(ctx context.Context, clientID string, source refs.Ref, routeOpts activateRouteOptions) error {
 	if s.Deps.Activation == nil {
 		return anyerr.Newf("activation service is unavailable in this composition",
 			"ACTIVATION_UNAVAILABLE")
 	}
-	plan, err := activation.PlanActivation(ctx, activation.Request{
-		Mode:   activation.ModePersistent,
-		Client: clientID,
-		Source: &source,
-	}, s.Deps.Activation, activation.Options{})
+	// Model selection resolves per source, with provider defaults underneath
+	// (ADR-0028): explicit per-connection pins win, stored provider defaults
+	// fill the rest, and the engine default covers what neither names. If a
+	// borrowing client has no cached account/gateway catalog yet, warm that
+	// exact source before planning so its
+	// native config never receives a model from another connection.
+	modelCatalog := s.sourceModelCatalog(ctx, source)
+	if !routeOpts.restoreOnly {
+		if source.Kind == refs.KindGateway {
+			// A configured gateway default is useful for planning but does not prove
+			// that the endpoint's complete model list is current. Warm a cold gateway
+			// cache even when that default already exists.
+			s.warmRouteModelCatalog(ctx, clientID, source)
+			modelCatalog = s.sourceModelCatalog(ctx, source)
+		} else if len(modelCatalog) == 0 {
+			s.warmRouteModelCatalog(ctx, clientID, source)
+			modelCatalog = s.sourceModelCatalog(ctx, source)
+		}
+	}
+	req := activation.Request{
+		Mode:         activation.ModePersistent,
+		Client:       clientID,
+		Source:       &source,
+		ModelCatalog: modelCatalog,
+	}
+	// ZCode needs a model before it can even open its provider map. Use the
+	// account-scoped cache when available (dynamic models win), then let the
+	// activation planner use the provider-owned cold-start hint.
+	if model := s.routeDefaultModel(ctx, clientID, source); model != "" {
+		req.Model = model
+	}
+	plan, err := activation.PlanActivation(ctx, req, s.Deps.Activation,
+		activation.Options{SkipNativeAuthWrite: routeOpts.restoreOnly})
 	if err != nil {
 		return err
 	}
-	_, err = activation.Execute(ctx, plan, s.Deps.Activation, activation.ExecuteOptions{})
-	return err
+	// Consent precedence:
+	//   1. the user confirmed this exact command (invoke.allowForeignConfig
+	//      from the app, or --allow-foreign-config on the CLI);
+	//   2. a stale loopback value the adapter can prove is AnyPick's own
+	//      (client.Preflight owns it by shape, not by consent).
+	// Nothing else grants it. A re-apply of a saved binding does NOT: if the
+	// user pointed the client at their own endpoint since, the apply fails
+	// closed with CLIENT_CONFIG_FOREIGN and the start reports why instead of
+	// silently rewriting their login.
+	return s.executeRouteActivation(ctx, clientID, plan, routeOpts.allowForeignConfig)
+}
+
+// executeRouteActivation runs one route plan and keeps the snapshot's
+// client-config condition in step with the outcome.
+func (s *Server) executeRouteActivation(ctx context.Context, clientID string, plan *activation.Plan, takeover bool) error {
+	_, err := activation.Execute(ctx, plan, s.Deps.Activation, activation.ExecuteOptions{
+		AllowForeignConfig: takeover,
+	})
+	if err != nil {
+		// A refusal is current state, not just an alert the user can dismiss:
+		// the app keeps showing the route as active, and this is why it is not.
+		if isForeignConfigRefusal(err) {
+			s.recordClientConfigIssue(clientID, err)
+		}
+		return err
+	}
+	s.clearClientConfigIssue(clientID)
+	return nil
+}
+
+// isForeignConfigRefusal reports whether an activation was refused because the
+// client's live config holds values AnyPick does not own.
+func isForeignConfigRefusal(err error) bool {
+	var ae *anyerr.Error
+	return errors.As(err, &ae) && ae != nil && ae.Code == "CLIENT_CONFIG_FOREIGN"
+}
+
+func (s *Server) warmRouteModelCatalog(ctx context.Context, clientID string, source refs.Ref) {
+	if s == nil {
+		return
+	}
+	if source.Kind == refs.KindGateway {
+		if s.Deps.Profiles == nil {
+			return
+		}
+		pr, err := s.Deps.Profiles.GetContext(ctx, source.Name)
+		if err != nil || pr == nil {
+			return
+		}
+		_, cached := s.gatewayCatalogList(ctx, pr)
+		if !cached {
+			s.warmGatewayModelCatalogBestEffort(ctx, source.Name)
+		}
+		return
+	}
+	if source.Kind == refs.KindAccountPool {
+		if len(s.accountPoolCatalogList(ctx, source.Provider)) == 0 {
+			s.warmAccountPoolModelCatalog(ctx, source.Provider)
+		}
+		return
+	}
+	if source.Kind == refs.KindProxyHub {
+		s.warmAccountCatalogsForHub(ctx, source.Name)
+		return
+	}
+	if source.Kind != refs.KindAccount || s.discoveryService() == nil {
+		return
+	}
+	// Warm the exact source before planning so a cross-provider proxy binding
+	// (e.g. Claude on a Grok account) publishes its model options even when
+	// the client itself needs no default model. Native same-family routes
+	// (the client's own login, app's own picker) have no proxy catalog: the
+	// provider cannot proxy, so there is nothing to warm and no egress to spend.
+	if s.Deps.Providers != nil {
+		if pv, err := s.Deps.Providers.Get(source.Provider); err != nil || pv == nil || !pv.CanProxy() {
+			return
+		}
+	} else {
+		cad, err := s.Deps.Clients.Get(clientID)
+		if err != nil || cad == nil || cad.Capabilities() == nil ||
+			!cad.Capabilities().RequiresDefaultModel {
+			return
+		}
+	}
+	if len(s.accountCatalogList(ctx, source)) > 0 {
+		return
+	}
+	s.warmAccountModelCatalogBestEffort(ctx, source.Provider, source.Name)
+}
+
+func (s *Server) routeDefaultModel(ctx context.Context, clientID string, source refs.Ref) string {
+	if s == nil || s.Deps.Clients == nil {
+		return ""
+	}
+	cad, err := s.Deps.Clients.Get(clientID)
+	if err != nil || cad == nil || cad.Capabilities() == nil ||
+		!cad.Capabilities().RequiresDefaultModel {
+		return ""
+	}
+
+	// Re-applying the selected route must preserve the model already pinned on
+	// that binding. A route switch without one can then choose from discovery.
+	if s.Deps.Bindings != nil {
+		if binding, berr := s.Deps.Bindings.GetGlobalContext(ctx, clientID); berr == nil &&
+			binding != nil && refs.SerializeRef(binding.Spec.Source) == refs.SerializeRef(source) {
+			if model := primaryModelOf(binding.Spec); model != "" {
+				if source.Kind != refs.KindAccount && source.Kind != refs.KindAccountPool && source.Kind != refs.KindProxyHub {
+					return model
+				}
+				// A model pinned for this source remains valid only while the
+				// source-scoped catalog still publishes it. If entitlement or a
+				// proxy rollout changed, fall through to the current catalog.
+				models := s.sourceModelCatalog(ctx, source)
+				if len(models) == 0 || containsModel(models, model) {
+					return model
+				}
+			}
+		}
+	}
+
+	if source.Kind == refs.KindAccount || source.Kind == refs.KindAccountPool {
+		models := s.sourceModelCatalog(ctx, source)
+		if len(models) > 0 {
+			return models[0]
+		}
+		return s.providerFallbackDefaultModel(source.Provider)
+	}
+
+	if source.Kind == refs.KindProxyHub {
+		models := s.sourceModelCatalog(ctx, source)
+		if len(models) > 0 {
+			return models[0]
+		}
+		if s.Deps.Hub != nil {
+			if cfg, err := s.Deps.Hub.GetConfigContext(ctx, source.Name); err == nil && cfg != nil {
+				for _, src := range cfg.Sources {
+					if !src.IsEnabled() {
+						continue
+					}
+					pID := src.ProviderID
+					if p, ok := hub.PoolSourceProvider(src); ok {
+						pID = p
+					}
+					if m := s.providerFallbackDefaultModel(pID); m != "" {
+						return m
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) providerFallbackDefaultModel(providerID string) string {
+	if pol := catalog.Policy(providerID); pol != nil {
+		if def := strings.TrimSpace(pol.RoleDefaults["default"]); def != "" {
+			return def
+		}
+		for _, m := range pol.StaticFallback {
+			if m = strings.TrimSpace(m); m != "" {
+				return m
+			}
+		}
+	}
+	if s.Deps.Providers != nil {
+		if pv, err := s.Deps.Providers.Get(providerID); err == nil && pv != nil {
+			if c, ok := pv.(*provider.Compatible); ok && c != nil {
+				for _, m := range c.Def.Models {
+					if m = strings.TrimSpace(m); m != "" {
+						return m
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func containsModel(models []string, want string) bool {
+	for _, model := range models {
+		if model == want {
+			return true
+		}
+	}
+	return false
+}
+
+// accountSwitchAction returns the Accounts-pane handler that makes one saved
+// account current. Use commits the pointer, realigns the binding and starts the
+// target proxy; the PostSwitch reapply rewrites bound clients (WorkBuddy's
+// models.json and friends) before Use returns success. A failed reapply rolls
+// everything back, so the pane cannot show "work" while models.json still
+// points at the previous account's stopped proxy.
+func (s *Server) accountSwitchAction(providerID, name string) actionHandler {
+	return func(c context.Context, opts actionOptions) error {
+		_, err := s.Deps.Accounts.Use(c, providerID, name, accounts.UseOptions{
+			PostSwitch: func(pc context.Context) error {
+				// opts travels into the closure: the switch's post-step runs
+				// inside the accounts service, and reading consent back out of
+				// the context there would depend on that service never
+				// detaching it.
+				return s.reapplyClientsBoundTo(pc, refs.AccountRef(providerID, name),
+					opts.AllowForeignConfig)
+			},
+		})
+		return err
+	}
 }
 
 // reapplyClientsBoundTo rewrites every persistent client whose global binding
 // is this account. Starting a proxy from the Proxies pane does not go through
 // `use`, so without this the live token and ~/.claude/settings.json diverge
 // and Claude Code 401s until the next activation.
-func (s *Server) reapplyClientsBoundTo(ctx context.Context, source refs.Ref) error {
+//
+// The stored spec travels with the reapply: planning a fresh source request
+// would reset model roles and the transport policy (the TUI had the same bug).
+//
+// Consent is NOT implied here. A client config AnyPick wrote is recognised by
+// the adapter itself (a loopback proxy endpoint is AnyPick's own value), so the
+// stale-token repair still works; a config the user has since pointed at their
+// own endpoint is refused and reported as a degraded condition instead of being
+// overwritten.
+func (s *Server) reapplyClientsBoundTo(ctx context.Context, source refs.Ref, allowForeign bool) error {
 	if s.Deps.Activation == nil || s.Deps.Bindings == nil || s.Deps.Clients == nil {
 		return nil
 	}
 	want := refs.SerializeRef(source)
-	var errs []error
+	canUndo := s.Deps.Activation != nil && s.Deps.Activation.Runtime != nil
+	var recovery [][]string
 	for _, clientID := range s.Deps.Clients.IDs() {
 		b, err := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
 		if err != nil || b == nil {
@@ -535,11 +1343,79 @@ func (s *Server) reapplyClientsBoundTo(ctx context.Context, source refs.Ref) err
 		if refs.SerializeRef(b.Spec.Source) != want {
 			continue
 		}
-		if err := s.activateRoute(ctx, clientID, source); err != nil {
-			errs = append(errs, err)
+		var records []string
+		if canUndo {
+			records, err = s.Deps.Activation.Runtime.PrepareClientConfigRecovery(
+				clientID, fmt.Sprintf("reapply-%s-%d", clientID, time.Now().UnixNano()))
+			if err != nil {
+				return finishReapply(recovery, fmt.Errorf("%s: %w", clientID, err))
+			}
+		}
+		if err := s.reapplyBinding(ctx, clientID, b, allowForeign); err != nil {
+			s.recordClientConfigIssue(clientID, err)
+			cause := fmt.Errorf("%s: %w", clientID, err)
+			if !canUndo && len(recovery) > 0 {
+				return accounts.IncompleteClientRestore(cause)
+			}
+			return finishReapply(append(recovery, records), cause)
+		}
+		s.clearClientConfigIssue(clientID)
+		recovery = append(recovery, records)
+	}
+	return nil
+}
+
+// finishReapply puts client configs taken before this reapply back. A restore
+// failure is marked incomplete so the switch notice does not claim the
+// clients were returned to the previous account.
+func finishReapply(recovery [][]string, cause error) error {
+	var restoreErr error
+	for i := len(recovery) - 1; i >= 0; i-- {
+		if err := runtime.RestoreClientConfigRecovery(recovery[i]); err != nil {
+			restoreErr = errors.Join(restoreErr, err)
 		}
 	}
-	return errors.Join(errs...)
+	if restoreErr != nil {
+		return accounts.IncompleteClientRestore(errors.Join(cause, restoreErr))
+	}
+	return cause
+}
+
+// reapplyBinding re-plans one stored binding without touching the source, and
+// applies it with the caller's answer on taking over client settings AnyPick
+// does not own. The pinned model is kept while the cached source catalog still
+// publishes it; otherwise the spec falls back to an omitted selection so the
+// planner bootstraps from the current catalog.
+//
+// Consent is a parameter, not an inference: the startup restore, a user
+// confirmation from the app and the CLI flag are different callers with
+// different standing, and the old `false`-only wrapper just hid that the
+// re-apply branch was silently dropping it.
+func (s *Server) reapplyBinding(ctx context.Context, clientID string, b *bindings.Global, allowForeign bool) error {
+	catalog := s.sourceModelCatalog(ctx, b.Spec.Source)
+	specCopy := b.Spec
+	if model := primaryModelOf(b.Spec); model != "" && len(catalog) > 0 && !containsModel(catalog, model) {
+		specCopy.Model = bindings.OmittedModel()
+	}
+	plan, err := activation.PlanActivation(ctx, activation.Request{
+		Mode:         activation.ModePersistent,
+		Client:       clientID,
+		ModelCatalog: catalog,
+	}, s.Deps.Activation, activation.Options{
+		ReapplySpec: &specCopy,
+		ReapplyProv: &bindings.Provenance{
+			Kind:                   "global_binding_snapshot",
+			GlobalBindingUpdatedAt: b.UpdatedAt,
+		},
+		SkipNativeAuthWrite: true,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = activation.Execute(ctx, plan, s.Deps.Activation, activation.ExecuteOptions{
+		AllowForeignConfig: allowForeign,
+	})
+	return err
 }
 
 func (s *Server) handle(ctx context.Context, cmd *Command) error {
@@ -556,13 +1432,38 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 
 	case "cancel":
 		var p cancelPayload
+		// DecodeLine strictly validates every payload before dispatch, so a
+		// decode failure here is unreachable from the wire; an unreadable
+		// frame already got its protocol-error answer there. Nothing to look
+		// up means nothing to cancel either way.
 		_ = json.Unmarshal(cmd.Payload, &p)
 		s.cancelMu.Lock()
 		cancelFn, ok := s.cancellables[p.RequestID]
 		s.cancelMu.Unlock()
 		if ok {
 			cancelFn()
+			return nil
 		}
+		// The cancel may arrive before the handler it cancels: commands are
+		// dispatched off the loop, so the loop is free to read the cancel frame
+		// while the handler is still starting. Dropping it would leave the host
+		// waiting on an action the user already cancelled. Record it and let
+		// the registration honour it.
+		s.cancelMu.Lock()
+		if s.cancelLedger == nil {
+			s.cancelLedger = map[string]time.Time{}
+		}
+		s.cancelLedger[p.RequestID] = time.Now()
+		for id, at := range s.cancelLedger {
+			if time.Since(at) > cancelLedgerTTL {
+				delete(s.cancelLedger, id)
+				continue
+			}
+			if len(s.cancelLedger) > maxCancelLedger {
+				delete(s.cancelLedger, id)
+			}
+		}
+		s.cancelMu.Unlock()
 		return nil
 
 	case "invoke":
@@ -571,14 +1472,23 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 			return err
 		}
 		if p.Revision < s.currentRevision()-1 {
-			s.write(FrameResult(Result{Version: ProtocolVersion, RequestID: p.RequestID,
-				Status: "error", Message: "stale action"}))
+			s.write(FrameResult(errorResult(p.RequestID, anyerr.Newf(
+				"stale action", "STALE_ACTION",
+				anyerr.WithSuggestions("Refresh the app, then try again.")))))
+			return nil
+		}
+		if s.reserveRequest(p.RequestID) {
+			// A retried action must not run twice: the first answer already
+			// reached the host, and a second run would repeat its writes.
+			s.write(FrameResult(errorResult(p.RequestID, anyerr.Newf(
+				"That action was already applied.", "STATE_CONFLICT"))))
 			return nil
 		}
 		handler, ok := s.actionHandler(p.ActionID)
 		if !ok {
-			s.write(FrameResult(Result{Version: ProtocolVersion, RequestID: p.RequestID,
-				Status: "error", Message: "unknown action"}))
+			s.write(FrameResult(errorResult(p.RequestID, anyerr.Newf(
+				"unknown action", "UNKNOWN_ACTION",
+				anyerr.WithSuggestions("Refresh the app; the action may have been replaced.")))))
 			return nil
 		}
 		// Run the action off the main select loop so a long mutation does
@@ -586,31 +1496,49 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 		// handler runs with a background context so parent cancellation
 		// does not abandon the mutation mid-write.
 		s.inFlight.Add(1)
-		go func(reqID string, h func(context.Context) error) {
+		go func(reqID string, h actionHandler, opts actionOptions) {
 			defer s.inFlight.Done()
-			bgCtx := context.Background()
-			result := Result{Version: ProtocolVersion, RequestID: reqID, Status: "success"}
-			if err := h(bgCtx); err != nil {
-				result.Status = "error"
-				result.Message = err.Error()
-				if ae, ok := err.(*anyerr.Error); ok && ae.Mutated {
-					result.Message += " (state was partially changed — run doctor)"
+			// A panic inside a provider adapter is a bug, not a reason to take
+			// the user's proxies down with it: the recovered frame keeps the app
+			// usable and tells it what to do, while the engine log keeps the
+			// stack. The mutation may already have written, so the warning is
+			// mandatory — see Result.Fail's Mutated handling.
+			defer func() {
+				if panicked := recover(); panicked != nil {
+					s.logErr(fmt.Errorf("mutation %s panicked: %v\n%s", reqID, panicked, debug.Stack()))
+					s.write(FrameResult(errorResult(reqID, panicErr(panicked))))
 				}
+			}()
+			bgCtx, cancel := context.WithTimeout(context.Background(), DesktopActionTimeout)
+			defer cancel()
+			result := Result{Version: ProtocolVersion, RequestID: reqID, Status: "success"}
+			if err := h(bgCtx, opts); err != nil {
+				result = result.Fail(err)
 			}
 			s.write(FrameResult(result))
 			if err := s.refresh(bgCtx); err != nil && err != errShutdown {
 				s.logErr(err)
 			}
-		}(p.RequestID, handler)
+		}(p.RequestID, handler, actionOptions{AllowForeignConfig: p.AllowForeignConfig})
 		return nil
 
 	case "model-roles":
 		var p modelRolesPayload
-		_ = json.Unmarshal(cmd.Payload, &p)
-		err := s.applyModelRoles(ctx, p.ClientID, p.RoleActionIDs)
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return err
+		}
+		if p.Revision > 0 && p.Revision < s.currentRevision()-1 {
+			// Action ids are revision-scoped: resolving a stale one would apply
+			// model choices against a source the user no longer sees.
+			s.write(FrameResult(errorResult(p.RequestID, anyerr.Newf(
+				"the model list changed; refresh AnyPick and choose the models again",
+				"STALE_ACTION"))))
+			return nil
+		}
+		err := s.applyModelRoles(ctx, p.ClientID, p.RoleActionIDs, p.Scope)
 		res := Result{Version: ProtocolVersion, RequestID: p.RequestID}
 		if err != nil {
-			res.Status, res.Message = "error", err.Error()
+			res = res.Fail(err)
 		} else {
 			res.Status = "success"
 		}
@@ -622,7 +1550,9 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 
 	case "backup-inspect":
 		var p backupInspectPayload
-		_ = json.Unmarshal(cmd.Payload, &p)
+		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+			return err
+		}
 		preview, err := s.inspections.Inspect(s.Deps.Providers, p.RequestID, p.Path)
 		if err != nil {
 			reason := inspectionFailureReason(err)
@@ -641,6 +1571,9 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 	case "logs":
 		return s.handleLogs(ctx, cmd.Payload)
 
+	case "doctor":
+		return s.handleDoctor(ctx, cmd.Payload)
+
 	case "mutate":
 		return s.handleMutate(ctx, cmd.Payload)
 	}
@@ -654,8 +1587,18 @@ func (s *Server) handleLogs(ctx context.Context, payload json.RawMessage) error 
 	}
 	res := ProxyLogsResult{Version: ProtocolVersion, RequestID: p.RequestID,
 		ProxyID: p.ProviderID + "/" + p.Name, State: "not-running"}
-	st, err := s.Deps.Proxy.Status(p.ProviderID, p.Name)
-	running := err == nil && st != nil && st.Running
+	var running bool
+	if p.ProviderID == "proxy-hub" {
+		cfg, _ := s.hubConfigOrNil(ctx, p.Name)
+		port, host := 0, ""
+		if cfg != nil {
+			port, host = cfg.Port, cfg.Host
+		}
+		running, _ = s.hubLive(p.Name, port, host)
+	} else {
+		st, err := s.Deps.Proxy.Status(p.ProviderID, p.Name)
+		running = err == nil && st != nil && st.Running
+	}
 	if running {
 		res.State = "empty"
 	}
@@ -665,11 +1608,14 @@ func (s *Server) handleLogs(ctx context.Context, payload json.RawMessage) error 
 	// native app. A read failure reports "error" WITHOUT blanking the tail:
 	// the client keeps its last good text (L4). Only a successful read may
 	// replace it.
-	text, terr := s.Deps.Proxy.ProxyLogs(ctx, p.ProviderID, p.Name, p.Lines)
+	var text string
+	var terr error
 	if p.ProviderID == "proxy-hub" {
 		// Hub children log to runtime/hub/<name>/service.log, not an
 		// account runtime dir, so the account tail below would always miss.
 		text, terr = tailHubLog(s.Deps.Root, p.Name, p.Lines)
+	} else {
+		text, terr = s.Deps.Proxy.ProxyLogs(ctx, p.ProviderID, p.Name, p.Lines)
 	}
 	if terr != nil {
 		res.State = "error"
@@ -681,6 +1627,30 @@ func (s *Server) handleLogs(ctx context.Context, payload json.RawMessage) error 
 	return nil
 }
 
+func (s *Server) handleDoctor(ctx context.Context, payload json.RawMessage) error {
+	var request doctorPayload
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return err
+	}
+	report := doctor.DiagnoseInstallation(ctx, doctor.InstallationDeps{
+		Root:              s.Deps.Root,
+		Providers:         s.Deps.Providers,
+		Clients:           s.Deps.Clients,
+		Accounts:          s.Deps.Accounts,
+		Bindings:          s.Deps.Bindings,
+		Proxy:             s.Deps.Proxy,
+		Environment:       s.Deps.Environment,
+		PluginDiagnostics: s.Deps.PluginDiagnostics,
+	})
+	s.write(FrameDoctor(DoctorResult{
+		Version:   ProtocolVersion,
+		RequestID: request.RequestID,
+		Status:    report.Status,
+		Findings:  report.Findings,
+	}))
+	return nil
+}
+
 func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) error {
 	var m Mutate
 	if err := json.Unmarshal(payload, &m); err != nil {
@@ -689,91 +1659,121 @@ func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) erro
 	if m.Operation == "account-login" {
 		return s.handleAccountLogin(ctx, m)
 	}
-	result := Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success"}
-	switch m.Operation {
-	case "account-detect":
-		result = s.handleAccountDetect(m)
-	case "account-save-current":
-		result = s.handleAccountSaveCurrent(ctx, m)
-	case "gateway-create":
-		result = s.mutateGatewayCreate(ctx, m, result)
-	case "account-remove":
-		result = s.mutateAccountRemove(ctx, m, result)
-	case "account-save":
-		result = s.handleAccountSave(ctx, payload, m)
-	case "account-save-input":
-		result = s.handleAccountSaveInput(ctx, m)
-	case "account-edit":
-		result = s.handleAccountEdit(ctx, payload, m)
-	case "account-refresh":
-		result = s.mutateAccountRefresh(ctx, m, result)
-	case "gateway-remove":
-		result = s.mutateGatewayRemove(ctx, m, result)
-	case "gateway-edit":
-		result = s.mutateGatewayEdit(ctx, m, result)
-	case "account-clear":
-		result = s.handleAccountClear(ctx, m)
-	case "client-reset":
-		result = s.mutateClientReset(ctx, m, result)
-	case "account-import", "account-export", "account-backup-all",
-		"account-backup-export", "account-backup-import":
-		result = s.handleTransferOp(ctx, m)
-	case "gateway-test":
-		result = s.handleGatewayTest(ctx, m)
-	case "gateway-refresh":
-		result = s.handleGatewayRefresh(ctx, m)
-	case "hub-source-toggle":
-		result = s.handleHubSourceToggle(ctx, m)
-	case "proxy-stop-all", "proxy-restart-all":
-		result = s.mutateProxyStopAll(ctx, m, result)
-	case "setting-launch-at-login":
-		var terminal bool
-		if result, terminal = s.mutateLaunchAtLogin(ctx, m, result); terminal {
-			return nil
-		}
-	case "setting-auto-start-proxies":
-		result = s.mutateAutoStartProxies(ctx, m, result)
-	case "setting-show-quota":
-		result = s.mutateShowQuota(ctx, m, result)
-	case "setting-quota-guard":
-		result = s.mutateQuotaGuard(ctx, m, result)
-	default:
-		// Unknown operations must surface as structured errors, never crash
-		// or silently succeed (mirrors TS unknown-mutation handling).
-		result.Status = "error"
-		result.Message = fmt.Sprintf("unknown mutation operation %q", m.Operation)
+	if s.reserveRequest(m.RequestID) {
+		// A retried command must not be applied twice. The first answer already
+		// reached the host; a duplicate is reported rather than repeated.
+		s.write(FrameResult(errorResult(m.RequestID, anyerr.Newf(
+			"That action was already applied.", "STATE_CONFLICT"))))
+		return nil
+	}
+	result, answered := s.routeMutation(ctx, payload, m)
+	if !answered {
+		return nil
 	}
 	s.write(FrameResult(result))
 	if result.Status == "success" {
-		return s.refresh(ctx)
+		// The terminal frame is already out. A failed refresh must not become a
+		// second answer for the same requestId (the app turns it into an error
+		// toast over a success), so it is logged here and retried by the ticker
+		// like every other snapshot failure.
+		if err := s.refresh(ctx); err != nil {
+			s.logErr(fmt.Errorf("refresh after %s: %w", m.Operation, err))
+		}
 	}
 	return nil
 }
 
+// deriveGatewayEndpoint resolves the endpoint for account-derived providers
+// (GatewayInfo.RequiresAccountID) from the raw profile account id. Anything
+// else returns the typed endpoint untouched; provider lookup failures fail
+// closed so a typo'd provider id never silently becomes a custom endpoint.
+func deriveGatewayEndpoint(providers *provider.Registry, providerID, profile string) (string, error) {
+	if providers == nil {
+		return "", serviceUnavailableErr("providers")
+	}
+	pv, err := providers.Get(providerID)
+	if err != nil || pv == nil {
+		return "", anyerr.Newf("Unknown gateway provider \""+providerID+".",
+			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
+	deriver, ok := pv.(provider.GatewayEndpointDeriver)
+	if !ok {
+		return "", anyerr.Newf("gateway provider cannot derive an endpoint",
+			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
+	return deriver.DeriveGatewayEndpoint(profile)
+}
+
+// resolveGatewayCreateCredential derives the stored endpoint and headers
+// for one gateway-create mutation. grok's base is fixed and engine-supplied;
+// account-derived providers (Cloudflare) build the base URL from the account
+// id the UI collected instead of a typed URL; multi-gateway providers persist
+// the normalized gateway id under the generic "gatewayId" header key, which
+// the provider maps onto its wire header at resolve time. No provider id
+// branches here: everything provider-specific comes from capabilities.
+func (s *Server) resolveGatewayCreateCredential(m Mutate) (string, map[string]string, error) {
+	endpoint := m.Endpoint
+	if m.ProviderID == "grok" && endpoint == "" {
+		endpoint = "https://cli-chat-proxy.grok.com"
+	}
+	var headers map[string]string
+	var info *provider.GatewayInfo
+	if s.Deps.Providers != nil {
+		if pv, perr := s.Deps.Providers.Get(m.ProviderID); perr == nil && pv != nil {
+			if gi, ok := pv.(provider.GatewayInfoProvider); ok {
+				got := gi.GatewayInfo()
+				info = &got
+			}
+		}
+	}
+	if info != nil && info.RequiresAccountID {
+		derived, derr := deriveGatewayEndpoint(s.Deps.Providers, m.ProviderID, m.Profile)
+		if derr != nil {
+			return "", nil, derr
+		}
+		endpoint = derived
+	}
+	if info != nil && info.RequiresGatewayID {
+		var normalizer provider.GatewayIDNormalizer
+		if pv, perr := s.Deps.Providers.Get(m.ProviderID); perr == nil && pv != nil {
+			normalizer, _ = pv.(provider.GatewayIDNormalizer)
+		}
+		if normalizer == nil {
+			return "", nil, anyerr.Newf(
+				"gateway provider cannot validate gateway ids",
+				"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+		}
+		gatewayID, nerr := normalizer.NormalizeGatewayID(m.GatewayID)
+		if nerr != nil {
+			return "", nil, nerr
+		}
+		headers = map[string]string{"gatewayId": gatewayID}
+	}
+	return endpoint, headers, nil
+}
+
 func (s *Server) mutateGatewayCreate(ctx context.Context, m Mutate, result Result) Result {
 	if m.Name == "" || m.ProviderID == "" {
-		result.Status, result.Message = "error",
-			"gateway-create needs name and providerId"
+		result = result.Fail(payloadErr("gateway-create", "name and providerId"))
 		return result
 	}
 	// grok gateways authenticate with the live x.ai OIDC session shared
 	// with the account flow, so no API key is collected. Every other
 	// gateway (including gemini) carries its key in the profile.
 	needsKey := m.ProviderID != "grok"
-	if (needsKey && m.APIKey == "") || m.Endpoint == "" {
-		result.Status, result.Message = "error",
-			"gateway-create needs endpoint"+map[bool]string{true: " and apiKey", false: ""}[needsKey]
-		return result
-	}
 	if s.Deps.Profiles == nil {
-		result.Status, result.Message = "error", "profiles unavailable"
+		result = result.Fail(serviceUnavailableErr("profiles"))
 		return result
 	}
-	// grok's upstream base is fixed and engine-supplied; fall back to it
-	// when the UI sends no endpoint (providerSuppliesEndpoint).
-	endpoint := m.Endpoint
-	if m.ProviderID == "grok" && endpoint == "" {
-		endpoint = "https://cli-chat-proxy.grok.com"
+	endpoint, headers, cerr := s.resolveGatewayCreateCredential(m)
+	if cerr != nil {
+		result = result.Fail(cerr)
+		return result
+	}
+	if (needsKey && m.APIKey == "") || endpoint == "" {
+		result = result.Fail(payloadErr("gateway-create",
+			"endpoint"+map[bool]string{true: " and apiKey", false: ""}[needsKey]))
+		return result
 	}
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
 		_, err := s.Deps.Profiles.UpsertContext(c, profile.Runtime{
@@ -784,58 +1784,86 @@ func (s *Server) mutateGatewayCreate(ctx context.Context, m Mutate, result Resul
 				Endpoint:     endpoint,
 				DefaultModel: m.DefaultModel,
 			},
-			Secrets: profile.Secrets{APIKey: m.APIKey},
+			Secrets: profile.Secrets{APIKey: m.APIKey, Headers: headers},
 		})
 		return err
 	})
 	if err != nil {
-		result.Status, result.Message = "error", err.Error()
+		result = result.Fail(err)
+	} else {
+		// An explicit gateway creation is also an explicit model-discovery
+		// action. Warm before the next snapshot so its client pickers and native
+		// adapters see the endpoint's models, not the provider-wide fallback.
+		s.warmGatewayModelCatalogBestEffort(ctx, m.Name)
+		label := strings.TrimSpace(m.Label)
+		if label == "" {
+			label = m.Name
+		}
+		result.Message = fmt.Sprintf("Added gateway %s.", label)
 	}
 	return result
 }
 
 func (s *Server) mutateAccountRemove(ctx context.Context, m Mutate, result Result) Result {
 	if m.ProviderID == "" || m.Name == "" {
-		result.Status, result.Message = "error", "account-remove needs providerId and name"
+		result = result.Fail(payloadErr("account-remove", "providerId and name"))
 		return result
 	}
 	if err := s.Deps.Accounts.Delete(ctx, m.ProviderID, m.Name); err != nil {
-		result.Status, result.Message = "error", err.Error()
+		result = result.Fail(err)
+	} else {
+		result.Message = fmt.Sprintf("Removed account %s.", m.Name)
+		// An account row is the only thing Delete removes; hub sources and
+		// route pins that named it would otherwise rot into ghosts the
+		// snapshot hides and serving trips over. Prune them while the
+		// provider/name pair is still in hand.
+		if s.Deps.Hub != nil {
+			if pruned, perr := s.Deps.Hub.PruneAccount(ctx, m.ProviderID, m.Name); perr != nil {
+				s.logErr(fmt.Errorf("hub prune for %s/%s: %w", m.ProviderID, m.Name, perr))
+			} else if len(pruned) > 0 {
+				result.Message += fmt.Sprintf(" Hub references dropped: %s.", strings.Join(pruned, ", "))
+			}
+		}
 	}
 	return result
 }
 
 func (s *Server) mutateAccountRefresh(ctx context.Context, m Mutate, result Result) Result {
 	if m.ProviderID == "" || m.Name == "" {
-		result.Status, result.Message = "error", "account-refresh needs providerId and name"
+		result = result.Fail(payloadErr("account-refresh", "providerId and name"))
 		return result
 	}
 	if _, err := s.Deps.Accounts.RefreshSnapshot(ctx, m.ProviderID, m.Name); err != nil {
-		result.Status, result.Message = "error", err.Error()
-		if ae, ok := err.(*anyerr.Error); ok && ae.Code == "ACCOUNT_NOT_FOUND" {
-			result.Message = "account not found"
+		result = result.Fail(err)
+		if result.Code == "ACCOUNT_NOT_FOUND" {
+			result.Message = fmt.Sprintf("account not found: %s is no longer available. Refresh your accounts list or re-add it.", m.Name)
 		}
+	} else {
+		s.warmAccountModelCatalogBestEffort(ctx, m.ProviderID, m.Name)
+		result.Message = fmt.Sprintf("Refreshed models for %s.", m.Name)
 	}
 	return result
 }
 
 func (s *Server) mutateGatewayRemove(ctx context.Context, m Mutate, result Result) Result {
 	if s.Deps.Profiles == nil || m.Name == "" {
-		result.Status, result.Message = "error", "gateway-remove needs name"
+		result = result.Fail(payloadErr("gateway-remove", "name"))
 		return result
 	}
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
 		return s.Deps.Profiles.DeleteContext(c, m.Name)
 	})
 	if err != nil {
-		result.Status, result.Message = "error", err.Error()
+		result = result.Fail(err)
+	} else {
+		result.Message = fmt.Sprintf("Removed gateway %s.", m.Name)
 	}
 	return result
 }
 
 func (s *Server) mutateGatewayEdit(ctx context.Context, m Mutate, result Result) Result {
 	if s.Deps.Profiles == nil || m.Name == "" {
-		result.Status, result.Message = "error", "gateway-edit needs name"
+		result = result.Fail(payloadErr("gateway-edit", "name"))
 		return result
 	}
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.MutationScopeForRef(refs.GatewayRef(m.Name)), func(c context.Context) error {
@@ -844,7 +1872,7 @@ func (s *Server) mutateGatewayEdit(ctx context.Context, m Mutate, result Result)
 			return err
 		}
 		if existing == nil {
-			return anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND")
+			return anyerr.Newf(fmt.Sprintf("gateway not found: %s does not exist", m.Name), "GATEWAY_NOT_FOUND")
 		}
 		if m.Label != "" {
 			existing.Meta.Label = m.Label
@@ -862,22 +1890,43 @@ func (s *Server) mutateGatewayEdit(ctx context.Context, m Mutate, result Result)
 		return err
 	})
 	if err != nil {
-		result.Status, result.Message = "error", err.Error()
+		result = result.Fail(err)
+	} else {
+		s.warmGatewayModelCatalogBestEffort(ctx, m.Name)
+		label := strings.TrimSpace(m.Label)
+		if label == "" {
+			label = m.Name
+		}
+		result.Message = fmt.Sprintf("Updated gateway %s.", label)
 	}
 	return result
 }
 
 func (s *Server) mutateClientReset(ctx context.Context, m Mutate, result Result) Result {
-	cad, cerr := s.Deps.Clients.Get(m.Name)
+	clientID := strings.TrimSpace(m.Name)
+	if clientID == "" {
+		clientID = strings.TrimSpace(m.ProviderID)
+	}
+	cad, cerr := s.Deps.Clients.Get(clientID)
 	if cerr != nil {
-		result.Status, result.Message = "error", cerr.Error()
+		result = result.Fail(cerr)
 		return result
 	}
-	rerr := lock.WithMutationLock(ctx, s.Deps.Root, "client/"+cad.ID(), func(context.Context) error {
-		return cad.Reset()
+	rerr := lock.WithMutationLock(ctx, s.Deps.Root, "client/"+cad.ID(), func(c context.Context) error {
+		if err := cad.Reset(); err != nil {
+			return err
+		}
+		if s.Deps.Bindings != nil {
+			if err := s.Deps.Bindings.DeleteGlobalContext(c, cad.ID()); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if rerr != nil {
-		result.Status, result.Message = "error", rerr.Error()
+		result = result.Fail(rerr)
+	} else {
+		result.Message = fmt.Sprintf("Disconnected %s and restored native login.", designAppName(cad.ID()))
 	}
 	return result
 }
@@ -922,12 +1971,57 @@ func (s *Server) mutateProxyStopAll(ctx context.Context, m Mutate, result Result
 		}
 	}
 	if len(failed) > 0 {
-		result.Status, result.Message = "error", fmt.Sprintf("could not %s %d of %d proxies: %s",
-			infinitive, len(failed), attempted, strings.Join(failed, "; "))
+		result = result.Fail(anyerr.Newf(fmt.Sprintf("could not %s %d of %d proxies: %s",
+			infinitive, len(failed), attempted, strings.Join(failed, "; ")),
+			"PROXY_BULK_FAILED",
+			anyerr.WithMutated(true),
+			anyerr.WithSuggestions("Open Live Logs for the first proxy that failed.")))
 	} else if attempted == 0 {
 		result.Message = "no enabled proxies to " + infinitive
 	} else {
 		result.Message = fmt.Sprintf("%s %d of %d proxies", verb, attempted, attempted)
+	}
+	return result
+}
+
+func (s *Server) mutateProxyStartAll(ctx context.Context, result Result) Result {
+	// Account relays only. Proxy Hub is not an account; its row publishes a
+	// toggle action, and starting it here would ignore that action's catalog
+	// check. A proxy that is already running is left alone: this is not a toggle.
+	var failed []string
+	attempted := 0
+	enumerateCtx := context.WithoutCancel(ctx)
+	for _, providerID := range s.Deps.Providers.IDs() {
+		list, lerr := s.Deps.Accounts.List(enumerateCtx, providerID)
+		if lerr != nil {
+			continue
+		}
+		for _, acc := range list {
+			name := acc.Meta.Name
+			if st, serr := s.Deps.Proxy.StatusContext(enumerateCtx, providerID, name); serr == nil && st != nil && st.Running {
+				continue
+			}
+			attempted++
+			label := providerID + "/" + name
+			if _, err := s.Deps.Proxy.StartProxy(ctx, providerID, name); err != nil {
+				failed = append(failed, label+": "+err.Error())
+				continue
+			}
+			if err := s.reapplyClientsBoundTo(ctx, refs.AccountRef(providerID, name), false); err != nil {
+				failed = append(failed, label+": "+err.Error())
+			}
+		}
+	}
+	if len(failed) > 0 {
+		result = result.Fail(anyerr.Newf(fmt.Sprintf("could not start %d of %d proxies: %s",
+			len(failed), attempted, strings.Join(failed, "; ")),
+			"PROXY_BULK_FAILED",
+			anyerr.WithMutated(true),
+			anyerr.WithSuggestions("Open Live Logs for the first proxy that failed.")))
+	} else if attempted == 0 {
+		result.Message = "no stopped proxies to start"
+	} else {
+		result.Message = fmt.Sprintf("started %d of %d proxies", attempted, attempted)
 	}
 	return result
 }
@@ -939,14 +2033,14 @@ func (s *Server) mutateLaunchAtLogin(ctx context.Context, m Mutate, result Resul
 	effect := config.NewLaunchAtLoginEffect(m.Enabled)
 	if s.serviceMode {
 		if err := s.requestHostEffect(m, effect); err != nil {
-			result.Status, result.Message = "error", err.Error()
+			result = result.Fail(err)
 			return result, false
 		}
 		return result, true
 	}
 	payload, perr := json.Marshal(effect)
 	if perr != nil {
-		result.Status, result.Message = "error", perr.Error()
+		result = result.Fail(perr)
 		return result, false
 	}
 	result.Payload = payload
@@ -960,12 +2054,12 @@ func (s *Server) mutateLaunchAtLogin(ctx context.Context, m Mutate, result Resul
 
 func (s *Server) mutateAutoStartProxies(ctx context.Context, m Mutate, result Result) Result {
 	if s.Deps.Config == nil {
-		result.Status, result.Message = "error", "config service unavailable"
+		result = result.Fail(serviceUnavailableErr("config service"))
 		return result
 	}
 	_, uerr := s.Deps.Config.SetTrayPreference(ctx, "startEnabledProxies", m.Enabled)
 	if uerr != nil {
-		result.Status, result.Message = "error", uerr.Error()
+		result = result.Fail(uerr)
 		return result
 	}
 	if m.Enabled {
@@ -981,11 +2075,11 @@ func (s *Server) mutateAutoStartProxies(ctx context.Context, m Mutate, result Re
 
 func (s *Server) mutateShowQuota(ctx context.Context, m Mutate, result Result) Result {
 	if s.Deps.Config == nil {
-		result.Status, result.Message = "error", "config service unavailable"
+		result = result.Fail(serviceUnavailableErr("config service"))
 		return result
 	}
 	if _, qerr := s.Deps.Config.SetTrayPreference(ctx, "showQuota", m.Enabled); qerr != nil {
-		result.Status, result.Message = "error", qerr.Error()
+		result = result.Fail(qerr)
 	} else if m.Enabled {
 		result.Message = "Quota is visible."
 	} else {
@@ -996,15 +2090,18 @@ func (s *Server) mutateShowQuota(ctx context.Context, m Mutate, result Result) R
 
 func (s *Server) mutateQuotaGuard(ctx context.Context, m Mutate, result Result) Result {
 	if s.Deps.Config == nil {
-		result.Status, result.Message = "error", "config service unavailable"
+		result = result.Fail(serviceUnavailableErr("config service"))
 		return result
 	}
 	if _, gerr := s.Deps.Config.SetQuotaGuardEnabled(ctx, m.Enabled); gerr != nil {
-		result.Status, result.Message = "error", gerr.Error()
+		result = result.Fail(gerr)
 		return result
 	}
 	if rerr := s.restartRunningPools(ctx); rerr != nil {
-		result.Status, result.Message = "error", rerr.Error()
+		// The preference is stored; only the running pools did not pick it up.
+		result = result.Fail(anyerr.Wrapf(rerr,
+			"Saved the quota-guard setting, but running pools did not restart",
+			"POOL_RESTART_FAILED", anyerr.WithMutated(true)))
 		return result
 	}
 	if m.Enabled {
@@ -1015,22 +2112,201 @@ func (s *Server) mutateQuotaGuard(ctx context.Context, m Mutate, result Result) 
 	return result
 }
 
+// loginRejection is why a sign-in did not start.
+type loginRejection int
+
+const (
+	loginAccepted loginRejection = iota
+	loginRejectedDuplicate
+	loginRejectedCancelled
+)
+
+// registerLogin claims one sign-in. The entry must stay registered while the
+// attempt runs: deleting it up front makes a later `cancel` frame a no-op and
+// strands the run with no terminal result.
+func (s *Server) registerLogin(requestID string, cancel context.CancelFunc) loginRejection {
+	s.cancelMu.Lock()
+	_, exists := s.cancellables[requestID]
+	if exists {
+		s.cancelMu.Unlock()
+		cancel()
+		return loginRejectedDuplicate
+	}
+	if s.takeEarlyCancel(requestID) {
+		s.cancelMu.Unlock()
+		cancel()
+		return loginRejectedCancelled
+	}
+	s.cancellables[requestID] = cancel
+	s.cancelMu.Unlock()
+	return loginAccepted
+}
+
+// armLoginDeadline answers a sign-in that outlives the engine's backstop even if
+// the adapter ignores the context. Nothing else will: the host holds its mutation
+// slot on this request.
+func (s *Server) armLoginDeadline(
+	requestID, providerID string, runCtx context.Context, cancel context.CancelFunc, budget time.Duration,
+) {
+	s.inFlight.Add(1)
+	go func() {
+		defer s.inFlight.Done()
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		select {
+		case <-runCtx.Done():
+			return
+		case <-s.stopCh:
+			return
+		case <-timer.C:
+		}
+		cancel()
+		s.write(FrameResult(errorResult(requestID, loginTimeoutErr(providerID))))
+	}()
+}
+
+// takeEarlyCancel consumes a cancel that arrived before this request registered.
+// Callers hold cancelMu.
+func (s *Server) takeEarlyCancel(requestID string) bool {
+	if _, cancelled := s.cancelLedger[requestID]; !cancelled {
+		return false
+	}
+	delete(s.cancelLedger, requestID)
+	return true
+}
+
+// loginOutcome maps one sign-in attempt to its terminal result. A failed
+// sign-in is compensated before this point, so the code and suggestions are
+// what tell the user which login method or source to fix.
+func loginOutcome(requestID string, login accounts.LoginResult, err error) Result {
+	result := Result{Version: ProtocolVersion, RequestID: requestID, Status: "success"}
+	switch {
+	case err == nil:
+		result.Message = fmt.Sprintf("Signed in with %s and saved %s/%s.",
+			login.Method.Label, login.Account.Provider, login.Account.Name)
+	case errors.Is(err, context.Canceled):
+		result = result.Cancel("Sign-in cancelled.")
+	default:
+		var ae *anyerr.Error
+		if errors.As(err, &ae) && ae.Code == "PROVIDER_LOGIN_CANCELLED" {
+			result = result.Cancel("Sign-in cancelled.")
+		} else {
+			result = result.Fail(err)
+		}
+	}
+	return result
+}
+
+// routeMutation runs one mutation and returns its terminal result. It holds the
+// dispatch table only; publishing and the follow-up refresh stay in handleMutate
+// so a failure path can never write two answers for one request.
+func (s *Server) routeMutation(ctx context.Context, payload json.RawMessage, m Mutate) (Result, bool) {
+	result := Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success"}
+	switch m.Operation {
+	case "account-detect":
+		result = s.handleAccountDetect(m)
+	case "account-save-current":
+		result = s.handleAccountSaveCurrent(ctx, m)
+	case "gateway-create":
+		result = s.mutateGatewayCreate(ctx, m, result)
+	case "account-remove":
+		result = s.mutateAccountRemove(ctx, m, result)
+	case "account-save":
+		result = s.handleAccountSave(ctx, payload, m)
+	case "account-save-input":
+		result = s.handleAccountSaveInput(ctx, m)
+	case "account-save-auth":
+		result = s.handleAccountSaveAuth(ctx, m)
+	case "account-edit":
+		result = s.handleAccountEdit(ctx, payload, m)
+	case "account-refresh":
+		result = s.mutateAccountRefresh(ctx, m, result)
+	case "gateway-remove":
+		result = s.mutateGatewayRemove(ctx, m, result)
+	case "gateway-edit":
+		result = s.mutateGatewayEdit(ctx, m, result)
+	case "account-clear":
+		result = s.handleAccountClear(ctx, m)
+	case "client-reset":
+		result = s.mutateClientReset(ctx, m, result)
+	case "codex-profile-save":
+		result = s.mutateCodexProfileSave(ctx, m, result)
+	case "codex-profile-update":
+		result = s.mutateCodexProfileUpdate(ctx, m, result)
+	case "codex-profile-sync":
+		result = s.mutateCodexProfileSync(ctx, m, result)
+	case "codex-profile-remove":
+		result = s.mutateCodexProfileRemove(ctx, m, result)
+	case "account-import", "account-export", "account-backup-all",
+		"account-backup-export", "account-backup-import", "account-backup-forget":
+		result = s.handleTransferOp(ctx, m)
+	case "gateway-test":
+		result = s.handleGatewayTest(ctx, m)
+	case "gateway-refresh":
+		result = s.handleGatewayRefresh(ctx, m)
+	case "hub-source-toggle":
+		result = s.handleHubSourceToggle(ctx, m)
+	case "hub-rotation":
+		result = s.handleHubRotation(ctx, m)
+	case "proxy-stop-all", "proxy-restart-all":
+		result = s.mutateProxyStopAll(ctx, m, result)
+	case "proxy-start-all":
+		result = s.mutateProxyStartAll(ctx, result)
+	case "proxy-token":
+		result = s.mutateProxyToken(ctx, m, result)
+	case "setting-launch-at-login":
+		var terminal bool
+		if result, terminal = s.mutateLaunchAtLogin(ctx, m, result); terminal {
+			// The host effect owns the answer; nothing may be written here.
+			return result, false
+		}
+	case "setting-auto-start-proxies":
+		result = s.mutateAutoStartProxies(ctx, m, result)
+	case "setting-show-quota":
+		result = s.mutateShowQuota(ctx, m, result)
+	case "setting-quota-guard":
+		result = s.mutateQuotaGuard(ctx, m, result)
+	default:
+		// Unknown operations must surface as structured errors, never crash
+		// or silently succeed (mirrors TS unknown-mutation handling).
+		result = result.Fail(anyerr.Newf(
+			fmt.Sprintf("unknown mutation operation %q", m.Operation),
+			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage)))
+	}
+	return result, true
+}
+
+// errorResult is the one place a desktop mutation turns a Go error into a
+// terminal frame. It delegates to Fail so the code, the CLI's suggestions and
+// the partial-mutation warning survive the boundary instead of collapsing into
+// err.Error().
 func errorResult(requestID string, err error) Result {
-	return Result{Version: ProtocolVersion, RequestID: requestID, Status: "error", Message: err.Error()}
+	return Result{Version: ProtocolVersion, RequestID: requestID, Status: "success"}.Fail(err)
 }
 
 // detectLiveSource ports the TypeScript capability fallback: a source-aware
 // provider owns the scoped probe; every other provider has one live store and
-// uses DetectLive. Only display identity crosses the desktop boundary.
+// uses DetectLive. The identity is returned raw: clear/save match it against
+// stored accounts, and sanitizing here would make an opaque-but-legitimate
+// identity miss its account. Callers sanitize only what they display.
 func detectLiveSource(pv provider.Provider, sourceID string) (provider.LiveAuthStatus, error) {
+	var (
+		live provider.LiveAuthStatus
+		err  error
+	)
 	if sourceID != "" {
-		if scoped, ok := pv.(interface {
-			DetectLiveSource(string) (provider.LiveAuthStatus, error)
-		}); ok {
-			return scoped.DetectLiveSource(sourceID)
+		if scoped, ok := pv.(provider.SourceScopedProvider); ok {
+			live, err = scoped.DetectLiveSource(sourceID)
+		} else {
+			live, err = pv.DetectLive()
 		}
+	} else {
+		live, err = pv.DetectLive()
 	}
-	return pv.DetectLive()
+	if err != nil {
+		return provider.LiveAuthStatus{}, err
+	}
+	return live, nil
 }
 
 func (s *Server) handleAccountDetect(m Mutate) Result {
@@ -1045,14 +2321,15 @@ func (s *Server) handleAccountDetect(m Mutate) Result {
 	}
 	if !live.Present {
 		return errorResult(m.RequestID,
-			anyerr.Newf("No live "+pv.Name()+" login was found.", "NO_LIVE_AUTH"))
+			anyerr.Newf("No live "+pv.Name()+" login was found.", "NO_LIVE_AUTH",
+				anyerr.WithSuggestions("Sign in to your "+pv.Name()+" account in the official application or browser, then try detecting again.")))
 	}
 	location := pv.Name()
 	if sourceID := strings.TrimSpace(m.SourceID); sourceID != "" {
 		location = sourceID
 	}
-	if live.Identity != "" {
-		result.Message = fmt.Sprintf("Detected %s in %s.", live.Identity, location)
+	if identity := displaySafeIdentity(live.Identity); identity != "" {
+		result.Message = fmt.Sprintf("Detected %s in %s.", identity, location)
 	} else {
 		result.Message = fmt.Sprintf("Detected the current login in %s.", location)
 	}
@@ -1061,8 +2338,7 @@ func (s *Server) handleAccountDetect(m Mutate) Result {
 
 func (s *Server) handleAccountSave(ctx context.Context, raw json.RawMessage, m Mutate) Result {
 	if m.ProviderID == "" || m.Name == "" {
-		return errorResult(m.RequestID,
-			anyerr.Newf("account-save needs providerId and name", "INVALID_USAGE"))
+		return errorResult(m.RequestID, payloadErr("account-save", "providerId and name"))
 	}
 	var saved store.Meta
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.ProviderScope(m.ProviderID),
@@ -1077,7 +2353,12 @@ func (s *Server) handleAccountSave(ctx context.Context, raw json.RawMessage, m M
 					accounts.CredentialInput{Kind: "api-key", Secret: apiKey, Profile: profileID},
 					m.Overwrite)
 			} else {
-				saved, saveErr = s.Deps.Accounts.Save(c, m.ProviderID, m.Name, m.Overwrite)
+				if source := strings.TrimSpace(m.SourceID); source != "" {
+					saved, saveErr = s.Deps.Accounts.SaveWithSource(
+						c, m.ProviderID, m.Name, source, m.Overwrite)
+				} else {
+					saved, saveErr = s.Deps.Accounts.Save(c, m.ProviderID, m.Name, m.Overwrite)
+				}
 			}
 			if saveErr != nil {
 				return saveErr
@@ -1101,23 +2382,23 @@ func (s *Server) handleAccountSave(ctx context.Context, raw json.RawMessage, m M
 	if label == "" {
 		label = saved.Name
 	}
+	s.warmAccountModelCatalogBestEffort(ctx, m.ProviderID, saved.Name)
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: "Saved " + label + "."}
 }
 
 // handleAccountSaveInput saves a typed credential (API key / plan key) for a
-// compatible vendor — the native Add Account sheet's key path. Unlike
+// provider-declared credential product — the native Add Account sheet's key path. Unlike
 // account-save there is no live login to snapshot; unlike gateway-create the
 // credential lands in the account store, so apps can be bound to it. An empty
 // profile selects the kind's first endpoint profile.
 func (s *Server) handleAccountSaveInput(ctx context.Context, m Mutate) Result {
 	if m.ProviderID == "" || m.Name == "" || m.Kind == "" || strings.TrimSpace(m.APIKey) == "" {
 		return errorResult(m.RequestID,
-			anyerr.Newf("account-save-input needs providerId, name, kind and apiKey", "INVALID_USAGE"))
+			payloadErr("account-save-input", "providerId, name, kind and apiKey"))
 	}
 	if s.Deps.Accounts == nil {
-		return errorResult(m.RequestID,
-			anyerr.Newf("accounts service unavailable", "SERVICE_UNAVAILABLE"))
+		return errorResult(m.RequestID, serviceUnavailableErr("accounts service"))
 	}
 	profileID := strings.TrimSpace(m.Profile)
 	if profileID == "" {
@@ -1136,8 +2417,54 @@ func (s *Server) handleAccountSaveInput(ctx context.Context, m Mutate) Result {
 	if label == "" {
 		label = meta.Name
 	}
+	s.warmAccountModelCatalogBestEffort(ctx, m.ProviderID, meta.Name)
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: "Saved " + meta.Provider + "/" + label + "."}
+}
+
+// handleAccountSaveAuth reads a provider auth document from a regular file
+// the host staged. The document is not a protocol field: a Codex auth.json
+// with several JWTs does not fit in MaxCommandBytes. The file is the host's,
+// including a CLI path the user still needs, so this handler never deletes it.
+func (s *Server) handleAccountSaveAuth(ctx context.Context, m Mutate) Result {
+	if m.ProviderID == "" || m.Path == "" {
+		return errorResult(m.RequestID, payloadErr("account-save-auth", "providerId and path"))
+	}
+	if s.Deps.Accounts == nil {
+		return errorResult(m.RequestID, serviceUnavailableErr("accounts service"))
+	}
+	info, err := os.Lstat(m.Path)
+	if err != nil {
+		return errorResult(m.RequestID, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errorResult(m.RequestID, anyerr.Newf(
+			"Auth JSON must be a regular file.",
+			"INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage)))
+	}
+	f, err := os.Open(m.Path)
+	if err != nil {
+		return errorResult(m.RequestID, err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, int64(provider.MaxAuthPasteBytes)+1))
+	if err != nil {
+		return errorResult(m.RequestID, err)
+	}
+	metas, err := s.Deps.Accounts.SavePastedAuth(ctx, m.ProviderID, m.Name, raw, m.Overwrite)
+	if err != nil {
+		return errorResult(m.RequestID, err)
+	}
+	names := make([]string, len(metas))
+	for i, meta := range metas {
+		names[i] = meta.Provider + "/" + meta.Name
+		s.warmAccountModelCatalogBestEffort(ctx, meta.Provider, meta.Name)
+	}
+	message := "Saved " + strings.Join(names, ", ") + "."
+	if len(metas) > 1 {
+		message = fmt.Sprintf("Saved %d accounts: %s.", len(metas), strings.Join(names, ", "))
+	}
+	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success", Message: message}
 }
 
 // defaultCredentialProfile resolves an omitted endpoint profile to the kind's
@@ -1149,15 +2476,13 @@ func (s *Server) defaultCredentialProfile(providerID, kind string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	definer, ok := pv.(interface {
-		Definition() *provider.CompatibleDefinition
-	})
-	if !ok || definer.Definition() == nil {
+	definer, ok := pv.(provider.CredentialDefinitionsProvider)
+	if !ok {
 		return "", anyerr.Newf(
 			"Provider "+providerID+" does not accept credential inputs. Sign in natively and use save.",
 			"UNSUPPORTED_CREDENTIAL_INPUT")
 	}
-	for _, c := range definer.Definition().Credentials {
+	for _, c := range definer.CredentialDefinitions() {
 		if c.Kind == kind {
 			if len(c.Profiles) == 0 {
 				break
@@ -1172,8 +2497,7 @@ func (s *Server) defaultCredentialProfile(providerID, kind string) (string, erro
 
 func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result {
 	if m.ProviderID == "" {
-		return errorResult(m.RequestID,
-			anyerr.Newf("account-save-current needs providerId", "INVALID_USAGE"))
+		return errorResult(m.RequestID, payloadErr("account-save-current", "providerId"))
 	}
 	pv, err := s.Deps.Providers.Get(m.ProviderID)
 	if err != nil {
@@ -1194,7 +2518,8 @@ func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result 
 				return nameErr
 			}
 			var saveErr error
-			saved, saveErr = s.Deps.Accounts.Save(c, m.ProviderID, name, true)
+			saved, saveErr = s.Deps.Accounts.SaveWithSource(c, m.ProviderID, name,
+				strings.TrimSpace(m.SourceID), true)
 			return saveErr
 		})
 	if err != nil {
@@ -1204,6 +2529,7 @@ func (s *Server) handleAccountSaveCurrent(ctx context.Context, m Mutate) Result 
 	if label == "" {
 		label = saved.Name
 	}
+	s.warmAccountModelCatalogBestEffort(ctx, m.ProviderID, saved.Name)
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: "Saved " + label + "."}
 }
@@ -1247,8 +2573,7 @@ func (s *Server) currentSaveName(ctx context.Context, providerID, requested stri
 
 func (s *Server) handleAccountEdit(ctx context.Context, raw json.RawMessage, m Mutate) Result {
 	if m.ProviderID == "" || m.Name == "" {
-		return errorResult(m.RequestID,
-			anyerr.Newf("account-edit needs providerId and name", "INVALID_USAGE"))
+		return errorResult(m.RequestID, payloadErr("account-edit", "providerId and name"))
 	}
 	var edited store.Meta
 	err := lock.WithMutationLock(ctx, s.Deps.Root, refs.ProviderScope(m.ProviderID),
@@ -1283,29 +2608,16 @@ func (s *Server) handleAccountEdit(ctx context.Context, raw json.RawMessage, m M
 
 func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 	if m.ProviderID == "" {
-		return errorResult(m.RequestID,
-			anyerr.Newf("account-clear needs providerId", "INVALID_USAGE"))
+		return errorResult(m.RequestID, payloadErr("account-clear", "providerId"))
 	}
 	pv, err := s.Deps.Providers.Get(m.ProviderID)
 	if err != nil {
 		return errorResult(m.RequestID, err)
 	}
 	sourceID := strings.TrimSpace(m.SourceID)
-	var clear func() error
-	if sourceID != "" {
-		if scoped, ok := pv.(interface{ ClearLiveSource(string) error }); ok {
-			clear = func() error { return scoped.ClearLiveSource(sourceID) }
-		}
-	}
-	if clear == nil {
-		if clearer, ok := pv.(provider.LiveClearer); ok {
-			clear = clearer.ClearLive
-		}
-	}
-	if clear == nil {
-		return errorResult(m.RequestID, anyerr.Newf(
-			fmt.Sprintf("Provider %q does not support clearing live auth.", m.ProviderID),
-			"STASH_UNSUPPORTED"))
+	clear, cerr := resolveClearer(pv, sourceID, m.ProviderID)
+	if cerr != nil {
+		return errorResult(m.RequestID, cerr)
 	}
 	var live provider.LiveAuthStatus
 	var backedUpTo string
@@ -1317,6 +2629,12 @@ func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 			if detectErr != nil || !live.Present {
 				return detectErr
 			}
+			if policy, ok := pv.(provider.LiveClearPolicy); ok && !policy.CanClearLive(live.Source) {
+				return anyerr.Newf(
+					pv.Name()+" login is owned by the external application and cannot be signed out safely.",
+					"STASH_UNSUPPORTED",
+					anyerr.WithSuggestions(fmt.Sprintf("Open %s settings to sign out directly.", pv.Name())))
+			}
 			name, matched, nameErr := s.stashSaveName(c, m.ProviderID, live)
 			if nameErr != nil {
 				return nameErr
@@ -1327,7 +2645,14 @@ func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 					"STASH_BACKUP_FAILED")
 			}
 			backedUpTo, matchedByIdentity = name, matched
-			return clear()
+			if cerr := clear(); cerr != nil {
+				// The back-up snapshot is on disk: the user must be told the
+				// state changed even though the action failed.
+				return anyerr.Wrapf(cerr,
+					"Saved the live login but could not clear it", "CLEAR_FAILED",
+					anyerr.WithMutated(true))
+			}
+			return nil
 		})
 	if err != nil {
 		return errorResult(m.RequestID, err)
@@ -1348,6 +2673,21 @@ func (s *Server) handleAccountClear(ctx context.Context, m Mutate) Result {
 	}
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: message}
+}
+
+func resolveClearer(pv provider.Provider, sourceID, providerID string) (func() error, error) {
+	if sourceID != "" {
+		if scoped, ok := pv.(interface{ ClearLiveSource(string) error }); ok {
+			return func() error { return scoped.ClearLiveSource(sourceID) }, nil
+		}
+	}
+	if clearer, ok := pv.(provider.LiveClearer); ok {
+		return clearer.ClearLive, nil
+	}
+	return nil, anyerr.Newf(
+		fmt.Sprintf("Provider %q does not support clearing live auth.", providerID),
+		"STASH_UNSUPPORTED",
+		anyerr.WithSuggestions(fmt.Sprintf("Sign out directly within the %s application or browser.", pv.Name())))
 }
 
 func (s *Server) stashSaveName(ctx context.Context, providerID string,
@@ -1400,26 +2740,13 @@ func sameIdentity(a, b string) bool {
 }
 
 func (s *Server) handleGatewayRefresh(ctx context.Context, m Mutate) Result {
-	if s.Deps.Profiles == nil || s.Deps.Accounts == nil || m.Name == "" {
-		return errorResult(m.RequestID,
-			anyerr.Newf("gateway-refresh needs an available profile and name", "INVALID_USAGE"))
+	if s.Deps.Profiles == nil || m.Name == "" {
+		return errorResult(m.RequestID, payloadErr("gateway-refresh", "an available profile and name"))
 	}
-	pr, err := s.Deps.Profiles.GetContext(ctx, m.Name)
+	models, err := s.refreshGatewayModelCatalog(ctx, m.Name)
 	if err != nil {
 		return errorResult(m.RequestID, err)
 	}
-	if pr == nil {
-		return errorResult(m.RequestID, anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND"))
-	}
-	discoveryService := &discovery.Service{
-		Root: s.Deps.Root, Cache: s.Deps.ModelCache,
-	}
-	models := discoveryService.List(ctx, discovery.Request{
-		ProviderID: pr.Meta.Provider,
-		Endpoint:   pr.Meta.Endpoint,
-		APIKey:     pr.Secrets.APIKey,
-		Refresh:    true,
-	})
 	return Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success",
 		Message: fmt.Sprintf("Refreshed %s: %d models.", m.Name, len(models.Models))}
 }
@@ -1433,36 +2760,53 @@ func jsonFieldPresent(raw json.RawMessage, field string) bool {
 	return ok
 }
 
+// recoverLoginPanic is deferred by the sign-in goroutine. A panic anywhere in
+// the OAuth child, the provider adapter or the credential write must still
+// publish one terminal frame: the sheet disables itself until a result for its
+// requestId arrives, so a silent panic stranded it — and, unhandled, the whole
+// service with it.
+func (s *Server) recoverLoginPanic(requestID string) {
+	if panicked := recover(); panicked != nil {
+		s.logErr(fmt.Errorf("login %s panicked: %v\n%s", requestID, panicked, debug.Stack()))
+		s.write(FrameResult(errorResult(requestID, panicErr(panicked))))
+	}
+}
+
 // handleAccountLogin runs the browser sign-in off the main loop with a
 // cancellable context registered under its requestId. Cancellation must reach
 // the OAuth child while the login is still awaiting it, and a cancelled run
 // must publish exactly one terminal result — "cancelled", never a late success.
 func (s *Server) handleAccountLogin(_ context.Context, m Mutate) error {
-	fail := func(message string) {
-		s.write(FrameResult(Result{Version: ProtocolVersion, RequestID: m.RequestID,
-			Status: "error", Message: message}))
+	fail := func(err error) {
+		s.write(FrameResult(errorResult(m.RequestID, err)))
 	}
 	if m.ProviderID == "" || m.MethodID == "" {
-		fail("account-login needs providerId and methodId")
+		fail(payloadErr("account-login", "providerId and methodId"))
 		return nil
 	}
 	if s.Deps.Accounts == nil {
-		fail("accounts service unavailable")
+		fail(serviceUnavailableErr("accounts service"))
 		return nil
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
-	s.cancelMu.Lock()
-	if _, exists := s.cancellables[m.RequestID]; exists {
-		s.cancelMu.Unlock()
-		fail("requestId is already in flight")
-		cancel()
+	loginDeadline := s.loginDeadline()
+	switch s.registerLogin(m.RequestID, cancel) {
+	case loginRejectedDuplicate:
+		fail(anyerr.Newf("requestId is already in flight", "STATE_CONFLICT",
+			anyerr.WithSuggestions("Wait for the sign-in already running, or cancel it first.")))
+		return nil
+	case loginRejectedCancelled:
+		// Nothing was started and nothing changed, so the terminal frame is the
+		// whole answer; no snapshot is needed.
+		s.write(FrameResult(Result{Version: ProtocolVersion, RequestID: m.RequestID,
+			Status: "success"}.Cancel("Sign-in cancelled.")))
 		return nil
 	}
-	s.cancellables[m.RequestID] = cancel
-	s.cancelMu.Unlock()
+	s.armLoginDeadline(m.RequestID, m.ProviderID, runCtx, cancel, loginDeadline)
 	s.inFlight.Add(1)
 	go func() {
 		defer s.inFlight.Done()
+		defer s.recoverLoginPanic(m.RequestID)
 		// The entry MUST stay registered while Login runs — deleting it up
 		// front makes the later `cancel` frame a no-op and strands this run
 		// with no terminal result. Unregister only once the login finished.
@@ -1473,33 +2817,34 @@ func (s *Server) handleAccountLogin(_ context.Context, m Mutate) error {
 			cancel()
 		}()
 
-		result := Result{Version: ProtocolVersion, RequestID: m.RequestID, Status: "success"}
-		login, err := s.Deps.Accounts.Login(runCtx, m.ProviderID, accounts.LoginOptions{
+		attemptCtx, cancelAttempt := context.WithTimeout(runCtx, loginDeadline)
+		defer cancelAttempt()
+		attempt := s.loginAttempt
+		if attempt == nil {
+			attempt = s.Deps.Accounts.Login
+		}
+		login, err := attempt(attemptCtx, m.ProviderID, accounts.LoginOptions{
 			MethodID: strings.TrimSpace(m.MethodID),
 			Source:   strings.TrimSpace(m.SourceID),
 			Name:     strings.TrimSpace(m.Name),
 			Label:    strings.TrimSpace(m.Label),
 		})
-		switch {
-		case err == nil:
-			result.Message = fmt.Sprintf("Signed in with %s and saved %s/%s.",
-				login.Method.Label, login.Account.Provider, login.Account.Name)
-		case errors.Is(err, context.Canceled):
-			result.Status = "cancelled"
-		default:
-			var ae *anyerr.Error
-			if errors.As(err, &ae) && ae.Code == "PROVIDER_LOGIN_CANCELLED" {
-				result.Status = "cancelled"
-			} else {
-				result.Status = "error"
-				result.Message = err.Error()
-			}
-		}
+		result := loginOutcome(m.RequestID, login, err)
+		// The sheet has been waiting on this frame; publish it before the
+		// best-effort warm (up to 8s) and the snapshot refresh.
 		s.write(FrameResult(result))
-		if result.Status == "success" {
-			if rerr := s.refresh(context.Background()); rerr != nil && rerr != errShutdown {
-				s.logErr(rerr)
-			}
+		if err == nil {
+			// Login has just committed the snapshot, so warm the account-scoped
+			// catalog before the next snapshot. A denied or transient model probe
+			// must not turn a successful sign-in into a failure.
+			s.warmAccountModelCatalogBestEffort(context.Background(),
+				login.Account.Provider, login.Account.Name)
+		}
+		// Refresh for every terminal outcome. A failed login is compensated
+		// before this point, and the native sheet needs the restored live source
+		// immediately so its fallback action is truthful.
+		if rerr := s.refresh(context.Background()); rerr != nil && rerr != errShutdown {
+			s.logErr(rerr)
 		}
 	}()
 	return nil
@@ -1531,10 +2876,34 @@ func (s *Server) snapshotModelRoleTargets() map[string]modelRoleTarget {
 // The submitted map is role id → *action id*, never a model id: every model
 // the host may choose was published as an opaque id in the snapshot, and this
 // resolves those ids back to (client, source, model) before planning — the
+// storeProviderModelRoles persists one provider-scope save. Split out of
+// applyModelRoles so the command handler stays under the long-function gate.
+func (s *Server) storeProviderModelRoles(
+	ctx context.Context, source *refs.Ref, modelRoles map[string]string,
+) error {
+	if s.Deps.Bindings == nil {
+		return anyerr.Newf("activation service is unavailable in this composition",
+			"ACTIVATION_UNAVAILABLE")
+	}
+	key := bindings.ModelRolesProviderKey(*source)
+	if key == "" {
+		return anyerr.Newf("this connection has no provider to save defaults for",
+			"INVALID_SELECTION")
+	}
+	return s.Deps.Bindings.SetProviderModelRoles(ctx, key, modelRoles)
+}
+
 // same rule as src/tray/model-role-actions.ts. Nothing the host sends is
 // trusted past the id, so a hand-written model id cannot reach activation.
-func (s *Server) applyModelRoles(ctx context.Context, clientID string, roleActionIDs map[string]string) error {
-	if roleActionIDs["default"] == "" {
+//
+// Scope selects where the choice lands. "connection" (default, historical)
+// pins this connection. "provider" stores the choice as the provider default
+// and re-resolves this connection against it, so one setting covers every
+// account of the provider. An empty map on the connection scope clears the
+// pins (reset to provider-or-engine default); the default-model requirement
+// only applies when something is actually being pinned.
+func (s *Server) applyModelRoles(ctx context.Context, clientID string, roleActionIDs map[string]string, scope string) error {
+	if len(roleActionIDs) > 0 && roleActionIDs["default"] == "" {
 		return anyerr.Newf("choose a Default model before applying model settings",
 			"INVALID_SELECTION")
 	}
@@ -1564,11 +2933,41 @@ func (s *Server) applyModelRoles(ctx context.Context, clientID string, roleActio
 		}
 		modelRoles[role] = target.ModelID
 	}
+	if len(roleActionIDs) == 0 {
+		// Reset (and provider-default clear): nothing was picked, so there
+		// is no source to resolve from the selection. Fall back to the
+		// client's current binding; without one there is nothing to clear
+		// or re-resolve.
+		if s.Deps.Bindings == nil {
+			return anyerr.Newf("activation service is unavailable in this composition",
+				"ACTIVATION_UNAVAILABLE")
+		}
+		binding, berr := s.Deps.Bindings.GetGlobalContext(ctx, clientID)
+		if berr != nil {
+			return berr
+		}
+		if binding == nil {
+			return anyerr.Newf("this app has no connection to reset",
+				"INVALID_SELECTION")
+		}
+		src := binding.Spec.Source
+		source = &src
+	}
+	if scope == "provider" {
+		// Store first, then plan without roles so the fresh-source branch
+		// copies them back as inherited pins (marker "provider") instead of
+		// stamping this save as a per-connection customization.
+		if err := s.storeProviderModelRoles(ctx, source, modelRoles); err != nil {
+			return err
+		}
+		modelRoles = nil
+	}
 	plan, err := activation.PlanActivation(ctx, activation.Request{
-		Mode:       activation.ModePersistent,
-		Client:     clientID,
-		Source:     source,
-		ModelRoles: modelRoles,
+		Mode:         activation.ModePersistent,
+		Client:       clientID,
+		Source:       source,
+		ModelRoles:   modelRoles,
+		ModelCatalog: s.sourceModelCatalog(ctx, *source),
 	}, s.Deps.Activation, activation.Options{})
 	if err != nil {
 		return err
