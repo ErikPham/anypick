@@ -1,8 +1,9 @@
 # ADR-0025: A global OS credential store needs a reachable test seam (CRED-01)
 
-- Status: proposed (2026-09-18)
-- Provenance: found by the review audit of 2026-09-17. Independent review
-  outstanding — see Consequences.
+- Status: accepted (2026-10-02)
+- Provenance: found by the review audit of 2026-09-17. Independent review of
+  the trust-boundary change was completed in the architecture must-fix pass
+  (2026-10-02).
 
 ## Context
 
@@ -67,7 +68,7 @@ to independent judgment, and it is the reason that layer is not ceremony.
   `go test` binary — including those that never install `guardAntigravityKeyring`
   — cannot reach the real Keychain by default. Per-binary guards (Decision §2–3)
   remain for recording that the mirror was consulted.
-- **Residual, and the reason this stays proposed:** §7 puts a change to a trust
-  boundary on the High-risk route, which requires an independent context. The
-  author cannot supply that for their own change, so this record stays
-  **proposed** until one reviews it.
+- **Review residual closed:** the composition-root Keychain no-op seam landed
+  under independent review in the architecture must-fix pass; this ADR is
+  accepted. Per-binary consultation guards (Decision §2–3) remain the evidence
+  that activation paths still reach the mirror.
