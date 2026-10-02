@@ -31,6 +31,10 @@ immutable once accepted.
 | [0022](0022-bindings-coordinator-scopes.md) | `bindings.Store` carries the data `Root` and self-locks every persisted mutation through the coordinator by resource scope; correctness no longer depends on the caller locking. (CONC-03) | accepted |
 | [0023](0023-lease-heartbeat-ttl.md) | A lease stays alive by heartbeat (`HeartbeatInterval=15s`, `LeaseExpiry=2m`); reaping is a PID *veto* plus a failed instance echo, never a PID verdict. (PROC-02) | accepted, amends [0003](0003-process-lease-ownership.md) |
 | [0024](0024-pool-ring-total-deadline.md) | A pool ring has one pre-commit deadline budget (`DefaultPoolRingDeadline=2m`); a committed stream is never cut, and budget exhaustion returns `504 upstream_timeout`. (POOL-01) | accepted |
+| [0025](0025-global-credential-store-test-seam.md) | The OS credential store is global, so the write seam is exported and every test binary that drives activation installs its own guard — which asserts it was consulted. (CRED-01) | proposed |
+| [0026](0026-pool-rotation-and-all-cooling.md) | `round-robin` rotates a pool ring over its eligible members, and has one hub-wide counterpart that spreads each model across the accounts that can serve it; a fully cooled ring attempts the soonest-to-recover member and passes the vendor's verdict through instead of refusing locally. (POOL-02) | accepted, amends [0024](0024-pool-ring-total-deadline.md) |
+| [0027](0027-action-outcome-contract.md) | Every app action ends in exactly one attributed terminal outcome: the engine names the request it refuses, bounds and contains every command, and the host settles each row from the frame that owns it. (DESK-01) | accepted |
+| [0028](0028-provider-model-role-defaults.md) | Model roles resolve explicit pins → provider defaults → engine default; the planner copies defaults into fresh bindings and `model-roles` gains connection/provider scope plus reset. (MODEL-01) | accepted |
 
 ## Writing a new one
 

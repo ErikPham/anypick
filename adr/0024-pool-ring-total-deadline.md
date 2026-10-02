@@ -1,7 +1,7 @@
 # ADR-0024: Single pre-commit deadline budget for a pool ring (POOL-01)
 
 - Status: accepted (2026-09-07)
-- Task: G0 decision #5 (SYSTEM_ARCHITECTURE_2026-09-07.md §6)
+- Task: G0 decision #5 (that plan was consolidated into docs/history/ARCHITECTURE_AND_ROADMAP_2026-09-08.md)
 
 ## Context
 
