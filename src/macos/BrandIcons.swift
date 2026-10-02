@@ -21,12 +21,16 @@ struct DesignProviderIcon: View {
           .resizable()
           .interpolation(.high)
           .scaledToFit()
-          .foregroundStyle(.primary)
+          .foregroundStyle(
+            image.isTemplate
+              ? DesignBrandAsset.tint(for: provider, dark: colorScheme == .dark)
+              : .primary
+          )
           .frame(width: size, height: size)
       } else {
         Image(systemName: fallbackSymbol)
           .symbolRenderingMode(.hierarchical)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(DesignBrandAsset.tint(for: provider, dark: colorScheme == .dark))
           .frame(width: size, height: size)
       }
     }
@@ -109,11 +113,12 @@ struct DesignProviderPicker: NSViewRepresentable {
       item.representedObject = option.id
       item.toolTip = option.detail
       item.isEnabled = option.enabled
-      if let image = DesignBrandAsset.image(for: option.id, pointSize: iconSize, dark: dark) {
+      let iconProvider = option.iconID ?? option.id
+      if let image = DesignBrandAsset.image(for: iconProvider, pointSize: iconSize, dark: dark) {
         image.size = NSSize(width: iconSize, height: iconSize)
         item.image = image
       } else if let symbol = NSImage(
-        systemSymbolName: DesignBrandAsset.fallbackSymbol(for: option.id),
+        systemSymbolName: DesignBrandAsset.fallbackSymbol(for: iconProvider),
         accessibilityDescription: option.label
       ) {
         // Vendors without a bundled mark (compatible API providers and custom
@@ -142,6 +147,105 @@ struct DesignProviderPicker: NSViewRepresentable {
   }
 }
 
+/// Native candidate routing pop-up. Bridges NSPopUpButton to render real brand icons
+/// on menu items and on the button face, avoiding SwiftUI's SF-symbol-only restriction.
+struct DesignCandidatePicker: NSViewRepresentable {
+  let candidates: [DesignRoutingCandidate]
+  @Binding var selection: String?
+  var placeholder: String? = nil
+  var iconSize: CGFloat = 14
+  var accessibilityIdentifier: String = "model-routing.picker"
+  var onSelect: ((DesignRoutingCandidate) -> Void)? = nil
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(self)
+  }
+
+  func makeNSView(context: Context) -> NSPopUpButton {
+    let button = NSPopUpButton(frame: .zero, pullsDown: false)
+    button.controlSize = .small
+    button.font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small))
+    button.autoenablesItems = false
+    button.setContentHuggingPriority(.required, for: .horizontal)
+    button.setContentCompressionResistancePriority(.required, for: .horizontal)
+    button.target = context.coordinator
+    button.action = #selector(Coordinator.selectCandidate(_:))
+    button.setAccessibilityIdentifier(accessibilityIdentifier)
+    return button
+  }
+
+  func updateNSView(_ button: NSPopUpButton, context: Context) {
+    context.coordinator.parent = self
+    button.isEnabled = context.environment.isEnabled
+    button.removeAllItems()
+    let dark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+
+    if let placeholder {
+      let placeholderItem = NSMenuItem(title: placeholder, action: nil, keyEquivalent: "")
+      placeholderItem.representedObject = nil
+      placeholderItem.isEnabled = false
+      button.menu?.addItem(placeholderItem)
+    }
+
+    for candidate in candidates {
+      let title = hubConflictCandidateLabel(candidate)
+      let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+      item.representedObject = candidate.id
+      item.toolTip = candidate.detail.isEmpty ? nil : candidate.detail
+
+      if let image = DesignBrandAsset.image(for: candidate.provider, pointSize: iconSize, dark: dark) {
+        let icon = image.copy() as? NSImage ?? image
+        icon.size = NSSize(width: iconSize, height: iconSize)
+        item.image = icon
+      } else if let symbol = NSImage(
+        systemSymbolName: DesignBrandAsset.fallbackSymbol(for: candidate.provider),
+        accessibilityDescription: title
+      ) {
+        let icon = symbol.copy() as? NSImage ?? symbol
+        icon.size = NSSize(width: iconSize, height: iconSize)
+        icon.isTemplate = true
+        item.image = icon
+      }
+      button.menu?.addItem(item)
+    }
+
+    if let selection,
+       let match = button.itemArray.first(where: { ($0.representedObject as? String) == selection }) {
+      button.select(match)
+    } else if let placeholderItem = button.itemArray.first(where: { $0.representedObject == nil }) {
+      button.select(placeholderItem)
+    }
+
+    button.sizeToFit()
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
+    nsView.intrinsicContentSize
+  }
+
+  final class Coordinator: NSObject {
+    var parent: DesignCandidatePicker
+
+    init(_ parent: DesignCandidatePicker) {
+      self.parent = parent
+    }
+
+    @objc func selectCandidate(_ sender: NSPopUpButton) {
+      guard let selectedID = sender.selectedItem?.representedObject as? String else {
+        if parent.placeholder != nil {
+          parent.selection = nil
+        }
+        return
+      }
+      parent.selection = selectedID
+      if let candidate = parent.candidates.first(where: { $0.id == selectedID }) {
+        parent.onSelect?(candidate)
+      }
+    }
+  }
+}
+
+
 extension DesignBrandAsset {
   static func image(for provider: String, pointSize: CGFloat, dark: Bool) -> NSImage? {
     image(named: candidateFiles(for: provider, dark: dark), pointSize: pointSize)
@@ -161,7 +265,7 @@ extension DesignBrandAsset {
       return dark
         ? ["openai-mark-dark.png", "openai-mark-light.png", "openai.svg"]
         : ["openai-mark-light.png", "openai-mark-dark.png", "openai.svg"]
-    case "gemini", "google", "geminicli", "antigravity", "googleaipro":
+    case "gemini", "google", "googlegemini", "geminicli", "antigravity", "googleaipro":
       // Official 2025 icon (blue→lavender gradient) first; the white
       // single-fill mark stays as fallback.
       return ["gemini-icon-2025.svg", "gemini-mark-v2.png", "gemini-mark.png", "googlegemini.svg"]
@@ -188,11 +292,17 @@ extension DesignBrandAsset {
       // Zen/Go rows share OpenCode's own mark: they are OpenCode products,
       // not third-party vendors.
       return ["opencode.svg"]
+    case "commandcode", "command-code":
+      return ["commandcode.svg"]
+    case "cline":
+      // Verified robot mark (single near-black fill): template-tints per
+      // appearance like the other monochrome vendor marks.
+      return ["cline.svg"]
     case "deepseek":
       return ["deepseek.svg"]
     case "kimi", "moonshot":
       return ["kimi.svg"]
-    case "zai", "glm":
+    case "zai", "glm", "zaiglm":
       return ["zai.svg"]
     case "qwen", "dashscope":
       return ["qwen.svg"]
@@ -257,26 +367,61 @@ enum DesignBrandAsset {
     switch normalize(provider) {
     case "claude", "anthropic", "claudecode": "brain.head.profile"
     case "codex", "codexcli", "openai": "terminal.fill"
-    case "gemini", "google", "geminicli", "antigravity", "googleaipro": "sparkle"
+    case "gemini", "google", "googlegemini", "geminicli", "antigravity", "googleaipro": "sparkle"
     case "kiro", "personalbuilder": "shippingbox.fill"
     case "openrouter": "network"
     case "grok", "xai": "sparkles"
     case "opencode": "chevron.left.forwardslash.chevron.right"
+    case "commandcode", "command-code": "terminal.fill"
+    case "proxyhub", "hub": "point.3.connected.trianglepath.dotted"
+    case "ark", "volcenginearkbyteplusmodelark": "bolt.horizontal.circle.fill"
+    case "cerebras": "waveform.path.ecg"
+    case "fireworks": "flame.fill"
+    case "groq", "groqcloud", "groqcloudnativeresponses": "bolt.fill"
+    case "siliconflow": "waveform"
+    case "stepfun": "figure.walk"
+    case "together", "togetherai": "person.2.fill"
+    case "tokenhub", "tencentcloudtokenhub": "key.fill"
+    case "hunyuan": "circle.hexagongrid.fill"
+    case "modelscope": "square.stack.3d.up.fill"
+    case "nvidia", "nvidianim": "cpu"
+    case "doubao", "bytedance": "rectangle.3.group.fill"
+    case "qwen", "dashscope": "character.textbox"
+    case "mistral": "wind"
+    case "minimax": "waveform.path"
+    case "kimi", "moonshot": "moon.fill"
+    case "mimo", "xiaomi": "circle.grid.3x3.fill"
+    case "zai", "glm", "zaiglm": "z.circle.fill"
+    case "deepseek": "bubble.left.and.bubble.right.fill"
+    case "cloudflare", "cloudflareaigateway": "cloud.fill"
     // Full-color app icons ship in Resources/icons; anything else here is a
-    // monochrome mark, so an unbundled row degrades to the same glyph.
+    // monochrome mark, so an unbundled row still gets a provider-specific
+    // semantic glyph instead of making every provider look like a server.
     case "zcode": "curlybraces"
+    // Terminal agent harnesses with no bundled mark yet.
+    case "pi": "terminal"
+    case "omp": "keyboard"
+    // Subscription source with no bundled mark: card over the server rack.
+    case "cline": "creditcard.fill"
     // Briefcase only when the bundled workbuddy-mark.png is absent.
     case "workbuddy", "codebuddy": "briefcase.fill"
     default: "server.rack"
     }
   }
 
+  private static let imageCache = NSCache<NSString, NSImage>()
+
   static func image(named names: [String], pointSize: CGFloat) -> NSImage? {
+    let cacheKey = "\(names.joined(separator: ","))@\(pointSize)" as NSString
+    if let cached = imageCache.object(forKey: cacheKey) {
+      return cached
+    }
     for name in names {
       for url in searchURLs(name) {
         if let image = NSImage(contentsOf: url) {
           image.size = NSSize(width: pointSize * 2, height: pointSize * 2)
           image.isTemplate = isTemplateMark(name)
+          imageCache.setObject(image, forKey: cacheKey)
           return image
         }
       }
@@ -292,7 +437,7 @@ enum DesignBrandAsset {
   /// mark renders black in Light Mode until it is listed here.
   private static let fullColorMarks: Set<String> = [
     "claude-mark-orange.svg", "deepseek.svg", "doubao.svg",
-    "gemini-icon-2025.svg", "hunyuan.svg", "mimo.svg", "minimax.svg",
+    "commandcode.svg", "gemini-icon-2025.svg", "hunyuan.svg", "mimo.svg", "minimax.svg",
     "mistral.svg", "modelscope.svg", "nvidia.svg", "qwen.svg",
   ]
 
@@ -317,11 +462,40 @@ enum DesignBrandAsset {
   }
 
   static func normalize(_ value: String) -> String {
-    let provider = value.split(separator: ":", maxSplits: 1).first.map(String.init) ?? value
-    return provider.lowercased()
-      .replacingOccurrences(of: " ", with: "")
-      .replacingOccurrences(of: "-", with: "")
-      .replacingOccurrences(of: "_", with: "")
+    let stripped = value.hasPrefix("provider/") ? String(value.dropFirst(9)) : value
+    let provider = stripped.split(separator: ":", maxSplits: 1).first.map(String.init) ?? stripped
+    return provider.lowercased().filter { $0.isLetter || $0.isNumber }
+  }
+
+  /// Template assets need an explicit semantic tint. Without one, an icon
+  /// loaded through NSImage inherits the secondary label color from the Form
+  /// row and every provider collapses into the same washed-out gray mark.
+  static func tint(for provider: String, dark: Bool) -> Color {
+    switch normalize(provider) {
+    case "claude", "anthropic", "claudecode":
+      return Color(red: 0.96, green: 0.40, blue: 0.22)
+    case "gemini", "google", "googlegemini", "geminicli", "antigravity", "googleaipro":
+      return Color(red: 0.55, green: 0.62, blue: 1.0)
+    case "deepseek":
+      return Color(red: 0.35, green: 0.53, blue: 1.0)
+    case "zai", "glm", "zaiglm", "zcode":
+      return dark ? Color.white : Color.black
+    case "grok", "xai":
+      return dark ? Color.white : Color.black
+    case "openai", "codex", "codexcli":
+      // OpenAI's mark is black on light and white on dark. The teal tint
+      // invented a brand color and read as washed out next to the full-color
+      // marks (Gemini, Claude).
+      return dark ? Color.white : Color.black
+    case "opencode", "opencodego", "opencodezen":
+      return dark ? Color.white : Color.black
+    case "cline":
+      return dark ? Color.white : Color.black
+    case "openrouter":
+      return Color(red: 0.72, green: 0.46, blue: 1.0)
+    default:
+      return Color(nsColor: .labelColor)
+    }
   }
 
   private static func searchURLs(_ file: String) -> [URL] {

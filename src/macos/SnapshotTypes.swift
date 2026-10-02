@@ -47,6 +47,11 @@ struct ProxySnapshot: Decodable, Identifiable {
   let toggleActionId: String
   let restartActionId: String
   let testActionId: String?
+  let rotateActionId: String?
+  let apiKey: String?
+  /// True when a copy can ask the service for the bearer. Absent on a helper
+  /// that still puts the secret in apiKey; production ignores that secret.
+  let hasToken: Bool?
 }
 
 struct ManagedAccountSnapshot: Decodable, Identifiable {
@@ -74,6 +79,13 @@ struct HubSourceSnapshot: Decodable, Identifiable {
   let status: String?
   let modelCount: Int?
   let warning: String?
+  /// Rotation row: this source value ("pool:<provider>") is served by the
+  /// provider's account ring instead of a single account.
+  let rotates: Bool?
+  let accountCount: Int?
+  /// True when the source value is a pool ("pool:<provider>"): the row carries
+  /// its own label and detail, because there is no account to resolve.
+  let poolSource: Bool?
 }
 
 struct HubConflictCandidateSnapshot: Decodable, Identifiable {
@@ -138,7 +150,30 @@ struct ClientModelConfigSnapshot: Decodable, Identifiable {
   let roles: [ClientModelRoleSnapshot]
   let defaultModel: String?
   let modelRoles: [String: String]
+  /// Where the pins came from: "explicit" (this connection), "provider"
+  /// (inherited default), or absent (engine default / legacy explicit pins).
+  let modelRolesSource: String?
   let options: [ClientModelOptionSnapshot]
+}
+
+struct CodexProfileSourceSnapshot: Decodable, Identifiable, Equatable {
+  var id: String { sourceId }
+  let sourceId: String
+  let kind: String?
+  let label: String
+  let detail: String
+  let selected: Bool
+  let models: [String]
+}
+
+struct CodexProfileSnapshot: Decodable, Identifiable, Equatable {
+  var id: String { name }
+  let name: String
+  let sourceId: String
+  let sourceLabel: String
+  let modelId: String
+  let transportPolicy: String
+  let launchCommand: String
 }
 
 struct GatewaySnapshot: Decodable, Identifiable {
@@ -158,6 +193,20 @@ struct ProviderLoginMethodSnapshot: Decodable, Identifiable {
   let preferred: Bool
   let available: Bool
   let unavailableReason: String?
+  let sourceID: String?
+  let sourceLabel: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case label
+    case detail
+    case provenance
+    case preferred
+    case available
+    case unavailableReason
+    case sourceID = "sourceId"
+    case sourceLabel
+  }
 }
 
 struct AccountProviderSnapshot: Decodable, Identifiable {
@@ -174,8 +223,13 @@ struct AccountProviderSnapshot: Decodable, Identifiable {
   /// Provider can wipe the live app login so a second account can sign in.
   let canClear: Bool?
   /// Typed credential products (API keys / plan keys) this provider accepts
-  /// through account-save-input. Empty for native-only providers.
+  /// through account-save-input. Native providers may expose these alongside
+  /// their local-login path.
   let credentialKinds: [ProviderCredentialKindSnapshot]?
+  /// The provider can save its own auth file from pasted JSON.
+  /// `var` with a default: a `let` default is skipped by synthesized Decodable,
+  /// so a snapshot that sends the flag would otherwise always read as absent.
+  var acceptsAuthPaste: Bool? = nil
 }
 
 struct ProviderCredentialKindSnapshot: Decodable, Identifiable {
@@ -207,6 +261,8 @@ struct GatewayProviderSnapshot: Decodable, Identifiable {
   let kind: String?
   let regions: [String]?
   let regionDefault: String?
+  let requiresGatewayId: Bool?
+  let requiresAccountId: Bool?
 }
 
 struct TraySettingsSnapshot: Decodable {
@@ -222,8 +278,8 @@ struct ActivityEvent: Decodable, Identifiable, Equatable {
   let message: String
   let isError: Bool
   let kind: String
-  /// Brand identity derived from affected resources (L9); nil when the row
-  /// carries no provider ref — the row renders unbranded, never guessed.
+  /// Brand identity derived from affected resources; nil when the row carries
+  /// no provider reference.
   let provider: String?
 
   var date: Date {
@@ -270,6 +326,8 @@ struct TraySnapshot: Decodable {
   let hubCatalogs: [HubCatalogSnapshot]?
   let logSources: [LogSourceSnapshot]?
   let clientModelConfigs: [ClientModelConfigSnapshot]?
+  let codexProfiles: [CodexProfileSnapshot]?
+  let codexProfileSources: [CodexProfileSourceSnapshot]?
   let gateways: [GatewaySnapshot]
   let accountProviders: [AccountProviderSnapshot]
   let gatewayProviders: [GatewayProviderSnapshot]
@@ -295,6 +353,9 @@ struct AppServiceErrorFrame: Decodable {
   let protocolVersion: Int
   let code: String
   let message: String
+  /// Present when the engine could name the command that died. The host uses
+  /// it to settle that row instead of waiting out its confirm timeout.
+  let requestId: String?
 }
 
 struct Invocation: Encodable {
@@ -302,6 +363,9 @@ struct Invocation: Encodable {
   let requestId: String
   let revision: Int
   let actionId: String
+  /// The user's answer to a refused takeover. Omitted unless they confirmed,
+  /// so an unconfirmed take-over cannot be expressed on the wire at all.
+  var allowForeignConfig: Bool?
 }
 
 struct ModelRolesCommand: Encodable {
@@ -310,6 +374,10 @@ struct ModelRolesCommand: Encodable {
   let revision: Int
   let clientId: String
   let roleActionIds: [String: String]
+  /// "connection" (default) pins this connection; "provider" stores the
+  /// provider default; empty roles on connection scope clear the pins.
+  /// Encoded always: the engine defaults absent to connection.
+  let scope: String
 }
 
 struct Mutation: Encodable {
@@ -325,6 +393,7 @@ struct Mutation: Encodable {
   let endpoint: String?
   let apiKey: String?
   let region: String?
+  let gatewayId: String?
   let defaultModel: String?
   let overwrite: Bool?
   let enabled: Bool?
@@ -332,6 +401,8 @@ struct Mutation: Encodable {
   let kind: String?
   /// account-save-input: the endpoint profile id within the kind.
   let profile: String?
+  let transportPolicy: String?
+  var sourceIds: [String]? = nil
 }
 
 struct CancellationRequest: Encodable {
@@ -345,6 +416,26 @@ struct ProxyLogsRequest: Encodable {
   let providerId: String
   let name: String
   let lines: Int
+}
+
+struct DoctorRequest: Encodable {
+  let version = 1
+  let requestId: String
+}
+
+struct DoctorFindingSnapshot: Decodable, Identifiable, Equatable {
+  let check: String
+  let status: String
+  let detail: String?
+
+  var id: String { "\(check):\(detail ?? status)" }
+}
+
+struct DoctorResult: Decodable, Equatable {
+  let version: Int
+  let requestId: String
+  let status: String
+  let findings: [DoctorFindingSnapshot]
 }
 
 struct BackupInspectRequest: Encodable {
@@ -410,6 +501,46 @@ struct CommandResult: Decodable {
   let requestId: String
   let status: String
   let message: String?
+  /// Stable machine code for the failure (`INVALID_USAGE`, `PROXY_START_FAILED`, …).
+  let code: String?
+  /// Up to three hints the engine already prints in the CLI.
+  let suggestions: [String]?
+  /// The engine may have written before it failed; the user has to be told.
+  let mutated: Bool?
+  /// Command-specific object. Launch-at-login and proxy-token both land here;
+  /// unknown keys are ignored, and a missing apiKey stays nil.
+  /// var: a let with a default is skipped by synthesized Decodable, so the
+  /// proxy-token payload would stay nil and Copy would never see the key.
+  var payload: CommandPayload? = nil
+
+  /// Everything the user should read, in the order they should read it.
+  ///
+  /// The engine sends structure, not prose: a failure carries a code, hints
+  /// and a partial-change warning. Rendering only `message` threw the rest
+  /// away and left every failure looking like the same dead end.
+  var displayMessage: String? {
+    var lines: [String] = []
+    if let head = Self.oneLine(message, limit: 200) { lines.append(head) }
+    if mutated == true {
+      lines.append("State may have been partially changed — run `anypick doctor`.")
+    }
+    for suggestion in (suggestions ?? []).prefix(3) {
+      if let hint = Self.oneLine(suggestion, limit: 120) { lines.append("→ " + hint) }
+    }
+    return lines.isEmpty ? nil : lines.joined(separator: "\n")
+  }
+
+  private static func oneLine(_ value: String?, limit: Int) -> String? {
+    let compact = value?
+      .replacingOccurrences(of: "\n", with: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !compact.isEmpty else { return nil }
+    return String(compact.prefix(limit))
+  }
+}
+
+struct CommandPayload: Decodable {
+  let apiKey: String?
 }
 
 struct ProxyLogsResult: Decodable {

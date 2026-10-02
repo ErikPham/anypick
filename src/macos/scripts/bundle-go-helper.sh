@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Three levels up: this script lives at src/macos/scripts, so ../../.. is the
 # repository root. The Go module is at src/go, not go — the pre-src/ layout
 # appended /go straight onto the root and that suffix was never updated, which
-# made `make app-build` fail on every machine. `make paths` now asserts this
+# made `make build-macos` fail on every machine. `make check-paths` now asserts this
 # path resolves, so the suffix cannot drift again.
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 go_root="${repo_root}/src/go"
@@ -70,6 +70,18 @@ for wanted in arm64 x86_64; do
 done
 
 mkdir -p "${derived_dir}/go-build-cache" "${destination_dir}"
+ldflags=(-s -w -buildid=)
+if [[ "${CONFIGURATION:-Debug}" == "Release" ]]; then
+  release_version="${ANYPICK_GO_VERSION:-${MARKETING_VERSION:-}}"
+  if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: Release helper builds require a stable ANYPICK_GO_VERSION or MARKETING_VERSION; got '${release_version}'" >&2
+    exit 1
+  fi
+  # Source/Debug builds intentionally remain (devel). Only the signed Release
+  # configuration receives the canonical version used by the app handshake and
+  # update check.
+  ldflags+=("-X=github.com/outof0/anypick/go/internal/buildinfo.Version=${release_version}")
+fi
 binaries=()
 for architecture in "${ordered_archs[@]}"; do
   go_arch="${architecture}"
@@ -90,7 +102,7 @@ for architecture in "${ordered_archs[@]}"; do
         -buildvcs=false \
         -mod=readonly \
         -trimpath \
-        -ldflags='-s -w -buildid=' \
+        -ldflags="${ldflags[*]}" \
         -o "${output}" \
         ./cmd/anypick
   )

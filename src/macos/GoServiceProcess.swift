@@ -82,25 +82,39 @@ actor GoServiceProcess {
     restartTask?.cancel()
     stabilityTask?.cancel()
     pendingCommands.removeAll()
-    guard let process else {
+    guard process != nil else {
       await publish(.stopped)
       return
     }
-    if process.isRunning {
-      write("quit")
-      for _ in 0..<20 where process.isRunning {
-        try? await Task.sleep(nanoseconds: 50_000_000)
-      }
-      if process.isRunning { process.terminate() }
-    }
+    await terminateAndWait()
     clearPipeHandlers()
     self.process = nil
     await publish(.stopped)
   }
 
+  /// Asks the engine to quit and waits for it to actually exit. The engine's
+  /// shutdown sweep stops every proxy child it owns, so returning early — or
+  /// launching a replacement while the sweep still runs — orphans proxies on
+  /// their configured ports. SIGTERM is only the escalation: the engine
+  /// intercepts it and finishes the sweep, so this waits again after signalling.
+  private func terminateAndWait() async {
+    guard let process, process.isRunning else { return }
+    write("quit")
+    if await waitForExit(process, attempts: 200) { return }
+    process.terminate()
+    _ = await waitForExit(process, attempts: 100)
+  }
+
+  private func waitForExit(_ process: Process, attempts: Int) async -> Bool {
+    for _ in 0..<attempts where process.isRunning {
+      try? await Task.sleep(nanoseconds: 50_000_000)
+    }
+    return !process.isRunning
+  }
+
   /// Try Again path from terminal-degraded: the restart budget is spent and
   /// desiredRunning is off, so plain send() drops everything into the void.
-  /// Reset the budget and launch; a live process is left alone.
+  /// Reset the budget and launch a fresh helper process.
   func restart() async {
     restartTask?.cancel()
     stabilityTask?.cancel()
@@ -109,13 +123,31 @@ actor GoServiceProcess {
     restartCount = 0
     terminalDegraded = false
     pendingCommands.removeAll()
-    guard process == nil else { return }
+
+    // A failed pipe can leave Process non-nil until its termination callback
+    // is delivered. Treat restart as an explicit recovery operation instead
+    // of silently returning in that window; otherwise every command sheet is
+    // stuck against a dead helper until the app itself is relaunched.
+    desiredRunning = false
+    if process != nil {
+      // The replacement must not start until the old engine stopped its proxy
+      // children, or the two generations fight over the same ports.
+      await terminateAndWait()
+      clearPipeHandlers()
+      self.process = nil
+      input = nil
+      output = nil
+      errors = nil
+    }
     desiredRunning = true
     await launch()
   }
 
   private func launch() async {
     await publish(.starting)
+    // A relaunch is a fresh attempt: a previous terminal degradation must not
+    // keep claiming the service is unusable while this one is starting.
+    terminalDegraded = false
     await client.reset()
     do {
       let helper = try Self.helperURL()
@@ -131,10 +163,20 @@ actor GoServiceProcess {
       process.standardInput = input
       process.standardOutput = output
       process.standardError = errors
-      output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+      // One frame rarely arrives in one read (a snapshot is tens of kilobytes),
+      // and a task per chunk can be serviced out of order — which desynchronizes
+      // the client's line framing and reads as a protocol failure. Chunks are
+      // buffered and drained by a single task instead.
+      output.fileHandleForReading.readabilityHandler = { [weak self, chunks = FrameChunkBuffer()] handle in
         let data = handle.availableData
         guard !data.isEmpty else { return }
-        Task { await self?.receive(data, generation: launchGeneration) }
+        guard chunks.enqueue(data) else { return }
+        Task { [weak self] in
+          while let chunk = chunks.next() {
+            guard let self else { return }
+            await self.receive(chunk, generation: launchGeneration)
+          }
+        }
       }
       errors.fileHandleForReading.readabilityHandler = { handle in
         let data = handle.availableData
@@ -142,8 +184,9 @@ actor GoServiceProcess {
         Self.log.error("\(message.prefix(2_000), privacy: .private)")
       }
       process.terminationHandler = { [weak self] terminated in
+        let reason = terminated.terminationReason
         let status = terminated.terminationStatus
-        Task { await self?.terminated(status: status, generation: launchGeneration) }
+        Task { await self?.terminated(status: status, reason: reason, generation: launchGeneration) }
       }
 
       self.process = process
@@ -189,12 +232,27 @@ actor GoServiceProcess {
       terminalDegraded = true
       desiredRunning = false
       pendingCommands.removeAll()
+      // The engine log is where a DTO drift or a rejected frame becomes
+      // obvious. Today that reason was thrown away and only "the service sent
+      // an invalid payload" survived.
+      let detail =
+        (error as? AppServiceProtocolError)?.diagnosticDetail
+        ?? error.localizedDescription
+      // Frame kinds and decoding keys only — never a payload value — so this
+      // can be recorded where a reader can actually find it.
+      Self.log.error("service protocol failure: \(detail.prefix(2_000), privacy: .public)")
       await publish(.degraded(error.localizedDescription))
+      // One unreadable frame used to disable the engine until the app was
+      // reopened, which also stranded every switch that was waiting on it.
+      // Keep wanting it running and let the termination handler own the single
+      // restart: scheduling one here too spent two of the four budget slots and
+      // published two degraded messages for one failure.
+      desiredRunning = true
       process?.terminate()
     }
   }
 
-  private func terminated(status: Int32, generation: UUID) async {
+  private func terminated(status: Int32, reason: Process.TerminationReason, generation: UUID) async {
     guard generation == self.generation else { return }
     clearPipeHandlers()
     process = nil
@@ -206,7 +264,25 @@ actor GoServiceProcess {
       if !terminalDegraded { await publish(.stopped) }
       return
     }
-    await scheduleRestart(after: "The AnyPick service exited with status \(status).")
+    await scheduleRestart(after: Self.exitReason(status: status, reason: reason))
+  }
+
+  /// Turn an exit into something the user can act on. "status 2" says nothing;
+  /// a crash and a clean refusal need different next steps, and neither is
+  /// worth retrying blind.
+  private static func exitReason(status: Int32, reason: Process.TerminationReason) -> String {
+    switch reason {
+    case .uncaughtSignal:
+      return "The AnyPick service crashed (signal \(status)). Run `anypick doctor` in Terminal."
+    case .exit:
+      if status == 0 {
+        return "The AnyPick service stopped unexpectedly."
+      }
+      return
+        "The AnyPick service exited with status \(status). Run `anypick doctor` in Terminal."
+    @unknown default:
+      return "The AnyPick service stopped unexpectedly (status \(status))."
+    }
   }
 
   private func scheduleRestart(after message: String) async {
@@ -258,8 +334,21 @@ actor GoServiceProcess {
     do {
       try handle.write(contentsOf: Data("\(line)\n".utf8))
     } catch {
-      Self.log.error("service pipe write failed: \(error.localizedDescription, privacy: .public)")
+      // A failed write used to be a log line and nothing else: the command
+      // never reached the engine, so its result never came, and the sheet
+      // that sent it waited on a reply that could not exist.
+      Self.log.error("service pipe write failed: \(error.localizedDescription, privacy: .private)")
+      Task { [weak self] in await self?.handlePipeFailure() }
     }
+  }
+
+  /// Tear the generation down so the ordinary crash path owns the recovery:
+  /// one place decides restarts, and it already knows the two generations must
+  /// not overlap while the old one stops the proxies it owns.
+  private func handlePipeFailure() async {
+    guard desiredRunning, process?.isRunning == true else { return }
+    await publish(.degraded("AnyPick lost its connection to the service. Restarting it…"))
+    process?.terminate()
   }
 
   private func clearPipeHandlers() {

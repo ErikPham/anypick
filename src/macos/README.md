@@ -26,17 +26,17 @@ or **System Settings → Battery**, it is the wrong change.
 4. Product vocabulary and pane/sheet **content** in `design/design.pen`.
    Pen is not 100% native (Inter, Phosphor, drawn chrome) — ship SF Pro,
    SF Symbols, and system controls.
-5. `tests/macos-design-ui.test.ts` only for **isolation / credentials /
-   native-control presence**. String locks on pixel widths or Pencil
-   measurements are stale — update the test.
+5. `src/macos/AnyPickTests/` only for **isolation / credentials /
+   native-control presence** (`AnyPickTests.swift`, `PaneRenderTests.swift`).
+   String locks on pixel widths or Pencil measurements are stale — update the test.
 
 **Not authority.** Do not copy these into new UI:
 
 | Source | Why it misleads |
 | --- | --- |
-| Leftover tray cards / RGB tokens / chip rows | Superseded chrome. Do not reintroduce. |
+| Tray cards / RGB tokens / chip rows outside `MenuBar*.swift` | Deliberate Quick Panel chrome (see Menu bar extra). Copying it into panes or sheets is what misleads. |
 | Pen stand-in metrics (Inter, Phosphor, 54×24 switch, drawn traffic lights) | Mock fidelity only — not Swift constants |
-| `src/tray/tauri/ui/` | Web tray for Linux; not a macOS reference |
+| `src/tauri/ui/` | Web tray for Linux; not a macOS reference |
 | iOS Settings / inset-grouped “card” screenshots | Different platform |
 | A generic “make it native” prompt without this file | Agents still absorb the files above |
 
@@ -44,6 +44,13 @@ or **System Settings → Battery**, it is the wrong change.
 
 Edit this directory for chrome, panes, sheets, menu-bar content, store, and
 the production bridge. Nothing outside this tree renders macOS chrome.
+
+File layout: one type per file; extensions live in `Type+Feature.swift`
+(`MacOSDesignModel+Accounts.swift`, `TrayStore+Logs.swift`). New files
+must be registered in `sources.txt` and `AnyPick.xcodeproj` (app and test
+targets) — `testProjectUsesTheSharedSwiftSourceManifest` fails otherwise.
+`override` members and `super`-called methods stay in the main type file:
+Swift forbids overriding anything declared in an extension.
 
 ## Fixture vs live
 
@@ -98,6 +105,27 @@ python3 .claude/skills/design-checklist/scripts/route_review.py \
 
 Then read `.claude/skills/design-checklist/references/platform-macos.md`.
 
+## Running a build you are reviewing
+
+`make run-macos-dev` builds the app, installs it as `~/Applications/AnyPick Dev.app`
+with its own bundle id (`dev.anypick.app.dev`) and label, and runs it on fixture
+data. Use it instead of opening AnyPick from Spotlight or the Dock: a dev build
+and the release install share a name and an icon, so opening the wrong one looks
+exactly like "my change did nothing". The release copy in `/Applications` is
+never touched, and neither is `~/.anypick`.
+
+To review the build against your real data, quit the release app first — two
+instances on one data root fight over the same mutation locks and rewrite the
+same client configs.
+
+`make install-macos` is the other loop: it builds Release, keeps the previous
+bundle under `~/Library/Application Support/anypick-installed-backup/`, replaces
+the installed app, and restarts it. Use it when the change has to be in the app
+you actually run. Note that the app only quits from the menu-bar Quit — a Dock
+⌘Q or a scripted `quit` withdraws to the tray instead
+(`applicationShouldTerminate`), so anything that replaces the bundle while the
+app is running is replacing code the running process does not use.
+
 ## What “System Settings” means here
 
 The **main window** is a settings-style management app:
@@ -125,9 +153,10 @@ System Settings → Wi‑Fi / Displays / Battery / Privacy & Security:
 - Destructive work uses `confirmationDialog` or `NSAlert`, never a
   custom modal card.
 
-The **Settings scene** (`Settings { }` / ⌘,) is only app-wide, rarely
-changed preferences (launch at login, usage visibility, security facts).
-Task-specific options stay on the pane they affect. Do not put a
+The **Settings scene** (`Settings { }` / ⌘,) contains app-wide preferences
+and Diagnostics. Task-specific options stay on the pane they affect. The
+Diagnostics pane runs the read-only installation Doctor and offers recovery
+actions for Codex accounts whose profile model list is ready. Do not put a
 Settings row in the main sidebar.
 
 The **menu bar extra** is a status-item menu, not a second app. See
@@ -154,6 +183,12 @@ tints, and materials. Do not wrap them in a custom “design system”.
 
 ## Forbidden (this is why previous prompts failed)
 
+Scope: the main window (panes, sheets, Settings). The menu-bar Quick
+Panel is the one deliberate exception — a customized product surface per
+Pen board 29, owned by `MenuBarChrome.swift` (see Menu bar extra). Its
+cards, chips, and type ramp stay inside `MenuBar*.swift` and must not leak
+into panes or sheets.
+
 Do **not** introduce or copy:
 
 - Web / dashboard chrome: custom cards, rounded containers, gradients,
@@ -170,10 +205,10 @@ Do **not** introduce or copy:
 - Pixel-perfect frames as design: `frame(width: 208)`, `frame(width: 336)`,
   `padding(.horizontal, 20)` action bars, magic `minHeight` on every
   empty state.
-- Form `Section` cards used as pane actions. Actions sit **under the
-  last group**, outside the Form — System Settings → Displays
-  (`Advanced…` / `Night Shift…`). Not a second grouped card, not the
-  toolbar, not a window footer.
+- Form `Section` footers used as pane actions. Actions sit in a plain row
+  immediately below the content-sized grouped Form, with no second inset
+  container or manually styled card around the buttons. Keep them out of the
+  toolbar and do not pin them to the window bottom.
 - A product Light/Dark picker. Follow system appearance.
 - Secrets, tokens, or raw backup JSON in any view.
 
@@ -207,8 +242,9 @@ Rules:
   or a trailing `Button("Options…")` / `Button("Advanced…")` that opens
   a sheet or child pane — the System Settings pattern.
 - Row-level commands stay **in the Form** (trailing `LabeledContent`
-  button). Pane-level commands sit **under the last group**, outside
-  the Form (`DesignGroupedPane`).
+  button). Pane-level commands sit in the plain action row immediately below
+  the content (`DesignGroupedPane`), without a second Form/container
+  background or a window-bottom footer.
 - Service lifecycle (Start/Stop/Restart) also lives **in the Service row**
   as a trailing button. Panes carry **no titlebar buttons**: collection
   actions (Add Account, Start Hub, Stop All…) live once, under the last
@@ -216,10 +252,12 @@ Rules:
   over duplicating actions where they fall below the fold.
   The log-source filter is the exception that proves it: with no toolbar,
   it sits beside the Events/Live Logs picker inside the Activity pane.
-- Quick Panel uses native rows, `Menu`, `Toggle`, `Picker` only. No custom
-  cards, chip strips, palette files, manual fonts, or `RoundedRectangle`
-  chrome. Account names wrap; the expanded proxy list scrolls in a bounded
-  region so Search/Open/Quit stay reachable.
+- Quick Panel is a deliberately customized product surface (Pen board 29,
+  node `m0s8el`), not a Settings pane: its cards, account chips, status
+  pills, and type ramp (`TrayPaint` / `TrayFont` in `MenuBarChrome.swift`)
+  are intentional. Service controls inside it stay native (`Toggle`,
+  `Picker`, push buttons). Account names wrap; the expanded proxy list
+  scrolls in a bounded region so Search/Open/Quit stay reachable.
 - `List` is for the sidebar and for true selectable collections (logs).
   Do not fake selection with `.buttonStyle(.plain)` +
   `listRowBackground`.
@@ -234,11 +272,16 @@ Rules:
 Create / choose / inspect flows (`Add Subscription`, `Add API Gateway`,
 `Use With`, `Models`, `Export Accounts`, `Import Accounts`):
 
-- `sheet` + grouped `Form`. No navigation heading.
-- Cancel + default sit **under the last group**, same Displays
-  pattern. Disable the default until the form is valid.
+- `sheet` + grouped `Form` inside one rounded native sheet. The title sits
+  inside the sheet above the content; it is not a navigation title bar.
+- Cancel + default sit in the separated bottom action bar, aligned to the
+  trailing edge. Disable the default until the form is valid.
 - Files use `NSSavePanel` / `NSOpenPanel`. Do not draw a fake file-name row.
-- **Change Connection** runs connection → review → apply → models. The model
+- **Change Connection** keeps the current source visible, groups alternatives
+  under Accounts, Proxy Hub, and API Gateways, and moves a native checkmark to
+  the selected row. Search appears when the resource list is long. Keep
+  `Review Change` disabled until the user selects a different source.
+  The flow continues connection → review → apply → models. The model
   picker comes *after* the switch on purpose: the engine publishes model
   options per live connection, so a picker offered before the switch would
   list models the new route cannot serve. The step only appears when the
@@ -273,7 +316,7 @@ Main window sidebar (peer destinations, System Settings style):
 | Destination | Job |
 | --- | --- |
 | Overview | Attention + Get Started + summary. Not a marketing dashboard. |
-| Apps | Every switchable installed client/provider. Native-only clients switch saved accounts; only compatible-routing clients expose custom providers and model configuration. |
+| Apps | Every switchable installed client/provider. Native-only clients switch saved accounts; only compatible-routing clients expose custom providers and model configuration. Codex also manages named profiles here: choose a saved account or route, optional model and transport, edit existing profiles, then copy the profile's Terminal launch command. Proxy profiles use a discovered source model when no model is selected. |
 | Accounts & APIs | Searchable saved logins and API endpoints. **Add Account** owns importing the current local login and provider sign-in; there is no separate “Save Current Login” toolbar action. |
 | Proxy Hub | One local endpoint, its sources, published models, and service lifecycle. |
 | Proxies | Per-account translation processes and their service lifecycle. |
@@ -321,14 +364,18 @@ panes.
 
 - Comments citing `HANDOFF` / Pencil frames — delete when touching the
   file.
-- Do not reintroduce leftover tray cards, RGB tokens, or `Native*` chrome.
+- The Quick Panel's custom chrome (`TrayPaint` / `TrayFont` / cards /
+  chips) is intentional product chrome owned by `MenuBarChrome.swift`, not
+  leftovers. Do not copy it into panes or sheets, and do not
+  "native-ify" it without a product decision. Do not reintroduce
+  `Native*` chrome anywhere.
 
 ## When you are done
 
 - The pane is a grouped `Form`. A screenshot next to System Settings
   should share control anatomy, not just “a sidebar”.
 - No new token file, card, or pixel recipe.
-- `make app-build` compiles; `make app-test` passes unit and smoke UI tests.
+- `make build-macos` compiles; `make test-macos` passes unit and smoke UI tests.
 - Isolation tests still forbid supervisor / `~/.anypick` references in
   this tree.
 - If a string-scan test demanded a Pencil width or a removed wrapper,

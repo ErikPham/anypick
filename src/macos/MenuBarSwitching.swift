@@ -1,9 +1,5 @@
 import SwiftUI
 
-// NOTE (tray reset): enum lives in DesignDisplay.swift now; the old file's
-// copy was removed to avoid a duplicate. Patterns below are widened to the
-// current 4-tuple phase purely to compile — old name-matching behavior kept.
-
 @MainActor
 func trayInlineSwitchState(
   model: MacOSDesignModel,
@@ -11,16 +7,12 @@ func trayInlineSwitchState(
   route: DesignRoute
 ) -> TrayInlineSwitchState {
   guard let app else { return .available }
-  if route.id == app.selectedRouteID { return .current }
-
-  switch model.switchPhase {
-  case let .inFlight(appID, _, target, _) where appID == app.id && route.name == target:
-    return .switching
-  case let .recovery(appID, requested, _, _) where appID == app.id && route.name == requested:
-    return .retry
-  default:
-    return .available
-  }
+  // Names collide across accounts. The phase carries the route id for this.
+  return traySwitchStateForRoute(
+    phase: model.switchPhase,
+    appID: app.id,
+    routeID: route.id,
+    selectedRouteID: app.selectedRouteID)
 }
 
 struct TrayInlineRouteMark: View {

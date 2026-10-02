@@ -15,6 +15,7 @@ struct FirstRunWelcomeSheet: View {
       Form {
         Section {
           Text("Connect your coding tools with a provider account or API gateway. Credentials and local services stay on this Mac.")
+            .font(.subheadline)
             .foregroundStyle(.secondary)
         }
 
@@ -22,7 +23,7 @@ struct FirstRunWelcomeSheet: View {
           welcomeRow(
             title: "Local by default",
             detail: "Credentials stay on this Mac",
-            symbol: "lock.macwindow"
+            symbol: "lock.laptopcomputer"
           )
           welcomeRow(
             title: "Flexible connections",
@@ -46,12 +47,18 @@ struct FirstRunWelcomeSheet: View {
     Label {
       VStack(alignment: .leading, spacing: 2) {
         Text(title)
+          .font(.body.weight(.medium))
         Text(detail)
+          .font(.subheadline)
           .foregroundStyle(.secondary)
       }
     } icon: {
       Image(systemName: symbol)
+        .font(.title3)
+        .foregroundStyle(Color.accentColor)
+        .frame(width: 28, height: 28)
     }
+    .padding(.vertical, 2)
   }
 }
 
@@ -66,12 +73,13 @@ struct OverviewView: View {
             Label {
               VStack(alignment: .leading, spacing: 2) {
                 Text(condition.title)
+                  .fontWeight(.medium)
                 Text(condition.detail)
+                  .font(.subheadline)
                   .foregroundStyle(.secondary)
               }
             } icon: {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+              DesignWarningSymbol(scale: .medium)
             }
           }
         }
@@ -82,11 +90,15 @@ struct OverviewView: View {
         Section {
           LabeledContent {
             Button(attention.actionTitle, action: attention.action)
+              .buttonStyle(.bordered)
+              .controlSize(.small)
           } label: {
             Label {
               VStack(alignment: .leading, spacing: 2) {
                 Text(attention.title)
+                  .fontWeight(.medium)
                 Text(attention.message)
+                  .font(.subheadline)
                   .foregroundStyle(.secondary)
               }
             } icon: {
@@ -143,7 +155,9 @@ struct OverviewView: View {
           ) {
             model.destination = .proxyHub
           }
-          Button("Hide") { model.dismissOnboarding() }
+          Button("Hide Getting Started") { model.dismissOnboarding() }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
             .accessibilityIdentifier("overview.hide-onboarding")
         } header: {
           Text("Get Started")
@@ -153,12 +167,10 @@ struct OverviewView: View {
         .accessibilityIdentifier("overview.get-started")
       }
 
-      // No Apps section without apps (O7): an empty header above the
-      // checklist is noise on first run, and a bare header after a
-      // dismissed onboarding.
-      if !model.apps.isEmpty {
+      // Avoid an empty section above the checklist on first run.
+      if !overviewApps.isEmpty {
         Section {
-          ForEach(model.apps) { app in
+          ForEach(overviewApps) { app in
             NavigationLink(value: DesignRouteID.app(app.id)) {
               DesignIdentityRow(
                 title: app.name,
@@ -167,15 +179,41 @@ struct OverviewView: View {
               ) {
                 DesignProviderIcon(provider: app.id, fallbackSymbol: app.symbol)
               } trailing: {
-                Text(transportLabel(app))
-                  .foregroundStyle(isAppRouteConfigured(app) ? Color.secondary : Color.orange)
+                HStack(spacing: 6) {
+                  if !isAppRouteConfigured(app) {
+                    Image(systemName: "circle.fill")
+                      .font(.system(size: 7))
+                      .foregroundStyle(.orange)
+                  }
+                  Text(transportLabel(app))
+                    .font(.subheadline)
+                    .foregroundStyle(isAppRouteConfigured(app) ? Color.secondary : Color.orange)
+                }
               }
             }
             .accessibilityIdentifier("overview.app.\(app.id)")
             .accessibilityLabel("\(app.name), \(connectionSummary(app)), \(transportLabel(app))")
           }
+
+          if model.apps.count > overviewApps.count {
+            Button {
+              model.destination = .apps
+            } label: {
+              HStack {
+                Text("All Apps (\(model.apps.count))…")
+                  .foregroundStyle(Color.accentColor)
+                Spacer()
+                Image(systemName: "chevron.right")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.tertiary)
+              }
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("overview.apps.see-all")
+          }
         } header: {
-          Text("Apps")
+          Text(hasActiveOverviewApps ? "Active Apps" : "Apps")
         } footer: {
           if model.apps.contains(where: { !isAppRouteConfigured($0) }) {
             Text("Choose a login for each app before it can run.")
@@ -189,11 +227,20 @@ struct OverviewView: View {
           detail: servicesSummary
         ) {
           Image(systemName: DesignDestination.proxies.symbol)
-            .foregroundStyle(.secondary)
+            .font(.title3)
+            .foregroundStyle(runningServiceNames.isEmpty ? Color.secondary : Color.accentColor)
         } trailing: {
-          Text(serviceStatusText)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
+          HStack(spacing: 6) {
+            if !runningServiceNames.isEmpty {
+              Image(systemName: "circle.fill")
+                .font(.system(size: 7))
+                .foregroundStyle(.green)
+            }
+            Text(serviceStatusText)
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+              .monospacedDigit()
+          }
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("overview.services-summary")
@@ -201,29 +248,30 @@ struct OverviewView: View {
         Text("Services")
       }
 
-      // While the checklist is up, an empty "Events will appear here"
-      // placeholder competes for attention without information. Show the
-      // section once there is something to show or onboarding is done.
+      // While the checklist is visible, defer an empty activity section until
+      // onboarding is complete.
       if !model.activity.isEmpty || !model.shouldShowOnboarding {
         Section {
           if model.activity.isEmpty {
-            Text("Events will appear here.")
-              .foregroundStyle(.secondary)
+            DesignEmptyRow(text: "Recent events will appear here.")
           } else {
             ForEach(model.activity.prefix(3)) { item in
-              HStack(alignment: .center, spacing: 10) {
-                Image(
-                  systemName: item.status == .ready || item.status == .running
-                    ? item.symbol : item.status.symbol
-                )
-                .foregroundStyle(item.status.color)
-                .frame(width: 16)
-                .accessibilityLabel(item.status.rawValue)
-                VStack(alignment: .leading, spacing: 1) {
+              HStack(alignment: .center, spacing: 12) {
+                if let provider = item.provider {
+                  DesignProviderIcon(provider: provider, fallbackSymbol: item.symbol, size: 18)
+                } else {
+                  Image(
+                    systemName: item.status == .ready || item.status == .running
+                      ? item.symbol : item.status.symbol
+                  )
+                  .font(.system(size: 14))
+                  .foregroundStyle(item.status.color)
+                  .frame(width: 18)
+                }
+                VStack(alignment: .leading, spacing: 2) {
                   Text(item.title)
-                  // Detail used to be dropped here (O10): fixture "a2" lost
-                  // "Authentication failed…". The status glyph for problem
-                  // states stays — it must never read as success.
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
                   if !item.detail.isEmpty {
                     Text(item.detail)
                       .font(.caption)
@@ -233,9 +281,11 @@ struct OverviewView: View {
                 }
                 Spacer(minLength: 8)
                 Text(item.time)
+                  .font(.subheadline)
                   .foregroundStyle(.secondary)
                   .monospacedDigit()
               }
+              .padding(.vertical, 2)
               .accessibilityElement(children: .combine)
               .accessibilityIdentifier("overview.activity.\(item.id)")
             }
@@ -268,6 +318,22 @@ struct OverviewView: View {
 
   private func transportLabel(_ app: DesignApp) -> String {
     transportDisplayName(for: app)
+  }
+
+  private var hasActiveOverviewApps: Bool {
+    model.apps.contains { app in
+      isAppManagedByAnyPick(app) || app.status == .attention || app.status == .unavailable
+    }
+  }
+
+  private var overviewApps: [DesignApp] {
+    let active = model.apps.filter { app in
+      isAppManagedByAnyPick(app) || app.status == .attention || app.status == .unavailable
+    }
+    if !active.isEmpty {
+      return Array(active.prefix(3))
+    }
+    return Array(model.apps.prefix(3))
   }
 
   private var runningServiceNames: [String] {
@@ -306,20 +372,34 @@ struct OverviewView: View {
     actionTitle: String,
     identifier: String,
     action: @escaping () -> Void
-  ) -> some View {    LabeledContent {
+  ) -> some View {
+    LabeledContent {
       if done {
-        Text("Done")
+        Label("Done", systemImage: "checkmark")
+          .labelStyle(.titleAndIcon)
+          .font(.subheadline)
           .foregroundStyle(.secondary)
       } else {
         Button(actionTitle, action: action)
+          .buttonStyle(.bordered)
+          .controlSize(.small)
       }
     } label: {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-        Text(detail)
-          .foregroundStyle(.secondary)
+      Label {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.body.weight(.medium))
+          Text(detail)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+      } icon: {
+        Image(systemName: done ? "checkmark.circle.fill" : "circle")
+          .font(.system(size: 14))
+          .foregroundStyle(done ? Color.green : Color.secondary)
       }
     }
+    .padding(.vertical, 1)
     .accessibilityIdentifier(identifier)
     .accessibilityValue(done ? "Done" : "Not done")
   }
@@ -331,17 +411,24 @@ struct OverviewView: View {
     return app.issue
   }
 
+  private var actionableRoutingConflicts: [DesignRoutingConflict] {
+    model.routingConflicts.filter { conflict in
+      let providers = Set(conflict.candidates.map { hubProviderDisplayName($0.provider) }.filter { !$0.isEmpty })
+      return providers.count > 1
+    }
+  }
+
   private var primaryAttention:
     (title: String, message: String, actionTitle: String, action: () -> Void)?
   {
-    // Priority lives in overviewAttentionTarget (O1) so it stays pinnable;
-    // this only renders the winning target.
+    // Keep priority in the shared helper so fixture and production render the
+    // same recovery destination.
     guard
       let target = overviewAttentionTarget(
         proxies: model.proxies,
         apps: model.apps,
         accounts: model.accounts,
-        conflicts: model.routingConflicts
+        conflicts: actionableRoutingConflicts
       )
     else { return nil }
     switch target {
@@ -370,20 +457,13 @@ struct OverviewView: View {
         { model.destination = .accounts }
       )
     case .conflict(let kind):
-      guard let conflict = model.routingConflicts.first(where: { $0.kind == kind }) else {
+      guard let conflict = actionableRoutingConflicts.first(where: { $0.kind == kind }) ?? actionableRoutingConflicts.first else {
         return nil
       }
-      if kind == .sourceChoice {
-        return (
-          "Choose a \(conflict.title) account",
-          conflict.detail,
-          "Open Proxy Hub",
-          { model.destination = .proxyHub }
-        )
-      }
+      let (infoTitle, infoSubtitle) = hubConflictDisplayInfo(conflict)
       return (
-        "Overlapping models",
-        conflict.detail,
+        "Model conflict: \(infoTitle)",
+        infoSubtitle,
         "Open Proxy Hub",
         { model.destination = .proxyHub }
       )

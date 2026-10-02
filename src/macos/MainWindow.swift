@@ -19,13 +19,22 @@ struct MainWindow: View {
     }
     .navigationSplitViewStyle(.balanced)
     .alert(
-      "Unable to Complete",
+      model.feedback?.title ?? "Unable to Complete",
       isPresented: Binding(
         get: { model.feedback?.kind == .error },
         set: { if !$0 { model.dismissFeedback() } }
       )
     ) {
-      Button("OK", role: .cancel, action: model.dismissFeedback)
+      if model.pendingTakeover != nil {
+        // The refusal named CLIENT_CONFIG_FOREIGN: this is the confirmation its
+        // suggestion asked for, answered where the user already is.
+        Button("Manage with AnyPick", action: model.confirmPendingTakeover)
+        Button("Cancel", role: .cancel, action: model.dismissFeedback)
+      } else {
+        // A lone dismissal is the default action, not a cancel role: the role
+        // is what would bind Escape instead of Return to the only button.
+        Button("OK", action: model.dismissFeedback)
+      }
     } message: {
       Text(model.feedback?.message ?? "")
     }
@@ -40,23 +49,27 @@ struct MainWindow: View {
       FirstRunWelcomeSheet(model: model)
     }
     .onAppear {
+      AnyPickAppDelegate.openMainWindowAction = {
+        openWindow(id: "main")
+      }
       presentStartupRoute()
       if !model.isProduction {
         openWindow(id: "tray")
       }
     }
+    .background(
+      MainWindowAccessor { window in
+        window.identifier = NSUserInterfaceItemIdentifier("main")
+        window.isReleasedWhenClosed = false
+        AnyPickAppDelegate.registeredMainWindow = window
+      }
+    )
     .onChange(of: model.destination) { path = NavigationPath() }
     .onChange(of: model.pendingAccountDetailID) { _, id in
       guard let id else { return }
       model.destination = .accounts
       path.append(DesignRouteID.account(id))
       model.pendingAccountDetailID = nil
-    }
-    .onChange(of: model.announcementRequested) {
-      NSAccessibility.post(
-        element: NSApplication.shared,
-        notification: .announcementRequested
-      )
     }
   }
 
@@ -83,14 +96,29 @@ struct MainWindow: View {
   }
 
   private func presentStartupRoute() {
-    guard model.pendingStartupFlow == "published-models" else { return }
-    model.pendingStartupFlow = nil
+    if let flow = model.pendingStartupFlow, flow.hasPrefix("proxy-detail") {
+      model.pendingStartupFlow = nil
+      let targetID: String
+      if flow.contains(":") {
+        targetID = String(flow.split(separator: ":")[1])
+      } else {
+        targetID = model.proxies.first?.id ?? ""
+      }
+      if !targetID.isEmpty {
+        path.append(DesignRouteID.proxy(targetID))
+        return
+      }
+    }
+    guard model.pendingStartupFlow == "published-models" || model.pendingStartupFlow == "inspect-model" else { return }
+    if model.pendingStartupFlow == "published-models" {
+      model.pendingStartupFlow = nil
+    }
     path.append(DesignRouteID.publishedModels)
   }
 
-  /// Sidebar footer service status — "2 proxies running".
+  /// Sidebar footer service status.
   private var serviceStatusSummary: String {
-    // Visible in every phase (O6): hiding it while loading/error removes the
+    // Visible in every phase: hiding it while loading/error removes the
     // status exactly when it is needed (and pops the layout when it returns).
     if model.phase == .loading { return "Loading services…" }
     let running = model.proxies.filter { $0.status == .running }.count
@@ -118,14 +146,6 @@ struct MainWindow: View {
     .accessibilityIdentifier("sidebar.service-status")
   }
 
-  // kickSplitViewLayout() used to live here. It nudged the window frame by +1px
-  // and back to force NSHostingView to lay the sidebar out. `.onAppear` re-runs
-  // whenever NavigationStack rebuilds on a `model.destination` change, so every
-  // sidebar click bumped the window by one pixel — the "layout jump" the sidebar
-  // had. The empty-sidebar symptom it worked around does not reproduce on the
-  // macOS releases we ship; if it ever comes back, reintroduce it behind a
-  // one-shot guard (a `@State` flag) so it can only ever fire once.
-
   @ViewBuilder
   private var detailColumn: some View {
     switch model.phase {
@@ -148,16 +168,6 @@ struct MainWindow: View {
       NavigationStack(path: $path) {
         rootPane
           .navigationTitle(model.destination.title)
-          // Accounts & Activity install a toolbar (search). Without one on
-          // Apps / Overview the unified titlebar appears and disappears, and
-          // the sidebar column changes height. Keep the chrome mounted.
-          .toolbar {
-            ToolbarItem(placement: .automatic) {
-              Color.clear
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
-            }
-          }
           .navigationDestination(for: DesignRouteID.self) { route in
             switch route {
             case .app(let id):
@@ -196,6 +206,7 @@ struct MainWindow: View {
     case .backups: BackupsView(model: model)
     }
   }
+
 }
 
 enum DesignRouteID: Hashable {
@@ -204,4 +215,26 @@ enum DesignRouteID: Hashable {
   case proxy(String)
   case proxyHub
   case publishedModels
+}
+
+private struct MainWindowAccessor: NSViewRepresentable {
+  let onResolve: (NSWindow) -> Void
+
+  func makeNSView(context: Context) -> NSView {
+    let view = NSView()
+    DispatchQueue.main.async {
+      if let window = view.window {
+        onResolve(window)
+      }
+    }
+    return view
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {
+    DispatchQueue.main.async {
+      if let window = nsView.window {
+        onResolve(window)
+      }
+    }
+  }
 }

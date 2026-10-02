@@ -12,15 +12,34 @@
 		100000000000000000000003 /* HubRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* HubRouting.swift */; };
 		100000000000000000000004 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
 		100000000000000000000005 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* Models.swift */; };
+		100000000000000000000032 /* MacOSDesignModel+Accounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000032 /* MacOSDesignModel+Accounts.swift */; };
+		100000000000000000000033 /* MacOSDesignModel+Apps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000033 /* MacOSDesignModel+Apps.swift */; };
+		100000000000000000000037 /* MacOSDesignModel+Support.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* MacOSDesignModel+Support.swift */; };
 		100000000000000000000006 /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* Store.swift */; };
+		100000000000000000000003F /* TrayStore+Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003F /* TrayStore+Snapshots.swift */; };
+		1000000000000000000000040 /* TrayStore+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000040 /* TrayStore+Actions.swift */; };
+		1000000000000000000000041 /* TrayStore+Commands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000041 /* TrayStore+Commands.swift */; };
+		1000000000000000000000043 /* TrayStore+Backups.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000043 /* TrayStore+Backups.swift */; };
+		1000000000000000000000044 /* TrayStore+Logs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000044 /* TrayStore+Logs.swift */; };
 		100000000000000000000007 /* StoreTransfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* StoreTransfers.swift */; };
 		100000000000000000000008 /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* AppPreferences.swift */; };
 		100000000000000000000009 /* AppIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* AppIcon.swift */; };
 		10000000000000000000000A /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* Motion.swift */; };
 		10000000000000000000000B /* ProductionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProductionModel.swift */; };
+		100000000000000000000038 /* ProductionDesignModel+Accounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000038 /* ProductionDesignModel+Accounts.swift */; };
+		100000000000000000000039 /* ProductionDesignModel+Apps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000039 /* ProductionDesignModel+Apps.swift */; };
+		10000000000000000000003A /* ProductionDesignModel+Hub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* ProductionDesignModel+Hub.swift */; };
+		10000000000000000000003B /* ProductionDesignModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003B /* ProductionDesignModel+Proxies.swift */; };
+		10000000000000000000003C /* ProductionDesignModel+Backups.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003C /* ProductionDesignModel+Backups.swift */; };
+		10000000000000000000003D /* ProductionDesignModel+Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003D /* ProductionDesignModel+Settings.swift */; };
 		10000000000000000000000C /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* SharedUI.swift */; };
 		10000000000000000000000D /* BrandIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* BrandIcons.swift */; };
-		10000000000000000000000E /* AccountFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountFlows.swift */; };
+		10000000000000000000000E /* AccountsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountsSheet.swift */; };
+		10000000000000000000002D /* AddSavedAccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* AddSavedAccountSheet.swift */; };
+		10000000000000000000002E /* AddGatewaySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002E /* AddGatewaySheet.swift */; };
+		10000000000000000000002F /* AccountInspectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002F /* AccountInspectSheet.swift */; };
+		100000000000000000000030 /* EditAccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000030 /* EditAccountSheet.swift */; };
+		100000000000000000000031 /* ConnectGatewaySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* ConnectGatewaySheet.swift */; };
 		10000000000000000000000F /* ProxyFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* ProxyFlows.swift */; };
 		100000000000000000000010 /* BackupFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* BackupFlows.swift */; };
 		100000000000000000000011 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* OverviewView.swift */; };
@@ -49,11 +68,13 @@
 		100000000000000000000028 /* AppEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* AppEntry.swift */; };
 		100000000000000000000029 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		10000000000000000000002A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
+		10000000000000000000002C /* FrameChunkBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* FrameChunkBuffer.swift */; };
 		10000000000000000000002B /* DesignDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DesignDisplay.swift */; };
 		110000000000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000001 /* Assets.xcassets */; };
 		110000000000000000000004 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000004 /* icons */; };
 		110000000000000000000005 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000005 /* AppIcon.png */; };
 		120000000000000000000001 /* AnyPickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000001 /* AnyPickTests.swift */; };
+		12000000000000000000003E /* PaneRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000002 /* PaneRenderTests.swift */; };
 		120000000000000000000002 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		120000000000000000000003 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
 		120000000000000000000004 /* DesignTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DesignTypes.swift */; };
@@ -62,14 +83,33 @@
 		120000000000000000000007 /* HubRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* HubRouting.swift */; };
 		120000000000000000000008 /* BrandIcons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* BrandIcons.swift */; };
 		120000000000000000000009 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* Models.swift */; };
+		120000000000000000000032 /* MacOSDesignModel+Accounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000032 /* MacOSDesignModel+Accounts.swift */; };
+		120000000000000000000033 /* MacOSDesignModel+Apps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000033 /* MacOSDesignModel+Apps.swift */; };
+		120000000000000000000037 /* MacOSDesignModel+Support.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000037 /* MacOSDesignModel+Support.swift */; };
 		12000000000000000000000A /* Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* Store.swift */; };
+		120000000000000000000003F /* TrayStore+Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003F /* TrayStore+Snapshots.swift */; };
+		1200000000000000000000040 /* TrayStore+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000040 /* TrayStore+Actions.swift */; };
+		1200000000000000000000041 /* TrayStore+Commands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000041 /* TrayStore+Commands.swift */; };
+		1200000000000000000000043 /* TrayStore+Backups.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000043 /* TrayStore+Backups.swift */; };
+		1200000000000000000000044 /* TrayStore+Logs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2000000000000000000000044 /* TrayStore+Logs.swift */; };
 		12000000000000000000000B /* StoreTransfers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* StoreTransfers.swift */; };
 		12000000000000000000000C /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* AppPreferences.swift */; };
 		12000000000000000000000D /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* Motion.swift */; };
 		12000000000000000000000E /* ProductionModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProductionModel.swift */; };
+		120000000000000000000038 /* ProductionDesignModel+Accounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000038 /* ProductionDesignModel+Accounts.swift */; };
+		120000000000000000000039 /* ProductionDesignModel+Apps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000039 /* ProductionDesignModel+Apps.swift */; };
+		12000000000000000000003A /* ProductionDesignModel+Hub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003A /* ProductionDesignModel+Hub.swift */; };
+		12000000000000000000003B /* ProductionDesignModel+Proxies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003B /* ProductionDesignModel+Proxies.swift */; };
+		12000000000000000000003C /* ProductionDesignModel+Backups.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003C /* ProductionDesignModel+Backups.swift */; };
+		12000000000000000000003D /* ProductionDesignModel+Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000003D /* ProductionDesignModel+Settings.swift */; };
 		12000000000000000000000F /* DesignFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* DesignFixture.swift */; };
 		120000000000000000000010 /* AccountDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000016 /* AccountDetailView.swift */; };
-		120000000000000000000011 /* AccountFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountFlows.swift */; };
+		120000000000000000000011 /* AccountsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AccountsSheet.swift */; };
+		12000000000000000000002D /* AddSavedAccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* AddSavedAccountSheet.swift */; };
+		12000000000000000000002E /* AddGatewaySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002E /* AddGatewaySheet.swift */; };
+		12000000000000000000002F /* AccountInspectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002F /* AccountInspectSheet.swift */; };
+		120000000000000000000030 /* EditAccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000030 /* EditAccountSheet.swift */; };
+		120000000000000000000031 /* ConnectGatewaySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* ConnectGatewaySheet.swift */; };
 		120000000000000000000012 /* AccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000015 /* AccountsView.swift */; };
 		120000000000000000000013 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001A /* ActivityView.swift */; };
 		120000000000000000000014 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* AppDelegate.swift */; };
@@ -79,6 +119,7 @@
 		120000000000000000000018 /* BackupFlows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* BackupFlows.swift */; };
 		120000000000000000000019 /* BackupsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* BackupsView.swift */; };
 		12000000000000000000001A /* GoServiceProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* GoServiceProcess.swift */; };
+		12000000000000000000002C /* FrameChunkBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* FrameChunkBuffer.swift */; };
 		12000000000000000000001B /* MainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* MainWindow.swift */; };
 		12000000000000000000001C /* MenuBarChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001E /* MenuBarChrome.swift */; };
 		12000000000000000000001D /* MenuBarFirstRun.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* MenuBarFirstRun.swift */; };
@@ -114,15 +155,34 @@
 		200000000000000000000003 /* HubRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRouting.swift; sourceTree = "<group>"; };
 		200000000000000000000004 /* SnapshotTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotTypes.swift; sourceTree = "<group>"; };
 		200000000000000000000005 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		200000000000000000000032 /* MacOSDesignModel+Accounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MacOSDesignModel+Accounts.swift"; sourceTree = "<group>"; };
+		200000000000000000000033 /* MacOSDesignModel+Apps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MacOSDesignModel+Apps.swift"; sourceTree = "<group>"; };
+		200000000000000000000037 /* MacOSDesignModel+Support.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MacOSDesignModel+Support.swift"; sourceTree = "<group>"; };
 		200000000000000000000006 /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
+		200000000000000000000003F /* TrayStore+Snapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TrayStore+Snapshots.swift"; sourceTree = "<group>"; };
+		2000000000000000000000040 /* TrayStore+Actions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TrayStore+Actions.swift"; sourceTree = "<group>"; };
+		2000000000000000000000041 /* TrayStore+Commands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TrayStore+Commands.swift"; sourceTree = "<group>"; };
+		2000000000000000000000043 /* TrayStore+Backups.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TrayStore+Backups.swift"; sourceTree = "<group>"; };
+		2000000000000000000000044 /* TrayStore+Logs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TrayStore+Logs.swift"; sourceTree = "<group>"; };
 		200000000000000000000007 /* StoreTransfers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTransfers.swift; sourceTree = "<group>"; };
 		200000000000000000000008 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
 		200000000000000000000009 /* AppIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIcon.swift; sourceTree = "<group>"; };
 		20000000000000000000000A /* Motion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Motion.swift; sourceTree = "<group>"; };
 		20000000000000000000000B /* ProductionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionModel.swift; sourceTree = "<group>"; };
+		200000000000000000000038 /* ProductionDesignModel+Accounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Accounts.swift"; sourceTree = "<group>"; };
+		200000000000000000000039 /* ProductionDesignModel+Apps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Apps.swift"; sourceTree = "<group>"; };
+		20000000000000000000003A /* ProductionDesignModel+Hub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Hub.swift"; sourceTree = "<group>"; };
+		20000000000000000000003B /* ProductionDesignModel+Proxies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Proxies.swift"; sourceTree = "<group>"; };
+		20000000000000000000003C /* ProductionDesignModel+Backups.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Backups.swift"; sourceTree = "<group>"; };
+		20000000000000000000003D /* ProductionDesignModel+Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProductionDesignModel+Settings.swift"; sourceTree = "<group>"; };
 		20000000000000000000000C /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		20000000000000000000000D /* BrandIcons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandIcons.swift; sourceTree = "<group>"; };
-		20000000000000000000000E /* AccountFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountFlows.swift; sourceTree = "<group>"; };
+		20000000000000000000000E /* AccountsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountsSheet.swift; sourceTree = "<group>"; };
+		20000000000000000000002D /* AddSavedAccountSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddSavedAccountSheet.swift; sourceTree = "<group>"; };
+		20000000000000000000002E /* AddGatewaySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddGatewaySheet.swift; sourceTree = "<group>"; };
+		20000000000000000000002F /* AccountInspectSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountInspectSheet.swift; sourceTree = "<group>"; };
+		200000000000000000000030 /* EditAccountSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditAccountSheet.swift; sourceTree = "<group>"; };
+		200000000000000000000031 /* ConnectGatewaySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectGatewaySheet.swift; sourceTree = "<group>"; };
 		20000000000000000000000F /* ProxyFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyFlows.swift; sourceTree = "<group>"; };
 		200000000000000000000010 /* BackupFlows.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupFlows.swift; sourceTree = "<group>"; };
 		200000000000000000000011 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
@@ -151,6 +211,7 @@
 		200000000000000000000028 /* AppEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEntry.swift; sourceTree = "<group>"; };
 		200000000000000000000029 /* AppServiceClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppServiceClient.swift; sourceTree = "<group>"; };
 		20000000000000000000002A /* GoServiceProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoServiceProcess.swift; sourceTree = "<group>"; };
+		20000000000000000000002C /* FrameChunkBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameChunkBuffer.swift; sourceTree = "<group>"; };
 		20000000000000000000002B /* DesignDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignDisplay.swift; sourceTree = "<group>"; };
 		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -159,6 +220,7 @@
 		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
 		220000000000000000000006 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
+		230000000000000000000002 /* PaneRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneRenderTests.swift; sourceTree = "<group>"; };
 		240000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		240000000000000000000002 /* AnyPick.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AnyPick.entitlements; sourceTree = "<group>"; };
 		240000000000000000000003 /* bundle-go-helper.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "bundle-go-helper.sh"; sourceTree = "<group>"; };
@@ -205,16 +267,36 @@
 				200000000000000000000004 /* SnapshotTypes.swift */,
 				200000000000000000000029 /* AppServiceClient.swift */,
 				20000000000000000000002A /* GoServiceProcess.swift */,
+				20000000000000000000002C /* FrameChunkBuffer.swift */,
 				200000000000000000000005 /* Models.swift */,
+				200000000000000000000032 /* MacOSDesignModel+Accounts.swift */,
+				200000000000000000000033 /* MacOSDesignModel+Apps.swift */,
+				200000000000000000000037 /* MacOSDesignModel+Support.swift */,
 				200000000000000000000006 /* Store.swift */,
+				200000000000000000000003F /* TrayStore+Snapshots.swift */,
+				2000000000000000000000040 /* TrayStore+Actions.swift */,
+				2000000000000000000000041 /* TrayStore+Commands.swift */,
+				2000000000000000000000043 /* TrayStore+Backups.swift */,
+				2000000000000000000000044 /* TrayStore+Logs.swift */,
 				200000000000000000000007 /* StoreTransfers.swift */,
 				200000000000000000000008 /* AppPreferences.swift */,
 				200000000000000000000009 /* AppIcon.swift */,
 				20000000000000000000000A /* Motion.swift */,
 				20000000000000000000000B /* ProductionModel.swift */,
+				200000000000000000000038 /* ProductionDesignModel+Accounts.swift */,
+				200000000000000000000039 /* ProductionDesignModel+Apps.swift */,
+				20000000000000000000003A /* ProductionDesignModel+Hub.swift */,
+				20000000000000000000003B /* ProductionDesignModel+Proxies.swift */,
+				20000000000000000000003C /* ProductionDesignModel+Backups.swift */,
+				20000000000000000000003D /* ProductionDesignModel+Settings.swift */,
 				20000000000000000000000C /* SharedUI.swift */,
 				20000000000000000000000D /* BrandIcons.swift */,
-				20000000000000000000000E /* AccountFlows.swift */,
+				20000000000000000000000E /* AccountsSheet.swift */,
+				20000000000000000000002D /* AddSavedAccountSheet.swift */,
+				20000000000000000000002E /* AddGatewaySheet.swift */,
+				20000000000000000000002F /* AccountInspectSheet.swift */,
+				200000000000000000000030 /* EditAccountSheet.swift */,
+				200000000000000000000031 /* ConnectGatewaySheet.swift */,
 				20000000000000000000000F /* ProxyFlows.swift */,
 				200000000000000000000010 /* BackupFlows.swift */,
 				200000000000000000000011 /* OverviewView.swift */,
@@ -279,6 +361,7 @@
 			isa = PBXGroup;
 			children = (
 				230000000000000000000001 /* AnyPickTests.swift */,
+				230000000000000000000002 /* PaneRenderTests.swift */,
 			);
 			path = AnyPickTests;
 			sourceTree = "<group>";
@@ -442,16 +525,36 @@
 				100000000000000000000004 /* SnapshotTypes.swift in Sources */,
 				100000000000000000000029 /* AppServiceClient.swift in Sources */,
 				10000000000000000000002A /* GoServiceProcess.swift in Sources */,
+				10000000000000000000002C /* FrameChunkBuffer.swift in Sources */,
 				100000000000000000000005 /* Models.swift in Sources */,
+				100000000000000000000032 /* MacOSDesignModel+Accounts.swift in Sources */,
+				100000000000000000000033 /* MacOSDesignModel+Apps.swift in Sources */,
+				100000000000000000000037 /* MacOSDesignModel+Support.swift in Sources */,
 				100000000000000000000006 /* Store.swift in Sources */,
+				100000000000000000000003F /* TrayStore+Snapshots.swift in Sources */,
+				1000000000000000000000040 /* TrayStore+Actions.swift in Sources */,
+				1000000000000000000000041 /* TrayStore+Commands.swift in Sources */,
+				1000000000000000000000043 /* TrayStore+Backups.swift in Sources */,
+				1000000000000000000000044 /* TrayStore+Logs.swift in Sources */,
 				100000000000000000000007 /* StoreTransfers.swift in Sources */,
 				100000000000000000000008 /* AppPreferences.swift in Sources */,
 				100000000000000000000009 /* AppIcon.swift in Sources */,
 				10000000000000000000000A /* Motion.swift in Sources */,
 				10000000000000000000000B /* ProductionModel.swift in Sources */,
+				100000000000000000000038 /* ProductionDesignModel+Accounts.swift in Sources */,
+				100000000000000000000039 /* ProductionDesignModel+Apps.swift in Sources */,
+				10000000000000000000003A /* ProductionDesignModel+Hub.swift in Sources */,
+				10000000000000000000003B /* ProductionDesignModel+Proxies.swift in Sources */,
+				10000000000000000000003C /* ProductionDesignModel+Backups.swift in Sources */,
+				10000000000000000000003D /* ProductionDesignModel+Settings.swift in Sources */,
 				10000000000000000000000C /* SharedUI.swift in Sources */,
 				10000000000000000000000D /* BrandIcons.swift in Sources */,
-				10000000000000000000000E /* AccountFlows.swift in Sources */,
+				10000000000000000000000E /* AccountsSheet.swift in Sources */,
+				10000000000000000000002D /* AddSavedAccountSheet.swift in Sources */,
+				10000000000000000000002E /* AddGatewaySheet.swift in Sources */,
+				10000000000000000000002F /* AccountInspectSheet.swift in Sources */,
+				100000000000000000000030 /* EditAccountSheet.swift in Sources */,
+				100000000000000000000031 /* ConnectGatewaySheet.swift in Sources */,
 				10000000000000000000000F /* ProxyFlows.swift in Sources */,
 				100000000000000000000010 /* BackupFlows.swift in Sources */,
 				100000000000000000000011 /* OverviewView.swift in Sources */,
@@ -486,6 +589,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				120000000000000000000001 /* AnyPickTests.swift in Sources */,
+				12000000000000000000003E /* PaneRenderTests.swift in Sources */,
 				120000000000000000000002 /* AppServiceClient.swift in Sources */,
 				120000000000000000000003 /* SnapshotTypes.swift in Sources */,
 				120000000000000000000004 /* DesignTypes.swift in Sources */,
@@ -494,14 +598,33 @@
 				120000000000000000000007 /* HubRouting.swift in Sources */,
 				120000000000000000000008 /* BrandIcons.swift in Sources */,
 				120000000000000000000009 /* Models.swift in Sources */,
+				120000000000000000000032 /* MacOSDesignModel+Accounts.swift in Sources */,
+				120000000000000000000033 /* MacOSDesignModel+Apps.swift in Sources */,
+				120000000000000000000037 /* MacOSDesignModel+Support.swift in Sources */,
 				12000000000000000000000A /* Store.swift in Sources */,
+				120000000000000000000003F /* TrayStore+Snapshots.swift in Sources */,
+				1200000000000000000000040 /* TrayStore+Actions.swift in Sources */,
+				1200000000000000000000041 /* TrayStore+Commands.swift in Sources */,
+				1200000000000000000000043 /* TrayStore+Backups.swift in Sources */,
+				1200000000000000000000044 /* TrayStore+Logs.swift in Sources */,
 				12000000000000000000000B /* StoreTransfers.swift in Sources */,
 				12000000000000000000000C /* AppPreferences.swift in Sources */,
 				12000000000000000000000D /* Motion.swift in Sources */,
 				12000000000000000000000E /* ProductionModel.swift in Sources */,
+				120000000000000000000038 /* ProductionDesignModel+Accounts.swift in Sources */,
+				120000000000000000000039 /* ProductionDesignModel+Apps.swift in Sources */,
+				12000000000000000000003A /* ProductionDesignModel+Hub.swift in Sources */,
+				12000000000000000000003B /* ProductionDesignModel+Proxies.swift in Sources */,
+				12000000000000000000003C /* ProductionDesignModel+Backups.swift in Sources */,
+				12000000000000000000003D /* ProductionDesignModel+Settings.swift in Sources */,
 				12000000000000000000000F /* DesignFixture.swift in Sources */,
 							120000000000000000000010 /* AccountDetailView.swift in Sources */,
-				120000000000000000000011 /* AccountFlows.swift in Sources */,
+				120000000000000000000011 /* AccountsSheet.swift in Sources */,
+				12000000000000000000002D /* AddSavedAccountSheet.swift in Sources */,
+				12000000000000000000002E /* AddGatewaySheet.swift in Sources */,
+				12000000000000000000002F /* AccountInspectSheet.swift in Sources */,
+				120000000000000000000030 /* EditAccountSheet.swift in Sources */,
+				120000000000000000000031 /* ConnectGatewaySheet.swift in Sources */,
 				120000000000000000000012 /* AccountsView.swift in Sources */,
 				120000000000000000000013 /* ActivityView.swift in Sources */,
 				120000000000000000000014 /* AppDelegate.swift in Sources */,
@@ -511,6 +634,7 @@
 				120000000000000000000018 /* BackupFlows.swift in Sources */,
 				120000000000000000000019 /* BackupsView.swift in Sources */,
 				12000000000000000000001A /* GoServiceProcess.swift in Sources */,
+				12000000000000000000002C /* FrameChunkBuffer.swift in Sources */,
 				12000000000000000000001B /* MainWindow.swift in Sources */,
 				12000000000000000000001C /* MenuBarChrome.swift in Sources */,
 				12000000000000000000001D /* MenuBarFirstRun.swift in Sources */,
@@ -656,7 +780,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -680,7 +804,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -695,7 +819,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -709,7 +833,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

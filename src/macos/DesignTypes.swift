@@ -133,9 +133,12 @@ struct DesignRoute: Identifiable, Hashable {
   var badge: String? = nil
   var kind: DesignRouteKind = .account
   var providerID: String? = nil
+  /// Engine source (`account/claude/work`). Empty on fixture rows that
+  /// predate it; dedupe falls back to the display key for those.
+  var sourceID: String = ""
 }
 
-/// Fixture / preview override for board 29. Production uses `.auto`.
+/// Fixture/render override. Production uses `.auto`.
 enum DesignTrayScene: String {
   case auto
   case ready
@@ -147,7 +150,7 @@ enum DesignTrayScene: String {
 enum DesignSwitchPhase: Equatable {
   case idle
   /// `to`/`requested`/`kept` are display names for toasts; `routeID` is the
-  /// identity switch marks match on — names collide across providers (T4).
+  /// identity switch marks match on — names collide across providers.
   case inFlight(appID: String, from: String, to: String, routeID: String)
   case success(appID: String, name: String)
   case recovery(appID: String, requested: String, kept: String, routeID: String)
@@ -167,12 +170,18 @@ struct DesignLoginMethod: Identifiable, Hashable {
   var preferred: Bool
   var available: Bool
   var unavailableReason: String? = nil
+  var sourceID: String? = nil
+  var sourceLabel: String? = nil
 }
 
 struct DesignProviderOption: Identifiable, Hashable {
   let id: String
   var label: String
   var detail: String
+  /// Optional presentation owner for hybrid providers. Z.ai's subscription
+  /// account is presented with ZCode's app mark while its API gateway keeps
+  /// the Z.ai provider id and mark.
+  var iconID: String? = nil
   var defaultEndpoint: String? = nil
   var providesEndpoint: Bool = false
   var requiresApiKey: Bool = true
@@ -181,12 +190,16 @@ struct DesignProviderOption: Identifiable, Hashable {
   var canClear: Bool = false
   var loginMethods: [DesignLoginMethod] = []
   var kind: String = "gateway"
+  var requiresGatewayId: Bool = false
+  var requiresAccountId: Bool = false
   var regions: [String] = []
   var defaultRegion: String? = nil
   /// Typed credential products (API keys / plan keys) accepted through
-  /// account-save-input. Non-empty for compatible vendors: the Add Account
-  /// sheet offers key input instead of a disabled row.
+  /// account-save-input. Native providers may publish these alongside their
+  /// local-login path.
   var credentialKinds: [DesignCredentialKind] = []
+  /// The provider can save its own auth file from pasted JSON.
+  var acceptsAuthPaste: Bool = false
 }
 
 struct DesignCredentialKind: Identifiable, Hashable {
@@ -206,10 +219,25 @@ struct DesignHubSource: Identifiable, Hashable {
   var name: String
   var detail: String
   var provider: String
+  /// Raw engine provider id ("codex") for provider-level choices. Display
+  /// keeps using `provider`; never show this raw value.
+  var providerID: String = ""
   var symbol: String
   var enabled: Bool
   var warning: String? = nil
   var modelCount: Int = 0
+  /// True for the hub-wide "rotate across accounts" row: one per hub, toggled
+  /// as a hub mode rather than as a source.
+  var rotates: Bool = false
+  var rotatesAccountCount: Int = 0
+  /// True for a row whose label and detail come from the engine because its
+  /// account value is not an account at all ("pool:<provider>").
+  var poolSource: Bool = false
+
+  /// Rows that name themselves instead of resolving an account identity.
+  var describesItself: Bool { rotates || poolSource }
+  /// Hub owning this row; sent back as Name on hub mutations.
+  var hub: String = ""
 }
 
 struct DesignHubCatalog: Hashable {
@@ -238,6 +266,10 @@ struct DesignRoutingCandidate: Identifiable, Hashable {
   var detail: String
   var provider: String
   var actionID: String
+  /// Whole-provider choice ("OpenAI") instead of one account. Rendered from
+  /// `provider` via nativeProviderName; the engine resolves it to the first
+  /// attached source.
+  var providerChoice: Bool = false
 }
 
 struct DesignRoutingConflict: Identifiable, Hashable {
@@ -256,6 +288,37 @@ struct DesignOperationResult: Equatable {
   let operation: String
   let succeeded: Bool
   let message: String
+  /// Engine code (`ACCOUNT_EXISTS`, `ACCOUNT_SNAPSHOT_EXISTS`, …). Absent on
+  /// a result that has no machine code to report.
+  let code: String?
+
+  /// A defaulted stored `let` is left out of the memberwise initializer, so
+  /// `code:` cannot be passed unless this init exists. Call sites without an
+  /// engine code omit it.
+  init(
+    requestID: String,
+    operation: String,
+    succeeded: Bool,
+    message: String,
+    code: String? = nil
+  ) {
+    self.requestID = requestID
+    self.operation = operation
+    self.succeeded = succeeded
+    self.message = message
+    self.code = code
+  }
+}
+
+/// A refused client-config takeover the user can still confirm.
+///
+/// The engine fails closed when a client's config holds values it does not own
+/// (CLIENT_CONFIG_FOREIGN) so it never overwrites a login the user pointed
+/// elsewhere. Without this offer the refusal was a dead end: the message told
+/// the user to confirm the takeover, and no surface offered one.
+struct DesignTakeoverOffer: Equatable, Identifiable {
+  /// The requestId of the refused attempt, so two offers cannot collide.
+  let id: String
 }
 
 struct DesignDegradedCondition: Identifiable, Hashable {
@@ -263,6 +326,19 @@ struct DesignDegradedCondition: Identifiable, Hashable {
   var kind: String
   var title: String
   var detail: String
+}
+
+struct DesignDoctorFinding: Identifiable, Equatable {
+  let check: String
+  let status: String
+  let detail: String?
+
+  var id: String { "\(check):\(detail ?? status)" }
+}
+
+struct DesignDoctorReport: Equatable {
+  let status: String
+  let findings: [DesignDoctorFinding]
 }
 
 struct DesignApp: Identifiable, Hashable {
@@ -285,6 +361,33 @@ struct DesignApp: Identifiable, Hashable {
   var usageWindows: [DesignUsageWindow] = []
   var usageRemaining: String? = nil
   var attentionMessage: String? = nil
+}
+
+struct DesignCodexProfileSource: Identifiable, Hashable {
+  var id: String { sourceID }
+  let sourceID: String
+  var kind: String = "account"
+  var label: String
+  var detail: String
+  var selected: Bool
+  var models: [String]
+}
+
+struct DesignCodexProfile: Identifiable, Hashable {
+  var id: String { name }
+  let name: String
+  var sourceID: String
+  var sourceLabel: String
+  var modelID: String
+  var transportPolicy: String
+  var launchCommand: String
+}
+
+func validCodexProfileName(_ value: String) -> Bool {
+  let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+  return !value.isEmpty && value.count <= 64
+    && value.trimmingCharacters(in: .whitespacesAndNewlines) == value
+    && value.unicodeScalars.allSatisfy(allowed.contains)
 }
 
 struct DesignUsageWindow: Identifiable, Hashable {
@@ -311,6 +414,14 @@ struct DesignAccount: Identifiable, Hashable {
   var kind: DesignAccountKind
   var status: DesignStatus
   var lastUsed: String
+  /// Engine provider / client id ("codex", "gemini"). Quota is reported per
+  /// live login, so the account row needs this to find its app's usage rows
+  /// without guessing from the display name.
+  var providerID: String = ""
+  /// Engine answer for a reviewed backup entry: true when importing it
+  /// would replace a saved account. Nil on rows that are not an import
+  /// review, which still match by provider and name.
+  var importReplacesSaved: Bool? = nil
 }
 
 struct DesignLiveLogin: Identifiable, Equatable {
@@ -324,6 +435,11 @@ struct DesignLiveLogin: Identifiable, Equatable {
   var id: String { "\(providerID):\(sourceID ?? "default")" }
 }
 
+struct DesignCopiedKey: Equatable {
+  var id: String
+  var nonce: Int
+}
+
 struct DesignProxy: Identifiable, Hashable {
   let id: String
   var name: String
@@ -333,6 +449,10 @@ struct DesignProxy: Identifiable, Hashable {
   var status: DesignStatus
   var port: Int
   var enabled: Bool
+  var apiKey: String = ""
+  /// The service can reveal a key on copy. The key itself is not stored here
+  /// unless this row is fixture data.
+  var hasToken: Bool = false
 }
 
 struct DesignLogSource: Identifiable, Hashable {
@@ -392,6 +512,13 @@ struct DesignFeedback: Identifiable, Equatable {
   enum Kind: Equatable { case success, information, warning, error }
 
   let id = UUID()
+  var title: String?
   var message: String
   var kind: Kind
+
+  init(title: String? = nil, message: String, kind: Kind = .information) {
+    self.title = title
+    self.message = message
+    self.kind = kind
+  }
 }

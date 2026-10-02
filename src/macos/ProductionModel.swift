@@ -6,62 +6,153 @@ import UniformTypeIdentifiers
 let anyPickBackupType = UTType(filenameExtension: "anypick-backup") ?? .data
 
 // Adapts the versioned tray snapshot/command protocol to the new design-system UI.
-// Secrets remain behind the Node supervisor; this model only sees redacted snapshots.
+// Snapshots stay redacted. A proxy API key is fetched only when the user copies
+// it, then pasted without being stored on the model.
 @MainActor
 final class ProductionDesignModel: MacOSDesignModel {
+  // MARK: - State
+
   let store: TrayStore
   private var storeObserver: AnyCancellable?
   private var lastResultId: String?
-  private var pendingOperations = [String: String]()
+  private var synchronizeScheduled = false
+  var pendingOperations = [String: String]()
   private var pendingRouteChanges = [(appID: String, routeID: String)]()
+  private var pendingRouteRequestID: String?
   /// Model edits that arrived together with a route change. A route switch
   /// takes the single-flight slot, so the edit waits here and is applied
   /// once the snapshot confirms the new route — the switch never drops it.
   /// Dropped when the switch fails.
-  private var pendingModelRoleEdits = [String: (routeID: String, roles: [String: String])]()
+  private var pendingModelRoleEdits = [String: (routeID: String, roles: [String: String], scope: String)]()
   private var pendingConfigEdits = [
     String: (routeID: String, fast: String, reasoning: String, fallback: Bool)
   ]()
   private var serviceRequests = [String: (id: String, operation: DesignServiceOperation)]()
+  private var pendingServiceAnnouncements = [String: String]()
+  private var confirmedServiceOperations = Set<String>()
   /// Desired hub-source state per in-flight toggle, keyed by
   /// hubSourceServiceID. Snapshot confirmation (not the faster
   /// command-accepted result) clears the row spinner.
   private var hubSourcePending = [String: Bool]()
   /// Gateway names awaiting creation, keyed by requestID. The post-create
-  /// auto-connect arms only on the success result (A9), never on accept.
+  /// Auto-connect arms only on the success result, never on accept.
   private var pendingGatewayNames = [String: String]()
+  private var pendingAutoCodexProfileFingerprints = [String: Set<String>]()
+  private var attemptedAutoCodexProfileFingerprints = Set<String>()
   /// Backup rows awaiting a confirmed forget, keyed by requestID. The staged
-  /// server copy and the row clear only on the success result (B3).
+  /// Server copy and the row clear only on the success result.
   private var pendingForgetBackupIDs = [String: String]()
+  /// Apps whose removal waits on a successful client-reset. The preference
+  /// is dropped only when that reset is accepted; a refused or failed reset
+  /// leaves the app in the list and the client on its current config.
+  private var pendingAppRemovals = [String: String]()
+  /// Copy requests waiting on a proxy-token result, keyed by request id.
+  /// The value is the row id the checkmark watches ("hub" or a proxy id).
+  private var pendingProxyTokenCopies = [String: String]()
   /// Settings with an in-flight mutate, keyed by property name. synchronize()
-  /// skips overwriting these (S3): the binding already flipped local-first,
+  /// skips overwriting these: the binding already flipped local-first,
   /// and rewriting the stale snapshot value until the supervisor acks reads
   /// as flicker. Cleared by the command result, or when the command loop
   /// goes idle as a backstop.
-  private var pendingSettings = Set<String>()
+  var pendingSettings = Set<String>()
 
-  /// Send a setting mutate, holding the local value until it settles.
-  private func sendSetting(key: String, changed: Bool, mutate: () -> String?) {
-    guard changed else { return }
-    pendingSettings.insert(key)
-    guard let requestID = mutate() else {
-      pendingSettings.remove(key)
+  /// The native shell may lose the helper after accepting a mutation. The
+  /// result frame is then impossible to receive, so synchronize() converts
+  /// the pending operation into a normal failure when the store reports the
+  /// degraded service state. Clearing the map makes this one-shot.
+  private func failPendingOperationsIfServiceDegraded() {
+    guard case .degraded(let reason) = store.serviceState else { return }
+
+    if case .inFlight(let appID, let from, let to, let routeID) = switchPhase {
+      switchPhase = .recovery(appID: appID, requested: to, kept: from, routeID: routeID)
+    }
+    pendingRouteChanges.removeAll()
+    pendingRouteRequestID = nil
+    pendingModelRoleEdits.removeAll()
+    pendingConfigEdits.removeAll()
+    // Rows that were waiting on the service must stop waiting on it: a spinner
+    // or an optimistic switch left behind claims work is still happening.
+    for serviceID in serviceOperations.keys {
+      cancelServiceTimeout(for: serviceID)
+    }
+    // Rows whose only state is a service operation get the reason on the row
+    // itself: the Needs Attention banner explains the service, not which switch
+    // stopped answering.
+    for service in serviceRequests.values {
+      serviceFailures[service.id] = reason
+    }
+    serviceOperations.removeAll()
+    hubSourcePending.removeAll()
+    serviceRequests.removeAll()
+    pendingServiceAnnouncements.removeAll()
+    confirmedServiceOperations.removeAll()
+    // A refusal that is waiting for the user's answer cannot be answered by a
+    // service that is gone; leaving it would offer a sheet that cannot complete.
+    pendingTakeover = nil
+    pendingGatewayNames.removeAll()
+    pendingForgetBackupIDs.removeAll()
+    pendingAppRemovals.removeAll()
+    pendingProxyTokenCopies.removeAll()
+    // A successful gateway create arms the next snapshot to open the connect
+    // sheet; a service that died meanwhile must not leave that armed.
+    pendingGatewayConnectName = nil
+
+    var importWasRunning = false
+    if case .importing = backupInspectionState {
+      importWasRunning = true
+      // A backup import that lost its service never returns: its sheet would
+      // stay "Importing…" with the primary disabled and no alert to dismiss.
+      backupInspectionState = .atomicFailure
+      backupInspectionMessage = reason
+    }
+
+    guard !pendingOperations.isEmpty || !pendingSettings.isEmpty else {
+      if importWasRunning { showFeedback(reason, kind: .error) }
       return
     }
-    pendingOperations[requestID] = "setting-\(key)"
-    operationResult = nil
+
+    let pending = pendingOperations
+    // Automatic profile creation retries when the service comes back, so a
+    // service death does not need a second alert on top of the degraded
+    // banner. A sync the user asked for does not retry itself.
+    let hasVisiblePendingWork = pending.values.contains {
+      $0 != "codex-profile-auto-sync"
+    } || !pendingSettings.isEmpty || importWasRunning
+    pendingOperations.removeAll()
+    pendingAutoCodexProfileFingerprints.removeAll()
+    attemptedAutoCodexProfileFingerprints.removeAll()
+    pendingSettings.removeAll()
+    if pending.values.contains("account-switch") {
+      switchingAccountID = nil
+    }
+    // Report every stranded operation, not just the first: the views that
+    // observe operationResult are a subset of the ones that start operations,
+    // so the feedback banner is what actually tells the user what failed.
+    for requestID in pending.keys.sorted() {
+      guard let operation = pending[requestID] else { continue }
+      operationResult = DesignOperationResult(
+        requestID: requestID,
+        operation: operation,
+        succeeded: false,
+        message: reason
+      )
+    }
+    if hasVisiblePendingWork { showFeedback(reason, kind: .error) }
   }
+
   /// Watchdogs that fail a service operation when no snapshot confirms it
   /// in time. Without them a lost snapshot would spin the row forever.
   private var serviceTimeoutTasks = [String: Task<Void, Never>]()
-  private var clearedActivityIDs = Set<String>()
+  var clearedActivityIDs = Set<String>()
   /// Log lines hidden by Clear, per source: the exact tail on screen when
   /// cleared. New lines append visibly; a rotation or restart that no longer
   /// starts with this snapshot resets instead of hiding the new logs.
-  private var clearedLogSnapshots = [String: [String]]()
-  private var importedBackupFileName: String?
-  private var presentedInspectionID: String?
+  var clearedLogSnapshots = [String: [String]]()
+  var importedBackupFileName: String?
+  var presentedInspectionID: String?
   private var didResetFirstRunOnboarding = false
+
+  // MARK: - Derived state
 
   override var isProduction: Bool { true }
 
@@ -71,13 +162,16 @@ final class ProductionDesignModel: MacOSDesignModel {
       return DesignLiveLogin(
         providerID: source.providerId,
         sourceID: source.sourceId,
-        providerName: nativeProviderName(source.providerId),
+        providerName: source.clientId.map(anypickDisplayName)
+          ?? nativeProviderName(source.providerId),
         appName: source.clientId.map(anypickDisplayName) ?? source.label,
-        identity: source.liveIdentity,
+        identity: source.liveIdentity.flatMap(displaySafeIdentity),
         symbol: appSymbol(appID)
       )
     }
   }
+
+  // MARK: - Construction
 
   init(store: TrayStore) {
     self.store = store
@@ -100,7 +194,13 @@ final class ProductionDesignModel: MacOSDesignModel {
       // the SwiftUI binding never sees the new state. A Task hopped onto
       // MainActor is the documented way and matches how SwiftUI itself
       // dispatches update notifications.
-      Task { @MainActor [weak self] in self?.synchronize() }
+      Task { @MainActor [weak self] in
+        guard let self, !self.synchronizeScheduled else { return }
+        self.synchronizeScheduled = true
+        await Task.yield()
+        self.synchronize()
+        self.synchronizeScheduled = false
+      }
     }
     synchronize()
   }
@@ -124,17 +224,21 @@ final class ProductionDesignModel: MacOSDesignModel {
     super.dismissFirstRunWelcome()
   }
 
-  override func detectSavedAccount(provider: String) -> Bool {
+  // MARK: - Accounts and gateways
+
+  override func detectSavedAccount(provider: String, sourceID: String?) -> Bool {
     guard let source = accountProvider(for: provider) else {
       showFeedback("No installed login source is available for \(provider).", kind: .error)
       return false
     }
+    let selectedSourceID = sourceID?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let effectiveSourceID = selectedSourceID?.isEmpty == false ? selectedSourceID : source.sourceId
     guard
       let requestID = store.mutate(
         operation: "account-detect",
         name: "detect",
         providerId: source.providerId,
-        sourceId: source.sourceId,
+        sourceId: effectiveSourceID,
         activityLabel: "detecting \(source.label) login"
       )
     else { return false }
@@ -157,18 +261,32 @@ final class ProductionDesignModel: MacOSDesignModel {
       showFeedback("That browser login method is no longer available.", kind: .error)
       return false
     }
+    let method = source.loginMethods?.first { $0.id == methodId }
     let accountName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard
       let requestID = store.mutate(
         operation: "account-login",
         name: accountName.isEmpty ? nil : accountName,
         providerId: source.providerId,
-        sourceId: source.sourceId,
+        sourceId: method?.sourceID ?? source.sourceId,
         methodId: methodId,
         label: label,
         activityLabel: "signing in to \(source.label)"
       )
-    else { return false }
+    else {
+      // `mutate` rejects commands when the bundled service is disconnected,
+      // degraded, stopped, or already handling another request. The store
+      // has the precise reason, but it used to remain a toast behind this
+      // sheet, making an enabled Sign In button look inert.
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        !reason.isEmpty
+          ? reason
+          : "AnyPick could not start the browser sign-in. Try again when the service is ready.",
+        kind: .error
+      )
+      return false
+    }
     pendingOperations[requestID] = "account-login"
     operationResult = nil
     return true
@@ -181,7 +299,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     store.cancelMutation(requestId: requestID)
   }
 
-  /// Typed credential save for compatible vendors (API keys / plan keys).
+  /// Typed credential save for provider-declared credentials (API keys / plan keys).
   /// The secret travels in the mutation's apiKey field — the same field
   /// gateway-create already uses for profile secrets.
   override func saveCredentialInput(
@@ -219,6 +337,42 @@ final class ProductionDesignModel: MacOSDesignModel {
     return true
   }
 
+  /// Saves a provider auth file the user pasted. The document stays in the
+  /// temp file the sheet staged. `apiKey` is the one-line secret field, and
+  /// a pasted document must not ride in it.
+  override func savePastedAuth(
+    provider: String,
+    name: String?,
+    path: String,
+    overwrite: Bool
+  ) -> Bool {
+    guard let source = accountProvider(for: provider) else {
+      showFeedback("No supported login source is available for \(provider).", kind: .error)
+      return false
+    }
+    guard source.acceptsAuthPaste == true else {
+      showFeedback(
+        "\(source.label) does not accept pasted auth JSON. Sign in with its app, or use the API key field when that provider shows one.",
+        kind: .error
+      )
+      return false
+    }
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard
+      let requestID = store.mutate(
+        operation: "account-save-auth",
+        name: trimmed.isEmpty ? nil : trimmed,
+        providerId: source.providerId,
+        overwrite: overwrite ? true : nil,
+        path: path,
+        activityLabel: "saving \(source.label) account"
+      )
+    else { return false }
+    pendingOperations[requestID] = "account-save-auth"
+    operationResult = nil
+    return true
+  }
+
   override func clearLiveLogin(provider: String) {
     guard let source = accountProvider(for: provider) else {
       showFeedback("No live login source is available for \(provider).", kind: .error)
@@ -233,7 +387,7 @@ final class ProductionDesignModel: MacOSDesignModel {
     )
   }
 
-  override func testGateway(provider: String, endpoint: String, apiKey: String) -> Bool {
+  override func testGateway(provider: String, endpoint: String, apiKey: String, profile: String? = nil) -> Bool {
     guard let gateway = gatewayProvider(for: provider) else {
       showFeedback("Unknown gateway provider \(provider).", kind: .error)
       return false
@@ -245,6 +399,7 @@ final class ProductionDesignModel: MacOSDesignModel {
         providerId: gateway.id,
         endpoint: endpoint,
         apiKey: apiKey,
+        profile: profile,
         activityLabel: "testing \(gateway.label) connection"
       )
     else { return false }
@@ -253,20 +408,34 @@ final class ProductionDesignModel: MacOSDesignModel {
     return true
   }
 
-  override func setRoute(appID: String, routeID: String) {
+  @discardableResult
+  // MARK: - Apps
+
+  override func setRoute(appID: String, routeID: String) -> Bool {
     guard let action = store.actions.first(where: { $0.id == routeID && $0.clientId == appID })
     else {
       showFeedback("That route is no longer available. Refresh and try again.", kind: .error)
-      return
+      return false
     }
     let app = apps.first { $0.id == appID }
     let from = app?.routeOptions.first { $0.id == app?.selectedRouteID }?.name ?? ""
-    // invoke() refuses while another mutation is in flight (nil): only enter
-    // inFlight when the request was actually accepted, or the sheet hangs in
-    // Applying… with no result ever arriving (A1).
-    guard action.enabled else { return }
-    guard store.invoke(actionId: action.id, label: action.label) != nil else { return }
+    guard action.enabled else {
+      showFeedback("That connection is no longer available. Refresh and try again.", kind: .warning)
+      return false
+    }
+    guard let requestID = store.invoke(actionId: action.id, label: action.label) else {
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        reason.isEmpty
+          ? "AnyPick could not start this connection change. Try again when the service is ready."
+          : reason,
+        kind: .error
+      )
+      return false
+    }
+    pendingRouteRequestID = requestID
     switchPhase = .inFlight(appID: appID, from: from, to: action.label, routeID: routeID)
+    return true
   }
 
   @discardableResult
@@ -340,14 +509,15 @@ final class ProductionDesignModel: MacOSDesignModel {
   override func updateAppModelRoles(
     appID: String,
     routeID: String,
-    modelRoles: [String: String]
+    modelRoles: [String: String],
+    scope: ModelRoleScope = .connection
   ) -> Bool {
     guard let app = apps.first(where: { $0.id == appID }) else { return false }
     if routeID != app.selectedRouteID {
       // Keep the model edit across the switch: stash it for
       // flushPendingModelEdits once the snapshot confirms the new route.
       guard store.busyRequestId == nil else { return false }
-      pendingModelRoleEdits[appID] = (routeID, modelRoles)
+      pendingModelRoleEdits[appID] = (routeID, modelRoles, scope.rawValue)
       setRoute(appID: appID, routeID: routeID)
       guard isSwitching(appID) else {
         pendingModelRoleEdits.removeValue(forKey: appID)
@@ -355,64 +525,247 @@ final class ProductionDesignModel: MacOSDesignModel {
       }
       return true
     }
-    return sendModelRolesEdit(app: app, modelRoles: modelRoles)
+    return sendModelRolesEdit(app: app, modelRoles: modelRoles, scope: scope)
   }
 
   /// Resolve role names against the current route catalog and send them.
   /// Tracked so sheets can wait for the result instead of dismissing blind.
   @discardableResult
-  private func sendModelRolesEdit(app: DesignApp, modelRoles: [String: String]) -> Bool {
+  private func sendModelRolesEdit(
+    app: DesignApp,
+    modelRoles: [String: String],
+    scope: ModelRoleScope = .connection
+  ) -> Bool {
     guard let config = store.clientModelConfigs.first(where: { $0.clientId == app.id }),
       config.editable
     else {
       showFeedback("Model roles are managed by the selected app route.", kind: .information)
       return false
     }
+    // Clearing sends no ids at all: the engine drops the pins and
+    // re-resolves (provider default, else engine default).
+    let clearing = modelRoles.values.allSatisfy(\.isEmpty)
     var actionIDs = [String: String]()
-    for (roleID, modelID) in modelRoles where !modelID.isEmpty {
-      if let option = config.options.first(where: { $0.modelId == modelID }) {
-        actionIDs[roleID] = option.actionId
+    if !clearing {
+      for (roleID, modelID) in modelRoles where !modelID.isEmpty {
+        if let option = config.options.first(where: { $0.modelId == modelID }) {
+          actionIDs[roleID] = option.actionId
+        }
       }
-    }
-    guard actionIDs["default"] != nil else {
-      showFeedback("Choose a default model published by the current route.", kind: .error)
-      return false
+      guard actionIDs["default"] != nil else {
+        showFeedback("Choose a default model published by the current route.", kind: .error)
+        return false
+      }
     }
     guard
       let requestID = store.applyModelRoles(
-        clientId: app.id, roleActionIds: actionIDs, label: app.name)
+        clientId: app.id, roleActionIds: actionIDs, label: app.name,
+        scope: scope.rawValue)
     else { return false }
     pendingOperations[requestID] = "app-model-roles"
     operationResult = nil
     return true
   }
 
+  /// Where the app's pins came from: the engine marker, or legacy pins with
+  /// no marker (all historical writes were per-connection explicit).
+  override func modelRolesProvenance(appID: String) -> ModelRolesProvenance {
+    guard let app = apps.first(where: { $0.id == appID }) else { return .none }
+    guard
+      let config = store.clientModelConfigs.first(where: { $0.clientId == app.id }),
+      let source = config.modelRolesSource, !source.isEmpty
+    else {
+      return app.modelRoles.contains { !$0.modelID.isEmpty } ? .custom : .none
+    }
+    switch source {
+    case "explicit": return .custom
+    case "provider": return .inherited
+    default: return app.modelRoles.contains { !$0.modelID.isEmpty } ? .custom : .none
+    }
+  }
+
   override func resetAppConfiguration(appID: String) {
     _ = store.mutate(
       operation: "client-reset",
       name: appID,
-      activityLabel: "resetting \(anypickDisplayName(appID)) defaults"
+      providerId: appID,
+      activityLabel: "disconnecting \(anypickDisplayName(appID))"
     )
+  }
+
+  override func addApp(appID: String) {
+    AppPreferences.addConfiguredApp(appID)
+    let effective = AppPreferences.effectiveConfiguredAppIDs(allApps: allSupportedApps)
+    apps = allSupportedApps.filter { effective.contains($0.id) }
+    showFeedback("Added \(anypickDisplayName(appID)) to your apps.", kind: .success)
+  }
+
+  override func saveCodexProfile(
+    name: String,
+    sourceID: String,
+    modelID: String,
+    transportPolicy: String
+  ) -> Bool {
+    guard validCodexProfileName(name) else {
+      showFeedback("Use 1–64 letters, numbers, hyphens, or underscores for the profile name.", kind: .error)
+      return false
+    }
+    guard store.codexProfileSources.contains(where: { $0.sourceId == sourceID }) else {
+      showFeedback("That Codex route is no longer available. Refresh and try again.", kind: .error)
+      return false
+    }
+    guard !store.codexProfiles.contains(where: { $0.name == name }) else {
+      showFeedback("A Codex profile with that name already exists.", kind: .error)
+      return false
+    }
+    guard
+      let requestID = store.mutate(
+        operation: "codex-profile-save",
+        name: name,
+        sourceId: sourceID,
+        defaultModel: modelID.isEmpty ? nil : modelID,
+        transportPolicy: transportPolicy,
+        activityLabel: "adding Codex profile \(name)"
+      )
+    else { return false }
+    pendingOperations[requestID] = "codex-profile-save"
+    operationResult = nil
+    return true
+  }
+
+  @discardableResult
+  override func createMissingCodexProfiles(sourceIDs: [String]) -> Bool {
+    let requested = Set(sourceIDs)
+    let profiled = Set(store.codexProfiles.map(\.sourceId))
+    let missing = store.codexProfileSources
+      .filter { $0.kind == "account" && requested.contains($0.sourceId) && !profiled.contains($0.sourceId) }
+      .map(\.sourceId)
+    guard !missing.isEmpty else { return false }
+    guard let requestID = store.mutate(
+      operation: "codex-profile-sync",
+      sourceIDs: missing,
+      activityLabel: "creating \(missing.count) Codex profiles"
+    ) else {
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        reason.isEmpty
+          ? "AnyPick could not create those Codex profiles. Try again when the service is ready."
+          : reason,
+        kind: .error)
+      return false
+    }
+    pendingOperations[requestID] = "codex-profile-sync"
+    operationResult = nil
+    return true
+  }
+
+  override func setAutomaticCodexProfileCreation(_ enabled: Bool, baselineSourceIDs: [String]) {
+    automaticallyCreateCodexProfiles = enabled
+    AppPreferences.codexAutoProfilesEnabled = enabled
+    if enabled {
+      AppPreferences.codexAutoProfileSourceFingerprints = Set(
+        baselineSourceIDs.map { AppPreferences.codexAutoProfileFingerprint(for: $0) }
+      )
+    }
+    attemptedAutoCodexProfileFingerprints.removeAll()
+  }
+
+  override func updateCodexProfile(
+    name: String,
+    sourceID: String,
+    modelID: String,
+    transportPolicy: String
+  ) -> Bool {
+    guard validCodexProfileName(name) else {
+      showFeedback("Use 1–64 letters, numbers, hyphens, or underscores for the profile name.", kind: .error)
+      return false
+    }
+    guard store.codexProfileSources.contains(where: { $0.sourceId == sourceID }) else {
+      showFeedback("That Codex route is no longer available. Refresh and try again.", kind: .error)
+      return false
+    }
+    guard store.codexProfiles.contains(where: { $0.name == name }) else {
+      showFeedback("That Codex profile no longer exists. Refresh and try again.", kind: .error)
+      return false
+    }
+    guard
+      let requestID = store.mutate(
+        operation: "codex-profile-update",
+        name: name,
+        sourceId: sourceID,
+        defaultModel: modelID.isEmpty ? nil : modelID,
+        transportPolicy: transportPolicy,
+        activityLabel: "updating Codex profile \(name)"
+      )
+    else { return false }
+    pendingOperations[requestID] = "codex-profile-update"
+    operationResult = nil
+    return true
+  }
+
+  override func removeCodexProfile(name: String) {
+    guard store.codexProfiles.contains(where: { $0.name == name }) else {
+      showFeedback("That Codex profile no longer exists. Refresh and try again.", kind: .error)
+      return
+    }
+    guard
+      let requestID = store.mutate(
+        operation: "codex-profile-remove",
+        name: name,
+        activityLabel: "removing Codex profile \(name)"
+      )
+    else { return }
+    pendingOperations[requestID] = "codex-profile-remove"
+    operationResult = nil
+  }
+
+  override func removeApp(appID: String) {
+    if let app = apps.first(where: { $0.id == appID }), isAppManagedByAnyPick(app) {
+      guard
+        let requestID = store.mutate(
+          operation: "client-reset",
+          name: appID,
+          providerId: appID,
+          activityLabel: "disconnecting \(anypickDisplayName(appID))"
+        )
+      else { return }
+      pendingOperations[requestID] = "client-reset"
+      pendingAppRemovals[requestID] = appID
+      return
+    }
+    forgetApp(appID)
+  }
+
+  /// Drops the app from the local list. A managed app reaches this only after
+  /// client-reset succeeds, so the coding client is not left on AnyPick's config.
+  private func forgetApp(_ appID: String) {
+    AppPreferences.removeApp(appID)
+    let effective = AppPreferences.effectiveConfiguredAppIDs(allApps: allSupportedApps)
+    apps = allSupportedApps.filter { effective.contains($0.id) }
+    showFeedback("Removed \(anypickDisplayName(appID)) from your apps.", kind: .warning)
   }
 
   override func addSavedAccount(
     provider: String,
     name: String,
     label: String,
-    identity: String
+    identity: String,
+    sourceID: String? = nil
   ) -> Bool {
     guard let source = accountProvider(for: provider) else {
       showFeedback("No supported login source is available for \(provider).", kind: .error)
       return false
     }
-    // Tracked (C4): the sheet stays open until the result arrives instead of
-    // dismissing on accept and losing field context on failure.
+    let selectedSourceID = sourceID?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let effectiveSourceID = selectedSourceID?.isEmpty == false ? selectedSourceID : source.sourceId
+    // Keep the sheet open until the result arrives so failures retain field
+    // context.
     guard
       let requestID = store.mutate(
         operation: "account-save",
         name: name,
         providerId: source.providerId,
-        sourceId: source.sourceId,
+        sourceId: effectiveSourceID,
         label: label,
         activityLabel: "saving \(source.label) account"
       )
@@ -453,6 +806,8 @@ final class ProductionDesignModel: MacOSDesignModel {
     endpoint: String,
     apiKey: String,
     region: String?,
+    gatewayId: String? = nil,
+    profile: String? = nil,
     defaultModel: String
   ) -> Bool {
     guard let gateway = gatewayProvider(for: provider) else {
@@ -469,26 +824,29 @@ final class ProductionDesignModel: MacOSDesignModel {
         endpoint: endpoint,
         apiKey: apiKey,
         region: region,
+        gatewayId: gatewayId,
         defaultModel: defaultModel,
+        profile: profile,
         activityLabel: "adding \(gateway.label)"
       )
     else { return false }
+    // Both shapes are tracked: an account-api-key save previously tracked
+    // nothing, so a failure produced an operationResult no view observes and
+    // the user was told nothing at all.
+    pendingOperations[requestID] = operation
     if operation == "gateway-create" {
-      // Arm the post-create auto-connect only when the engine reports
-      // success (A9): arming on accept lets a failed create capture the next
-      // same-named gateway — and "Production" is the default name.
-      pendingOperations[requestID] = operation
+      // Arm the post-create auto-connect only after success; accepting the
+      // request is not enough to identify a created gateway.
       pendingGatewayNames[requestID] = name
-      operationResult = nil
     }
+    operationResult = nil
     return true
   }
 
   @discardableResult
   override func updateAccount(id: String, label: String) -> Bool {
-    // Tracked (C4) so the edit sheet can wait for the result. The store
-    // refuses while another mutation is in flight (nil request): report it so
-    // the sheet only waits for a result that will actually arrive (A1).
+    // The store refuses while another mutation is in flight. Return false so
+    // the sheet only waits for a result that will actually arrive.
     if let account = store.accounts.first(where: { $0.id == id }) {
       guard
         let requestID = store.mutate(
@@ -520,8 +878,7 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   override func refreshAccount(id: String) {
-    // Tracked (C4) for an honest result trail; the row has no sheet to hold,
-    // so failures surface through the result toast like other row actions.
+    // Keep a result trail for row actions; failures surface through feedback.
     if let account = store.accounts.first(where: { $0.id == id }) {
       guard
         let requestID = store.mutate(
@@ -547,7 +904,45 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
   }
 
-  /// Re-probe a saved gateway with its stored credential (C7). The key never
+  override func refreshAppModels(appID: String) {
+    guard let app = apps.first(where: { $0.id == appID }),
+      let action = store.actions.first(where: { $0.id == app.selectedRouteID })
+    else { return }
+
+    let sourceID = action.sourceId
+    if let account = parseAccountSource(sourceID) {
+      guard
+        let requestID = store.mutate(
+          operation: "account-refresh",
+          name: account.name,
+          providerId: account.provider,
+          activityLabel: "refreshing \(app.name) models"
+        )
+      else { return }
+      pendingOperations[requestID] = "account-refresh"
+      operationResult = nil
+      return
+    }
+
+    if let gatewayName = parseGatewaySource(sourceID) {
+      // gateway-refresh resolves the stored profile by name. The snapshot
+      // names that gateway in sourceId and does not carry a provider id.
+      guard
+        let requestID = store.mutate(
+          operation: "gateway-refresh",
+          name: gatewayName,
+          activityLabel: "refreshing \(app.name) models"
+        )
+      else { return }
+      pendingOperations[requestID] = "gateway-refresh"
+      operationResult = nil
+      return
+    }
+
+    showFeedback("Refresh the selected account or gateway from Connections.", kind: .information)
+  }
+
+  /// Re-probe a saved gateway with its stored credential. The key never
   /// leaves the engine: the frame carries only the gateway name, and
   /// handleGatewayTest resolves the profile server-side.
   override func testSavedGateway(id: String) {
@@ -582,6 +977,17 @@ final class ProductionDesignModel: MacOSDesignModel {
       )
     else {
       switchingAccountID = nil
+      // A row action can be rejected before it reaches the Go service (for
+      // example while another mutation is running or while the service is
+      // reconnecting). Keep the error on the account surface instead of
+      // leaving the user with a button that appears to do nothing.
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        !reason.isEmpty
+          ? reason
+          : "AnyPick could not switch to \(account.label). Try again when the service is ready.",
+        kind: .error
+      )
       return
     }
     pendingOperations[requestID] = "account-switch"
@@ -620,7 +1026,9 @@ final class ProductionDesignModel: MacOSDesignModel {
       }
       guard app.selectedRouteID == edit.routeID else { continue }
       pendingModelRoleEdits.removeValue(forKey: appID)
-      sendModelRolesEdit(app: app, modelRoles: edit.roles)
+      sendModelRolesEdit(
+        app: app, modelRoles: edit.roles,
+        scope: ModelRoleScope(rawValue: edit.scope) ?? .connection)
     }
     for (appID, edit) in pendingConfigEdits {
       guard !isSwitching(appID),
@@ -642,9 +1050,7 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   override func removeAccount(id: String) {
-    // Tracked (C4) for the result trail; the confirmation dialog still
-    // closes at once — there is no field context to preserve, and the
-    // result toast reports failures like every other destructive row action.
+    // The confirmation closes at once; result feedback reports failures.
     if let account = store.accounts.first(where: { $0.id == id }) {
       guard
         let requestID = store.mutate(
@@ -670,11 +1076,17 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
   }
 
+  // MARK: - Hub
+
+  override func hubSourceShowsEnabled(_ sourceID: String) -> Bool {
+    if let desired = hubSourcePending[hubSourceServiceID(sourceID)] { return desired }
+    return super.hubSourceShowsEnabled(sourceID)
+  }
+
   override func setHubSource(_ accountID: String, enabled: Bool) {
     guard let source = store.hubSources.first(where: { $0.id == accountID }) else { return }
-    // Contract with the engine (hub_snapshot.go): Name = hub, SourceID =
-    // account. The old call sent the account label as Name, which the engine
-    // read as the hub name and answered HUB_NOT_FOUND (H2).
+    // The engine expects the hub name in Name and the source account in
+    // SourceID.
     guard
       let requestID = store.mutate(
         operation: "hub-source-toggle",
@@ -685,9 +1097,28 @@ final class ProductionDesignModel: MacOSDesignModel {
         activityLabel: "updating Proxy Hub sources"
       )
     else { return }
-    // Row-level progress/failure like proxy toggles (H7): the requestID used
-    // to be discarded, so toggle errors only reached a generic toast.
+    // Keep the request associated with the row so progress and failures are
+    // shown beside the source instead of only in generic feedback.
     let serviceID = hubSourceServiceID(accountID)
+    let operation: DesignServiceOperation = enabled ? .starting : .stopping
+    trackServiceOperation(operation, for: serviceID)
+    serviceFailures.removeValue(forKey: serviceID)
+    hubSourcePending[serviceID] = enabled
+    serviceRequests[requestID] = (serviceID, operation)
+  }
+
+  override func setHubRotation(_ hub: String, enabled: Bool) {
+    guard
+      let requestID = store.mutate(
+        operation: "hub-rotation",
+        name: hub,
+        enabled: enabled,
+        activityLabel: "updating Proxy Hub rotation"
+      )
+    else { return }
+    // Same row-level progress and failure reporting as a source switch: the
+    // rotation row is the switch, so its spinner and its error belong to it.
+    let serviceID = hubSourceServiceID("hub/\(hub)/rotation")
     let operation: DesignServiceOperation = enabled ? .starting : .stopping
     trackServiceOperation(operation, for: serviceID)
     serviceFailures.removeValue(forKey: serviceID)
@@ -707,15 +1138,30 @@ final class ProductionDesignModel: MacOSDesignModel {
     serviceRequests[requestID] = (serviceID, .starting)
   }
 
+  // MARK: - Proxies
+
   override func setProxyEnabled(id: String, enabled: Bool) {
     guard let proxy = store.proxies.first(where: { $0.id == id }) else { return }
+    // The published action starts when the process is down and stops when it
+    // is up. It does not read this bool. Sending it for a state the process
+    // is already in runs the opposite branch.
+    if proxy.running == enabled { return }
     let actionId = proxy.toggleActionId
     guard
       let requestID = store.invoke(
         actionId: actionId,
         label: enabled ? "start \(proxy.label)" : "stop \(proxy.label)"
       )
-    else { return }
+    else {
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        reason.isEmpty
+          ? "AnyPick could not \(enabled ? "start" : "stop") \(proxy.label). Try again when the service is ready."
+          : reason,
+        kind: .error
+      )
+      return
+    }
     let serviceID = designServiceID(proxy)
     let operation: DesignServiceOperation = enabled ? .starting : .stopping
     trackServiceOperation(operation, for: serviceID)
@@ -746,6 +1192,60 @@ final class ProductionDesignModel: MacOSDesignModel {
     serviceRequests[requestID] = (serviceID, .restarting)
   }
 
+  override func copyProxyAPIKey(id: String) {
+    let snapshot: ProxySnapshot?
+    let copyID: String
+    if id == "hub" {
+      snapshot = store.proxyHub
+      copyID = "hub"
+    } else {
+      snapshot = store.proxies.first { $0.id == id }
+      copyID = id
+    }
+    guard let snapshot, snapshot.hasToken == true else {
+      announceOnly("API key isn’t available.")
+      return
+    }
+    let providerID = snapshot.providerId
+    let prefix = providerID + "/"
+    guard snapshot.id.hasPrefix(prefix) else { return }
+    let name = String(snapshot.id.dropFirst(prefix.count))
+    guard !name.isEmpty else { return }
+    guard
+      let requestID = store.mutate(
+        operation: "proxy-token",
+        name: name,
+        providerId: providerID,
+        activityLabel: "copy API key",
+        silentFeedback: true
+      )
+    else {
+      announceOnly("Couldn’t copy API key.")
+      return
+    }
+    pendingOperations[requestID] = "proxy-token"
+    pendingProxyTokenCopies[requestID] = copyID
+  }
+
+  override func rotateProxyKey(id: String) {
+    let proxy = id == "hub" ? store.proxyHub : store.proxies.first(where: { $0.id == id })
+    guard let proxy else { return }
+    guard let rotateActionId = proxy.rotateActionId else {
+      showFeedback("Rotating API key is not supported for this proxy.", kind: .warning)
+      return
+    }
+    guard
+      let requestID = store.invoke(
+        actionId: rotateActionId,
+        label: "rotate API key for \(proxy.label)"
+      )
+    else { return }
+    let serviceID = designServiceID(proxy)
+    trackServiceOperation(.restarting, for: serviceID)
+    serviceFailures.removeValue(forKey: serviceID)
+    serviceRequests[requestID] = (serviceID, .restarting)
+  }
+
   override func restartRunningProxies() {
     store.restartProxies()
   }
@@ -754,10 +1254,14 @@ final class ProductionDesignModel: MacOSDesignModel {
     store.stopProxies()
   }
 
+  // MARK: - Backups
+
   override func createBackup(accountIDs: Set<String>) -> Bool {
     let selected = store.accounts.filter { accountIDs.contains($0.id) }
-    guard !selected.isEmpty else {
-      showFeedback("Select at least one saved account.", kind: .error)
+    guard !selected.isEmpty, selected.count <= BackupLimits.maxAccounts else {
+      showFeedback(
+        "Select between 1 and \(BackupLimits.maxAccounts) saved accounts.",
+        kind: .error)
       return false
     }
     let panel = NSSavePanel()
@@ -809,7 +1313,6 @@ final class ProductionDesignModel: MacOSDesignModel {
       overwrite: overwrite
     )
     guard !entryIds.isEmpty else {
-      // Skip-with-all-replace used to sit open with no feedback (B7).
       showFeedback(
         "Nothing to import: every selected account is already saved. Choose Replace to overwrite.",
         kind: .information
@@ -832,7 +1335,7 @@ final class ProductionDesignModel: MacOSDesignModel {
 
   @discardableResult
   override func deleteBackup(id: String) -> Bool {
-    // The staged server copy clears only after the engine confirms (B3): the
+    // The staged server copy clears only after the engine confirms: the
     // forget travels on the single-flight slot, so clearing on send dropped
     // the row while the credentials stayed staged on a refusal or failure.
     guard store.backupPreview?.inspectionId == id else {
@@ -845,6 +1348,8 @@ final class ProductionDesignModel: MacOSDesignModel {
     operationResult = nil
     return true
   }
+
+  // MARK: - Activity, settings, and logs
 
   override func clearActivity() {
     if activityShowsLogs, let source = selectedLogSource,
@@ -877,6 +1382,10 @@ final class ProductionDesignModel: MacOSDesignModel {
   override func showGettingStartedAgain() {
     TrayPreferences.onboardingDismissed = false
     super.showGettingStartedAgain()
+  }
+
+  override func runDoctor() {
+    store.requestDoctor()
   }
 
   override func setOpenAtLogin(_ enabled: Bool) {
@@ -963,39 +1472,149 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
   }
 
+  // MARK: - Snapshot sync
+
   private func synchronizeOnboarding() {
     guard store.snapshotReady else { return }
     if store.isFirstRun {
       if !didResetFirstRunOnboarding {
         didResetFirstRunOnboarding = true
         TrayPreferences.resetOnboardingIfEmpty(isFirstRun: true)
-        onboardingDismissed = false
+        setIfChanged(\.onboardingDismissed, to: false)
       }
-      showFirstRunWelcome = !TrayPreferences.firstRunWelcomeSeen
+      setIfChanged(\.showFirstRunWelcome, to: !TrayPreferences.firstRunWelcomeSeen)
       return
     }
-    showFirstRunWelcome = false
+    setIfChanged(\.showFirstRunWelcome, to: false)
     didResetFirstRunOnboarding = false
     if !showGettingStarted {
-      onboardingDismissed = TrayPreferences.onboardingDismissed
+      setIfChanged(\.onboardingDismissed, to: TrayPreferences.onboardingDismissed)
     }
   }
 
+  private func synchronizeAutomaticCodexProfiles() {
+    guard AppPreferences.codexAutoProfilesEnabled, store.snapshotReady, !isBusy else { return }
+
+    let accountSourceIDs = store.codexProfileSources
+      .filter { $0.kind == "account" }
+      .map(\.sourceId)
+    guard !accountSourceIDs.isEmpty else { return }
+
+    let profilesBySource = Set(store.codexProfiles.map(\.sourceId))
+    var known = AppPreferences.codexAutoProfileSourceFingerprints
+    for sourceID in accountSourceIDs where profilesBySource.contains(sourceID) {
+      known.insert(AppPreferences.codexAutoProfileFingerprint(for: sourceID))
+    }
+    if known != AppPreferences.codexAutoProfileSourceFingerprints {
+      AppPreferences.codexAutoProfileSourceFingerprints = known
+    }
+
+    let pending = Set(pendingAutoCodexProfileFingerprints.values.reduce(into: Set<String>()) { $0.formUnion($1) })
+    let candidates = accountSourceIDs.filter { sourceID in
+      let fingerprint = AppPreferences.codexAutoProfileFingerprint(for: sourceID)
+      return !known.contains(fingerprint) && !attemptedAutoCodexProfileFingerprints.contains(fingerprint)
+        && !pending.contains(fingerprint) && !profilesBySource.contains(sourceID)
+    }
+    guard !candidates.isEmpty else { return }
+    let batch = Array(candidates.prefix(64))
+    guard let requestID = store.mutate(
+      operation: "codex-profile-sync",
+      sourceIDs: batch,
+      activityLabel: "creating Codex profiles for new accounts",
+      silentFeedback: true
+    ) else { return }
+    let fingerprints = Set(batch.map { AppPreferences.codexAutoProfileFingerprint(for: $0) })
+    attemptedAutoCodexProfileFingerprints.formUnion(fingerprints)
+    pendingAutoCodexProfileFingerprints[requestID] = fingerprints
+    pendingOperations[requestID] = "codex-profile-auto-sync"
+    operationResult = nil
+  }
+
+  private func setIfChanged<Value: Equatable>(
+    _ keyPath: ReferenceWritableKeyPath<MacOSDesignModel, Value>,
+    to value: Value
+  ) {
+    guard self[keyPath: keyPath] != value else { return }
+    self[keyPath: keyPath] = value
+  }
+
   private func synchronize() {
-    // A degraded service with data stays on Overview (O5): its Needs
+    // A degraded service with data stays on Overview: its Needs
     // Attention block names the condition. .error is only for having nothing
     // to show at all — the generic pane it renders hides that block.
+    let nextPhase: DesignLoadPhase
     if case .degraded = store.serviceState {
-      phase = store.snapshotReady ? .ready : .error
+      nextPhase = store.snapshotReady ? .ready : .error
     } else {
-      phase = store.snapshotReady ? .ready : .loading
+      nextPhase = store.snapshotReady ? .ready : .loading
     }
-    degradedConditions = store.degradedConditions.map {
+    setIfChanged(\.phase, to: nextPhase)
+    var nextDegradedConditions = store.degradedConditions.map {
       DesignDegradedCondition(id: $0.id, kind: $0.kind, title: $0.title, detail: $0.detail)
     }
-    apps = store.managedAppClientIDs.compactMap(designApp).sorted(by: nativeAppOrder)
-    accounts = (store.accounts.map(designAccount) + store.gateways.map(designGateway))
+    setIfChanged(\.doctorIsRunning, to: store.doctorIsRunning)
+    setIfChanged(\.doctorError, to: store.doctorError)
+    if let report = store.doctorResult {
+      let designReport = DesignDoctorReport(
+        status: report.status,
+        findings: report.findings.map {
+          DesignDoctorFinding(check: $0.check, status: $0.status, detail: $0.detail)
+        }
+      )
+      if doctorReport != designReport { doctorReport = designReport }
+    }
+    // A service that is gone is a degraded condition the app can see for
+    // itself. Without this the app looked completely normal after the helper
+    // died and only the next action failed — the pane that exists to name a
+    // problem never mentioned it.
+    if case .degraded(let reason) = store.serviceState {
+      nextDegradedConditions.insert(
+        DesignDegradedCondition(
+          id: "service-connection",
+          kind: "service",
+          title: "The AnyPick service is not running",
+          detail: reason),
+        at: 0)
+    }
+    setIfChanged(\.degradedConditions, to: nextDegradedConditions)
+    let all = store.managedAppClientIDs.compactMap(designApp).sorted(by: nativeAppOrder)
+    setIfChanged(\.allSupportedApps, to: all)
+    let effectiveConfigured = AppPreferences.effectiveConfiguredAppIDs(allApps: all)
+    setIfChanged(\.apps, to: all.filter { effectiveConfigured.contains($0.id) })
+    let nextAccounts = (store.accounts.map(designAccount) + store.gateways.map(designGateway))
       .sorted(by: nativeAccountOrder)
+    setIfChanged(\.accounts, to: nextAccounts)
+    let profileSources = store.codexProfileSources.map {
+      DesignCodexProfileSource(
+        sourceID: $0.sourceId,
+        kind: $0.kind ?? ($0.sourceId.hasPrefix("account/") ? "account" : ""),
+        label: $0.label,
+        detail: $0.detail,
+        selected: $0.selected,
+        models: $0.models
+      )
+    }
+    if codexProfileSources != profileSources {
+      codexProfileSources = profileSources
+    }
+    let sourceLabels = Dictionary(uniqueKeysWithValues: profileSources.map { ($0.sourceID, $0.label) })
+    let profiles = store.codexProfiles.map {
+      DesignCodexProfile(
+        name: $0.name,
+        sourceID: $0.sourceId,
+        sourceLabel: sourceLabels[$0.sourceId] ?? $0.sourceLabel,
+        modelID: $0.modelId,
+        transportPolicy: $0.transportPolicy,
+        launchCommand: $0.launchCommand
+      )
+    }
+    if codexProfiles != profiles {
+      codexProfiles = profiles
+    }
+    setIfChanged(
+      \.automaticallyCreateCodexProfiles,
+      to: AppPreferences.codexAutoProfilesEnabled
+    )
     if let name = pendingGatewayConnectName,
       let created = accounts.first(where: {
         $0.kind == .gateway && $0.name.caseInsensitiveCompare(name) == .orderedSame
@@ -1006,20 +1625,53 @@ final class ProductionDesignModel: MacOSDesignModel {
     }
     // Hub is presented beside these services by the macOS view, so keep it out
     // of the per-account snapshot list to avoid rendering it twice.
-    proxies = store.proxies.filter { $0.providerId != "proxy-hub" }.map(designProxy)
-    hubSources = store.hubSources.map(designHubSource)
-    hubSourceIDs = Set(store.hubSources.filter(\.enabled).map(\.id))
+    setIfChanged(
+      \.proxies,
+      to: store.proxies.filter { $0.providerId != "proxy-hub" }.map(designProxy)
+    )
+    let hubRows = store.hubSources.map(designHubSource)
+    setIfChanged(\.hubSources, to: hubRows)
+    // The rotation row is a hub mode, not a source: it must not make an empty
+    // hub look publishable, and the empty state ("add a compatible account")
+    // must still appear when nothing else is attached.
+    setIfChanged(
+      \.hubSourceIDs,
+      to: Set(hubRows.filter { $0.enabled && !$0.rotates }.map(\.id))
+    )
+    setIfChanged(\.proxyHubRotates, to: hubRows.contains { $0.rotates && $0.enabled })
     // Catalogs (static policy + warmed live lists, pins merged server-side)
     // compile to counts, conflicts and published models here — one logic for
     // fixture and production. The legacy Go-computed conflicts/published
     // stay on the wire but no longer drive the pane.
-    hubCatalogs = store.hubCatalogs.map {
+    let newCatalogs = store.hubCatalogs.map {
       DesignHubCatalog(accountID: $0.accountID, catalogID: $0.catalog, models: $0.models)
     }
+    if hubCatalogs != newCatalogs {
+      hubCatalogs = newCatalogs
+    }
+    // The engine persists an explicit owner when a shared model collision is
+    // resolved. Rehydrate those pins before compiling the catalog; otherwise
+    // the next snapshot would show the same conflict again even though the
+    // picker mutation succeeded.
+    let persistedHubOwners = store.hubPublishedModels.reduce(into: [String: String]()) { owners, row in
+      guard !row.needsChoice else { return }
+      if let owner = normalizedHubOwnerID(row.ownerAccountId) {
+        owners[row.id] = owner
+      } else if !row.ownerProviderId.isEmpty {
+        owners[row.id] = row.ownerProviderId
+      }
+    }
+    replaceHubModelOwners(persistedHubOwners)
     recompileHubRouting()
-    proxyHubEnabled = store.proxyHub?.running == true
-    proxyHubPort = servicePort(from: store.proxyHub?.address) ?? proxyHubPort
-    logSources = store.logSources.map {
+    setIfChanged(\.proxyHubEnabled, to: store.proxyHub?.running == true)
+    setIfChanged(
+      \.proxyHubPort,
+      to: servicePort(from: store.proxyHub?.address) ?? proxyHubPort
+    )
+    // An older helper may still put the bearer in the snapshot. Do not keep it.
+    setIfChanged(\.proxyHubApiKey, to: "")
+    setIfChanged(\.proxyHubHasToken, to: store.proxyHub?.hasToken == true)
+    let nextLogSources = store.logSources.map {
       DesignLogSource(
         id: $0.id,
         label: $0.label,
@@ -1028,6 +1680,7 @@ final class ProductionDesignModel: MacOSDesignModel {
         symbol: providerSymbol($0.providerId)
       )
     }
+    setIfChanged(\.logSources, to: nextLogSources)
     // The store re-emits the full snapshot on every poll. @Published fires on
     // every assignment even when unchanged, rebuilding the Activity list and
     // re-laying out the pane — the visible flicker. Only publish on change.
@@ -1038,31 +1691,50 @@ final class ProductionDesignModel: MacOSDesignModel {
       selectedLogSourceID = resolvedLogSourceID
     }
     synchronizeLogState()
-    // In-flight settings keep their local value (S3): rewriting the stale
+    // In-flight settings keep their local value: rewriting the stale
     // snapshot value until the supervisor acks reads as flicker.
-    if !pendingSettings.contains("openAtLogin") { openAtLogin = store.settings.launchAtLogin }
-    if !pendingSettings.contains("showUsage") { showUsage = store.settings.showQuota }
+    if !pendingSettings.contains("openAtLogin") {
+      setIfChanged(\.openAtLogin, to: store.settings.launchAtLogin)
+    }
+    if !pendingSettings.contains("showUsage") {
+      setIfChanged(\.showUsage, to: store.settings.showQuota)
+    }
     if !pendingSettings.contains("startProxiesAtLaunch") {
-      startProxiesAtLaunch = store.settings.startEnabledProxies
+      setIfChanged(\.startProxiesAtLaunch, to: store.settings.startEnabledProxies)
     }
     if !pendingSettings.contains("warnBeforeLowUsage") {
-      warnBeforeLowUsage = store.settings.quotaGuardEnabled
+      setIfChanged(\.warnBeforeLowUsage, to: store.settings.quotaGuardEnabled)
     }
     let wasBusy = isBusy
-    isBusy = store.busyRequestId != nil
+    setIfChanged(\.isBusy, to: store.busyRequestId != nil)
+    let degradedService = { if case .degraded = store.serviceState { return true }; return false }()
     if wasBusy, !isBusy {
       switchingAccountID = nil
-      // Backstop for pendingSettings (S3): the loop is idle, so any setting
+      // Backstop for pendingSettings: the loop is idle, so any setting
       // still held either applied or was dropped — sync resumes either way.
       pendingSettings.removeAll()
-      if !pendingRouteChanges.isEmpty {
-        applyNextPendingRouteChange()
-      }
     }
-    if wasBusy, !isBusy, pendingRouteChanges.isEmpty,
-      case .inFlight(let appID, let from, let to, let routeID) = switchPhase,
-      let result = store.lastResult
+    if !isBusy,
+      let requestID = pendingRouteRequestID,
+      store.lastResult?.requestId != requestID,
+      case .inFlight(let appID, let from, let to, let routeID) = switchPhase
     {
+      // The slot is free and this request never produced a result: the engine
+      // rejected the frame, answered without an id, or died mid-action. Leaving
+      // it in flight made the route sheet modal with no Cancel and no primary.
+      pendingRouteRequestID = nil
+      switchPhase = .recovery(appID: appID, requested: to, kept: from, routeID: routeID)
+      showFeedback(
+        "The connection change did not complete. Your previous connection is unchanged.",
+        kind: .error)
+    }
+    if !isBusy,
+      let requestID = pendingRouteRequestID,
+      let result = store.lastResult,
+      result.requestId == requestID,
+      case .inFlight(let appID, let from, let to, let routeID) = switchPhase
+    {
+      pendingRouteRequestID = nil
       if result.status == "success" {
         switchPhase = .success(appID: appID, name: to)
         Task { @MainActor in
@@ -1082,6 +1754,9 @@ final class ProductionDesignModel: MacOSDesignModel {
         }
       }
     }
+    if !isBusy, pendingRouteRequestID == nil, !pendingRouteChanges.isEmpty {
+      applyNextPendingRouteChange()
+    }
     // @Published fires on every set even when the value is identical; each
     // fire rebuilds the Activity list and re-lays out the pane. Only publish
     // on real change so background polls with identical tails stay quiet.
@@ -1098,33 +1773,93 @@ final class ProductionDesignModel: MacOSDesignModel {
     synchronizeBackupInspectionState()
     confirmServiceOperations()
     flushPendingModelEdits()
+    // After the result block above: a result and a degraded service seen in the
+    // same synchronize turn must not turn a real success into a failure.
+    if degradedService { failPendingOperationsIfServiceDegraded() }
 
     if let result = store.lastResult, result.requestId != lastResultId {
       lastResultId = result.requestId
+      var suppressResultFeedback = false
       if let service = serviceRequests.removeValue(forKey: result.requestId) {
         if result.status == "success" {
-          // Success only means the engine accepted the action. The spinner
-          // stays until a snapshot confirms the target state
-          // (confirmServiceOperations); otherwise a fast result flashes
-          // "done" over a still-stopped proxy.
-          serviceFailures.removeValue(forKey: service.id)
+          if service.id.hasPrefix("hub-conflict/") {
+            // The exception the rule above needs: a model-owner pick has no
+            // snapshot state to confirm against, so the result is the whole
+            // answer. Waiting for a snapshot here raised a false
+            // "didn't confirm in time" on every successful pick.
+            serviceFailures.removeValue(forKey: service.id)
+            cancelServiceTimeout(for: service.id)
+            serviceOperations.removeValue(forKey: service.id)
+          } else if (service.operation == .starting || service.operation == .stopping)
+            && (service.id == "hub" || store.proxies.contains(where: { $0.id == service.id }))
+          {
+            // A result only says the command was accepted. Announce success
+            // after the same snapshot that removes the row's pending state.
+            suppressResultFeedback = true
+            let message = result.displayMessage ?? fallbackMessage(for: result.status)
+            if confirmedServiceOperations.remove(service.id) != nil {
+              serviceFailures.removeValue(forKey: service.id)
+              showFeedback(message, kind: .success)
+            } else if serviceOperations[service.id] != nil {
+              serviceFailures.removeValue(forKey: service.id)
+              pendingServiceAnnouncements[service.id] = message
+            }
+          } else {
+            serviceFailures.removeValue(forKey: service.id)
+          }
         } else {
           cancelServiceTimeout(for: service.id)
           serviceOperations.removeValue(forKey: service.id)
           hubSourcePending.removeValue(forKey: service.id)
+          pendingServiceAnnouncements.removeValue(forKey: service.id)
+          confirmedServiceOperations.remove(service.id)
           serviceFailures[service.id] =
             result.message ?? "The service could not complete that action."
         }
       }
       if let operation = pendingOperations.removeValue(forKey: result.requestId) {
+        // Background creation has no button to answer. Success is the new
+        // profile row. A failure still has to be said: the attempt is
+        // remembered, so this session will not try that account again.
+        if operation == "codex-profile-auto-sync", result.status == "success" {
+          suppressResultFeedback = true
+        }
+        // Account switches are complete when the service returns the action
+        // result. Do not rely on observing the busy flag transition: a fast
+        // result can clear it before synchronize() sees the in-flight state,
+        // which otherwise leaves the row stuck showing Switch progress.
+        if operation == "account-switch" {
+          switchingAccountID = nil
+        }
+        if operation == "client-reset",
+          let appID = pendingAppRemovals.removeValue(forKey: result.requestId),
+          result.status == "success"
+        {
+          forgetApp(appID)
+          suppressResultFeedback = true
+        }
+        if operation == "codex-profile-auto-sync",
+          let fingerprints = pendingAutoCodexProfileFingerprints.removeValue(forKey: result.requestId),
+          result.status == "success"
+        {
+          var known = AppPreferences.codexAutoProfileSourceFingerprints
+          known.formUnion(fingerprints)
+          AppPreferences.codexAutoProfileSourceFingerprints = known
+        }
         operationResult = DesignOperationResult(
           requestID: result.requestId,
           operation: operation,
           succeeded: result.status == "success",
-          message: result.message ?? ""
+          message: result.message ?? "",
+          code: result.code
         )
+        if operation == "account-save-auth", result.code == "ACCOUNT_EXISTS" {
+          // The add sheet turns this into Replace. The error alert would
+          // cover the button that answers it.
+          suppressResultFeedback = true
+        }
         if operation == "gateway-create" {
-          // One-shot auto-connect arming (A9): only a successful create may
+          // One-shot auto-connect arming: only a successful create may
           // capture the next gateway of the same name.
           let name = pendingGatewayNames.removeValue(forKey: result.requestId)
           if result.status == "success", let name {
@@ -1146,8 +1881,26 @@ final class ProductionDesignModel: MacOSDesignModel {
             backupInspectionMessage = result.message ?? "No saved accounts were changed."
           }
         }
+        if operation == "proxy-token" {
+          suppressResultFeedback = true
+          let copyID = pendingProxyTokenCopies.removeValue(forKey: result.requestId)
+          if result.status == "success",
+            let key = result.payload?.apiKey, !key.isEmpty, let copyID
+          {
+            if pasteString(key) {
+              noteCopiedKey(id: copyID)
+              announceOnly("Copied API key.")
+            } else {
+              announceOnly("Couldn’t copy API key.")
+            }
+          } else {
+            showFeedback(
+              result.displayMessage ?? "Couldn’t copy the API key.",
+              kind: .error)
+          }
+        }
         if operation == "account-backup-forget" {
-          // Server-confirmed forget (B3): only now drop the staged copy and
+          // Server-confirmed forget: only now drop the staged copy and
           // the row. Failures keep both; the generic feedback below surfaces
           // the engine reason as the error alert.
           let backupID = pendingForgetBackupIDs.removeValue(forKey: result.requestId)
@@ -1159,344 +1912,73 @@ final class ProductionDesignModel: MacOSDesignModel {
           }
         }
       }
+      let outcome = feedbackKind(for: result.status)
+      if result.code == "CLIENT_CONFIG_FOREIGN" {
+        // The refusal is answerable: offer the confirmation it asked for
+        // instead of leaving the user to run a CLI flag they may not have.
+        pendingTakeover = DesignTakeoverOffer(id: result.requestId)
+      }
+      if !suppressResultFeedback {
+        showFeedback(
+          result.displayMessage ?? fallbackMessage(for: result.status),
+          kind: outcome
+        )
+      }
+    }
+    synchronizeAutomaticCodexProfiles()
+  }
+
+  /// Re-run the action whose takeover the engine refused, now with the user's
+  /// consent. The engine backs the previous file up before it replaces it.
+  // MARK: - Takeover
+
+  override func confirmPendingTakeover() {
+    guard let offer = pendingTakeover else { return }
+    pendingTakeover = nil
+    if store.retryInvokeWithConsent(requestId: offer.id) == nil {
       showFeedback(
-        result.message ?? (result.status == "success" ? "Action completed." : "Action failed."),
-        kind: result.status == "success" ? .success : .error
+        "AnyPick could not retry that change. Try again when the service is ready.",
+        kind: .warning
       )
     }
   }
 
-  private func designApp(clientID: String) -> DesignApp? {
-    let actions = store.managedActions(clientId: clientID)
-    let provider = store.accountProviders.first { $0.clientId == clientID && $0.installed }
-    guard !actions.isEmpty || provider != nil else {
-      // Actions exist but none are enabled (e.g. incompatible routes): show
-      // an attention row with a fix action instead of dropping the app (A11).
-      guard appNeedsAttentionPlaceholder(
-        clientID: clientID,
-        actions: store.actions,
-        providers: store.accountProviders
-      ) else { return nil }
-      return DesignApp(
-        id: clientID,
-        name: designAppName(clientID),
-        detail: "No usable connection",
-        symbol: appSymbol(clientID),
-        status: .attention,
-        showInQuickPanel: false,
-        accountCount: 0,
-        selectedRouteID: "",
-        routeOptions: [],
-        fastModel: "auto",
-        reasoningModel: "auto",
-        useCompatibleFallback: true,
-        attentionMessage: "No compatible login is available for this app."
-      )
-    }
-    let route = store.route(clientId: clientID)
-    let selected = actions.first(where: \.selected)
-    let config = store.modelConfig(clientID)
-    let options = uniqueCompatibleRoutes(
-      actions.map {
-        DesignRoute(
-          id: $0.id,
-          name: $0.routeKind == "direct-account"
-            ? ($0.upstreamSourceLabel ?? $0.label)
-            : $0.label,
-          detail: friendlyRouteDetail($0.detail, routeKind: $0.routeKind),
-          symbol: routeSymbol($0.routeKind),
-          kind: appRouteKind(
-            routeKind: $0.routeKind,
-            upstreamProviderID: $0.upstreamProviderId,
-            clientID: clientID
-          ),
-          providerID: $0.upstreamProviderId
-        )
-      },
-      selectedID: selected?.id)
-    let selectedName = selected.flatMap { action in
-      options.first { $0.id == action.id }?.name
-    }
-    let routeStatus = route?.status.lowercased()
-    let configuredRouteUnavailable =
-      selected == nil
-      && route?.source?.isEmpty == false
-      && provider?.livePresent != true
-    let status: DesignStatus =
-      routeStatus == "attention"
-      ? .attention
-      : configuredRouteUnavailable
-        ? .stopped
-        : selected != nil || provider?.livePresent == true || routeStatus == "native"
-          || routeStatus == "ready" ? .ready : .stopped
-    let nativeLoginDetail: String? =
-      provider?.livePresent == true
-      ? (provider?.liveIdentity.map { "Signed in as \($0)" } ?? "Current login")
-      : nil
-    let connectionDetail =
-      selectedName.map { "Uses \($0)" }
-      ?? nativeLoginDetail
-      ?? (route?.source?.isEmpty == false ? "Configured source unavailable" : nil)
-      ?? "No account selected"
-    let usageWindows =
-      store.usage(for: clientID)?.windows.map {
-        DesignUsageWindow(
-          label: $0.label,
-          remainingPercent: $0.remainingPercent,
-          resetsAtMs: $0.resetsAtMs,
-          limitWindowSeconds: $0.limitWindowSeconds
-        )
-      } ?? []
-    return DesignApp(
-      id: clientID,
-      name: designAppName(clientID),
-      detail: connectionDetail,
-      symbol: appSymbol(clientID),
-      status: status,
-      showInQuickPanel: AppPreferences.quickPanelShown(for: clientID) ?? (selected != nil),
-      accountCount: options.count,
-      selectedRouteID: selected?.id ?? "",
-      routeOptions: options,
-      fastModel: config?.modelRoles["haiku"] ?? config?.defaultModel ?? "auto",
-      reasoningModel: config?.modelRoles["opus"] ?? config?.defaultModel ?? "auto",
-      useCompatibleFallback: true,
-      modelRoles: config?.roles.map {
-        DesignModelRole(
-          id: $0.id,
-          label: $0.label,
-          modelID: config?.modelRoles[$0.id]
-            ?? ($0.id == "default" ? config?.defaultModel ?? "" : "")
-        )
-      } ?? [],
-      modelOptions: Array(Set(config?.options.map(\.modelId) ?? [])).sorted(),
-      modelEditingAvailable: config?.editable ?? false,
-      modelUnavailableReason: config?.unavailableReason,
-      usageWindows: usageWindows,
-      usageRemaining: usageWindows.first.map { "\($0.remainingPercent)% remaining" },
-      attentionMessage: routeStatus == "attention" ? route?.attentionReason : nil
-    )
-  }
+  /// A cancelled command is not a failure. The user asked for it, so raising the
+  /// error alert — which is what the old `status == "success" ? … : .error`
+  /// did — told them off for their own action.
+  // MARK: - Result mapping
 
-  private func designAccount(_ account: ManagedAccountSnapshot) -> DesignAccount {
-    DesignAccount(
-      id: account.id,
-      name: account.label,
-      detail: account.detail,
-      provider: nativeProviderName(account.providerId),
-      symbol: providerSymbol(account.providerId),
-      kind: .saved,
-      status: account.active ? .running : .ready,
-      lastUsed: account.active ? "Used now" : "Saved"
-    )
-  }
-
-  private func designGateway(_ gateway: GatewaySnapshot) -> DesignAccount {
-    DesignAccount(
-      id: "gateway/\(gateway.id)",
-      name: gateway.name,
-      detail: gateway.detail,
-      provider: nativeProviderName(gateway.providerId),
-      symbol: providerSymbol(gateway.providerId),
-      kind: .gateway,
-      status: gateway.ready ? .ready : .unavailable,
-      lastUsed: gateway.ready ? "Available" : "Needs attention"
-    )
-  }
-
-  private func designProxy(_ proxy: ProxySnapshot) -> DesignProxy {
-    let required = proxyIsRequired(proxy)
-    return DesignProxy(
-      id: proxy.id,
-      name: friendlyProxyName(label: proxy.label, providerId: proxy.providerId),
-      detail: proxy.address ?? proxy.detail,
-      symbol: providerSymbol(proxy.providerId),
-      provider: proxy.providerId,
-      status: proxy.running ? .running : proxy.enabled && required ? .attention : .stopped,
-      port: servicePort(from: proxy.address) ?? 0,
-      enabled: proxy.enabled
-    )
-  }
-
-  private func proxyIsRequired(_ proxy: ProxySnapshot) -> Bool {
-    let selectedByApp = store.actions.contains {
-      $0.selected
-        && $0.presentation == "app-route"
-        && $0.upstreamProviderId == proxy.providerId
-        && $0.routeKind != "direct-account"
-    }
-    let selectedByHub =
-      store.proxyHub?.running == true
-      && store.hubSources.contains { $0.enabled && $0.providerId == proxy.providerId }
-    return selectedByApp || selectedByHub
-  }
-
-  // Activity is always the journal-backed event history. Live logs travel on
-  // the separate liveLogLines path; mapping them into DesignActivity here used
-  // index-based ids ("log-<index>-<hash>") that shifted on every appended
-  // line, re-identifying the whole list on each 1.75s poll — the flicker.
-  private func designActivity() -> [DesignActivity] {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "HH:mm"
-    return store.activity.filter { !clearedActivityIDs.contains($0.id) }.map {
-      DesignActivity(
-        id: $0.id,
-        day: activityDayLabel($0.date),
-        time: formatter.string(from: $0.date),
-        title: $0.message,
-        detail: activityDetail($0.kind, isError: $0.isError),
-        symbol: activitySymbol($0.kind),
-        status: $0.isError ? .attention : .ready,
-        provider: $0.provider
-      )
+  private func feedbackKind(for status: String) -> DesignFeedback.Kind {
+    switch status {
+    case "success": return .success
+    case "cancelled": return .information
+    default: return .error
     }
   }
 
-  private func activityDayLabel(_ date: Date) -> String {
-    let calendar = Calendar.current
-    if calendar.isDateInToday(date) { return "Today" }
-    if calendar.isDateInYesterday(date) { return "Yesterday" }
-    return date.formatted(date: .abbreviated, time: .omitted)
-  }
-
-  private var selectedLogSource: LogSourceSnapshot? {
-    store.logSources.first { $0.id == store.selectedLogSourceId } ?? store.logSources.first
-  }
-
-  private func designLogLines() -> [String] {
-    guard let source = selectedLogSource,
-      let text = store.logsBySource[source.id], !text.isEmpty
-    else { return [] }
-    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    // The cleared state is content-anchored: only hide while the tail still
-    // starts with the cleared snapshot. Rotation or a restart replaces the
-    // content — even at the same length — so reset and show the new logs
-    // instead of hiding them behind a stale count.
-    var hidden = 0
-    if let snapshot = clearedLogSnapshots[source.id] {
-      if lines.starts(with: snapshot) {
-        hidden = snapshot.count
-      } else {
-        clearedLogSnapshots.removeValue(forKey: source.id)
-      }
+  private func fallbackMessage(for status: String) -> String {
+    switch status {
+    case "success": return "Action completed."
+    case "cancelled": return "Action cancelled."
+    default: return "Action failed."
     }
-    let visible = visibleLogLines(lines, hiddenCount: &hidden)
-    return visible
-  }
-
-  private func synchronizeLogState() {
-    // Every assignment below goes through setLogState so an unchanged
-    // state/message pair stays quiet instead of rebuilding the pane.
-    guard let source = selectedLogSource else {
-      setLogState(
-        .unavailable, message: "Choose another log source or return to Activity.")
-      return
-    }
-    // Background polls set loadingLogSourceId on every 1.75s tick. Flipping
-    // to .loading each time swaps the notice row (ProgressView in/out) and
-    // hides the Live badge — the flicker. When a tail is already on screen,
-    // stay .ready through the refresh; only the first load shows .loading.
-    if store.loadingLogSourceId == source.id,
-      store.logsBySource[source.id]?.isEmpty != false
-    {
-      setLogState(.loading, message: "Loading \(source.label) logs…")
-      return
-    }
-    let serviceRunning: Bool
-    if store.proxyHub?.id == source.id {
-      serviceRunning = store.proxyHub?.running == true
-    } else if let proxy = store.proxies.first(where: { $0.id == source.id }) {
-      serviceRunning = proxy.running
-    } else {
-      // Orphaned source (service removed mid-flight, L3): never the idle
-      // "Output appears here…" — the service is gone.
-      setLogState(
-        .unavailable, message: "This service is no longer available. Choose another log source."
-      )
-      return
-    }
-    if !serviceRunning {
-      let startTarget = store.proxyHub?.id == source.id ? "Proxy Hub" : "the proxy"
-      setLogState(
-        .stopped,
-        message: "Prior logs may remain visible. Start \(startTarget) to view new entries.")
-      return
-    }
-    switch store.logStatesBySource[source.id] {
-    case "error":
-      setLogState(
-        .error, message: "Showing the most recent logs that loaded successfully. Try again.")
-    case "empty":
-      setLogState(
-        .empty, message: "The service is running but has not written any log entries.")
-    case "ready":
-      setLogState(.ready, message: nil)
-    default:
-      setLogState(
-        store.logsBySource[source.id]?.isEmpty == false ? .ready : .idle, message: nil)
-    }
-  }
-
-  /// @Published fires on every set even when the value is identical; route
-  /// all log-state writes through here so steady states stay quiet.
-  private func setLogState(_ state: DesignLogState, message: String?) {
-    if logState != state {
-      logState = state
-    }
-    if logStateMessage != message {
-      logStateMessage = message
-    }
-  }
-
-  private func synchronizeBackupInspectionState() {
-    if store.backupPreviewRequestId != nil {
-      backupInspectionState = .reading
-      backupInspectionMessage = "Reading a protected review copy…"
-      return
-    }
-    if backupInspectionState == .importing || backupInspectionState == .success
-      || backupInspectionState == .expired || backupInspectionState == .atomicFailure
-    {
-      return
-    }
-    if let preview = store.backupPreview, preview.status == "error" {
-      switch preview.reason {
-      case "newer-version": backupInspectionState = .newerVersion
-      case "permission-denied": backupInspectionState = .permissionDenied
-      case "missing": backupInspectionState = .missing
-      case "timeout": backupInspectionState = .damaged
-      default: backupInspectionState = .damaged
-      }
-      backupInspectionMessage = preview.message ?? "Nothing was imported. Choose another file."
-    } else if store.backupPreview?.status == "ready" {
-      backupInspectionState = .ready
-      backupInspectionMessage = nil
-    } else {
-      backupInspectionState = .idle
-      backupInspectionMessage = nil
-    }
-  }
-
-  private func designHubSource(_ source: HubSourceSnapshot) -> DesignHubSource {
-    DesignHubSource(
-      id: source.id,
-      name: source.label,
-      detail: source.detail,
-      provider: nativeProviderName(source.providerId),
-      symbol: providerSymbol(source.providerId),
-      enabled: source.enabled,
-      warning: source.warning,
-      modelCount: source.modelCount ?? 0
-    )
   }
 
   override var savedAccountProviderOptions: [DesignProviderOption] {
-    store.accountProviders.map {
-      DesignProviderOption(
+    // Add Account is the subscription/native-login surface. Compatible
+    // providers that only publish credential kinds are API gateways and must
+    // stay in Add API Gateway; otherwise every API vendor is presented as a
+    // misleading local account option.
+    store.accountProviders.filter { source in
+      source.installed || !(source.loginMethods ?? []).isEmpty
+    }.map {
+      let canSignIn = $0.installed || ($0.loginMethods ?? []).contains(where: \.available)
+      return DesignProviderOption(
         id: $0.id,
         label: $0.label,
         detail: Self.accountProviderDetail($0),
-        enabled: $0.installed || ($0.loginMethods ?? []).contains(where: \.available)
-          || !($0.credentialKinds ?? []).isEmpty,
+        iconID: $0.clientId ?? $0.id,
+        enabled: canSignIn,
         canClear: $0.canClear == true,
         loginMethods: ($0.loginMethods ?? []).map {
           DesignLoginMethod(
@@ -1506,7 +1988,9 @@ final class ProductionDesignModel: MacOSDesignModel {
             provenance: $0.provenance,
             preferred: $0.preferred,
             available: $0.available,
-            unavailableReason: $0.unavailableReason
+            unavailableReason: $0.unavailableReason,
+            sourceID: $0.sourceID,
+            sourceLabel: $0.sourceLabel
           )
         },
         credentialKinds: ($0.credentialKinds ?? []).map {
@@ -1517,7 +2001,8 @@ final class ProductionDesignModel: MacOSDesignModel {
               DesignCredentialProfile(id: $0.profileID, label: $0.label)
             }
           )
-        }
+        },
+        acceptsAuthPaste: $0.acceptsAuthPaste == true
       )
     }
   }
@@ -1533,91 +2018,25 @@ final class ProductionDesignModel: MacOSDesignModel {
         requiresApiKey: $0.requiresApiKey == true,
         firstPartyClientIDs: $0.firstPartyClientIds ?? [],
         kind: $0.kind ?? "gateway",
+        requiresGatewayId: $0.requiresGatewayId == true,
+        requiresAccountId: $0.requiresAccountId == true,
         regions: $0.regions ?? [],
         defaultRegion: $0.regionDefault
       )
     }
   }
 
-  private func synchronizeBackupPreview() {
-    guard let preview = store.backupPreview,
-      preview.status == "ready",
-      let inspectionId = preview.inspectionId,
-      let entries = preview.entries
-    else { return }
-    let previewAccounts = entries.map {
-      DesignAccount(
-        id: $0.id,
-        name: $0.label,
-        detail: $0.disposition == "replace" ? "Will replace saved account" : "Ready to import",
-        provider: nativeProviderName($0.providerId),
-        symbol: providerSymbol($0.providerId),
-        kind: .saved,
-        status: $0.disposition == "blocked" || $0.disposition == "unavailable"
-          ? .unavailable : .ready,
-        lastUsed: $0.disposition.capitalized
-      )
-    }
-    backups = [
-      DesignBackup(
-        id: inspectionId,
-        createdAt: preview.createdAt ?? "Imported backup",
-        accountCount: previewAccounts.count,
-        size: "Inspected package",
-        location: importedBackupFileName ?? "Selected file",
-        accounts: previewAccounts
-      )
-    ]
-    if presentedInspectionID != inspectionId {
-      presentedInspectionID = inspectionId
-      pendingImportBackupID = inspectionId
-    }
-  }
-
-  /// Tooltip for the provider picker. A row the user cannot act on keeps the
-  /// engine's description, except when a sign-in method exists but its
-  /// launcher is missing — then the picker says so instead of just dimming.
-  private static func accountProviderDetail(_ source: AccountProviderSnapshot) -> String {
-    let methods = source.loginMethods ?? []
-    if !methods.isEmpty, !methods.contains(where: \.available), source.livePresent != true {
-      if let reason = methods.compactMap(\.unavailableReason).first(where: { !$0.isEmpty }) {
-        return reason
-      }
-    }
-    return source.detail
-  }
-
-  private func accountProvider(for value: String) -> AccountProviderSnapshot? {
-    store.accountProviders.first {
-      $0.id.caseInsensitiveCompare(value) == .orderedSame
-        || $0.providerId.caseInsensitiveCompare(value) == .orderedSame
-        || $0.label.caseInsensitiveCompare(value) == .orderedSame
-        || nativeProviderName($0.providerId).caseInsensitiveCompare(value) == .orderedSame
-    }
-  }
-
-  private func gatewayProvider(for value: String) -> GatewayProviderSnapshot? {
-    store.gatewayProviders.first {
-      $0.id.caseInsensitiveCompare(value) == .orderedSame
-        || $0.label.caseInsensitiveCompare(value) == .orderedSame
-        || nativeProviderName($0.id).caseInsensitiveCompare(value) == .orderedSame
-    }
-  }
-
-  private func gatewaySnapshot(for id: String) -> GatewaySnapshot? {
-    let raw = id.hasPrefix("gateway/") ? String(id.dropFirst("gateway/".count)) : id
-    return store.gateways.first { $0.id == raw || $0.name == raw }
-  }
-
-  private func designServiceID(_ proxy: ProxySnapshot) -> String {
-    proxy.providerId == "proxy-hub" ? "hub" : proxy.id
-  }
-
   /// How long a service spinner may wait for snapshot confirmation before
-  /// failing loudly instead of spinning forever.
-  private static let serviceConfirmTimeout: UInt64 = 15_000_000_000
+  /// failing loudly instead of spinning forever. Must exceed the engine's own
+  /// action budget (60s): a legal-but-slow action used to raise "didn't confirm
+  /// in time" at 15s while the engine went on to succeed.
+  private static let serviceConfirmTimeout: UInt64 = 75_000_000_000
+
+  // MARK: - Service operations
 
   private func trackServiceOperation(_ operation: DesignServiceOperation, for serviceID: String) {
+    pendingServiceAnnouncements.removeValue(forKey: serviceID)
+    confirmedServiceOperations.remove(serviceID)
     serviceOperations[serviceID] = operation
     cancelServiceTimeout(for: serviceID)
     serviceTimeoutTasks[serviceID] = Task { @MainActor [weak self] in
@@ -1625,6 +2044,8 @@ final class ProductionDesignModel: MacOSDesignModel {
       guard let self, !Task.isCancelled else { return }
       guard self.serviceOperations[serviceID] != nil else { return }
       self.serviceOperations.removeValue(forKey: serviceID)
+      self.pendingServiceAnnouncements.removeValue(forKey: serviceID)
+      self.confirmedServiceOperations.remove(serviceID)
       self.serviceFailures[serviceID] =
         "The service didn’t confirm in time. Check Live Logs for details."
       self.showFeedback(
@@ -1642,11 +2063,22 @@ final class ProductionDesignModel: MacOSDesignModel {
   /// on `running`, not on the faster command-accepted result.
   private func confirmServiceOperations() {
     for (serviceID, operation) in serviceOperations {
-      // Conflict resolve has no snapshot state to confirm against; the engine
-      // result or the timeout settles it (H7).
+      // Conflict resolve has no snapshot state to confirm against: the engine
+      // result settles it (see settleConflictRow), and a failure arrives as a
+      // result error. Leaving it to this loop meant every successful pick still
+      // raised "didn't confirm in time" 15 seconds later.
       if serviceID.hasPrefix("hub-conflict/") { continue }
+      // A row the engine already failed must not keep its spinner either.
+      if serviceFailures[serviceID] != nil {
+        cancelServiceTimeout(for: serviceID)
+        serviceOperations.removeValue(forKey: serviceID)
+        hubSourcePending.removeValue(forKey: serviceID)
+        pendingServiceAnnouncements.removeValue(forKey: serviceID)
+        confirmedServiceOperations.remove(serviceID)
+        continue
+      }
       // Hub-source toggles confirm against the snapshot's enabled flag, not
-      // the faster command-accepted result (H7).
+      // the faster command-accepted result.
       if let desired = hubSourcePending[serviceID] {
         if serviceFailures[serviceID] != nil {
           hubSourcePending.removeValue(forKey: serviceID)
@@ -1656,6 +2088,9 @@ final class ProductionDesignModel: MacOSDesignModel {
           cancelServiceTimeout(for: serviceID)
           serviceOperations.removeValue(forKey: serviceID)
           hubSourcePending.removeValue(forKey: serviceID)
+          // A confirmed row is healthy again: a stale failure from an earlier
+          // attempt would otherwise stay on it forever.
+          serviceFailures.removeValue(forKey: serviceID)
         }
         continue
       }
@@ -1671,6 +2106,8 @@ final class ProductionDesignModel: MacOSDesignModel {
         // Row vanished (account removed mid-flight): never strand a spinner.
         cancelServiceTimeout(for: serviceID)
         serviceOperations.removeValue(forKey: serviceID)
+        pendingServiceAnnouncements.removeValue(forKey: serviceID)
+        confirmedServiceOperations.remove(serviceID)
         continue
       }
       let confirmed =
@@ -1681,83 +2118,20 @@ final class ProductionDesignModel: MacOSDesignModel {
       if confirmed {
         cancelServiceTimeout(for: serviceID)
         serviceOperations.removeValue(forKey: serviceID)
+        serviceFailures.removeValue(forKey: serviceID)
+        if operation == .starting || operation == .stopping {
+          if let message = pendingServiceAnnouncements.removeValue(forKey: serviceID) {
+            showFeedback(message, kind: .success)
+          } else {
+            confirmedServiceOperations.insert(serviceID)
+          }
+        }
       }
     }
   }
 
-  private func providerSymbol(_ provider: String) -> String {
-    switch provider.lowercased() {
-    case "claude", "anthropic": return "sparkles"
-    case "codex", "openai", "opencode": return "terminal"
-    case "gemini", "google", "antigravity": return "diamond.fill"
-    case "kiro": return "shippingbox.fill"
-    case "proxy-hub": return "point.3.connected.trianglepath.dotted"
-    case "workbuddy", "codebuddy": return "briefcase.fill"
-    case "zcode": return "curlybraces"
-    default: return "network"
-    }
+  func providerSymbol(_ provider: String) -> String {
+    DesignBrandAsset.fallbackSymbol(for: provider)
   }
 
-  private func appSymbol(_ client: String) -> String { providerSymbol(client) }
-
-  private func designAppName(_ client: String) -> String {
-    switch client.lowercased() {
-    case "claude": return "Claude Code"
-    case "codex": return "Codex"
-    case "gemini": return "Gemini"
-    case "kiro": return "Kiro"
-    case "grok": return "Grok"
-    case "opencode": return "OpenCode"
-    case "workbuddy", "codebuddy": return "WorkBuddy"
-    case "zcode": return "ZCode"
-    case "dsh": return "DeepSeek Harness"
-    default: return anypickDisplayName(client)
-    }
-  }
-
-  private func routeSymbol(_ kind: String?) -> String {
-    switch kind {
-    case "hub": return "point.3.connected.trianglepath.dotted"
-    case "gateway": return "network"
-    case "pool", "account": return "arrow.triangle.branch"
-    default: return "person.crop.circle"
-    }
-  }
-
-  private func activityDetail(_ kind: String, isError: Bool) -> String {
-    switch kind {
-    case "account": return isError ? "The saved login was not changed." : "Saved login updated."
-    case "gateway": return isError ? "The saved gateway was not changed." : "Gateway updated."
-    case "proxy": return isError ? "The service needs attention." : "Local service updated."
-    case "quota": return isError ? "Usage could not be refreshed." : "Usage refreshed."
-    case "settings": return isError ? "The setting was not changed." : "Setting updated."
-    default: return isError ? "The previous app configuration was kept." : "App routing updated."
-    }
-  }
-
-  private func nativeAppOrder(_ lhs: DesignApp, _ rhs: DesignApp) -> Bool {
-    let priority = ["claude", "codex", "gemini", "kiro", "grok", "opencode", "workbuddy", "zcode"]
-    let lhsIndex = priority.firstIndex(of: lhs.id) ?? priority.count
-    let rhsIndex = priority.firstIndex(of: rhs.id) ?? priority.count
-    if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
-    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-  }
-
-  private func nativeAccountOrder(_ lhs: DesignAccount, _ rhs: DesignAccount) -> Bool {
-    if lhs.kind != rhs.kind { return lhs.kind == .saved }
-    let lhsIndex = nativeProviderPriority(lhs.provider)
-    let rhsIndex = nativeProviderPriority(rhs.provider)
-    if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
-    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-  }
-
-  private func activitySymbol(_ kind: String) -> String {
-    switch kind {
-    case "account": return "person.crop.circle"
-    case "gateway": return "network"
-    case "proxy": return "bolt.circle"
-    case "quota": return "gauge.with.dots.needle.67percent"
-    default: return "arrow.left.arrow.right.circle"
-    }
-  }
 }

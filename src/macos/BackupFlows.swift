@@ -1,11 +1,18 @@
 import SwiftUI
 
+/// How many accounts one backup selection may name. This is
+/// transfer.MaxBackupAccounts: the sheet and the desktop protocol accept the
+/// same set the backup file can hold.
+enum BackupLimits {
+  static let maxAccounts = 256
+}
+
 struct CreateBackupSheet: View {
   @ObservedObject var model: MacOSDesignModel
   @Environment(\.dismiss) private var dismiss
   @State private var selectedAccountIDs = Set<String>()
 
-  private let selectionLimit = 64
+  private let selectionLimit = BackupLimits.maxAccounts
 
   private var savedAccounts: [DesignAccount] {
     model.accounts.filter { $0.kind == .saved }
@@ -25,11 +32,8 @@ struct CreateBackupSheet: View {
     ) {
       Form {
         Section {
-          // Deep-link entry with zero saved accounts (B9): a plain boxed row
-          // like the rest of the pane; Export stays disabled with no selection.
           if savedAccounts.isEmpty {
-            Text("No saved accounts yet.")
-              .foregroundStyle(.secondary)
+            DesignEmptyRow(text: "No saved accounts yet.")
           }
           ForEach(savedAccounts) { account in
             Toggle(
@@ -65,7 +69,22 @@ struct CreateBackupSheet: View {
             .accessibilityIdentifier("backup-create.account.\(account.id)")
           }
         } header: {
-          Text("Saved Accounts")
+          HStack {
+            Text("Saved Accounts")
+            Spacer()
+            if savedAccounts.count > 1 {
+              Button(selectedAccountIDs.count == savedAccounts.count ? "Deselect All" : "Select All") {
+                if selectedAccountIDs.count == savedAccounts.count {
+                  selectedAccountIDs.removeAll()
+                } else {
+                  selectedAccountIDs = Set(savedAccounts.prefix(selectionLimit).map(\.id))
+                }
+              }
+              .buttonStyle(.plain)
+              .font(.caption)
+              .foregroundStyle(Color.accentColor)
+            }
+          }
         } footer: {
           if savedAccounts.isEmpty {
             Text("Add a login under Accounts & APIs, then choose accounts here.")
@@ -121,7 +140,9 @@ struct RestoreBackupSheet: View {
       }
     ) {
       Form {
-        restoreOutcome
+        if model.backupInspectionState != .idle && model.backupInspectionState != .ready {
+          restoreOutcome
+        }
         if let backup {
           Section {
             ForEach(backup.accounts) { account in
@@ -136,7 +157,15 @@ struct RestoreBackupSheet: View {
               ) {
                 Label {
                   VStack(alignment: .leading, spacing: 2) {
-                    Text(account.name)
+                    HStack(spacing: 6) {
+                      Text(account.name)
+                      if alreadySaved(account) {
+                        Text("Existing")
+                          .font(.caption2)
+                          .foregroundStyle(.secondary)
+                          .accessibilityLabel("Already saved")
+                      }
+                    }
                     Text(account.detail)
                       .foregroundStyle(.secondary)
                       .lineLimit(1)
@@ -151,9 +180,25 @@ struct RestoreBackupSheet: View {
               .disabled(account.status == .unavailable)
               .accessibilityIdentifier("backup-restore.account.\(account.id)")
             }
+          } header: {
+            HStack {
+              Text("Accounts in Backup")
+              Spacer()
+              let available = backup.accounts.filter { $0.status != .unavailable }
+              if available.count > 1 {
+                Button(selectedAccountIDs.count == available.count ? "Deselect All" : "Select All") {
+                  if selectedAccountIDs.count == available.count {
+                    selectedAccountIDs.removeAll()
+                  } else {
+                    selectedAccountIDs = Set(available.map(\.id))
+                  }
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+              }
+            }
           } footer: {
-            // Blocked entries are disabled above; `replace` rows are skipped
-            // unless the duplicate dialog chooses Replace (B6).
             Text("Turn off an account to leave it out. Accounts already saved are skipped unless you choose Replace.")
           }
         }

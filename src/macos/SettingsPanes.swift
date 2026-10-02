@@ -173,3 +173,144 @@ struct SettingsSecurityPane: View {
     NSApp.activate(ignoringOtherApps: true)
   }
 }
+
+struct SettingsDiagnosticsPane: View {
+  @ObservedObject var model: MacOSDesignModel
+  @Environment(\.openWindow) private var openWindow
+
+  private var missingCodexSources: [DesignCodexProfileSource] {
+    let profiled = Set(model.codexProfiles.map(\.sourceID))
+    return model.codexProfileSources.filter {
+      $0.kind == "account" && !profiled.contains($0.sourceID)
+    }
+  }
+
+  private var creatableCodexSources: [DesignCodexProfileSource] {
+    missingCodexSources.filter { !$0.models.isEmpty }
+  }
+
+  private var unreadyCodexSources: [DesignCodexProfileSource] {
+    missingCodexSources.filter { $0.models.isEmpty }
+  }
+
+  var body: some View {
+    Form {
+      Section {
+        LabeledContent("Status") {
+          if let report = model.doctorReport {
+            Label(report.status.capitalized, systemImage: statusSymbol(report.status))
+              .foregroundStyle(statusColor(report.status))
+          } else if model.doctorIsRunning {
+            ProgressView("Checking")
+              .controlSize(.small)
+          } else {
+            Text("Not checked")
+              .foregroundStyle(.secondary)
+          }
+        }
+
+        if let error = model.doctorError {
+          Text(error)
+            .foregroundStyle(.secondary)
+        }
+
+        if let report = model.doctorReport {
+          ForEach(report.findings) { finding in
+            LabeledContent(finding.check.replacingOccurrences(of: "-", with: " ").capitalized) {
+              VStack(alignment: .trailing, spacing: 2) {
+                Text(finding.status.capitalized)
+                  .foregroundStyle(statusColor(finding.status))
+                if let detail = finding.detail, !detail.isEmpty {
+                  Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+                }
+              }
+            }
+          }
+        }
+
+        Button(model.doctorIsRunning ? "Running Doctor…" : "Run Doctor") {
+          model.runDoctor()
+        }
+        .disabled(model.doctorIsRunning || model.isBusy)
+        .accessibilityIdentifier("settings.run-doctor")
+      } header: {
+        Text("Installation Health")
+      } footer: {
+        Text("Doctor checks saved account references, proxies, routing, plugins, and proxy environment settings. It does not change data.")
+      }
+
+      Section {
+        if missingCodexSources.isEmpty {
+          LabeledContent("Profiles") {
+            Text("All compatible accounts have a profile.")
+              .foregroundStyle(.secondary)
+          }
+        } else {
+          LabeledContent("Missing Profiles", value: "\(missingCodexSources.count)")
+          ForEach(unreadyCodexSources) { source in
+            LabeledContent {
+              Button("Refresh Models") { refreshModels(for: source) }
+                .disabled(model.isBusy)
+            } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(source.label)
+                Text("Model list unavailable")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+            }
+          }
+          Button("Create Missing Profiles…") {
+            _ = model.createMissingCodexProfiles(
+              sourceIDs: creatableCodexSources.map(\.sourceID)
+            )
+          }
+          .disabled(model.isBusy || creatableCodexSources.isEmpty)
+          .accessibilityIdentifier("settings.create-codex-profiles")
+        }
+
+        if !unreadyCodexSources.isEmpty {
+          Button("Open Accounts & APIs…") { open(.accounts) }
+            .disabled(model.isBusy)
+        }
+      } header: {
+        Text("Codex Profiles")
+      } footer: {
+        Text("Profiles can be created when their account model list is available. Refresh accounts above, then create the remaining profiles here.")
+      }
+    }
+    .formStyle(.grouped)
+  }
+
+  private func refreshModels(for source: DesignCodexProfileSource) {
+    guard source.sourceID.hasPrefix("account/") else { return }
+    let accountID = String(source.sourceID.dropFirst("account/".count))
+    model.refreshAccount(id: accountID)
+  }
+
+  private func open(_ destination: DesignDestination) {
+    model.destination = destination
+    openWindow(id: "main")
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  private func statusSymbol(_ status: String) -> String {
+    switch status {
+    case "ok": "checkmark.circle.fill"
+    case "degraded": "exclamationmark.triangle.fill"
+    default: "xmark.octagon.fill"
+    }
+  }
+
+  private func statusColor(_ status: String) -> Color {
+    switch status {
+    case "ok": .green
+    case "degraded", "warn": .orange
+    default: .red
+    }
+  }
+}

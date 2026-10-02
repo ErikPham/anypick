@@ -24,11 +24,13 @@ extension TrayStore {
       endpoint: nil,
       apiKey: nil,
       region: nil,
+      gatewayId: nil,
       defaultModel: nil,
       overwrite: overwrite,
       enabled: nil,
       kind: nil,
-      profile: nil
+      profile: nil,
+      transportPolicy: nil
     )
     return sendMutation(mutation, activityLabel: activityLabel)
   }
@@ -67,7 +69,7 @@ extension TrayStore {
     return sendMutationCommand(mutation, requestId: requestId, activityLabel: activityLabel)
   }
 
-  /// Discard a staged review copy server-side (B3). Returns the request id on
+  /// Discard a staged review copy server-side. Returns the request id on
   /// accept, nil while another mutation is in flight: callers must clear
   /// local preview state only after the engine confirms (see deleteBackup).
   @discardableResult

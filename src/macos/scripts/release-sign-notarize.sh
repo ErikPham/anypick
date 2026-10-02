@@ -29,6 +29,9 @@ done
 : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required for notarization.}"
 : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID is required for notarization.}"
 
+if [[ -n "${version}" ]]; then
+  export ANYPICK_GO_VERSION="${version}"
+fi
 xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -configuration Release -destination 'generic/platform=macOS' \
   ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO \

@@ -2,20 +2,22 @@
 # Smoke-test an installed AnyPick artifact the way a clean user would meet it:
 # sandboxed HOME/ANYPICK_HOME, restricted PATH, no source tree, no Node.
 #
-# Usage: smoke-installed-artifact.sh <AnyPick.app | anypick-core binary>
+# Usage: smoke-installed-artifact.sh <AnyPick.app | anypick-core binary> [version]
 #
-# Phase-4 exit criteria live here: launch, version, providers, a mutation
-# round-trip (add/remove a compatible-vendor account), proxy start/stop, and
-# a backup round-trip — every step asserting, nothing eyeballed.
+# Installed-helper smoke: version, providers, an add/list + export/remove/
+# import account round-trip, and proxy start/stop — every step asserting,
+# nothing eyeballed. An .app path is only used to locate
+# Contents/Helpers/anypick-core; the GUI itself is not launched.
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: smoke-installed-artifact.sh <AnyPick.app | anypick-core>" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: smoke-installed-artifact.sh <AnyPick.app | anypick-core> [version]" >&2
   exit 2
 fi
 
 target="$1"
+expected_version="${2:-${ANYPICK_EXPECTED_VERSION:-}}"
 if [[ "${target}" == *.app ]]; then
   for candidate in \
     "${target}/Contents/Helpers/anypick-core" \
@@ -45,6 +47,9 @@ pass() { echo "smoke ok: $*"; }
 
 out="$("${core}" --version)" || fail "core --version exits $?"
 [[ "${out}" == anypick-go* ]] || fail "unexpected --version: ${out}"
+if [[ -n "${expected_version}" && "${out}" != "anypick-go ${expected_version}" ]]; then
+  fail "expected anypick-go ${expected_version}, got ${out}"
+fi
 pass "version (${out})"
 
 "${core}" providers >/dev/null || fail "providers"

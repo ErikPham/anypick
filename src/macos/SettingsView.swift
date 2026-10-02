@@ -5,6 +5,7 @@ private enum DesignSettingsPane: String, CaseIterable, Identifiable {
   case usage = "Usage"
   case localProxies = "Proxies"
   case security = "Security"
+  case diagnostics = "Diagnostics"
 
   var id: String { rawValue }
 
@@ -14,6 +15,7 @@ private enum DesignSettingsPane: String, CaseIterable, Identifiable {
     case .usage: "chart.bar"
     case .localProxies: "server.rack"
     case .security: "lock.fill"
+    case .diagnostics: "stethoscope"
     }
   }
 
@@ -45,6 +47,7 @@ struct SettingsView: View {
         case .usage: SettingsUsagePane(model: model)
         case .localProxies: SettingsLocalProxiesPane(model: model)
         case .security: SettingsSecurityPane(model: model)
+        case .diagnostics: SettingsDiagnosticsPane(model: model)
         }
       }
       .navigationTitle(pane.rawValue)

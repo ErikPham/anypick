@@ -3,10 +3,16 @@ import SwiftUI
 
 struct AnyPickMenuBarScene: Scene {
   @ObservedObject var model: MacOSDesignModel
+  @Environment(\.openWindow) private var openWindow
 
   var body: some Scene {
     MenuBarExtra {
       MenuBarMenu(model: model)
+        .onAppear {
+          AnyPickAppDelegate.openMainWindowAction = {
+            openWindow(id: "main")
+          }
+        }
     } label: {
       AnyPickMenuBarLabel(model: model)
     }
@@ -17,8 +23,6 @@ struct AnyPickMenuBarScene: Scene {
 struct AnyPickMenuBarLabel: View {
   @ObservedObject var model: MacOSDesignModel
 
-  // NOTE (tray reset): MenuBarChrome.swift is back at its pre-rework state,
-  // which has no dismissed-aware helper — the dot reads the raw list again.
   private var attentionCount: Int { trayAttentionItems(from: model).count }
 
   var body: some View {
@@ -49,6 +53,7 @@ struct AnyPickMenuBarLabel: View {
 struct AppCommands: Commands {
   @ObservedObject var model: MacOSDesignModel
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.openSettings) private var openSettings
 
   var body: some Commands {
     CommandGroup(after: .newItem) {
@@ -73,6 +78,8 @@ struct AppCommands: Commands {
             modifiers: .command
           )
       }
+      Divider()
+      Button("Settings…") { openSettings() }
     }
   }
 

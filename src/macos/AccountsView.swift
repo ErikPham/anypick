@@ -14,22 +14,10 @@ struct AccountsView: View {
   @State private var editingAccount: DesignAccount?
   @State private var connectingGateway: DesignAccount?
   @State private var pendingRemoval: DesignAccount?
-  @State private var hoveredAccountID: String?
+  @State private var consumedInitialFlow = false
 
   init(model: MacOSDesignModel) {
     self.model = model
-    let startupSheet: AccountsSheet? =
-      switch model.pendingStartupFlow {
-      case "add-account": .addAccount
-      case "add-gateway": .addGateway
-      default: nil
-      }
-    _activeSheet = State(initialValue: startupSheet)
-    _pendingRemoval = State(
-      initialValue: model.pendingStartupFlow == "remove-account"
-        ? model.accounts.first(where: { $0.kind == .saved })
-        : nil
-    )
   }
 
   private var providers: [String] {
@@ -54,7 +42,14 @@ struct AccountsView: View {
   }
 
   private var gateways: [DesignAccount] {
-    searched(model.accounts.filter { $0.kind == .gateway }).sorted(by: nativeAccountOrder)
+    let filtered =
+      switch filter {
+      case .all:
+        model.accounts.filter { $0.kind == .gateway }
+      case .provider(let provider):
+        model.accounts.filter { $0.kind == .gateway && $0.provider == provider }
+      }
+    return searched(filtered).sorted(by: nativeAccountOrder)
   }
 
   var body: some View {
@@ -79,14 +74,28 @@ struct AccountsView: View {
         inventory
       }
     }
+    .background {
+      Group {
+        Button("") { activeSheet = .addAccount }
+          .keyboardShortcut("n", modifiers: .command)
+        Button("") { activeSheet = .addGateway }
+          .keyboardShortcut("n", modifiers: [.command, .shift])
+      }
+      .opacity(0)
+      .allowsHitTesting(false)
+    }
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
-        DesignToolbarSearch(text: $searchQuery, prompt: "Search Accounts")
-          .frame(minWidth: 180, idealWidth: 220, maxWidth: 280)
+        HStack(spacing: 8) {
+          if providers.count > 1 {
+            providerPicker
+          }
+          DesignToolbarSearch(text: $searchQuery, prompt: "Search Accounts")
+            .frame(minWidth: 160, idealWidth: 180, maxWidth: 220)
+        }
       }
     }
-    .accessibilityIdentifier("accounts.list")
-    .sheet(item: $activeSheet) { sheet in
+    .sheet(item: $activeSheet, onDismiss: consumeStartupFlow) { sheet in
       switch sheet {
       case .addAccount: AddSavedAccountSheet(model: model)
       case .addGateway: AddGatewaySheet(model: model)
@@ -107,7 +116,12 @@ struct AccountsView: View {
       pendingRemoval.map { "Remove “\($0.name)” from AnyPick?" } ?? "Remove Account?",
       isPresented: Binding(
         get: { pendingRemoval != nil },
-        set: { if !$0 { pendingRemoval = nil } }
+        set: {
+          if !$0 {
+            pendingRemoval = nil
+            consumeStartupFlow()
+          }
+        }
       ),
       titleVisibility: .visible
     ) {
@@ -115,65 +129,40 @@ struct AccountsView: View {
         guard let account = pendingRemoval else { return }
         model.removeAccount(id: account.id)
         pendingRemoval = nil
+        consumeStartupFlow()
       }
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(removalMessage)
     }
-    // Consume the entry flow once (B1-family): without this, every return to
-    // the pane re-opens the entry sheet from a stale flag.
-    .onAppear { model.pendingStartupFlow = nil }
-  }
-
-  private var inventory: some View {
-    DesignGroupedPane {
-      Section {
-        if savedAccounts.isEmpty {
-          ContentUnavailableView {
-            Label("No Accounts", systemImage: "person.2")
-          } description: {
-            Text(emptyFilterMessage)
-          }
-        } else {
-          ForEach(savedAccounts) { account in
-            accountRow(account)
-          }
+    .onAppear {
+      guard !consumedInitialFlow, let flow = model.pendingStartupFlow else { return }
+      consumedInitialFlow = true
+      // The Accounts pane is mounted inside NavigationSplitView/NavigationStack.
+      // Defer the first sheet presentation until that host has completed its
+      // first layout pass; setting a sheet item during construction is ignored
+      // by AppKit and leaves the fixture looking as if the flow did nothing.
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        guard model.pendingStartupFlow == flow else { return }
+        switch flow {
+        case "add-account", "add-account-error": activeSheet = .addAccount
+        case "add-gateway", "add-gateway-error": activeSheet = .addGateway
+        case "remove-account":
+          pendingRemoval = model.accounts.first(where: { $0.kind == .saved })
+        default: break
         }
-      } header: {
-        HStack {
-          Text("Accounts")
-          Spacer()
-          providerPicker
-        }
-      } footer: {
-        if gateways.isEmpty {
-          footerActions
-        }
-      }
-
-      if !gateways.isEmpty {
-        Section {
-          ForEach(gateways) { gateway in
-            accountRow(gateway)
-          }
-        } header: {
-          Text("API Gateways")
-        } footer: {
-          footerActions
-        }
-      }
-    }
-    .onChange(of: providers) { _, names in
-      if case .provider(let provider) = filter, !names.contains(provider) {
-        filter = .all
       }
     }
   }
 
-  private var footerActions: some View {
+  private var paneActions: some View {
     DesignPaneActions {
+      // No key equivalent: the pane already binds ⌘N (see the hidden buttons
+      // in the body), and a Return binding would make any keystroke in the
+      // pane add an account.
       DesignSheetButton(
         title: "Add Account…",
+        enabled: !model.isBusy,
         identifier: "accounts.save-login"
       ) { activeSheet = .addAccount }
       DesignSheetButton(
@@ -187,101 +176,176 @@ struct AccountsView: View {
     }
   }
 
-  private func accountRow(_ account: DesignAccount) -> some View {
-    DesignIdentityRow(
-      title: disambiguatedAccountName(for: account, in: model.accounts),
-      detail: accountIdentityLine(provider: account.provider, detail: account.detail),
+  private func consumeStartupFlow() {
+    switch model.pendingStartupFlow {
+    case "add-account", "add-account-error", "add-gateway", "add-gateway-error", "remove-account":
+      model.pendingStartupFlow = nil
+    default: break
+    }
+  }
+
+  private var inventory: some View {
+    DesignGroupedPane(contentIdentifier: "accounts.list", actions: { paneActions }) {
+      if !savedAccounts.isEmpty || (filter == .all && gateways.isEmpty) {
+        Section {
+          if savedAccounts.isEmpty {
+            // A group with no rows states it in one grey line: the pane-level
+            // empty state is the filling hero above, and a second one nested in
+            // a Section grows a card it was never meant to have.
+            DesignEmptyRow(text: emptyFilterMessage)
+          } else {
+            ForEach(savedAccounts) { account in
+              AccountListRow(
+                model: model,
+                account: account,
+                allAccounts: model.accounts,
+                onEdit: { editingAccount = $0 },
+                onConnect: { connectingGateway = $0 },
+                onRemove: { pendingRemoval = $0 }
+              )
+            }
+          }
+        } header: {
+          Text(savedAccounts.isEmpty ? "Accounts" : "Accounts (\(savedAccounts.count))")
+        }
+      }
+
+      if !gateways.isEmpty || (filter == .all && !model.gatewayProviderOptions.isEmpty) {
+        Section {
+          if gateways.isEmpty {
+            // Same one-grey-line treatment as the Accounts group above:
+            // the add command lives once in the pane action row below.
+            DesignEmptyRow(text: gatewayEmptyMessage)
+          } else {
+            ForEach(gateways) { gateway in
+              AccountListRow(
+                model: model,
+                account: gateway,
+                allAccounts: model.accounts,
+                onEdit: { editingAccount = $0 },
+                onConnect: { connectingGateway = $0 },
+                onRemove: { pendingRemoval = $0 }
+              )
+            }
+          }
+        } header: {
+          Text(gateways.isEmpty ? "API Gateways" : "API Gateways (\(gateways.count))")
+        }
+      }
+    }
+    .onChange(of: providers) { _, names in
+      if case .provider(let provider) = filter, !names.contains(provider) {
+        filter = .all
+      }
+    }
+  }
+}
+
+private struct AccountListRow: View {
+  @ObservedObject var model: MacOSDesignModel
+  let account: DesignAccount
+  let allAccounts: [DesignAccount]
+  let onEdit: (DesignAccount) -> Void
+  let onConnect: (DesignAccount) -> Void
+  let onRemove: (DesignAccount) -> Void
+
+  /// Hover reveals the row's primary command in its own column; the row's
+  /// context menu and accessibility actions offer the same command without it.
+  @State private var isHovered = false
+
+  var body: some View {
+    let canMakeCurrent = account.kind == .saved && !model.isCurrentAccount(account)
+    let isCurrent = model.isCurrentAccount(account)
+    let displayName = disambiguatedAccountName(for: account, in: allAccounts)
+    let subtitle = accountRowSubtitle(for: account, title: displayName)
+    let showsAction = account.kind == .saved
+      ? canMakeCurrent
+      : account.status != .unavailable
+
+    return DesignIdentityRow(
+      title: displayName,
+      detail: subtitle,
       issue: accountIssue(account)
     ) {
-      DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)
+      DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol, size: 28)
     } trailing: {
-      rowTrailing(account)
+      AccountRowTrailing(
+        model: model,
+        account: account,
+        displayName: displayName,
+        isCurrent: isCurrent,
+        showsAction: showsAction,
+        isHovered: isHovered,
+        onEdit: { onEdit(account) },
+        onConnect: { onConnect(account) },
+        onRemove: { onRemove(account) }
+      )
     }
-    .accessibilityIdentifier("accounts.row.\(account.id)")
-    .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
+    .contentShape(Rectangle())
+    .onTapGesture {
+      model.pendingAccountDetailID = account.id
+    }
     .onHover { hovering in
-      hoveredAccountID = hovering ? account.id : (hoveredAccountID == account.id ? nil : hoveredAccountID)
+      isHovered = hovering
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityIdentifier("accounts.row.\(account.id)")
+    .accessibilityLabel(accountAccessibilityLabel(for: account, in: allAccounts))
     .contextMenu {
-      Button("Edit") { editingAccount = account }
-      if account.kind == .saved && !model.isCurrentAccount(account) {
-        Button("Make Current") { model.makeAccountCurrent(id: account.id) }
+      if canMakeCurrent {
+        Button("Switch to Account") { model.makeAccountCurrent(id: account.id) }
           .disabled(model.isBusy)
       }
       if account.kind == .gateway {
-        Button("Connect") { connectingGateway = account }
+        Button("Connect") { onConnect(account) }
           .disabled(model.isBusy || account.status == .unavailable)
       }
+      Button("Show Details") { model.pendingAccountDetailID = account.id }
+      Button("Edit…") { onEdit(account) }
+      Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
+        if account.kind == .gateway {
+          model.testSavedGateway(id: account.id)
+        } else {
+          model.refreshAccount(id: account.id)
+        }
+      }
+      .disabled(model.isBusy)
       Divider()
-      Button("Remove", role: .destructive) { pendingRemoval = account }
+      Button("Remove…", role: .destructive) { onRemove(account) }
     }
     .modifier(
       AccountRowAccessibilityActions(
-        showsSwitch: account.kind == .saved && !model.isCurrentAccount(account),
+        showsSwitch: canMakeCurrent,
         showsConnect: account.kind == .gateway,
         onSwitch: { model.makeAccountCurrent(id: account.id) },
-        onConnect: { connectingGateway = account }
+        onConnect: { onConnect(account) }
       )
     )
   }
 
-  // Design U2MnSV/sBdJe “Aligned Action Grid”: fixed columns — Switch slot,
-  // status slot, then the NavigationLink chevron. Hover reveals
-  // Switch/Connect; opacity (not removal) keeps the columns aligned.
-  // No "..." menu: it was deleted deliberately (it leaked into the toolbar).
-  @ViewBuilder
-  private func rowTrailing(_ account: DesignAccount) -> some View {
-    let switching = model.switchingAccountID == account.id
-    let showsSwitch = account.kind == .saved && !model.isCurrentAccount(account)
-    let showsConnect = account.kind == .gateway
-    let visible = hoveredAccountID == account.id || switching
-
-    HStack(spacing: 9) {
-      ZStack {
-        if showsSwitch {
-          Button {
-            model.makeAccountCurrent(id: account.id)
-          } label: {
-            if switching { ProgressView().controlSize(.small) } else { Text("Switch") }
-          }
-          .disabled(model.isBusy)
-          .accessibilityIdentifier("accounts.switch.\(account.id)")
-        } else if showsConnect {
-          Button {
-            connectingGateway = account
-          } label: {
-            if switching { ProgressView().controlSize(.small) } else { Text("Connect") }
-          }
-          .disabled(model.isBusy || account.status == .unavailable)
-          .accessibilityIdentifier("accounts.connect.\(account.id)")
-        }
-      }
-      .buttonStyle(.bordered)
-      .controlSize(.small)
-      .frame(minWidth: 64, minHeight: 26)
-      .opacity(visible ? 1 : 0)
-      .allowsHitTesting(visible)
-
-      ZStack {
-        Color.clear
-        if model.isCurrentAccount(account) {
-          Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(.green)
-            .accessibilityLabel("Current")
-        }
-      }
-      .frame(width: 18, height: 18)
-
-      EllipsisCircleMenu(
-        accessibilityName: "More actions for \(accountAccessibilityLabel(for: account, in: model.accounts))",
-        identifier: "accounts.more.\(account.id)",
-        onDetail: { model.pendingAccountDetailID = account.id },
-        onEdit: { editingAccount = account },
-        onRemove: { pendingRemoval = account }
-      )
-      .frame(width: 19, height: 19)
+  private func accountRowSubtitle(for account: DesignAccount, title: String) -> String {
+    let cleanDetail = account.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+    let identity: String
+    if !cleanDetail.isEmpty {
+      let resolved = cleanSourceDisplayName(cleanDetail)
+      identity = resolved.caseInsensitiveCompare(account.provider) != .orderedSame ? resolved : ""
+    } else if let live = model.liveLogins.first(where: {
+      ($0.providerID.caseInsensitiveCompare(account.providerID) == .orderedSame || $0.providerName.caseInsensitiveCompare(account.provider) == .orderedSame)
+        && ($0.identity?.isEmpty == false)
+    }), let liveIdentity = live.identity?.trimmingCharacters(in: .whitespacesAndNewlines), !liveIdentity.isEmpty {
+      identity = liveIdentity
+    } else {
+      identity = ""
     }
-    .fixedSize()
+
+    if account.kind == .gateway {
+      return identity.isEmpty ? "API Gateway" : identity
+    }
+
+    if !identity.isEmpty {
+      return "\(account.provider) · \(identity)"
+    }
+    return "\(account.provider) · Saved login"
   }
 
   private func accountIssue(_ account: DesignAccount) -> String? {
@@ -292,17 +356,154 @@ struct AccountsView: View {
       return nil
     }
   }
+}
+
+/// The trailing three columns of one account row: the primary command, the
+/// row's state, and the row menu.
+///
+/// It is a type of its own so the columns can be measured. The property that
+/// matters is that the grid is the same for every row — including a row with
+/// nothing in a column — and the only way to keep that true through later edits
+/// is to assert the width, not to look at it.
+struct AccountRowTrailing: View {
+  @ObservedObject var model: MacOSDesignModel
+  let account: DesignAccount
+  let displayName: String
+  let isCurrent: Bool
+  let showsAction: Bool
+  let isHovered: Bool
+  let onEdit: () -> Void
+  let onConnect: () -> Void
+  let onRemove: () -> Void
+
+  /// Column widths. The action column is the widest control it can hold
+  /// ("Connect"), the marker column holds one SF Symbol, and the chevron
+  /// column holds the drill-in disclosure.
+  static let actionColumnWidth: CGFloat = 72
+  static let statusColumnWidth: CGFloat = 18
+  static let chevronColumnWidth: CGFloat = 14
+
+  private var revealsAction: Bool {
+    showsAction && (isHovered || model.switchingAccountID == account.id)
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      // Column 1 — the primary command, revealed on hover. The column holds its
+      // width when the cell is empty, which is what keeps every row's Switch /
+      // Connect, marker and menu in the same three columns.
+      ReservedColumn(width: Self.actionColumnWidth) {
+        if revealsAction {
+          actionButton
+        }
+      }
+      .accessibilityHidden(!revealsAction)
+
+      // Column 2 — the row's state: current, attention, unavailable, or empty.
+      ReservedColumn(width: Self.statusColumnWidth) {
+        statusIcon
+      }
+
+      // Column 3 — the row's commands.
+      moreMenu
+
+      // Column 4 — drill-in disclosure. Every row opens its detail on tap,
+      // and a System Settings row that drills in always says so.
+      ReservedColumn(width: Self.chevronColumnWidth) {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(.tertiary)
+          .accessibilityHidden(true)
+      }
+    }
+    .fixedSize()
+  }
+
+  @ViewBuilder
+  private var statusIcon: some View {
+    if isCurrent {
+      Image(systemName: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+        .accessibilityLabel("Current")
+        .help("Current active account on this Mac")
+    }
+  }
+
+  private var switching: Bool { model.switchingAccountID == account.id }
+
+  private var actionButton: some View {
+    Button {
+      if account.kind == .saved {
+        model.makeAccountCurrent(id: account.id)
+      } else {
+        onConnect()
+      }
+    } label: {
+      ZStack {
+        Text(account.kind == .saved ? "Switch" : "Connect")
+          .opacity(switching ? 0 : 1)
+        if switching {
+          ProgressView().controlSize(.small)
+        }
+      }
+      .frame(maxWidth: .infinity)
+    }
+    .buttonStyle(.bordered)
+    .controlSize(.small)
+    .disabled(model.isBusy)
+    .accessibilityIdentifier(
+      account.kind == .saved ? "accounts.switch.\(account.id)" : "accounts.connect.\(account.id)"
+    )
+    .accessibilityLabel(
+      account.kind == .saved ? "Switch to \(displayName)" : "Connect to \(displayName)"
+    )
+  }
+
+  /// The row's secondary commands, in a system `Menu` rather than a hand-built
+  /// NSButton + NSMenu: the control, its hit area and its keyboard behaviour
+  /// are the platform's. It offers the same commands as the row's context menu,
+  /// minus the primary one that already has its own button.
+  private var moreMenu: some View {
+    Menu {
+      Button("Show Details") { model.pendingAccountDetailID = account.id }
+      Button("Edit…") { onEdit() }
+      Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
+        if account.kind == .gateway {
+          model.testSavedGateway(id: account.id)
+        } else {
+          model.refreshAccount(id: account.id)
+        }
+      }
+      .disabled(model.isBusy)
+      Divider()
+      Button("Remove…", role: .destructive) { onRemove() }
+    } label: {
+      Image(systemName: "ellipsis.circle")
+        .foregroundStyle(.secondary)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .opacity(isHovered ? 1.0 : 0.0)
+    .animation(.easeInOut(duration: 0.15), value: isHovered)
+    .accessibilityLabel("More actions for \(displayName)")
+    .accessibilityIdentifier("accounts.more.\(account.id)")
+  }
+}
+
+extension AccountsView {
 
   private var providerPicker: some View {
     Picker("Provider", selection: $filter) {
       Text("All Providers").tag(AccountProviderFilter.all)
+      Divider()
       ForEach(providers, id: \.self) { provider in
-        Text(provider).tag(AccountProviderFilter.provider(provider))
+        Label(provider, systemImage: DesignBrandAsset.fallbackSymbol(for: provider))
+          .tag(AccountProviderFilter.provider(provider))
       }
     }
     .pickerStyle(.menu)
     .labelsHidden()
-    .fixedSize()
     .accessibilityIdentifier("accounts.filter")
   }
 
@@ -330,6 +531,13 @@ struct AccountsView: View {
     filter = .all
   }
 
+  private var gatewayEmptyMessage: String {
+    if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return "No gateways match \(searchQuery)\"."
+    }
+    return "No API gateways yet."
+  }
+
   private var emptyFilterMessage: String {
     if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return "No accounts match \"\(searchQuery)\"."
@@ -354,9 +562,6 @@ struct AccountsView: View {
     let lhsIndex = nativeProviderPriority(lhs.provider)
     let rhsIndex = nativeProviderPriority(rhs.provider)
     if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
-    if model.isCurrentAccount(lhs) != model.isCurrentAccount(rhs) {
-      return model.isCurrentAccount(lhs)
-    }
     return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
   }
 }
@@ -364,77 +569,6 @@ struct AccountsView: View {
 /// "..." menu trigger. NSButton, not a SwiftUI Button/Menu: on macOS 26 a
 /// SwiftUI button under a toolbar search is copied into the titlebar.
 /// Menu items: Detail, Edit, Remove.
-private struct EllipsisCircleMenu: NSViewRepresentable {
-  var accessibilityName: String
-  var identifier: String
-  var onDetail: () -> Void
-  var onEdit: () -> Void
-  var onRemove: () -> Void
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator(onDetail: onDetail, onEdit: onEdit, onRemove: onRemove)
-  }
-
-  func makeNSView(context: Context) -> NSButton {
-    let button = NSButton()
-    button.isBordered = false
-    button.bezelStyle = .inline
-    button.setButtonType(.momentaryChange)
-    button.imagePosition = .imageOnly
-    button.imageScaling = .scaleProportionallyDown
-    button.image = NSImage(
-      systemSymbolName: "ellipsis.circle",
-      accessibilityDescription: accessibilityName
-    )
-    button.contentTintColor = .secondaryLabelColor
-    button.target = context.coordinator
-    button.action = #selector(Coordinator.press(_:))
-    button.setAccessibilityLabel(accessibilityName)
-    button.setAccessibilityIdentifier(identifier)
-    return button
-  }
-
-  func updateNSView(_ button: NSButton, context: Context) {
-    context.coordinator.onDetail = onDetail
-    context.coordinator.onEdit = onEdit
-    context.coordinator.onRemove = onRemove
-    button.setAccessibilityLabel(accessibilityName)
-    button.setAccessibilityIdentifier(identifier)
-  }
-
-  final class Coordinator: NSObject {
-    var onDetail: () -> Void
-    var onEdit: () -> Void
-    var onRemove: () -> Void
-
-    init(
-      onDetail: @escaping () -> Void, onEdit: @escaping () -> Void, onRemove: @escaping () -> Void
-    ) {
-      self.onDetail = onDetail
-      self.onEdit = onEdit
-      self.onRemove = onRemove
-    }
-
-    @objc func press(_ sender: NSButton) {
-      let menu = NSMenu()
-      menu.autoenablesItems = false
-      let detail = menu.addItem(withTitle: "Detail", action: #selector(detail), keyEquivalent: "")
-      detail.target = self
-      let edit = menu.addItem(withTitle: "Edit", action: #selector(edit), keyEquivalent: "")
-      edit.target = self
-      menu.addItem(.separator())
-      let remove = menu.addItem(withTitle: "Remove", action: #selector(remove), keyEquivalent: "")
-      remove.target = self
-      remove.identifier = NSUserInterfaceItemIdentifier("accounts.more.remove")
-      menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
-    }
-
-    @objc func detail() { onDetail() }
-    @objc func edit() { onEdit() }
-    @objc func remove() { onRemove() }
-  }
-}
-
 private struct AccountRowAccessibilityActions: ViewModifier {
   let showsSwitch: Bool
   let showsConnect: Bool

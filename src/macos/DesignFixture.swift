@@ -264,55 +264,58 @@ enum DesignFixture {
     let accounts = [
       DesignAccount(
         id: "claude-work", name: "Work", detail: "alex@studio.example", provider: "Claude",
-        symbol: "brain.head.profile", kind: .saved, status: .running, lastUsed: "Used now"
+        symbol: "brain.head.profile", kind: .saved, status: .running, lastUsed: "Used now",
+        providerID: "claude"
       ),
       DesignAccount(
         id: "claude-personal", name: "Personal", detail: "alex@example.com",
-        provider: "Claude", symbol: "brain.head.profile", kind: .saved, status: .ready, lastUsed: "4 minutes ago"
+        provider: "Claude", symbol: "brain.head.profile", kind: .saved, status: .ready,
+        lastUsed: "4 minutes ago", providerID: "claude"
       ),
       DesignAccount(
         id: "claude-client", name: "Client", detail: "client@agency.example",
         provider: "Claude", symbol: "brain.head.profile", kind: .saved, status: .attention,
-        lastUsed: "3 days ago"
+        lastUsed: "3 days ago", providerID: "claude"
       ),
       DesignAccount(
         id: "google-pro", name: "Google AI Pro", detail: "alex@example.com",
         provider: "Gemini", symbol: "sparkle", kind: .saved, status: .ready,
-        lastUsed: "12 minutes ago"
+        lastUsed: "12 minutes ago", providerID: "gemini"
       ),
       DesignAccount(
         id: "claude-team", name: "Team", detail: "team@studio.example",
         provider: "Claude", symbol: "brain.head.profile", kind: .saved, status: .ready,
-        lastUsed: "This morning"
+        lastUsed: "This morning", providerID: "claude"
       ),
       DesignAccount(
         id: "codex-work", name: "Work", detail: "maya@studio.example",
         provider: "Codex", symbol: "terminal.fill", kind: .saved, status: .running,
-        lastUsed: "8 minutes ago"
+        lastUsed: "8 minutes ago", providerID: "codex"
       ),
       DesignAccount(
         id: "codex-personal", name: "Personal", detail: "alex@example.com",
         provider: "Codex", symbol: "terminal.fill", kind: .saved, status: .ready,
-        lastUsed: "Yesterday"
+        lastUsed: "Yesterday", providerID: "codex"
       ),
       DesignAccount(
         id: "personal-builder", name: "Personal Builder", detail: "builder@example.com",
         provider: "Kiro", symbol: "shippingbox.fill", kind: .saved, status: .ready,
-        lastUsed: "Yesterday"
+        lastUsed: "Yesterday", providerID: "kiro"
       ),
       DesignAccount(
         id: "grok-work", name: "Work", detail: "alex@x.example",
         provider: "Grok", symbol: "sparkles", kind: .saved, status: .ready,
-        lastUsed: "Today"
+        lastUsed: "Today", providerID: "grok"
       ),
       DesignAccount(
         id: "openrouter", name: "OpenRouter", detail: "openrouter.ai",
-        provider: "OpenRouter", symbol: "network", kind: .gateway, status: .ready, lastUsed: "Used now"
+        provider: "OpenRouter", symbol: "network", kind: .gateway, status: .ready,
+        lastUsed: "Used now", providerID: "openrouter"
       ),
       DesignAccount(
         id: "staging", name: "Staging Gateway", detail: "api.staging.example",
         provider: "Custom", symbol: "server.rack", kind: .gateway, status: .attention,
-        lastUsed: "3 days ago"
+        lastUsed: "3 days ago", providerID: "custom"
       ),
     ]
 
@@ -320,7 +323,7 @@ enum DesignFixture {
       DesignProxy(
         id: "claude-relay", name: "Claude Relay", detail: "Work · Claude",
         symbol: "brain.head.profile", provider: "claude", status: .running, port: 41_411,
-        enabled: true
+        enabled: true, apiKey: "ap_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       ),
       DesignProxy(
         id: "codex-relay", name: "Codex Relay", detail: "Personal · Codex",
@@ -407,7 +410,7 @@ enum DesignFixture {
       ),
     ]
 
-    // Console copy follows design ngJKM ("Activity · Live Logs"):
+    // Console copy for Activity · Live Logs:
     // `HH:MM:SS  <message>`, timestamp first, human message after.
     let liveLogLines = [
       "09:42:11  Proxy Hub listening on 127.0.0.1:41401",

@@ -1,16 +1,18 @@
 import Foundation
 
-// Shared display helpers for macOS panes and Quick Panel (P1-01…P1-04).
-// Centralizes route canonicalization, identity formatting, and friendly
-// copy so planner and executor cannot diverge on ad-hoc strings.
-// Also hosts the add-account sheet gates (AUDIT_2026-09-03 C2/C6/C8/C9/C10):
-// this file compiles into AnyPickTests, so the gates stay pinned without
-// hosting SwiftUI.
+// Shared display and state helpers for macOS panes and the Quick Panel.
+// Keeping these rules in one place prevents fixture and production from
+// drifting on route identity, provider copy, and recovery behavior.
 
 /// Canonical key for a route: provider family + account identity.
 /// Two actions pointing at the same saved login (different engine IDs)
 /// collapse to one row; the current route is never shown twice.
 func routeDedupeKey(_ route: DesignRoute) -> String {
+  let source = route.sourceID.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+  // The source is the account. A display key collapses two saved logins
+  // that share a label and an empty identity into the one action id the
+  // switcher can still invoke.
+  if !source.isEmpty { return "source|\(source)" }
   let provider = (route.providerID ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
   let name = route.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
   let detail = route.detail.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -46,7 +48,7 @@ func compatibleAccountRoutes(in app: DesignApp) -> [DesignRoute] {
   )
 }
 
-/// Join provider and identity without a dangling separator (P1-02).
+/// Join provider and identity without a dangling separator.
 func accountIdentityLine(provider: String, detail: String) -> String {
   let cleanProvider = provider.trimmingCharacters(in: .whitespacesAndNewlines)
   let cleanDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,19 +60,55 @@ func accountIdentityLine(provider: String, detail: String) -> String {
   }
 }
 
-/// Visible name that stays distinguishable when two accounts share a label.
-/// Appends the provider only on collision so unique names stay clean.
+/// Identity metadata comes from provider-owned credential stores. Keep only a
+/// short printable value in the native UI; an unreadable value is represented
+/// by the caller's generic "Current login" copy instead of rendering a token.
+func displaySafeIdentity(_ raw: String) -> String? {
+  let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !value.isEmpty, value.count <= 160 else { return nil }
+  guard value.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+  guard !looksLikeOpaqueDisplayValue(value) else { return nil }
+  return value
+}
+
+/// Operation messages are useful feedback, but they must not be allowed to
+/// turn a provider response or credential into a giant SwiftUI Text view.
+func displaySafeFeedback(_ raw: String, fallback: String) -> String {
+  let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !value.isEmpty, value.count <= 512 else { return fallback }
+  let punctuation = CharacterSet.punctuationCharacters
+  for chunk in value.components(separatedBy: .whitespacesAndNewlines) {
+    let candidate = chunk.trimmingCharacters(in: punctuation)
+    if looksLikeOpaqueDisplayValue(candidate) { return fallback }
+  }
+  return value
+}
+
+private func looksLikeOpaqueDisplayValue(_ value: String) -> Bool {
+  let parts = value.split(separator: ".")
+  if parts.count == 3, parts.allSatisfy({ $0.count >= 8 }) {
+    return true
+  }
+  guard value.unicodeScalars.count >= 48,
+        !value.contains("@"),
+        !value.contains(":"),
+        !value.contains(" ") else { return false }
+  let allowed = CharacterSet.alphanumerics.union(
+    CharacterSet(charactersIn: "-_.+=/")
+  )
+  return value.unicodeScalars.allSatisfy { allowed.contains($0) }
+}
+
+/// Visible name for an account row or detail header.
+/// Keeps the user's chosen account name clean without appending redundant
+/// provider suffixes like "(OpenAI)" or "(Gemini)", since the provider icon
+/// and subtitle already communicate provider identity.
 func disambiguatedAccountName(for account: DesignAccount, in all: [DesignAccount]) -> String {
-  let collisions = all.filter {
-    $0.id != account.id
-      && $0.name.caseInsensitiveCompare(account.name) == .orderedSame
-  }
-  guard !collisions.isEmpty else { return account.name }
-  if collisions.allSatisfy({ $0.provider.caseInsensitiveCompare(account.provider) == .orderedSame }) {
-    let detail = account.detail.trimmingCharacters(in: .whitespacesAndNewlines)
-    return detail.isEmpty ? account.name : "\(account.name) · \(detail)"
-  }
-  return "\(account.name) (\(account.provider))"
+  let name = account.name.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !name.isEmpty { return name }
+  let detail = account.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !detail.isEmpty { return detail }
+  return account.provider
 }
 
 /// VoiceOver label: account, provider, identity, plus position on collision.
@@ -95,7 +133,7 @@ func accountAccessibilityLabel(for account: DesignAccount, in all: [DesignAccoun
   return "\(base) (\(index + 1) of \(sameName.count))"
 }
 
-/// Map a raw engine routeKind / detail to user-facing copy (P1-03).
+/// Map a raw engine routeKind / detail to user-facing copy.
 /// Never surfaces "direct-account", "account", or "provider/id proxy".
 func friendlyRouteDetail(_ rawDetail: String?, routeKind: String?) -> String {
   let cleaned = (rawDetail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -103,11 +141,13 @@ func friendlyRouteDetail(_ rawDetail: String?, routeKind: String?) -> String {
   let looksInternal = cleaned.isEmpty
     || cleaned == rawKind
     || cleaned == "direct-account"
+    || cleaned == "managed-account"
     || cleaned == "account"
     || cleaned == "pool"
   if !looksInternal { return cleaned }
   switch rawKind {
   case "direct-account": return "Direct account"
+  case "managed-account": return "AnyPick proxy"
   case "account", "pool": return "Saved account"
   case "hub": return "Proxy Hub"
   case "gateway": return "API gateway"
@@ -125,19 +165,47 @@ func friendlyRouteKindLabel(_ kind: DesignRouteKind) -> String {
   }
 }
 
-/// Engine proxy labels can be "provider/internal-id proxy".
-/// Prefer the friendly provider name so no composite ID reaches the UI.
+/// Engine proxy labels can be "provider/internal-id proxy" or "<Provider> proxy · <Identity>".
+/// Prefer the clean identity or friendly provider name so no composite ID reaches the UI.
 func friendlyProxyName(label: String, providerId: String) -> String {
   let cleaned = label.trimmingCharacters(in: .whitespacesAndNewlines)
   if cleaned.contains("/") {
     return "\(nativeProviderName(providerId)) proxy"
   }
   if cleaned.isEmpty { return "\(nativeProviderName(providerId)) proxy" }
+  for separator in [" · ", " • "] {
+    if let range = cleaned.range(of: separator) {
+      let suffix = String(cleaned[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !suffix.isEmpty {
+        return suffix
+      }
+    }
+  }
   return cleaned
 }
 
+/// Formats proxy status and port into a clean, human-friendly System Settings description.
+/// E.g. "Running · Port 62252" instead of raw "http://127.0.0.1:62252", and "Stopped" instead of "stopped".
+func friendlyProxyStatusSubtitle(status: DesignStatus, port: Int, detail: String) -> String {
+  switch status {
+  case .running:
+    if port > 0 {
+      return "Running · Port \(port)"
+    }
+    return "Running"
+  case .stopped:
+    return "Stopped"
+  case .attention:
+    return "Needs attention"
+  case .unavailable:
+    return "Unavailable"
+  case .ready:
+    return "Ready"
+  }
+}
+
 /// Parse a loopback service address to its port. URL parsing needs a
-/// scheme, so schemeless "127.0.0.1:41401" (dynamic assignment, H6) falls
+/// scheme, so schemeless "127.0.0.1:41401" falls
 /// back to a host:port split. Bracketed IPv6 ("[::1]:5150") works too.
 func servicePort(from address: String?) -> Int? {
   guard let address = address?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -156,8 +224,39 @@ func servicePort(from address: String?) -> Int? {
   return Int(portText)
 }
 
+/// Strips redundant vendor/namespace prefix from model names for unified display.
+/// E.g. "gemini/gemini-2.5-flash" -> "gemini-2.5-flash", "opencode/claude-3-7-sonnet" -> "claude-3-7-sonnet"
+func cleanModelDisplayName(_ raw: String) -> String {
+  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return "" }
+  if trimmed == "Direct account" || trimmed == "Same as Default" { return trimmed }
+  guard let slashIndex = trimmed.firstIndex(of: "/") else {
+    return trimmed
+  }
+  let remainder = String(trimmed[trimmed.index(after: slashIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+  if !remainder.isEmpty {
+    return remainder
+  }
+  return trimmed
+}
+
+/// Strips redundant vendor / provider prefix from source or account names for unified display.
+/// E.g. "gemini/lentaunao" -> "lentaunao", "gemini/stacktify" -> "stacktify", "hub/default/gemini/stacktify" -> "stacktify"
+func cleanSourceDisplayName(_ raw: String) -> String {
+  let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return "" }
+  guard let slashIndex = trimmed.lastIndex(of: "/") else {
+    return trimmed
+  }
+  let remainder = String(trimmed[trimmed.index(after: slashIndex)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+  if !remainder.isEmpty {
+    return remainder
+  }
+  return trimmed
+}
+
 /// Stable service-operation keys so ProxyHubView rows and ProductionModel
-/// agree without string surgery (H7).
+/// agree without string surgery.
 func hubSourceServiceID(_ accountID: String) -> String { "hub-source/\(accountID)" }
 func hubConflictServiceID(_ conflictID: String) -> String { "hub-conflict/\(conflictID)" }
 
@@ -182,7 +281,62 @@ func usageWindowPeriod(limitWindowSeconds: Int?) -> String? {
   return "\(days) days"
 }
 
-/// Lines surviving a log Clear (L5). The clear hides by count, which a file
+/// Compact badge for a quota window: e.g. "5h", "Weekly", "Monthly", "Session".
+func quotaWindowLabel(_ window: DesignUsageWindow) -> String {
+  if let seconds = window.limitWindowSeconds, seconds > 0 {
+    if seconds == 18000 { return "5h" }
+    if seconds == 3600 { return "1h" }
+    if seconds == 86400 { return "Daily" }
+    if seconds == 604800 { return "Weekly" }
+    if seconds >= 2419200 && seconds <= 2678400 { return "Monthly" }
+    let hours = seconds / 3600
+    if hours > 0 && hours < 24 { return "\(hours)h" }
+    let days = seconds / 86400
+    if days > 0 && days < 7 { return "\(days)d" }
+  }
+  let clean = window.label.trimmingCharacters(in: .whitespacesAndNewlines)
+  if clean.localizedCaseInsensitiveCompare("primary") == .orderedSame {
+    return "5h"
+  }
+  if clean.localizedCaseInsensitiveCompare("secondary") == .orderedSame {
+    return "Weekly"
+  }
+  return clean.isEmpty ? "Quota" : clean
+}
+
+/// Compact reset time/date string: e.g. "Oct 16", "in 2h", "in 45m".
+func quotaResetFormatted(
+  resetsAtMs: Double?,
+  limitWindowSeconds: Int? = nil,
+  now: Date = Date()
+) -> String? {
+  guard let ms = resetsAtMs, ms > 0 else {
+    if let period = usageWindowPeriod(limitWindowSeconds: limitWindowSeconds) {
+      return "every \(period)"
+    }
+    return nil
+  }
+  let targetDate = Date(timeIntervalSince1970: ms / 1000)
+  let diff = targetDate.timeIntervalSince(now)
+  if diff <= 0 {
+    return "Resets soon"
+  }
+  if diff < 3600 {
+    let mins = max(1, Int((diff / 60).rounded()))
+    return "in \(mins)m"
+  }
+  if diff < 86400 {
+    let hours = max(1, Int((diff / 3600).rounded()))
+    return "in \(hours)h"
+  }
+  let formatter = DateFormatter()
+  let calendar = Calendar.current
+  let sameYear = calendar.component(.year, from: targetDate) == calendar.component(.year, from: now)
+  formatter.dateFormat = sameYear ? "MMM d" : "MMM d, yyyy"
+  return formatter.string(from: targetDate)
+}
+
+/// Lines surviving a log Clear. The clear hides by count, which a file
 /// rotation or restart invalidates: when the tail is strictly shorter than
 /// what was hidden, the old count resets — otherwise new entries stay hidden
 /// forever. Equal counts keep hiding (same tail, still cleared); a
@@ -192,9 +346,9 @@ func visibleLogLines(_ lines: [String], hiddenCount: inout Int, limit: Int = 160
   return Array(lines.dropFirst(min(hiddenCount, lines.count)).suffix(limit))
 }
 
-// MARK: - Backups menu gates (AUDIT_2026-09-03 B7)
+// MARK: - Backup import
 
-/// Entry IDs to import (B7). Without overwrite the engine skips `replace`
+/// Entry IDs to import. Without overwrite the engine skips `replace`
 /// dispositions, so an all-skipped selection must warn instead of sitting
 /// open with no feedback. Empty means "nothing would change".
 func backupImportEntryIDs(
@@ -207,16 +361,16 @@ func backupImportEntryIDs(
   }.sorted()
 }
 
-// MARK: - Overview menu gates (AUDIT_2026-09-03 O1/O2/O3/O4/O7)
+// MARK: - Overview
 
-/// Saved logins only — API gateways are not logins (O2). A lone gateway used
+/// Saved logins only — API gateways are not logins. A lone gateway used
 /// to mark "Save a Login" Done and hide the checklist early.
 func overviewHasSavedLogin(accounts: [DesignAccount]) -> Bool {
   accounts.contains { $0.kind == .saved }
 }
 
 /// One app counts as pointed when its selected route is a managed,
-/// non-native route (O3): a native-only login is setup still to do, and a
+/// non-native route: a native-only login is setup still to do, and a
 /// stale selection missing from the options counts for nothing.
 func overviewIsChosenRoute(_ app: DesignApp) -> Bool {
   guard let selected = app.routeOptions.first(where: { $0.id == app.selectedRouteID }) else {
@@ -225,15 +379,13 @@ func overviewIsChosenRoute(_ app: DesignApp) -> Bool {
   return selected.kind != .native
 }
 
-/// Checklist predicate shared by fixture and production (O3): both read the
+/// Checklist predicate shared by fixture and production: both read the
 /// snapshot-derived apps, so a native-only login is Not done everywhere.
 func overviewHasChosenRoute(apps: [DesignApp]) -> Bool {
   apps.contains(where: overviewIsChosenRoute)
 }
 
-/// Primary attention target, proxies → apps → accounts → conflicts (O1:
-/// saved-account attention used to fall through silently even though
-/// attentionCount includes it).
+/// Primary attention target, ordered from service failures to routing conflicts.
 enum OverviewAttentionTarget: Equatable {
   case proxy(id: String)
   case app(id: String)
@@ -271,13 +423,13 @@ func overviewAttentionTarget(
   return nil
 }
 
-/// Services total (O4): the Hub slot counts only when a hub is configured —
+/// Services total: the Hub slot counts only when a hub is configured —
 /// sources listed or running — never a phantom +1 ("0 of 1 running").
 func overviewServiceTotal(proxyCount: Int, hubSourcesEmpty: Bool, hubEnabled: Bool) -> Int {
   proxyCount + (hubSourcesEmpty && !hubEnabled ? 0 : 1)
 }
 
-/// Row summary keeps production detail (O7): the engine's connectionDetail
+/// Row summary keeps production detail: the engine's connectionDetail
 /// ("Signed in as…", "Configured source unavailable") survives instead of a
 /// flat "No login chosen".
 func overviewConnectionSummary(_ app: DesignApp) -> String {
@@ -287,19 +439,18 @@ func overviewConnectionSummary(_ app: DesignApp) -> String {
   return app.detail.isEmpty ? "No login chosen" : app.detail
 }
 
-// MARK: - Proxies menu gates (AUDIT_2026-09-03 PX3)
+// MARK: - Proxy actions
 
-/// Restart availability mirrors the Proxies list row (PX3): enabled services
-/// restart, and so do stopped ones needing attention. The Detail used to
-/// disable Restart whenever the proxy was not enabled — a different rule
-/// from the list row for the same service.
-func canRestartProxy(enabled: Bool, status: DesignStatus) -> Bool {
-  enabled || status == .attention || status == .unavailable
+/// Restart is available for a running service or a stopped service that has a
+/// recoverable attention state. Non-running list rows still use Start so the
+/// visible action always matches the process lifecycle.
+func canRestartProxy(isRunning: Bool, status: DesignStatus) -> Bool {
+  isRunning || status == .attention || status == .unavailable
 }
 
-// MARK: - Tray menu gates (AUDIT_2026-09-03 T1/T3/T4/T6)
+// MARK: - Tray state helpers
 
-/// Dismissal primitives for attention notices (T3). Only string IDs cross
+/// Dismissal primitives for attention notices. Only string IDs cross
 /// into the test bundle: the item type lives with the tray chrome, while the
 /// key format, legacy compat, and pruning are pinned here. The key is the
 /// stable item id — legacy "id|title" keys (any title) still count as
@@ -310,7 +461,7 @@ func trayAttentionDismissed(id: String, title: String, keys: Set<String>) -> Boo
     || keys.contains(where: { $0.hasPrefix("\(id)|") })
 }
 
-/// Insert a dismissal, pruning the persisted set (T3): it never shrinks
+/// Insert a dismissal, pruning the persisted set: it never shrinks
 /// otherwise and rides every launch via AppPreferences.
 func trayDismissAttention(id: String, keys: Set<String>, limit: Int = 100) -> Set<String> {
   var next = keys
@@ -328,7 +479,7 @@ enum TrayInlineSwitchState {
   case retry
 }
 
-/// Inline switch mark matched by route id (T4): duplicate route names across
+/// Inline switch mark matched by route id: duplicate route names across
 /// providers used to light the spinner/retry on the wrong row.
 func traySwitchStateForRoute(
   phase: DesignSwitchPhase,
@@ -347,7 +498,7 @@ func traySwitchStateForRoute(
   }
 }
 
-/// First unused "Work" → "Personal" → "Account N" name (T6): the fixture
+/// First unused "Work" → "Personal" → "Account N" name. The fixture
 /// hardcoded "Work" and duplicated on second save.
 func unusedAccountName(existing: [String], candidates: [String] = ["Work", "Personal"]) -> String {
   for candidate in candidates {
@@ -367,10 +518,8 @@ func unusedAccountName(existing: [String], candidates: [String] = ["Work", "Pers
 // MARK: - ZCode-app plan status (ZAI captive login)
 
 /// Warning from the ZCode desktop app's world-readable plan-status cache.
-/// The app keeps its login to itself (Electron store — no plaintext
-/// credential exists anywhere to import, same as other desktop apps), so
-/// this only reports whether a coding plan shows connected. Non-nil means
-/// "tell the user to paste a dashboard key instead".
+/// This is only plan-status context; the provider separately reads the
+/// encrypted ZCode login and offers the official browser fallback.
 func zcodeCodingPlanWarning(_ data: Data) -> String? {
   guard
     let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -386,12 +535,12 @@ func zcodeCodingPlanWarning(_ data: Data) -> String? {
   }
   return connected
     ? nil
-    : "The ZCode app reports no connected coding plan, and its login can’t be imported — paste a GLM Coding Plan key from the Z.ai dashboard (API Keys)."
+    : "The ZCode app reports no connected coding plan. You can still use the ZCode login on this Mac, sign in again with Z.ai, or paste a GLM Coding Plan key from the Z.ai dashboard (API Keys)."
 }
 
-// MARK: - Apps menu gates (AUDIT_2026-09-03 A8/A11/A12)
+// MARK: - App state helpers
 
-/// "Add API Gateway…" availability (A8). Any client can use a gateway through
+/// "Add API Gateway…" availability. Any client can use a gateway through
 /// the provider picker — the first-party match only preselects a provider in
 /// the sheet, so its absence must not disable the action for
 /// Kiro/Grok/OpenCode/WorkBuddy.
@@ -400,7 +549,7 @@ func canAddGateway(isBusy: Bool, gatewayProviderCount: Int) -> Bool {
 }
 
 /// True when a client has route actions but none usable and no installed
-/// login: the Apps list must show an attention row, not drop the app (A11).
+/// login: the Apps list must show an attention row, not drop the app.
 /// Raw action presence (not the enabled-only subset designApp renders) is
 /// the signal — all-disabled actions are exactly the vanishing case.
 func appNeedsAttentionPlaceholder(
@@ -413,7 +562,7 @@ func appNeedsAttentionPlaceholder(
   return actions.contains(where: { $0.clientId == clientID })
 }
 
-/// Engine "direct-account" covers two cases (A12): the client's own native
+/// Engine "direct-account" covers two cases: the client's own native
 /// login and a managed route onto another provider's account (e.g. Claude on
 /// a Grok account). Only the former is native — the latter must keep the
 /// Models section and route management visible.
@@ -433,13 +582,14 @@ func appRouteKind(
       return .account
     }
     return .native
+  case "managed-account": return .account
   case "account", "pool": return .account
   default: return .account
   }
 }
 
-/// Transport for an app row. Apps with no selected route are never "Direct"
-/// and never contribute to a Ready summary (P1-04).
+/// Transport for an app row. Saved-account routes are AnyPick-managed proxy
+/// routes; only the client's own native route is a direct connection.
 func transportDisplayName(for app: DesignApp) -> String {
   guard let selected = app.routeOptions.first(where: { $0.id == app.selectedRouteID }) else {
     return "Not Configured"
@@ -447,13 +597,39 @@ func transportDisplayName(for app: DesignApp) -> String {
   switch selected.kind {
   case .gateway: return "Gateway"
   case .hub: return "Proxy Hub"
-  case .account, .native: return "Direct"
+  case .account: return "AnyPick proxy"
+  case .native: return "Direct"
   }
 }
 
 func isAppRouteConfigured(_ app: DesignApp) -> Bool {
   !app.selectedRouteID.isEmpty
     && app.routeOptions.contains(where: { $0.id == app.selectedRouteID })
+}
+
+func isAppManagedByAnyPick(_ app: DesignApp) -> Bool {
+  guard isAppRouteConfigured(app) else { return false }
+  guard let route = app.routeOptions.first(where: { $0.id == app.selectedRouteID }) else {
+    return false
+  }
+  return route.kind != .native
+}
+
+func appShortDescription(_ clientID: String) -> String {
+  switch clientID.lowercased() {
+  case "claude": return "Anthropic’s terminal coding agent"
+  case "codex": return "OpenAI’s terminal and desktop coding tool"
+  case "kiro": return "AI-assisted coding IDE and environment"
+  case "commandcode": return "Terminal command AI assistant"
+  case "gemini": return "Google’s AI coding tool"
+  case "opencode": return "Open-source developer terminal assistant"
+  case "workbuddy", "codebuddy": return "Tencent’s AI programming assistant"
+  case "zcode": return "Z.ai intelligent development environment"
+  case "dsh": return "DeepSeek AI coding harness"
+  case "pi": return "Interactive terminal AI agent"
+  case "omp": return "Multi-provider AI command line interface"
+  default: return "Supported coding application"
+  }
 }
 
 func usablePublishedModelCount(_ models: [DesignPublishedModel]) -> Int {
@@ -467,22 +643,29 @@ func activityAccessibilityLabel(for item: DesignActivity) -> String {
   return parts.joined(separator: ", ")
 }
 
-// MARK: - Add-account sheet gates (AUDIT_2026-09-03 C2/C6/C8/C9/C10)
+// MARK: - Add-account state helpers
 
 /// "Test Connection" enablement for AddGatewaySheet. Providers that need no
-/// API key (e.g. Grok, which reads ~/.grok/auth.json) stay testable with an
-/// empty key field (C2).
-func gatewayConnectionTestEnabled(requiresApiKey: Bool, apiKey: String, isBusy: Bool) -> Bool {
+/// API key stay testable with an empty key field.
+func gatewayConnectionTestEnabled(
+  requiresApiKey: Bool,
+  apiKey: String,
+  isBusy: Bool,
+  requiresAccountId: Bool = false,
+  accountID: String = ""
+) -> Bool {
   if isBusy { return false }
-  if requiresApiKey {
-    return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  if requiresApiKey && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return false
+  }
+  if requiresAccountId && accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return false
   }
   return true
 }
 
 /// Submit gate for the saved-account path of AddSavedAccountSheet. A live
-/// login without a parsed identity (e.g. WorkBuddy token with no `sub`) is
-/// still saveable — save() falls back to "Current <label> login" (C8).
+/// login without a parsed identity is still saveable.
 func addSavedAccountCanSubmit(
   name: String,
   isNewAccountMode: Bool,
@@ -513,9 +696,7 @@ func addCredentialInputCanSubmit(
   return named && keyed && providerEnabled
 }
 
-/// Inline reason rendered when Sign In / Add is disabled. The engine already
-/// publishes per-method `unavailableReason`; the sheet never showed it, so a
-/// missing launcher read as a dead button (C6). Nil means "no blocker".
+/// Inline reason rendered when Sign In / Add is disabled. Nil means no blocker.
 func addAccountBlockerMessage(
   provider: DesignProviderOption?,
   method: DesignLoginMethod?,
@@ -536,12 +717,13 @@ func addAccountBlockerMessage(
 }
 
 /// Parse "Detected <identity> in <source>" from account-detect results.
-/// Matches the LAST " in " so identities containing " in " survive (C9).
+/// Matches the last " in " so identities containing that phrase survive.
 func accountIdentity(fromDetectionMessage message: String?) -> String? {
   guard let message, message.hasPrefix("Detected ") else { return nil }
   let body = message.dropFirst("Detected ".count)
   guard let range = body.range(of: " in ", options: .backwards) else { return nil }
   let identity = String(body[..<range.lowerBound])
   if identity.isEmpty { return nil }
-  return identity == "the current login" ? "Current login" : identity
+  if identity == "the current login" { return "Current login" }
+  return displaySafeIdentity(identity)
 }

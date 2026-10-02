@@ -10,8 +10,7 @@ struct BackupsView: View {
   @State private var showingCreate = false
   @State private var backupPresentation: BackupPresentation?
   @State private var pendingForgetBackup: DesignBackup?
-  /// Deep-link flow captured at entry (B1/B2): consumed once on appear so
-  /// re-entering the pane never re-opens sheets or wedges the flag.
+  /// Deep-link flow captured at entry and consumed once on appear.
   @State private var initialFlow: String?
   @State private var consumedInitialFlow = false
 
@@ -33,14 +32,16 @@ struct BackupsView: View {
   }
 
   var body: some View {
-    DesignGroupedPane {
+    DesignGroupedPane(actions: { paneActions }) {
       backupInspectionSection
 
       Section {
         Label {
-          VStack(alignment: .leading, spacing: 2) {
+          VStack(alignment: .leading, spacing: 3) {
             Text("Backup files contain working credentials")
+              .font(.body.weight(.medium))
             Text("They are readable JSON and are not encrypted. Store them securely and don’t share them.")
+              .font(.subheadline)
               .foregroundStyle(.secondary)
           }
         } icon: {
@@ -49,90 +50,87 @@ struct BackupsView: View {
       }
 
       Section {
-        LabeledContent {
-          Button("Choose Accounts…") { showingCreate = true }
-            .disabled(model.accounts.first(where: { $0.kind == .saved }) == nil)
-            .accessibilityIdentifier("backups.choose-accounts")
-        } label: {
-          Label {
-            VStack(alignment: .leading, spacing: 2) {
-              Text("Create an account backup")
-              Text("Choose saved accounts and a destination.")
-                .foregroundStyle(.secondary)
-            }
-          } icon: {
-            Image(systemName: "square.and.arrow.up")
-          }
-        }
-      } header: {
-        Text("Export Accounts")
-      }
-
-      Section {
-        LabeledContent {
-          Button("Choose Backup…", action: chooseBackup)
-            .accessibilityIdentifier("backups.import")
-        } label: {
-          Label {
-            VStack(alignment: .leading, spacing: 2) {
-              Text("Review an account backup")
-              Text("Nothing changes until you review and confirm each account.")
-                .foregroundStyle(.secondary)
-            }
-          } icon: {
-            Image(systemName: "square.and.arrow.down")
-          }
-        }
-      } header: {
-        Text("Import Accounts")
-      } footer: {
-        Text("Saved accounts only. API gateways, app settings, activity, and AnyPick settings are not included.")
-      }
-
-      if !model.backups.isEmpty {
-        Section {
+        if model.backups.isEmpty {
+          DesignEmptyRow(
+            text: "No reviewed backups. Choose a backup file to review it before importing."
+          )
+        } else {
           ForEach(model.backups) { backup in
             LabeledContent {
-              HStack {
+              HStack(spacing: 8) {
                 Button("Review") {
                   // Backups born in this list are restored, not imported:
                   // only a package picked via Choose/pendingImport carries
                   // importedPackage: true (presentImportedBackup).
                   backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
                 }
-                Button("Forget Review…", role: .destructive) {
-                  pendingForgetBackup = backup
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+
+                Menu {
+                  Button("Review Backup…") {
+                    backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
+                  }
+                  Button("Copy File Path") {
+                    copyLocation(backup.location)
+                  }
+                  Divider()
+                  Button("Forget Review…", role: .destructive) {
+                    pendingForgetBackup = backup
+                  }
+                } label: {
+                  Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("More backup options")
+
+                Image(systemName: "chevron.right")
+                  .font(.system(size: 12, weight: .medium))
+                  .foregroundStyle(.tertiary)
+                  .accessibilityHidden(true)
               }
             } label: {
               Label {
                 VStack(alignment: .leading, spacing: 2) {
                   Text(backup.createdAt)
-                  Text("\(backup.accountCount) accounts · \(backup.location)")
+                    .font(.body.weight(.medium))
+                  Text(backupSubtitle(for: backup))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 }
               } icon: {
                 Image(systemName: "externaldrive.badge.checkmark")
+                  .symbolRenderingMode(.hierarchical)
+                  .foregroundStyle(Color.accentColor)
+              }
+            }
+            .contextMenu {
+              Button("Review Backup…") {
+                backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
+              }
+              Button("Copy File Path") {
+                copyLocation(backup.location)
+              }
+              Divider()
+              Button("Forget Review…", role: .destructive) {
+                pendingForgetBackup = backup
               }
             }
             .accessibilityIdentifier("backups.inventory.\(backup.id)")
           }
-        } header: {
-          Text("Reviewed Backups")
-        } footer: {
-          // Forgetting now discards the staged server copy too (B3); TTL
-          // remains the backstop if the forget frame is ever lost.
-          Text("For imported files, AnyPick stages a protected copy that is discarded when you forget the review.")
         }
-      } else {
-        // Empty state (B9): a plain boxed row like the rest of the pane.
-        Section {
-          Text("No reviewed backups. Choose a backup file to review it before importing.")
-            .foregroundStyle(.secondary)
-        } header: {
-          Text("Reviewed Backups")
-        }
+      } header: {
+        Text("Reviewed Backups")
+      } footer: {
+        // Saved accounts only, and forgetting also discards the staged server
+        // copy; TTL remains the backstop if the forget frame is lost.
+        Text(
+          "Saved accounts only. API gateways, app settings, activity, and AnyPick settings are not included. For imported files, AnyPick stages a protected copy that is discarded when you forget the review."
+        )
       }
     }
     .sheet(isPresented: $showingCreate) {
@@ -169,13 +167,27 @@ struct BackupsView: View {
       guard !consumedInitialFlow else { return }
       consumedInitialFlow = true
       let flow = initialFlow
-      model.pendingStartupFlow = nil
-      // Cold-start import-backup with nothing to present (B2): honor the
-      // flow by opening the file picker instead of wedging the flag.
+      // Honor a cold-start import request by opening the file picker.
       if flow == "import-backup", backupPresentation == nil {
         chooseBackup()
+      } else if flow == "restore-backup", backupPresentation == nil, let id = model.backups.first?.id {
+        backupPresentation = BackupPresentation(id: id, importedPackage: false)
       }
+      model.pendingStartupFlow = nil
     }
+  }
+
+  private func copyLocation(_ location: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(location, forType: .string)
+  }
+
+  private func backupSubtitle(for backup: DesignBackup) -> String {
+    let accountsText = backup.accountCount == 1 ? "1 account" : "\(backup.accountCount) accounts"
+    if !backup.size.isEmpty {
+      return "\(accountsText) · \(backup.size) · \(backup.location)"
+    }
+    return "\(accountsText) · \(backup.location)"
   }
 
   private func chooseBackup() {
@@ -186,6 +198,21 @@ struct BackupsView: View {
     guard let id = model.pendingImportBackupID else { return }
     backupPresentation = BackupPresentation(id: id, importedPackage: true)
     model.pendingImportBackupID = nil
+  }
+
+  private var paneActions: some View {
+    DesignPaneActions {
+      DesignSheetButton(
+        title: "Export Accounts…",
+        enabled: !model.isBusy && model.accounts.contains { $0.kind == .saved },
+        identifier: "backups.choose-accounts"
+      ) { showingCreate = true }
+      DesignSheetButton(
+        title: "Review Backup…",
+        enabled: !model.isBusy,
+        identifier: "backups.import"
+      ) { chooseBackup() }
+    }
   }
 
   @ViewBuilder
@@ -267,7 +294,9 @@ struct BackupsView: View {
         Label {
           VStack(alignment: .leading, spacing: 2) {
             Text(title)
+              .font(.body.weight(.medium))
             Text(message)
+              .font(.subheadline)
               .foregroundStyle(.secondary)
           }
         } icon: {
@@ -283,7 +312,9 @@ struct BackupsView: View {
       Label {
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
+            .font(.body.weight(.medium))
           Text(message)
+            .font(.subheadline)
             .foregroundStyle(.secondary)
         }
       } icon: {

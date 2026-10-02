@@ -15,52 +15,102 @@ struct AccountDetailView: View {
   }
 
   var body: some View {
-    DesignGroupedPane {
+    DesignGroupedPane(
+      actions: {
+        if let account { detailActions(for: account) }
+      }
+    ) {
       if let account {
         Section {
-          Label {
-            VStack(alignment: .leading, spacing: 2) {
+          HStack(spacing: 12) {
+            DesignProviderIcon(
+              provider: account.provider,
+              fallbackSymbol: account.symbol,
+              size: 32
+            )
+            VStack(alignment: .leading, spacing: 3) {
               Text(disambiguatedAccountName(for: account, in: model.accounts))
-              let identity = accountIdentityLine(provider: account.provider, detail: account.detail)
-              if !identity.isEmpty {
-                Text(identity)
+                .font(.headline)
+              Text(account.detail.isEmpty ? "Identity not reported" : account.detail)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 12)
+            accountStatus(account)
+          }
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel(accountAccessibilityLabel(for: account, in: model.accounts))
+        } header: {
+          Text("Account")
+        }
+
+        if account.status == .attention || account.status == .unavailable {
+          Section {
+            Label {
+              VStack(alignment: .leading, spacing: 2) {
+                Text("Needs Attention")
+                  .fontWeight(.medium)
+                Text(account.status.rawValue)
+                  .font(.subheadline)
                   .foregroundStyle(.secondary)
               }
+            } icon: {
+              DesignWarningSymbol(scale: .medium)
             }
-          } icon: {
-            DesignProviderIcon(provider: account.provider, fallbackSymbol: account.symbol)
           }
         }
 
         Section {
+          LabeledContent(account.kind == .gateway ? "Endpoint" : "Email or ID") {
+            Text(account.detail.isEmpty ? "Not reported" : account.detail)
+              .foregroundStyle(account.detail.isEmpty ? .secondary : .primary)
+              .textSelection(.enabled)
+          }
           LabeledContent("Provider", value: account.provider)
-          LabeledContent("Type", value: account.kind == .gateway ? "API Gateway" : "Saved Login")
-          LabeledContent("Status") {
-            if model.isCurrentAccount(account) {
-              Text("Current")
-                .foregroundStyle(.secondary)
-            } else {
-              DesignStatusLabel(status: account.status)
-            }
-          }
-        } footer: {
-          if usageWindows.isEmpty {
-            detailActions(for: account)
-          }
+          LabeledContent(
+            "Type",
+            value: account.kind == .gateway ? "API Gateway" : "Saved Login"
+          )
+          LabeledContent("Account Name", value: account.name)
+          LabeledContent("Last Used", value: account.lastUsed)
+        } header: {
+          Text("Identity")
         }
 
-        if !usageWindows.isEmpty {
+        if model.showUsage {
           Section {
-            ForEach(usageWindows) { window in
-              usageRow(window)
+            if usageWindows.isEmpty {
+              VStack(alignment: .leading, spacing: 8) {
+                Text(
+                  model.isCurrentAccount(account)
+                    ? "This provider does not report remaining quota."
+                    : "Live quota is reported for the account currently active on this Mac."
+                )
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if account.kind == .saved && !model.isCurrentAccount(account) {
+                  Button("Make Current to Check Quota") {
+                    model.makeAccountCurrent(id: account.id)
+                  }
+                  .buttonStyle(.bordered)
+                  .controlSize(.small)
+                  .disabled(model.isBusy)
+                }
+              }
+            } else {
+              ForEach(usageWindows) { window in
+                usageRow(window)
+              }
             }
           } header: {
-            Text("Remaining Quotas")
+            Text("Remaining Quota")
           } footer: {
-            VStack(alignment: .leading) {
-              Text("Reported by \(account.provider) for the account currently active on this Mac.")
-              detailActions(for: account)
-            }
+            Text(
+              model.isCurrentAccount(account)
+                ? "Reported by \(account.provider) for the account currently active on this Mac."
+                : "Usage is available for the account currently active on this Mac."
+            )
           }
         }
       }
@@ -91,6 +141,19 @@ struct AccountDetailView: View {
       if removalRequested, wasBusy, !busy, account != nil {
         removalRequested = false
       }
+    }
+  }
+
+  @ViewBuilder
+  private func accountStatus(_ account: DesignAccount) -> some View {
+    if model.isCurrentAccount(account) {
+      Label("Current", systemImage: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+        .labelStyle(.titleAndIcon)
+    } else {
+      Label(account.status.rawValue, systemImage: account.status.symbol)
+        .foregroundStyle(account.status.color)
+        .labelStyle(.titleAndIcon)
     }
   }
 
@@ -125,18 +188,8 @@ struct AccountDetailView: View {
   }
 
   private func usageRow(_ window: DesignUsageWindow) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      LabeledContent(window.label) {
-        Text("\(window.remainingPercent)% remaining")
-          .foregroundStyle(.secondary)
-          .monospacedDigit()
-      }
-      ProgressView(value: Double(window.remainingPercent), total: 100)
-      if let resetsAtMs = window.resetsAtMs {
-        Text("Resets \(Date(timeIntervalSince1970: resetsAtMs / 1000), style: .relative)")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+    LabeledContent(quotaWindowLabel(window)) {
+      DesignQuotaView(window: window, isCompact: false, showsLabel: false)
     }
     .accessibilityIdentifier("accounts.inspector.usage.\(window.id)")
   }

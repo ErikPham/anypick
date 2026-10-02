@@ -5,11 +5,17 @@ import UniformTypeIdentifiers
 
 @MainActor
 class MacOSDesignModel: ObservableObject {
+  // MARK: - State
+
   @Published var destination: DesignDestination
   @Published var phase: DesignLoadPhase
   @Published var appearance: DesignAppearance
   @Published var activityShowsLogs: Bool
   @Published var apps: [DesignApp]
+  @Published var allSupportedApps: [DesignApp] = []
+  @Published var codexProfiles: [DesignCodexProfile] = []
+  @Published var codexProfileSources: [DesignCodexProfileSource] = []
+  @Published var automaticallyCreateCodexProfiles = AppPreferences.codexAutoProfilesEnabled
   @Published var accounts: [DesignAccount]
   @Published var proxies: [DesignProxy]
   @Published var activity: [DesignActivity]
@@ -27,7 +33,14 @@ class MacOSDesignModel: ObservableObject {
   @Published var publishedModels: [DesignPublishedModel] = []
   @Published var proxyHubModelCount: Int?
   @Published var proxyHubEnabled = true
+  /// Hub-wide request mode: spread each model across the accounts that can
+  /// serve it, instead of pinning it to the resolved source.
+  @Published var proxyHubRotates = false
   @Published var proxyHubPort = 41_401
+  @Published var proxyHubApiKey = ""
+  @Published var proxyHubHasToken = false
+  /// Fires when a copy lands on the pasteboard. The key is not part of this value.
+  @Published var copiedKey: DesignCopiedKey?
   @Published var publishModels = true
   @Published var openAtLogin = true
   @Published var showUsage = true
@@ -38,8 +51,11 @@ class MacOSDesignModel: ObservableObject {
   @Published var showFirstRunWelcome = false
   @Published var onboardingDismissed = false
   @Published var useTrustedProfiles = true
-  @Published var announcementRequested = 0
   @Published var feedback: DesignFeedback?
+  /// Set when the engine refused a client-config takeover it cannot prove it
+  /// owns. The error alert then offers the confirmation the refusal asked for;
+  /// without it the message "confirm the takeover" had nothing to confirm it.
+  @Published var pendingTakeover: DesignTakeoverOffer?
   @Published var pendingStartupFlow: String?
   @Published var pendingGatewayConnectID: String?
   @Published var pendingGatewayConnectName: String?
@@ -57,18 +73,31 @@ class MacOSDesignModel: ObservableObject {
   @Published var serviceOperations: [String: DesignServiceOperation] = [:]
   @Published var serviceFailures: [String: String] = [:]
   @Published var degradedConditions: [DesignDegradedCondition] = []
+  @Published var doctorReport: DesignDoctorReport?
+  @Published var doctorIsRunning = false
+  @Published var doctorError: String?
   var hubCatalogs: [DesignHubCatalog] = []
   private var hubModelOwners: [String: String] = [:]
-  /// In-flight fixture simulations (L7/PX5). Production overrides every path
+  var cachedRouteCandidates: [String: [DesignRoutingCandidate]] = [:]
+  /// Provider-level model defaults, keyed like the engine buckets
+  /// (account provider id, "gateway/<name>", "proxy-hub"). Fixture-local keys
+  /// never cross to the engine; production resolves them server-side.
+  var providerModelDefaults: [String: [String: String]] = [:]
+  /// In-flight fixture simulations. Production overrides every path
   /// that uses these, so they never affect the live service.
+  var feedbackDismissTask: Task<Void, Never>?
   private var logPollingTask: Task<Void, Never>?
   private var proxySimTasks = [String: Task<Void, Never>]()
+
+  // MARK: - Derived state
 
   var isProduction: Bool { false }
 
   var currentLiveLogins: [DesignLiveLogin] { liveLogins }
 
   var currentLiveLogin: DesignLiveLogin? { currentLiveLogins.first }
+
+  // MARK: - Construction
 
   init(
     destination: DesignDestination,
@@ -89,6 +118,7 @@ class MacOSDesignModel: ObservableObject {
     self.phase = phase
     self.appearance = appearance
     self.activityShowsLogs = activityShowsLogs
+    self.allSupportedApps = apps
     self.apps = Self.applyingQuickPanelPreferences(apps)
     self.accounts = accounts
     self.proxies = proxies
@@ -133,7 +163,8 @@ class MacOSDesignModel: ObservableObject {
             preferred: true,
             available: true
           )
-        ]
+        ],
+        acceptsAuthPaste: true
       ),
       DesignProviderOption(
         id: "OpenAI",
@@ -149,10 +180,44 @@ class MacOSDesignModel: ObservableObject {
             preferred: true,
             available: true
           )
-        ]
+        ],
+        acceptsAuthPaste: true
       ),
       DesignProviderOption(
-        id: "Gemini", label: "Gemini", detail: "Local app login", canClear: true),
+        id: "Gemini",
+        label: "Gemini",
+        detail: "Google subscription or API key",
+        canClear: true,
+        loginMethods: [
+          DesignLoginMethod(
+            id: "gemini-subscription",
+            label: "Gemini subscription",
+            detail: "Google browser sign-in for Gemini CLI",
+            provenance: "official",
+            preferred: true,
+            available: true,
+            sourceID: "gemini-cli"
+          ),
+          DesignLoginMethod(
+            id: "antigravity-subscription",
+            label: "Antigravity subscription",
+            detail: "Google browser sign-in for Antigravity-compatible access",
+            provenance: "official",
+            preferred: false,
+            available: true,
+            sourceID: "antigravity"
+          ),
+        ],
+        credentialKinds: [
+          DesignCredentialKind(
+            kind: "api-key",
+            label: "Gemini API key",
+            profiles: [
+              DesignCredentialProfile(id: "global", label: "Google AI Studio")
+            ]
+          )
+        ]
+      ),
       DesignProviderOption(
         id: "Kiro",
         label: "Kiro",
@@ -188,18 +253,8 @@ class MacOSDesignModel: ObservableObject {
       DesignProviderOption(
         id: "OpenCode",
         label: "OpenCode",
-        detail: "Local app login",
+        detail: "Use the OpenCode login already on this Mac",
         canClear: true,
-        loginMethods: [
-          DesignLoginMethod(
-            id: "opencode-login",
-            label: "OpenCode login",
-            detail: "OpenCode browser sign-in",
-            provenance: "official",
-            preferred: true,
-            available: true
-          )
-        ]
       ),
       DesignProviderOption(
         id: "WorkBuddy",
@@ -264,29 +319,13 @@ class MacOSDesignModel: ObservableObject {
         defaultEndpoint: "http://127.0.0.1:8080/v1", kind: "custom"
       ),
       DesignProviderOption(
+        id: "cloudflare-aigateway", label: "Cloudflare AI Gateway",
+        detail: "Cloudflare AI Gateway REST API (Unified Billing)", kind: "hosted",
+        requiresGatewayId: true, requiresAccountId: true
+      ),
+      DesignProviderOption(
         id: "Custom", label: "Custom", detail: "Custom endpoint", kind: "custom"),
     ]
-  }
-
-  func defaultGatewayEndpoint(for provider: String) -> String? {
-    gatewayProviderOptions.first(where: { $0.id == provider })?.defaultEndpoint
-  }
-
-  func preferredGatewayProvider(for clientID: String?) -> DesignProviderOption? {
-    guard let clientID else { return nil }
-    return gatewayProviderOptions.first { option in
-      option.firstPartyClientIDs.contains {
-        $0.caseInsensitiveCompare(clientID) == .orderedSame
-      }
-    }
-  }
-
-  func usageWindows(for account: DesignAccount) -> [DesignUsageWindow] {
-    guard isCurrentAccount(account), showUsage else { return [] }
-    return apps.first { app in
-      app.name.localizedCaseInsensitiveContains(account.provider)
-        || account.provider.localizedCaseInsensitiveContains(app.id)
-    }?.usageWindows ?? []
   }
 
   static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment)
@@ -295,10 +334,17 @@ class MacOSDesignModel: ObservableObject {
     let fixture =
       DesignLoadPhase(rawValue: environment["ANYPICK_MACOS_FIXTURE"] ?? "ready")
       ?? (environment["ANYPICK_MACOS_FIXTURE"] == "populated" ? .ready : .ready)
-    let destination =
-      DesignDestination(
-        rawValue: environment["ANYPICK_MACOS_DESTINATION"] ?? DesignDestination.overview.rawValue
-      ) ?? .overview
+    let startupFlow = environment["ANYPICK_MACOS_FLOW"]
+    let explicitDestination = environment["ANYPICK_MACOS_DESTINATION"].flatMap(DesignDestination.init)
+    let flowDestination: DesignDestination? = switch startupFlow {
+    case "add-account", "add-account-error", "add-gateway", "add-gateway-error", "remove-account": .accounts
+    case "published-models": .apps
+    case "inspect-model", "hub-overlap": .proxyHub
+    case let flow? where flow.hasPrefix("proxy-detail"): .proxies
+    case "create-backup", "restore-backup", "import-backup": .backups
+    default: nil
+    }
+    let destination = explicitDestination ?? flowDestination ?? .overview
     let appearance =
       DesignAppearance(rawValue: environment["ANYPICK_MACOS_APPEARANCE"] ?? "system")
       ?? .system
@@ -325,8 +371,8 @@ class MacOSDesignModel: ObservableObject {
             symbol: "point.3.connected.trianglepath.dotted"
           ),
           DesignLogSource(
-            // Mirrors a real fixture proxy (L6): the stopped notice's Start
-            // button needs a source id that matches a proxy row.
+            // The stopped notice's Start button needs a source id that
+            // matches a proxy row.
             id: "codex-relay",
             label: "Codex Relay",
             detail: "Personal · Codex",
@@ -336,8 +382,37 @@ class MacOSDesignModel: ObservableObject {
         ],
       selectedLogSourceID: "hub",
       backups: fixture == .empty ? [] : populated.backups,
-      startupFlow: environment["ANYPICK_MACOS_FLOW"]
+      startupFlow: startupFlow
     )
+    if fixture != .empty {
+      model.codexProfileSources = [
+        DesignCodexProfileSource(
+          sourceID: "account/gemini/work",
+          label: "Gemini · Work",
+          detail: "maya@studio.example",
+          selected: true,
+          models: ["gemini-3.8-flash", "gemini-3.8-pro"]
+        ),
+        DesignCodexProfileSource(
+          sourceID: "hub/default",
+          kind: "proxy-hub",
+          label: "Proxy Hub",
+          detail: "Shared models and accounts",
+          selected: false,
+          models: ["gemini-3.8-flash", "gpt-5.6-codex"]
+        ),
+      ]
+      model.codexProfiles = [
+        DesignCodexProfile(
+          name: "gemini-work",
+          sourceID: "account/gemini/work",
+          sourceLabel: "Gemini · Work",
+          modelID: "gemini-3.8-flash",
+          transportPolicy: "auto",
+          launchCommand: "source '$HOME/.anypick/clients/codex/profiles/gemini-work.env.sh' && CODEX_HOME='$HOME/.anypick/clients/codex/profiles/gemini-work/codex-home' codex --profile 'gemini-work'"
+        ),
+      ]
+    }
     if fixture == .empty {
       model.proxyHubEnabled = false
       model.showFirstRunWelcome = !(environment["ANYPICK_MACOS_FLOW"] ?? "").hasPrefix("tray")
@@ -345,6 +420,11 @@ class MacOSDesignModel: ObservableObject {
     model.logState = fixture == .empty ? .unavailable : (showsLogs ? .ready : .idle)
     if environment["ANYPICK_MACOS_FLOW"] == "getting-started" {
       model.showGettingStarted = true
+    } else if environment["ANYPICK_MACOS_FLOW"] == "feedback-toast" {
+      model.feedback = DesignFeedback(
+        message: "Gateway connection verified. Models were loaded successfully.",
+        kind: .success
+      )
     }
     if fixture != .empty {
       model.liveLogins = [
@@ -393,10 +473,7 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
-  func isSwitching(_ appID: String) -> Bool {
-    if case .inFlight(let id, _, _, _) = switchPhase { return id == appID }
-    return false
-  }
+  // MARK: - Overview
 
   var hasSavedLogin: Bool { overviewHasSavedLogin(accounts: accounts) }
 
@@ -439,7 +516,9 @@ class MacOSDesignModel: ObservableObject {
     showFeedback("Everything is up to date.", kind: .success)
   }
 
-  func detectSavedAccount(provider: String) -> Bool {
+  // MARK: - Accounts and gateways
+
+  func detectSavedAccount(provider: String, sourceID: String? = nil) -> Bool {
     liveLogin(for: provider) != nil
   }
 
@@ -454,76 +533,11 @@ class MacOSDesignModel: ObservableObject {
     )
   }
 
-  func liveLogin(for provider: String) -> DesignLiveLogin? {
-    currentLiveLogins.first {
-      $0.providerID.caseInsensitiveCompare(provider) == .orderedSame
-        || $0.providerName.caseInsensitiveCompare(provider) == .orderedSame
-    }
-  }
-
-  func upsertLiveLogin(provider: String, identity: String, appName: String? = nil) {
-    let symbol = symbol(for: provider)
-    let login = DesignLiveLogin(
-      providerID: provider.lowercased(),
-      sourceID: nil,
-      providerName: provider,
-      appName: appName ?? anypickDisplayName(provider),
-      identity: identity,
-      symbol: symbol
-    )
-    if let index = liveLogins.firstIndex(where: {
-      $0.providerName.caseInsensitiveCompare(provider) == .orderedSame
-        || $0.providerID.caseInsensitiveCompare(provider) == .orderedSame
-    }) {
-      liveLogins[index] = login
-    } else {
-      liveLogins.append(login)
-    }
-  }
-
-  func testGateway(provider: String, endpoint: String, apiKey: String) -> Bool {
+  func testGateway(provider: String, endpoint: String, apiKey: String, profile: String? = nil) -> Bool {
     !apiKey.localizedCaseInsensitiveContains("invalid")
   }
 
-  /// VoiceOver-only success cue — no modal. Use for copy / non-blocking status.
-  func announceOnly(_ message: String) {
-    announce(message)
-  }
-
-  func announce(_ message: String) {
-    announcementRequested += 1
-    NSAccessibility.post(
-      element: NSApplication.shared,
-      notification: .announcementRequested,
-      userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue]
-    )
-  }
-
-  func applyRoute(appID: String, routeID: String) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-    let previousRoute = apps[index].selectedRouteID
-    guard previousRoute != routeID else { return }
-    commitRoute(appID: appID, routeID: routeID)
-  }
-
   var quickPanelApps: [DesignApp] { apps.filter(\.showInQuickPanel) }
-
-  func setQuickPanelShown(appID: String, shows: Bool) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-    guard apps[index].showInQuickPanel != shows else { return }
-    apps[index].showInQuickPanel = shows
-    AppPreferences.setQuickPanelShown(shows, for: appID)
-    recordActivity(
-      title: "\(apps[index].name) \(shows ? "added to" : "removed from") Quick Panel",
-      detail: shows
-        ? "It now appears in the Quick Panel." : "It no longer appears in the Quick Panel.",
-      symbol: "menubar.rectangle",
-      status: shows ? .ready : .stopped
-    )
-    showFeedback(
-      "\(apps[index].name) \(shows ? "now shows in" : "no longer shows in") the Quick Panel."
-    )
-  }
 
   static func applyingQuickPanelPreferences(_ apps: [DesignApp]) -> [DesignApp] {
     apps.map { app in
@@ -535,15 +549,20 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
-  func setRoute(appID: String, routeID: String) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
+  @discardableResult
+  func setRoute(appID: String, routeID: String) -> Bool {
+    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return false }
     let previousRoute = apps[index].selectedRouteID
-    guard previousRoute != routeID else { return }
+    guard previousRoute != routeID else { return true }
     let fromName = routeName(previousRoute, for: apps[index])
     let toName = routeName(routeID, for: apps[index])
     if isProduction {
       commitRoute(appID: appID, routeID: routeID)
-      return
+      return true
+    }
+    guard !isBusy else {
+      showFeedback("Another change is already in progress. Try again in a moment.", kind: .warning)
+      return false
     }
     isBusy = true
     switchPhase = .inFlight(appID: appID, from: fromName, to: toName, routeID: routeID)
@@ -558,19 +577,7 @@ class MacOSDesignModel: ObservableObject {
         switchPhase = .idle
       }
     }
-  }
-
-  private func commitRoute(appID: String, routeID: String) {
-    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
-    apps[index].selectedRouteID = routeID
-    apps[index].status = .ready
-    recordActivity(
-      title: "\(apps[index].name) now uses \(routeName(routeID, for: apps[index]))",
-      detail: "The change applied without restarting the app.",
-      symbol: "arrow.triangle.2.circlepath",
-      status: .ready
-    )
-    showFeedback("\(apps[index].name) now uses \(routeName(routeID, for: apps[index])).")
+    return true
   }
 
   @discardableResult
@@ -598,12 +605,101 @@ class MacOSDesignModel: ObservableObject {
   }
 
   @discardableResult
-  func updateAppModelRoles(appID: String, routeID: String, modelRoles: [String: String]) -> Bool {
+  /// Fixture key mirroring the engine bucket shape (account provider,
+  /// per-gateway name, single hub). Local only; production resolves keys
+  /// server-side and never calls this.
+  func modelRolesScopeKey(appID: String, route: DesignRoute?) -> String? {
+    guard let route else { return nil }
+    switch route.kind {
+    case .gateway:
+      return route.name.isEmpty ? nil : "gateway/" + route.name
+    case .hub:
+      return "proxy-hub"
+    default:
+      if let provider = route.providerID, !provider.isEmpty { return provider }
+      let resolved = providerID(forRoute: route)
+      return resolved.isEmpty ? nil : resolved
+    }
+  }
+
+  /// Where the app's current values come from: per-connection pins, the
+  /// provider default, or nothing yet.
+  func modelRolesProvenance(appID: String) -> ModelRolesProvenance {
+    guard let app = apps.first(where: { $0.id == appID }) else { return .none }
+    let pinned = app.modelRoles.contains { !$0.modelID.isEmpty }
+    if pinned { return .custom }
+    if let route = app.routeOptions.first(where: { $0.id == app.selectedRouteID }),
+      let key = modelRolesScopeKey(appID: appID, route: route),
+      let defaults = providerModelDefaults[key],
+      defaults.values.contains(where: { !$0.isEmpty })
+    {
+      return .inherited
+    }
+    return .none
+  }
+
+  /// Whether the connection flow should nudge into the model picker: an
+  /// app with an effective default (pinned or inherited) must not be forced
+  /// through it to finish.
+  func appRouteNeedsModelChoice(appID: String) -> Bool {
+    guard let app = apps.first(where: { $0.id == appID }),
+      appRouteOffersModelStep(app)
+    else { return false }
+    return (effectiveModelRoles(appID: appID)["default"] ?? "").isEmpty
+  }
+
+  /// Effective values for pickers: explicit pins, else the provider default.
+  func effectiveModelRoles(appID: String) -> [String: String] {
+    guard let app = apps.first(where: { $0.id == appID }) else { return [:] }
+    var out = Dictionary(
+      uniqueKeysWithValues: app.modelRoles.map { ($0.id, $0.modelID) })
+    if out.values.allSatisfy(\.isEmpty),
+      let route = app.routeOptions.first(where: { $0.id == app.selectedRouteID }),
+      let key = modelRolesScopeKey(appID: appID, route: route),
+      let defaults = providerModelDefaults[key]
+    {
+      for (role, model) in defaults where !model.isEmpty {
+        out[role] = model
+      }
+    }
+    return out
+  }
+
+  func updateAppModelRoles(
+    appID: String,
+    routeID: String,
+    modelRoles: [String: String],
+    scope: ModelRoleScope = .connection
+  ) -> Bool {
     guard let index = apps.firstIndex(where: { $0.id == appID }) else { return false }
     apps[index].selectedRouteID = routeID
-    for roleIndex in apps[index].modelRoles.indices {
-      let roleID = apps[index].modelRoles[roleIndex].id
-      apps[index].modelRoles[roleIndex].modelID = modelRoles[roleID] ?? ""
+    let cleaned = Dictionary(
+      uniqueKeysWithValues: modelRoles.compactMap { key, value in
+        value.isEmpty ? nil : (key, value)
+      })
+    switch scope {
+    case .connection:
+      for roleIndex in apps[index].modelRoles.indices {
+        let roleID = apps[index].modelRoles[roleIndex].id
+        apps[index].modelRoles[roleIndex].modelID = cleaned[roleID] ?? ""
+      }
+    case .provider:
+      guard
+        let route = apps[index].routeOptions.first(where: { $0.id == routeID }),
+        let key = modelRolesScopeKey(appID: appID, route: route)
+      else { return false }
+      // Provider scope replaces the default and drops per-connection pins,
+      // so the new default takes effect visibly everywhere at once. The
+      // engine keeps pins+marker instead; both shapes read identically
+      // through provenance and effective values.
+      if cleaned.isEmpty {
+        providerModelDefaults.removeValue(forKey: key)
+      } else {
+        providerModelDefaults[key] = cleaned
+      }
+      for roleIndex in apps[index].modelRoles.indices {
+        apps[index].modelRoles[roleIndex].modelID = ""
+      }
     }
     showFeedback("Applied model roles for \(apps[index].name).", kind: .success)
     return true
@@ -625,11 +721,206 @@ class MacOSDesignModel: ObservableObject {
     showFeedback("Reset \(apps[index].name) to its native login.", kind: .warning)
   }
 
+  var availableAppsToAdd: [DesignApp] {
+    allSupportedApps.filter { supported in
+      !apps.contains(where: { $0.id == supported.id })
+    }
+  }
+
+  func addApp(appID: String) {
+    AppPreferences.addConfiguredApp(appID)
+    guard let candidate = allSupportedApps.first(where: { $0.id == appID }) else { return }
+    if !apps.contains(where: { $0.id == appID }) {
+      apps.append(candidate)
+      apps.sort(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+    }
+    recordActivity(
+      title: "\(candidate.name) added",
+      detail: "Added to your managed apps.",
+      symbol: "plus.circle",
+      status: .ready
+    )
+    showFeedback("Added \(candidate.name) to your apps.", kind: .success)
+  }
+
+  @discardableResult
+  func createMissingCodexProfiles(sourceIDs: [String]) -> Bool {
+    let profiledSourceIDs = Set(codexProfiles.map(\.sourceID))
+    let targets = codexProfileSources.filter {
+      $0.kind == "account" && sourceIDs.contains($0.sourceID)
+        && !profiledSourceIDs.contains($0.sourceID)
+    }
+    guard !targets.isEmpty else { return false }
+
+    var created = 0
+    for source in targets {
+      let sourceParts = source.sourceID.split(separator: "/").suffix(2)
+      let rawName = sourceParts.joined(separator: "-").lowercased()
+      var name = rawName.unicodeScalars.map { scalar -> String in
+        let value = scalar.value
+        return (97...122).contains(value) || (48...57).contains(value) ? String(scalar) : "-"
+      }.joined()
+      name = name.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+      if name.isEmpty { name = "account" }
+      var candidate = String(name.prefix(64))
+      var suffix = 2
+      while codexProfiles.contains(where: { $0.name == candidate }) {
+        let tail = "-\(suffix)"
+        candidate = String(name.prefix(64 - tail.count)) + tail
+        suffix += 1
+      }
+      if saveCodexProfile(
+        name: candidate,
+        sourceID: source.sourceID,
+        modelID: source.models.first ?? "",
+        transportPolicy: "auto"
+      ) {
+        created += 1
+      }
+    }
+    return created > 0
+  }
+
+  func setAutomaticCodexProfileCreation(_ enabled: Bool, baselineSourceIDs: [String]) {
+    automaticallyCreateCodexProfiles = enabled
+    if enabled {
+      showFeedback("Automatic Codex profiles are enabled for new accounts.", kind: .success)
+    } else {
+      showFeedback("Automatic Codex profile creation is turned off.", kind: .information)
+    }
+  }
+
+  @discardableResult
+  func saveCodexProfile(
+    name: String,
+    sourceID: String,
+    modelID: String,
+    transportPolicy: String
+  ) -> Bool {
+    let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard validCodexProfileName(normalizedName) else {
+      showFeedback("Use 1–64 letters, numbers, hyphens, or underscores for the profile name.", kind: .error)
+      return false
+    }
+    guard !codexProfiles.contains(where: { $0.name == normalizedName }) else {
+      showFeedback("A Codex profile with that name already exists.", kind: .error)
+      return false
+    }
+    guard let source = codexProfileSources.first(where: { $0.sourceID == sourceID }) else {
+      showFeedback("Choose an available Codex account or route.", kind: .error)
+      return false
+    }
+    let needsProxyEnvironment = !sourceID.hasPrefix("account/codex/") || transportPolicy == "proxy"
+    let envFile = "\(NSHomeDirectory())/.anypick/clients/codex/profiles/\(normalizedName).env.sh"
+    let profileHome = "\(NSHomeDirectory())/.anypick/clients/codex/profiles/\(normalizedName)/codex-home"
+    let prefix = needsProxyEnvironment ? "source '\(envFile)' && " : ""
+    let command = "\(prefix)CODEX_HOME='\(profileHome)' codex --profile '\(normalizedName)'"
+    codexProfiles.append(
+      DesignCodexProfile(
+        name: normalizedName,
+        sourceID: sourceID,
+        sourceLabel: source.label,
+        modelID: modelID,
+        transportPolicy: transportPolicy,
+        launchCommand: command
+      )
+    )
+    recordActivity(
+      title: "Codex profile \(normalizedName) added",
+      detail: "Saved \(source.label) as an isolated Codex profile.",
+      symbol: "person.crop.circle.badge.checkmark",
+      status: .ready
+    )
+    showFeedback("Added Codex profile \(normalizedName).", kind: .success)
+    return true
+  }
+
+  func removeCodexProfile(name: String) {
+    guard let index = codexProfiles.firstIndex(where: { $0.name == name }) else { return }
+    codexProfiles.remove(at: index)
+    recordActivity(
+      title: "Codex profile \(name) removed",
+      detail: "The profile was removed from AnyPick.",
+      symbol: "trash",
+      status: .stopped
+    )
+    showFeedback("Removed Codex profile \(name).", kind: .warning)
+  }
+
+  @discardableResult
+  func updateCodexProfile(
+    name: String,
+    sourceID: String,
+    modelID: String,
+    transportPolicy: String
+  ) -> Bool {
+    guard validCodexProfileName(name) else {
+      showFeedback("Use 1–64 letters, numbers, hyphens, or underscores for the profile name.", kind: .error)
+      return false
+    }
+    guard let index = codexProfiles.firstIndex(where: { $0.name == name }) else {
+      showFeedback("That Codex profile no longer exists. Refresh and try again.", kind: .error)
+      return false
+    }
+    guard let source = codexProfileSources.first(where: { $0.sourceID == sourceID }) else {
+      showFeedback("Choose an available Codex account or route.", kind: .error)
+      return false
+    }
+    let needsProxyEnvironment = !sourceID.hasPrefix("account/codex/") || transportPolicy == "proxy"
+    let envFile = "\(NSHomeDirectory())/.anypick/clients/codex/profiles/\(name).env.sh"
+    let profileHome = "\(NSHomeDirectory())/.anypick/clients/codex/profiles/\(name)/codex-home"
+    let prefix = needsProxyEnvironment ? "source '\(envFile)' && " : ""
+    let command = "\(prefix)CODEX_HOME='\(profileHome)' codex --profile '\(name)'"
+    codexProfiles[index] = DesignCodexProfile(
+      name: name,
+      sourceID: sourceID,
+      sourceLabel: source.label,
+      modelID: modelID,
+      transportPolicy: transportPolicy,
+      launchCommand: command
+    )
+    recordActivity(
+      title: "Codex profile \(name) updated",
+      detail: "Updated its account, model, or transport settings.",
+      symbol: "checkmark.circle",
+      status: .ready
+    )
+    showFeedback("Updated Codex profile \(name).", kind: .success)
+    return true
+  }
+
+  func copyCodexProfileLaunchCommand(name: String) {
+    guard let profile = codexProfiles.first(where: { $0.name == name }),
+      !profile.launchCommand.isEmpty
+    else { return }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(profile.launchCommand, forType: .string)
+    showFeedback("Launch command copied. Paste it into Terminal to start this Codex profile.", kind: .success)
+  }
+
+  func removeApp(appID: String) {
+    guard let index = apps.firstIndex(where: { $0.id == appID }) else { return }
+    let removed = apps[index]
+    if isAppManagedByAnyPick(removed) {
+      resetAppConfiguration(appID: appID)
+    }
+    AppPreferences.removeApp(appID)
+    apps.remove(at: index)
+    recordActivity(
+      title: "\(removed.name) removed",
+      detail: "Removed from your managed apps.",
+      symbol: "trash",
+      status: .stopped
+    )
+    showFeedback("Removed \(removed.name) from your apps.", kind: .warning)
+  }
+
   func addSavedAccount(
     provider: String,
     name: String,
     label: String,
-    identity: String
+    identity: String,
+    sourceID: String? = nil
   ) -> Bool {
     let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalizedName.isEmpty else { return false }
@@ -670,8 +961,7 @@ class MacOSDesignModel: ObservableObject {
   }
 
   func saveCurrentLogin(_ login: DesignLiveLogin) -> Bool {
-    // First unused name (T6): a hardcoded "Work" duplicated on second save
-    // and addSavedAccount rejects the duplicate.
+    // Pick a distinct default name for each saved login.
     let existing = accounts.filter {
       $0.kind == .saved && $0.provider.caseInsensitiveCompare(login.providerName) == .orderedSame
     }.map(\.name)
@@ -704,6 +994,43 @@ class MacOSDesignModel: ObservableObject {
     )
   }
 
+  /// Fixture twin of account-save-auth. A same name reports ACCOUNT_EXISTS
+  /// and leaves the account list unchanged until the caller passes overwrite.
+  func savePastedAuth(provider: String, name: String?, path _: String, overwrite: Bool) -> Bool {
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let resolved = trimmed.isEmpty ? "pasted" : trimmed
+    let sameName: (DesignAccount) -> Bool = {
+      $0.provider.caseInsensitiveCompare(provider) == .orderedSame
+        && $0.name.caseInsensitiveCompare(resolved) == .orderedSame
+    }
+    if accounts.contains(where: sameName), !overwrite {
+      operationResult = DesignOperationResult(
+        requestID: UUID().uuidString,
+        operation: "account-save-auth",
+        succeeded: false,
+        message: "An account named \(resolved) already exists for \(provider).",
+        code: "ACCOUNT_EXISTS"
+      )
+      return false
+    }
+    if overwrite {
+      accounts.removeAll(where: sameName)
+    }
+    let saved = addSavedAccount(
+      provider: provider,
+      name: resolved,
+      label: "",
+      identity: "Pasted auth"
+    )
+    operationResult = DesignOperationResult(
+      requestID: UUID().uuidString,
+      operation: "account-save-auth",
+      succeeded: saved,
+      message: saved ? "Saved \(resolved)." : (feedback?.message ?? "Couldn’t save that account.")
+    )
+    return saved
+  }
+
   /// Fixture twin of the account-save-input engine path: stores a typed
   /// credential (API key / plan key) without a live login behind it.
   func saveCredentialInput(
@@ -732,6 +1059,8 @@ class MacOSDesignModel: ObservableObject {
     endpoint: String,
     apiKey: String,
     region: String?,
+    gatewayId: String? = nil,
+    profile: String? = nil,
     defaultModel: String
   ) -> Bool {
     let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -797,8 +1126,16 @@ class MacOSDesignModel: ObservableObject {
     showFeedback("\(accounts[index].name) is ready.", kind: .success)
   }
 
-  /// Re-probe a saved gateway with its stored credential (C7): the Detail
-  /// "Test Connection" button tests instead of refreshing the catalog.
+  /// Refreshes the model catalog for the route selected in Apps. The live
+  /// model sends the provider-specific account/gateway request; the fixture
+  /// keeps the same user-visible affordance without pretending to make a
+  /// network call.
+  func refreshAppModels(appID: String) {
+    guard let app = apps.first(where: { $0.id == appID }) else { return }
+    showFeedback("Refreshing models for \(app.name)…", kind: .information)
+  }
+
+  /// Re-probe a saved gateway with its stored credential.
   func testSavedGateway(id: String) {
     guard let index = accounts.firstIndex(where: { $0.id == id && $0.kind == .gateway }) else {
       return
@@ -812,54 +1149,6 @@ class MacOSDesignModel: ObservableObject {
       status: .ready
     )
     showFeedback("\(accounts[index].name) is ready.", kind: .success)
-  }
-
-  func isCurrentAccount(_ account: DesignAccount) -> Bool {
-    account.kind == .saved && account.status == .running
-  }
-
-  func gatewayRoute(in app: DesignApp, matching gateway: DesignAccount) -> DesignRoute? {
-    let rawID =
-      gateway.id.hasPrefix("gateway/")
-      ? String(gateway.id.dropFirst("gateway/".count))
-      : gateway.id
-    return app.routeOptions.first { route in
-      guard route.kind == .gateway else { return false }
-      if route.id == gateway.id || route.id == rawID { return true }
-      if route.name.caseInsensitiveCompare(gateway.name) == .orderedSame { return true }
-      if gateway.name.localizedCaseInsensitiveContains(route.name)
-        || route.name.localizedCaseInsensitiveContains(gateway.name)
-      {
-        return true
-      }
-      guard let providerID = route.providerID else { return false }
-      return providerID.caseInsensitiveCompare(gateway.provider) == .orderedSame
-        || providerID.caseInsensitiveCompare(rawID) == .orderedSame
-    }
-  }
-
-  func appsCompatible(with gateway: DesignAccount) -> [DesignApp] {
-    apps.filter { gatewayRoute(in: $0, matching: gateway) != nil }
-  }
-
-  func gatewayRouteChanges(id: String, appIDs: Set<String>) -> [(appID: String, routeID: String)] {
-    guard let gateway = accounts.first(where: { $0.id == id && $0.kind == .gateway }) else {
-      return []
-    }
-    var changes = [(appID: String, routeID: String)]()
-    for app in appsCompatible(with: gateway) {
-      guard let route = gatewayRoute(in: app, matching: gateway) else { continue }
-      let shouldUse = appIDs.contains(app.id)
-      let using = app.selectedRouteID == route.id
-      if shouldUse && !using {
-        changes.append((app.id, route.id))
-      } else if !shouldUse && using,
-        let native = app.routeOptions.first(where: { $0.kind == .native })
-      {
-        changes.append((app.id, native.id))
-      }
-    }
-    return changes
   }
 
   func connectGateway(id: String, appIDs: Set<String>) {
@@ -905,23 +1194,6 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
-  func applyMakeCurrent(id: String) {
-    guard let index = accounts.firstIndex(where: { $0.id == id }) else { return }
-    let provider = accounts[index].provider
-    for candidate in accounts.indices where accounts[candidate].provider == provider {
-      accounts[candidate].status = candidate == index ? .running : .ready
-      accounts[candidate].lastUsed = candidate == index ? "Used now" : "Saved"
-    }
-    recordActivity(
-      title: "\(accounts[index].name) is current",
-      detail: "The live \(provider) login now uses this saved account.",
-      symbol: "person.crop.circle.badge.checkmark",
-      status: .ready
-    )
-    showFeedback("\(accounts[index].name) is now current.", kind: .success)
-    announce("\(accounts[index].name) is now current")
-  }
-
   func removeAccount(id: String) {
     guard let index = accounts.firstIndex(where: { $0.id == id }) else { return }
     let removed = accounts.remove(at: index)
@@ -934,6 +1206,43 @@ class MacOSDesignModel: ObservableObject {
       status: .attention
     )
     showFeedback("Removed \(removed.name).", kind: .warning)
+  }
+
+  /// What a hub-source switch displays.
+  ///
+  /// The base model has no engine to wait for, so the switch is the stored
+  /// state. Production overrides this to keep the user's choice while the
+  /// engine confirms it — reading only the snapshot made the switch bounce back
+  /// to its old value until the next snapshot arrived, which reads as the
+  /// control fighting the click.
+  ///
+  /// Rotation is a hub mode, not a source: it is stored on its row and kept out
+  /// of hubSourceIDs, so "does this hub have sources?" keeps meaning sources.
+  // MARK: - Hub
+
+  func hubSourceShowsEnabled(_ sourceID: String) -> Bool {
+    if let row = hubSources.first(where: { $0.id == sourceID }), row.rotates {
+      return row.enabled
+    }
+    return hubSourceIDs.contains(sourceID)
+  }
+
+  /// The hub-wide request mode. The base model has no engine, so the stored
+  /// strategy is the whole truth; Production sends the mutation and waits for
+  /// the snapshot like every other switch.
+  func setHubRotation(_ hub: String, enabled: Bool) {
+    proxyHubRotates = enabled
+    if let index = hubSources.firstIndex(where: { $0.rotates && ($0.hub ?? "default") == hub }) {
+      hubSources[index].enabled = enabled
+    }
+    recordActivity(
+      title: enabled ? "Proxy Hub rotation on" : "Proxy Hub rotation off",
+      detail: enabled
+        ? "Each model is spread across the accounts that can serve it."
+        : "Each model is served by one account again.",
+      symbol: "arrow.triangle.2.circlepath",
+      status: enabled ? .ready : .attention
+    )
   }
 
   func setHubSource(_ accountID: String, enabled: Bool) {
@@ -957,14 +1266,51 @@ class MacOSDesignModel: ObservableObject {
   }
 
   func selectRoutingCandidate(actionID: String) {
+    if actionID.hasPrefix("model-route:") {
+      let parts = actionID.split(separator: ":", maxSplits: 2)
+      if parts.count == 3 {
+        let modelID = String(parts[1])
+        let candidateID = String(parts[2])
+        let ownerID: String
+        if candidateID.hasPrefix("provider/") {
+          let pid = String(candidateID.dropFirst(9)).lowercased()
+          ownerID = hubSources.first(where: {
+            $0.provider.lowercased() == pid ||
+            $0.providerID.lowercased() == pid
+          })?.id ?? candidateID
+        } else {
+          ownerID = candidateID
+        }
+        hubModelOwners[modelID] = ownerID
+        recompileHubRouting()
+        return
+      }
+    }
+
     guard
       let conflict = routingConflicts.first(where: {
         $0.candidates.contains(where: { $0.actionID == actionID })
       }),
       let candidate = conflict.candidates.first(where: { $0.actionID == actionID })
     else { return }
+    // A provider choice resolves to the provider's first source in this
+    // conflict — the fixture mirror of the engine pinning the provider id
+    // to its first attached source.
+    let ownerID: String
+    if candidate.providerChoice {
+      if let first = hubSources.first(where: {
+        $0.provider.lowercased() == candidate.provider.lowercased() ||
+        $0.providerID.lowercased() == candidate.provider.lowercased()
+      }) {
+        ownerID = first.id
+      } else {
+        ownerID = candidate.id
+      }
+    } else {
+      ownerID = candidate.id
+    }
     for model in conflict.models {
-      hubModelOwners[model] = candidate.id
+      hubModelOwners[model] = ownerID
     }
     recompileHubRouting()
   }
@@ -975,10 +1321,52 @@ class MacOSDesignModel: ObservableObject {
       catalogs: hubCatalogs,
       owners: hubModelOwners
     )
-    hubSources = compiled.sources
-    publishedModels = compiled.models
-    routingConflicts = compiled.conflicts
-    proxyHubModelCount = compiled.models.filter { !$0.needsChoice }.count
+    if hubSources != compiled.sources {
+      hubSources = compiled.sources
+    }
+    if publishedModels != compiled.models {
+      publishedModels = compiled.models
+    }
+    if routingConflicts != compiled.conflicts {
+      routingConflicts = compiled.conflicts
+    }
+    let newCount = compiled.models.filter { !$0.needsChoice }.count
+    if proxyHubModelCount != newCount {
+      proxyHubModelCount = newCount
+    }
+    cachedRouteCandidates = DesignHubRouting.allRouteCandidates(
+      catalogs: hubCatalogs,
+      sources: hubSources
+    )
+  }
+
+  /// Production restores these persisted pins from the engine snapshot before
+  /// compiling the catalog. Fixture interactions keep using the local map.
+  func replaceHubModelOwners(_ owners: [String: String]) {
+    if hubModelOwners != owners {
+      hubModelOwners = owners
+    }
+  }
+
+  func routeCandidates(for modelID: String) -> [DesignRoutingCandidate] {
+    if let cached = cachedRouteCandidates[modelID], !cached.isEmpty {
+      return cached
+    }
+    let fromCatalogs = DesignHubRouting.routeCandidates(
+      for: modelID,
+      catalogs: hubCatalogs,
+      sources: hubSources
+    )
+    if !fromCatalogs.isEmpty {
+      return fromCatalogs
+    }
+    if let conflict = routingConflicts.first(where: { $0.models.contains(modelID) }) {
+      let providerCandidates = conflict.candidates.filter(\.providerChoice)
+      if providerCandidates.count > 1 {
+        return providerCandidates
+      }
+    }
+    return []
   }
 
   private func rebuildHubSources() {
@@ -988,11 +1376,13 @@ class MacOSDesignModel: ObservableObject {
     recompileHubRouting()
   }
 
+  // MARK: - Proxies
+
   func setProxyEnabled(id: String, enabled: Bool) {
     guard let index = proxies.firstIndex(where: { $0.id == id }) else { return }
     let previousEnabled = proxies[index].enabled
     guard previousEnabled != enabled else { return }
-    // Fixture service simulation (PX5): brief progress like production, so
+    // Brief progress mirrors production, so
     // the row spinners and failure slots are exercisable without the engine.
     proxySimTasks[id]?.cancel()
     let operation: DesignServiceOperation = enabled ? .starting : .stopping
@@ -1068,6 +1458,61 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
+  func rotateProxyKey(id: String) {
+    if id == "hub" {
+      proxyHubApiKey = "aph_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+      proxyHubHasToken = true
+      showFeedback("Proxy Hub API key rotated.", kind: .success)
+      return
+    }
+    guard let index = proxies.firstIndex(where: { $0.id == id }) else { return }
+    let newKey = "ap_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    proxies[index].apiKey = newKey
+    proxies[index].hasToken = true
+    showFeedback("Rotated \(proxies[index].name) API key.", kind: .success)
+  }
+
+  func proxyCanCopyAPIKey(_ proxy: DesignProxy) -> Bool {
+    proxy.hasToken || !proxy.apiKey.isEmpty
+  }
+
+  var proxyHubCanCopyAPIKey: Bool {
+    proxyHubHasToken || !proxyHubApiKey.isEmpty
+  }
+
+  /// Fixture copy. Production replaces this with a service fetch so the
+  /// snapshot never has to carry the bearer.
+  func copyProxyAPIKey(id: String) {
+    let key: String
+    if id == "hub" {
+      key = proxyHubApiKey
+    } else if let proxy = proxies.first(where: { $0.id == id }) {
+      key = proxy.apiKey
+    } else {
+      return
+    }
+    guard !key.isEmpty else {
+      announceOnly("API key isn’t available.")
+      return
+    }
+    guard pasteString(key) else {
+      announceOnly("Couldn’t copy API key.")
+      return
+    }
+    noteCopiedKey(id: id)
+    announceOnly("Copied API key.")
+  }
+
+  func pasteString(_ value: String) -> Bool {
+    NSPasteboard.general.clearContents() != 0
+      && NSPasteboard.general.setString(value, forType: .string)
+  }
+
+  func noteCopiedKey(id: String) {
+    let nonce = (copiedKey?.nonce ?? 0) + 1
+    copiedKey = DesignCopiedKey(id: id, nonce: nonce)
+  }
+
   func restartRunningProxies() {
     let runningIDs = proxies.filter(\.enabled).map(\.id)
     for id in runningIDs { restartProxy(id: id) }
@@ -1095,10 +1540,14 @@ class MacOSDesignModel: ObservableObject {
   }
 
   @discardableResult
+  // MARK: - Backups
+
   func createBackup(accountIDs: Set<String>) -> Bool {
     let selected = accounts.filter { accountIDs.contains($0.id) && $0.kind == .saved }
-    guard !selected.isEmpty, selected.count <= 64 else {
-      showFeedback("Select between 1 and 64 saved accounts.", kind: .error)
+    guard !selected.isEmpty, selected.count <= BackupLimits.maxAccounts else {
+      showFeedback(
+        "Select between 1 and \(BackupLimits.maxAccounts) saved accounts.",
+        kind: .error)
       return false
     }
     let formatter = DateFormatter()
@@ -1155,6 +1604,23 @@ class MacOSDesignModel: ObservableObject {
     return true
   }
 
+  // MARK: - Settings and activity
+
+  func runDoctor() {
+    doctorIsRunning = false
+    doctorError = nil
+    doctorReport = DesignDoctorReport(
+      status: "ok",
+      findings: [
+        DesignDoctorFinding(
+          check: "service",
+          status: "ok",
+          detail: "The settings preview is using fixture data."
+        )
+      ]
+    )
+  }
+
   func setOpenAtLogin(_ enabled: Bool) {
     showFeedback(enabled ? "AnyPick will open at login." : "Open at Login disabled.")
   }
@@ -1207,8 +1673,7 @@ class MacOSDesignModel: ObservableObject {
   func selectLogSource(_ id: String) {
     guard logSources.contains(where: { $0.id == id }) else { return }
     selectedLogSourceID = id
-    // A stopped service shows its Start action (L6), not "Output appears
-    // here…": match the source against proxy rows and the hub toggle.
+    // A stopped service shows its Start action rather than an empty log.
     if logSources.first(where: { $0.id == id })?.provider == "proxy-hub" {
       logState = proxyHubEnabled ? (liveLogLines.isEmpty ? .empty : .ready) : .stopped
     } else if let proxy = proxies.first(where: { $0.id == id }), !proxy.enabled {
@@ -1224,15 +1689,15 @@ class MacOSDesignModel: ObservableObject {
     selectLogSource(selectedLogSourceID)
   }
 
-  /// Fixture polling simulation (L7): Loading → settled, so the notice rows
+  /// Fixture polling simulation: Loading → settled, so the notice rows
   /// and Live badge are exercisable without the engine. Stopped sources stay
-  /// stopped — polling must not clobber the Start action (L6). Production
+  /// stopped — polling must not clobber the Start action. Production
   /// overrides this with real polling.
   func setLogPolling(_ enabled: Bool) {
     logPollingTask?.cancel()
     logPollingTask = nil
     guard enabled, logState != .stopped else { return }
-    // Mirror production (synchronizeLogState): cached tails stay put, only
+    // Cached tails stay put; only
     // the first load flashes Loading.
     guard liveLogLines.isEmpty else { return }
     logState = .loading
@@ -1246,6 +1711,8 @@ class MacOSDesignModel: ObservableObject {
     }
   }
 
+  // MARK: - Backup restore
+
   func restoreBackup(id: String, accountIDs: Set<String>, overwrite: Bool) {
     guard let backup = backups.first(where: { $0.id == id }) else { return }
     let selected = backup.accounts.filter { accountIDs.contains($0.id) }
@@ -1253,7 +1720,7 @@ class MacOSDesignModel: ObservableObject {
       showFeedback("Select at least one account to import.", kind: .information)
       return
     }
-    // Mirror the engine rule (B7): without overwrite, already-saved accounts
+    // Match the engine rule: without overwrite, already-saved accounts
     // are skipped — an all-skipped selection warns instead of reporting
     // a hollow "0 Accounts Imported" success.
     let skipped = selected.filter { alreadySavedAccount($0) }.count
@@ -1299,38 +1766,22 @@ class MacOSDesignModel: ObservableObject {
     return true
   }
 
-  /// Provider+name match the restore flows use to detect an already-saved
-  /// account — single source for the Replace dialog and the skip rule (B7).
-  func alreadySavedAccount(_ account: DesignAccount) -> Bool {
-    accounts.contains { $0.provider == account.provider && $0.name == account.name }
-  }
-
   func clearActivity() {
     activity.removeAll()
     liveLogLines.removeAll()
     showFeedback("Activity history cleared.", kind: .information)
   }
 
-  func dismissFeedback() {
-    feedback = nil
+  /// Confirm the takeover the engine asked for. The base (fixture) model has no
+  /// engine to re-run, so it only clears the offer; ProductionDesignModel
+  /// overrides it.
+  // MARK: - Feedback and identity
+
+  func confirmPendingTakeover() {
+    pendingTakeover = nil
   }
 
-  /// Blocking alert only for errors. Success and information stay silent
-  /// (VoiceOver announcement), matching System Settings.
-  func showFeedback(
-    _ message: String,
-    kind: DesignFeedback.Kind = .information
-  ) {
-    announce(message)
-    if kind == .error {
-      feedback = DesignFeedback(message: message, kind: kind)
-    } else {
-      // Clear any previous error alert; do not present success modals.
-      if feedback?.kind == .error { feedback = nil }
-    }
-  }
-
-  private func recordActivity(
+  func recordActivity(
     title: String,
     detail: String,
     symbol: String,
@@ -1349,24 +1800,6 @@ class MacOSDesignModel: ObservableObject {
       ),
       at: 0
     )
-  }
-
-  private func routeName(_ routeID: String, for app: DesignApp) -> String {
-    app.routeOptions.first(where: { $0.id == routeID })?.name ?? friendlyRouteKindLabel(.native)
-  }
-
-  func providerID(forRoute route: DesignRoute) -> String {
-    if let providerID = route.providerID { return providerID }
-    if route.kind == .gateway { return "openrouter" }
-    if let account = accounts.first(where: { $0.id == route.id || $0.name == route.name }) {
-      return account.provider
-    }
-    return route.id
-  }
-
-  /// SF Symbol fallback when a provider has no bundled brand mark.
-  private func symbol(for provider: String) -> String {
-    DesignBrandAsset.fallbackSymbol(for: provider)
   }
 
 }

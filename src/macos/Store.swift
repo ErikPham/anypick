@@ -6,6 +6,8 @@ import SwiftUI
 
 @MainActor
 final class TrayStore: ObservableObject {
+  // MARK: - State
+
   @Published private(set) var proxyCount: Int
   @Published private(set) var routes: [RouteSnapshot] = []
   @Published private(set) var actions: [ActionSnapshot] = []
@@ -18,6 +20,8 @@ final class TrayStore: ObservableObject {
   @Published private(set) var hubCatalogs: [HubCatalogSnapshot] = []
   @Published private(set) var logSources: [LogSourceSnapshot] = []
   @Published private(set) var clientModelConfigs: [ClientModelConfigSnapshot] = []
+  @Published private(set) var codexProfiles: [CodexProfileSnapshot] = []
+  @Published private(set) var codexProfileSources: [CodexProfileSourceSnapshot] = []
   @Published private(set) var gateways: [GatewaySnapshot] = []
   @Published private(set) var accountProviders: [AccountProviderSnapshot] = []
   @Published private(set) var gatewayProviders: [GatewayProviderSnapshot] = []
@@ -28,9 +32,12 @@ final class TrayStore: ObservableObject {
     quotaGuardEnabled: false
   )
   @Published private(set) var logsBySource: [String: String] = [:]
-  @Published private(set) var logStatesBySource: [String: String] = [:]
-  @Published private(set) var selectedLogSourceId = ""
-  @Published private(set) var loadingLogSourceId: String?
+  @Published var logStatesBySource: [String: String] = [:]
+  @Published private(set) var doctorResult: DoctorResult?
+  @Published private(set) var doctorIsRunning = false
+  @Published private(set) var doctorError: String?
+  @Published var selectedLogSourceId = ""
+  @Published var loadingLogSourceId: String?
   @Published private(set) var activity: [ActivityEvent] = []
   @Published private(set) var degradedConditions: [DegradedConditionSnapshot] = []
   @Published private(set) var revision = 0
@@ -42,31 +49,45 @@ final class TrayStore: ObservableObject {
   /// UI-facing busy flag with a short hold so ProgressView does not flash off.
   @Published private(set) var showsBusy = false
   @Published private(set) var busyLabel: String?
-  @Published private(set) var message: String?
+  @Published var message: String?
   @Published private(set) var messageIsError = false
   /// Last completed command result, keyed by request id (forms wait on this).
   @Published private(set) var lastResult: CommandResult?
   /// Read-only backup preview state is independent from mutation busy/result state.
-  @Published private(set) var backupPreview: BackupPreviewResult?
-  @Published private(set) var backupPreviewRequestId: String?
+  @Published var backupPreview: BackupPreviewResult?
+  @Published var backupPreviewRequestId: String?
 
   @Published private(set) var serviceState: AppServiceConnectionState = .starting
-  @Published private(set) var serviceFailure: String?
+  /// Frame kinds this build has already reported as unreadable. One report per
+  /// kind is enough: the engine writes whole frames, so a payload this build
+  /// cannot decode will not decode on the next 2.5s tick either, and repeating
+  /// the message would bury every real status under it.
+  private var unreadableFrames = Set<String>()
 
   private var inputBuffer = Data()
   private var commandSink: ((String) -> Void)?
-  private var loadingLogRequestId: String?
-  private var logRequestTimeoutTask: Task<Void, Never>?
-  private var logPollTask: Task<Void, Never>?
-  private var logPollSourceId: String?
-  private var inspectedBackupPath: String?
-  private var backupPreviewTimeoutTask: Task<Void, Never>?
-  private var messageDismissTask: Task<Void, Never>?
+  /// The last action the app asked the engine to run (see
+  /// retryInvokeWithConsent).
+  private var lastInvoke: (requestId: String, actionId: String, label: String)?
+  private var silentRequestIDs = Set<String>()
+  var loadingLogRequestId: String?
+  var logRequestTimeoutTask: Task<Void, Never>?
+  var doctorRequestId: String?
+  var doctorTimeoutTask: Task<Void, Never>?
+  var logPollTask: Task<Void, Never>?
+  var logPollSourceId: String?
+  var inspectedBackupPath: String?
+  var backupPreviewTimeoutTask: Task<Void, Never>?
+  var messageDismissTask: Task<Void, Never>?
   private var busyHideTask: Task<Void, Never>?
+
+  // MARK: - Construction
 
   init(initialCount: Int) {
     proxyCount = initialCount
   }
+
+  // MARK: - Service
 
   func attachCommandSink(_ sink: @escaping (String) -> Void) {
     commandSink = sink
@@ -79,10 +100,24 @@ final class TrayStore: ObservableObject {
 
   func updateServiceState(_ state: AppServiceConnectionState) {
     serviceState = state
-    if case .degraded(let reason) = state {
-      serviceFailure = reason
-    } else if state == .ready {
-      serviceFailure = nil
+    if case .degraded = state {
+      if doctorRequestId != nil {
+        finishDoctorRequest(error: "The AnyPick service stopped before Doctor finished.")
+      }
+      // A crashed or incompatible helper cannot deliver the result for the
+      // mutation that was in flight. Release the single-flight slot here so
+      // forms can receive the failure and retry instead of staying disabled.
+      if let busyRequestId {
+        silentRequestIDs.remove(busyRequestId)
+        endBusy()
+      }
+      return
+    }
+    if state == .ready {
+      // A fresh generation gets its own report per frame kind: the user was
+      // told to restart, so if the frames still do not decode they must hear
+      // it again rather than have it filtered as already-reported.
+      unreadableFrames.removeAll()
     }
   }
 
@@ -108,159 +143,54 @@ final class TrayStore: ObservableObject {
 
   /// Returns false (and surfaces a message) when another mutation is already in flight.
   @discardableResult
-  private func claimBusy(requestId: String, label: String) -> Bool {
+  private func claimBusy(requestId: String, label: String, silentFeedback: Bool = false) -> Bool {
     if busyRequestId != nil {
       let current = busyLabel ?? "another action"
-      showMessage("Already working on \(current). Try again in a moment.", isError: true)
+      if !silentFeedback {
+        showMessage("Already working on \(current). Try again in a moment.", isError: true)
+      }
       return false
     }
     beginBusy(requestId, label: label)
     return true
   }
 
-  var appRouteClients: [String] {
-    var seen = Set<String>()
-    return actions
-      .filter { $0.enabled && $0.presentation == "app-route" }
-      .compactMap { action in seen.insert(action.client).inserted ? action.client : nil }
-  }
-
-  var nativeAccounts: [ActionSnapshot] {
-    actions.filter { $0.enabled && $0.presentation == "native-account" }
-  }
-
-  var nativeAccountClients: [String] {
-    var seen = Set<String>()
-    return nativeAccounts.compactMap { action in
-      seen.insert(action.client).inserted ? action.client : nil
+  func sendMutationCommand<T: Encodable>(
+    _ mutation: T,
+    requestId: String,
+    activityLabel: String,
+    silentFeedback: Bool = false
+  ) -> String? {
+    guard commandCanBeAccepted(silentFeedback: silentFeedback) else { return nil }
+    guard let data = encodeCommand(mutation) else { return nil }
+    let command = "mutate\t\(data.base64EncodedString())"
+    guard command.lengthOfBytes(using: .utf8) <= 16 * 1024 else {
+      showMessage(
+        "This request is too large to send. Shorten entered values or select fewer accounts, then try again.",
+        isError: true
+      )
+      return nil
     }
-  }
-
-  var managedAppClientIDs: [String] {
-    var seen = Set<String>()
-    let actionable: [String] = actions.compactMap { action -> String? in
-      seen.insert(action.clientId).inserted ? action.clientId : nil
+    guard claimBusy(requestId: requestId, label: activityLabel, silentFeedback: silentFeedback) else {
+      return nil
     }
-    let installed: [String] = accountProviders.compactMap { provider -> String? in
-      guard provider.installed, let clientId = provider.clientId else { return nil }
-      return seen.insert(clientId).inserted ? clientId : nil
+    if silentFeedback {
+      silentRequestIDs.insert(requestId)
+    } else {
+      showMessage("Working on \(activityLabel)…", isError: false)
     }
-    return actionable + installed
+    emit(command)
+    return requestId
   }
 
-  var nativeSourceIds: [String] {
-    var seen = Set<String>()
-    return nativeAccounts.compactMap { action in
-      seen.insert(action.sourceId).inserted ? action.sourceId : nil
-    }
-  }
+  /// Termination hook. Production wires the delegate path (menu-bar Quit
+  /// semantics: Dock/⌘Q hides instead of killing); unset falls back to a
+  /// plain terminate. The hook keeps TrayStore free of the app delegate so
+  /// the unit-test target can compile the store without the app scene.
+  var quitHandler: (() -> Void)?
 
-  var primaryUsageText: String? {
-    guard let window = usage.first?.windows.first else { return nil }
-    return "\(window.remainingPercent)%"
-  }
 
-  var proxyHub: ProxySnapshot? {
-    proxies.first { $0.providerId == "proxy-hub" }
-  }
-
-  var unavailableHubSources: [HubSourceSnapshot] {
-    hubSources.filter { source in
-      guard source.enabled else { return false }
-      if let warning = source.warning?.trimmingCharacters(in: .whitespacesAndNewlines),
-         !warning.isEmpty {
-        return true
-      }
-      let status = source.status?.lowercased() ?? ""
-      return ["attention", "error", "unavailable"].contains(status)
-    }
-  }
-
-  var routingChoiceCount: Int {
-    hubConflicts.filter { $0.kind == "source-choice" }.count
-  }
-
-  var routingIssueCount: Int {
-    hubConflicts.filter { $0.kind != "source-choice" }.count + unavailableHubSources.count
-  }
-
-  /// Badge / menu-bar attention: routing issues + unresolved source choices.
-  var attentionCount: Int {
-    routingIssueCount + routingChoiceCount
-  }
-
-  /// True until AnyPick has persisted a source or route. Installed CLIs are
-  /// device capabilities, not evidence that setup has happened.
-  var isFirstRun: Bool {
-    snapshotReady
-      && accounts.isEmpty
-      && gateways.isEmpty
-      && !routes.contains(where: { $0.source?.isEmpty == false })
-  }
-
-  /// Installed clients come from native installation probes, not from route
-  /// actions. A fresh AnyPick install has no route actions to display yet.
-  var hasInstalledClient: Bool {
-    accountProviders.contains { $0.clientId != nil && $0.installed }
-  }
-
-  /// Accounts exist but no installable app-route client is visible yet.
-  var needsInstalledApps: Bool {
-    snapshotReady
-      && !accounts.isEmpty
-      && !hasInstalledClient
-  }
-
-  /// Short relative freshness for chrome (“Updated just now”).
-  func snapshotFreshnessText(now: Date = Date()) -> String? {
-    guard let lastSnapshotAt else { return nil }
-    let seconds = now.timeIntervalSince(lastSnapshotAt)
-    if seconds < 8 { return "Updated just now" }
-    if seconds < 60 { return "Updated \(max(1, Int(seconds)))s ago" }
-    if seconds < 3600 { return "Updated \(max(1, Int(seconds / 60)))m ago" }
-    return "Updated \(max(1, Int(seconds / 3600)))h ago"
-  }
-
-  func appActions(_ client: String) -> [ActionSnapshot] {
-    actions.filter { $0.enabled && $0.presentation == "app-route" && $0.client == client }
-  }
-
-  func managedActions(clientId: String) -> [ActionSnapshot] {
-    actions.filter { $0.enabled && $0.clientId == clientId }
-  }
-
-  func nativeActions(_ client: String) -> [ActionSnapshot] {
-    nativeAccounts.filter { $0.client == client }
-  }
-
-  func nativeSourceActions(_ sourceId: String) -> [ActionSnapshot] {
-    nativeAccounts.filter { $0.sourceId == sourceId }
-  }
-
-  func route(_ client: String) -> RouteSnapshot? {
-    routes.first { $0.client == client }
-  }
-
-  func route(clientId: String) -> RouteSnapshot? {
-    routes.first { $0.clientId == clientId }
-  }
-
-  func modelConfig(_ client: String) -> ClientModelConfigSnapshot? {
-    clientModelConfigs.first { $0.client == client || $0.clientId == client }
-  }
-
-  /// Match usage cards by short client name, display name, or source id.
-  func usage(for client: String) -> UsageSnapshot? {
-    let needle = client.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !needle.isEmpty else { return nil }
-    let display = anypickDisplayName(needle)
-    return usage.first { card in
-      card.client.caseInsensitiveCompare(needle) == .orderedSame
-        || card.client.caseInsensitiveCompare(display) == .orderedSame
-        || card.account.localizedCaseInsensitiveContains(needle)
-        || needle.localizedCaseInsensitiveContains(card.client)
-    }
-  }
+  // MARK: - Frame consume, invoke, and mutation pipeline
 
   func consume(_ data: Data) {
     inputBuffer.append(data)
@@ -278,27 +208,58 @@ final class TrayStore: ObservableObject {
   }
 
   @discardableResult
-  func invoke(actionId: String, label: String) -> String? {
+  func invoke(actionId: String, label: String, allowForeignConfig: Bool = false) -> String? {
+    guard commandCanBeAccepted() else { return nil }
     let requestId = UUID().uuidString
-    let invocation = Invocation(requestId: requestId, revision: revision, actionId: actionId)
-    guard let data = try? JSONEncoder().encode(invocation) else { return nil }
+    let invocation = Invocation(
+      requestId: requestId,
+      revision: revision,
+      actionId: actionId,
+      allowForeignConfig: allowForeignConfig ? true : nil
+    )
+    guard let data = encodeCommand(invocation) else { return nil }
     guard claimBusy(requestId: requestId, label: label) else { return nil }
+    // Remembered so a CLIENT_CONFIG_FOREIGN refusal can be retried with the
+    // user's consent instead of dead-ending the sheet that raised it. Keyed by
+    // request id: a later mutation must not be answered by replaying this
+    // action.
+    lastInvoke = (requestId: requestId, actionId: actionId, label: label)
     showMessage("Working on \(label)…", isError: false)
     emit("invoke\t\(data.base64EncodedString())")
     return requestId
   }
 
+  /// Re-runs the action whose takeover the engine refused, now with the user's
+  /// consent. Only the refused request may be retried: any other id means the
+  /// offer is stale, and replaying a different action under consent would be
+  /// exactly the unasked-for takeover the gate exists to prevent.
   @discardableResult
-  func applyModelRoles(clientId: String, roleActionIds: [String: String], label: String) -> String? {
-    guard roleActionIds["default"] != nil else { return nil }
+  func retryInvokeWithConsent(requestId: String) -> String? {
+    guard let target = lastInvoke, target.requestId == requestId else { return nil }
+    return invoke(actionId: target.actionId, label: target.label, allowForeignConfig: true)
+  }
+
+  @discardableResult
+  func applyModelRoles(
+    clientId: String,
+    roleActionIds: [String: String],
+    label: String,
+    scope: String = "connection"
+  ) -> String? {
+    // Empty roles clear the pins (reset); anything else still needs a default.
+    if !roleActionIds.isEmpty {
+      guard roleActionIds["default"] != nil else { return nil }
+    }
+    guard commandCanBeAccepted() else { return nil }
     let requestId = UUID().uuidString
     let command = ModelRolesCommand(
       requestId: requestId,
       revision: revision,
       clientId: clientId,
-      roleActionIds: roleActionIds
+      roleActionIds: roleActionIds,
+      scope: scope
     )
-    guard let data = try? JSONEncoder().encode(command) else { return nil }
+    guard let data = encodeCommand(command) else { return nil }
     guard claimBusy(requestId: requestId, label: "\(label) models") else { return nil }
     showMessage("Applying \(label) models…", isError: false)
     emit("model-roles\t\(data.base64EncodedString())")
@@ -316,12 +277,17 @@ final class TrayStore: ObservableObject {
     endpoint: String? = nil,
     apiKey: String? = nil,
     region: String? = nil,
+    gatewayId: String? = nil,
     defaultModel: String? = nil,
     overwrite: Bool? = nil,
     enabled: Bool? = nil,
     kind: String? = nil,
     profile: String? = nil,
-    activityLabel: String
+    path: String? = nil,
+    transportPolicy: String? = nil,
+    sourceIDs: [String]? = nil,
+    activityLabel: String,
+    silentFeedback: Bool = false
   ) -> String? {
     let requestId = UUID().uuidString
     let mutation = Mutation(
@@ -331,229 +297,68 @@ final class TrayStore: ObservableObject {
       sourceId: sourceId,
       methodId: methodId,
       name: name,
-      path: nil,
+      path: path,
       label: label,
       endpoint: endpoint,
       apiKey: apiKey,
       region: region,
+      gatewayId: gatewayId,
       defaultModel: defaultModel,
       overwrite: overwrite,
       enabled: enabled,
       kind: kind,
-      profile: profile
+      profile: profile,
+      transportPolicy: transportPolicy,
+      sourceIds: sourceIDs
     )
-    return sendMutation(mutation, activityLabel: activityLabel)
+    return sendMutation(mutation, activityLabel: activityLabel, silentFeedback: silentFeedback)
   }
 
-  func sendMutation(_ mutation: Mutation, activityLabel: String) -> String? {
-    sendMutationCommand(mutation, requestId: mutation.requestId, activityLabel: activityLabel)
-  }
-
-  func sendMutationCommand<T: Encodable>(
-    _ mutation: T,
-    requestId: String,
-    activityLabel: String
+  func sendMutation(
+    _ mutation: Mutation,
+    activityLabel: String,
+    silentFeedback: Bool = false
   ) -> String? {
-    guard let data = try? JSONEncoder().encode(mutation) else { return nil }
-    let command = "mutate\t\(data.base64EncodedString())"
-    guard command.lengthOfBytes(using: .utf8) <= 16 * 1024 else {
-      showMessage(
-        "This request is too large to send. Shorten entered values or select fewer accounts, then try again.",
-        isError: true
-      )
-      return nil
-    }
-    guard claimBusy(requestId: requestId, label: activityLabel) else { return nil }
-    showMessage("Working on \(activityLabel)…", isError: false)
-    emit(command)
-    return requestId
+    sendMutationCommand(
+      mutation,
+      requestId: mutation.requestId,
+      activityLabel: activityLabel,
+      silentFeedback: silentFeedback
+    )
   }
 
   func cancelMutation(requestId: String) {
     guard busyRequestId == requestId else { return }
     let request = CancellationRequest(requestId: requestId)
-    guard let data = try? JSONEncoder().encode(request) else { return }
+    guard let data = encodeCommand(request) else { return }
     busyLabel = "cancelling sign-in"
     showMessage("Cancelling sign-in…", isError: false)
     emit("cancel\t\(data.base64EncodedString())")
   }
 
-  @discardableResult
-  func inspectBackup(path: String) -> String? {
+  func requestDoctor() {
+    guard doctorRequestId == nil, commandCanBeAccepted() else { return }
     let requestId = UUID().uuidString
-    let request = BackupInspectRequest(requestId: requestId, path: path)
-    guard let data = try? JSONEncoder().encode(request) else { return nil }
-    backupPreviewTimeoutTask?.cancel()
-    if inspectedBackupPath != path {
-      backupPreview = nil
-    }
-    inspectedBackupPath = path
-    backupPreviewRequestId = requestId
-    emit("backup-inspect\t\(data.base64EncodedString())")
-    backupPreviewTimeoutTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 10_000_000_000)
-      guard !Task.isCancelled,
-            let self,
-            self.backupPreviewRequestId == requestId else { return }
-      self.backupPreviewRequestId = nil
-      self.backupPreview = BackupPreviewResult(
-        version: 1,
-        requestId: requestId,
-        status: "error",
-        inspectionId: nil,
-        createdAt: nil,
-        entries: nil,
-        error: "inspection-failed",
-        code: "BACKUP_INSPECT_FAILED",
-        reason: "timeout",
-        message: "AnyPick could not inspect that backup. Choose a valid AnyPick backup file and try again."
-      )
-    }
-    return requestId
-  }
-
-  func clearBackupPreview() {
-    backupPreviewTimeoutTask?.cancel()
-    backupPreviewTimeoutTask = nil
-    backupPreviewRequestId = nil
-    inspectedBackupPath = nil
-    backupPreview = nil
-  }
-
-  func requestLogs(_ source: LogSourceSnapshot, lines: Int = 160, silent: Bool = false) {
-    requestLogs(
-      id: source.id,
-      providerId: source.providerId,
-      name: source.name,
-      lines: lines,
-      silent: silent
-    )
-  }
-
-  func selectLogSource(_ sourceId: String) {
-    guard logSources.contains(where: { $0.id == sourceId }) else { return }
-    selectedLogSourceId = sourceId
-  }
-
-  func requestLogs(_ proxy: ProxySnapshot, lines: Int = 80, silent: Bool = false) {
-    requestLogs(
-      id: proxy.id,
-      providerId: proxy.providerId,
-      name: proxy.id.components(separatedBy: "/").dropFirst().joined(separator: "/"),
-      lines: lines,
-      silent: silent
-    )
-  }
-
-  /// Poll the selected log source while the Logs panel is visible.
-  func startLogPolling(for sourceId: String) {
-    guard logPollSourceId != sourceId else { return }
-    stopLogPolling()
-    logPollSourceId = sourceId
-    logPollTask = Task { @MainActor [weak self] in
-      while !Task.isCancelled {
-        guard let self else { return }
-        guard self.logPollSourceId == sourceId else { return }
-        if let source = self.logSources.first(where: { $0.id == sourceId }),
-           self.loadingLogRequestId == nil {
-          self.requestLogs(source, silent: true)
-        }
-        try? await Task.sleep(nanoseconds: 1_750_000_000)
-      }
+    let request = DoctorRequest(requestId: requestId)
+    guard let data = encodeCommand(request) else { return }
+    doctorError = nil
+    doctorRequestId = requestId
+    doctorIsRunning = true
+    emit("doctor\t\(data.base64EncodedString())")
+    doctorTimeoutTask?.cancel()
+    doctorTimeoutTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 25_000_000_000)
+      guard !Task.isCancelled, let self, self.doctorRequestId == requestId else { return }
+      self.finishDoctorRequest(error: "Doctor did not finish. Try again when AnyPick is ready.")
     }
   }
 
-  func stopLogPolling() {
-    logPollTask?.cancel()
-    logPollTask = nil
-    logPollSourceId = nil
-  }
-
-  private func requestLogs(
-    id: String,
-    providerId: String,
-    name: String,
-    lines: Int,
-    silent: Bool = false
-  ) {
-    // Foreground loads own loadingLogSourceId (drives the Loading UI).
-    // Background polls must not touch it: flipping to .loading on every
-    // 1.75s tick swaps the notice row and hides the Live badge — the jump.
-    // Either kind still needs a free request slot to match the response.
-    guard loadingLogRequestId == nil else { return }
-    if !silent {
-      guard loadingLogSourceId == nil else { return }
-    }
-    let requestId = UUID().uuidString
-    let request = ProxyLogsRequest(
-      requestId: requestId,
-      providerId: providerId,
-      name: name,
-      lines: lines
-    )
-    guard let data = try? JSONEncoder().encode(request) else { return }
-    logRequestTimeoutTask?.cancel()
-    if !silent {
-      loadingLogSourceId = id
-    }
-    loadingLogRequestId = requestId
-    emit("logs\t\(data.base64EncodedString())")
-    logRequestTimeoutTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 10_000_000_000)
-      guard !Task.isCancelled,
-            let self,
-            self.loadingLogRequestId == requestId else { return }
-      // Background polls fail quietly; keep the last good tail on screen.
-      if !silent {
-        self.logStatesBySource[id] = "error"
-        self.showMessage("The log request timed out. Refresh to try again.", isError: true)
-      }
-      self.loadingLogSourceId = nil
-      self.loadingLogRequestId = nil
-    }
-  }
-
-  func openAnyPick() { emit("open") }
-  func refreshAll() { emit("refresh") }
-  func restartProxies() {
-    mutate(
-      operation: "proxy-restart-all",
-      name: "all",
-      activityLabel: "restarting enabled proxies"
-    )
-  }
-  func stopProxies() {
-    mutate(operation: "proxy-stop-all", name: "all", activityLabel: "stopping all proxies")
-  }
-  func navigate(_ screen: String) { emit("navigate\t\(screen)") }
-
-  func copyAddress(_ address: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(address, forType: .string)
-    showMessage("Copied \(address)", isError: false)
-  }
-
-  func copyLogs(for sourceId: String) {
-    guard let text = logsBySource[sourceId], !text.isEmpty else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-    showMessage("Copied visible logs", isError: false)
-  }
-
-  func dismissMessage() {
-    messageDismissTask?.cancel()
-    messageDismissTask = nil
-    withAnimation(TrayMotion.message) { message = nil }
-  }
-
-  /// Termination hook. Production wires the delegate path (menu-bar Quit
-  /// semantics: Dock/⌘Q hides instead of killing); unset falls back to a
-  /// plain terminate. The hook keeps TrayStore free of the app delegate so
-  /// the unit-test target can compile the store without the app scene.
-  var quitHandler: (() -> Void)?
-
-  func quitAnyPick() {
-    if let quitHandler { quitHandler() } else { NSApp.terminate(nil) }
+  private func finishDoctorRequest(error: String? = nil) {
+    doctorTimeoutTask?.cancel()
+    doctorTimeoutTask = nil
+    doctorRequestId = nil
+    doctorIsRunning = false
+    if let error { doctorError = error }
   }
 
   private func consume(_ line: String) {
@@ -561,42 +366,103 @@ final class TrayStore: ObservableObject {
       .map(String.init)
     guard fields.count == 2 else { return }
     if fields[0] == "snapshot",
-       let data = Data(base64Encoded: fields[1]),
-       let snapshot = try? JSONDecoder().decode(TraySnapshot.self, from: data) {
+       let snapshot: TraySnapshot = decodeFrame("snapshot", fields[1]) {
       apply(snapshot)
       return
     }
     if fields[0] == "snapshot-event",
-       let data = Data(base64Encoded: fields[1]),
-       let event = try? JSONDecoder().decode(AppServiceSnapshotEvent.self, from: data),
+       let event: AppServiceSnapshotEvent = decodeFrame("snapshot-event", fields[1]),
        event.protocolVersion == 2,
        event.revision == event.snapshot.revision {
       apply(event.snapshot)
       return
     }
     if fields[0] == "usage-event",
-       let data = Data(base64Encoded: fields[1]),
-       let event = try? JSONDecoder().decode(AppServiceUsageEvent.self, from: data),
+       let event: AppServiceUsageEvent = decodeFrame("usage-event", fields[1]),
        event.protocolVersion == 2,
        event.revision >= revision {
       usage = event.usage
       lastSnapshotAt = Date()
       return
     }
-    if fields[0] == "protocol-error",
-       let data = Data(base64Encoded: fields[1]),
-       let protocolError = try? JSONDecoder().decode(AppServiceErrorFrame.self, from: data),
-       protocolError.protocolVersion == 2 {
-      showMessage(protocolError.message, isError: true)
+    if fields[0] == "doctor",
+       let result: DoctorResult = decodeFrame("doctor", fields[1]),
+       result.version == 1,
+       result.requestId == doctorRequestId {
+      doctorResult = result
+      doctorError = nil
+      finishDoctorRequest()
       return
     }
-    if fields[0] == "status", let count = Int(fields[1]) {
+    if fields[0] == "protocol-error",
+       let protocolError: AppServiceErrorFrame = decodeFrame("protocol-error", fields[1]),
+       protocolError.protocolVersion == 2 {
+      // A protocol error means the engine refused a frame outright and will
+      // never answer it. The mutation slot it was holding must be released
+      // here, or the sheet that sent it stays disabled with no way out.
+      // An unnamed rejection carries no request id. A nil doctor slot would
+      // compare equal and swallow the toast, leaving the earlier "Working on"
+      // line on screen after the mutation slot had already been released.
+      let isDoctorRequest = protocolError.requestId != nil && protocolError.requestId == doctorRequestId
+      let isSilentRequest = protocolError.requestId.map { silentRequestIDs.remove($0) != nil } ?? false
+      if !isDoctorRequest && !isSilentRequest {
+        showMessage(
+          concise(protocolError.message, fallback: "AnyPick rejected that request."),
+          isError: true
+        )
+      }
+      // A named failure is answered like a failed result: the row that sent it
+      // must stop spinning. Without this the operation ran to the host's
+      // confirm timeout and reported "did not confirm in time" instead of what
+      // the engine said.
+      if let requestId = protocolError.requestId {
+        // Log and backup-review requests are not mutations: they own their own
+        // slots, and the engine's rejection is their terminal answer.
+        if requestId == loadingLogRequestId {
+          finishLogRequest()
+        }
+        if requestId == backupPreviewRequestId {
+          backupPreviewTimeoutTask?.cancel()
+          backupPreviewTimeoutTask = nil
+          backupPreviewRequestId = nil
+        }
+        if requestId == doctorRequestId {
+          finishDoctorRequest(error: concise(
+            protocolError.message, fallback: "Doctor could not complete the check."
+          ))
+        }
+      }
+      if let requestId = protocolError.requestId,
+         requestId == busyRequestId,
+         lastResult?.requestId != requestId {
+        lastResult = CommandResult(
+          version: 1,
+          requestId: requestId,
+          status: "error",
+          message: protocolError.message,
+          code: protocolError.code,
+          suggestions: nil,
+          mutated: nil
+        )
+      }
+      // Only a rejection that names no request, or one that names the request
+      // the mutation slot is holding, releases that slot. A log or backup
+      // rejection has its own slot and must leave the mutation running.
+      if protocolError.requestId == nil || protocolError.requestId == busyRequestId {
+        if busyRequestId != nil { endBusy() }
+      }
+      return
+    }
+    if fields[0] == "status" {
+      guard let count = Int(fields[1]) else {
+        reportUnreadableFrame("status")
+        return
+      }
       proxyCount = count
       return
     }
     if fields[0] == "logs",
-       let data = Data(base64Encoded: fields[1]),
-       let result = try? JSONDecoder().decode(ProxyLogsResult.self, from: data),
+       let result: ProxyLogsResult = decodeFrame("logs", fields[1]),
        result.version == 1,
        result.requestId == loadingLogRequestId {
       logRequestTimeoutTask?.cancel()
@@ -604,7 +470,7 @@ final class TrayStore: ObservableObject {
       // Background polls re-deliver identical tails every 1.75s. Publishing
       // them unconditionally re-renders the log view and resets its scroll,
       // so skip the write when nothing changed. An "error" frame never
-      // carries replacement text: keep the last good tail on screen (L4)
+      // carries replacement text: keep the last good tail on screen
       // and only publish the state flip.
       let nextState = result.state ?? (result.text.isEmpty ? "empty" : "ready")
       if nextState != "error", logsBySource[result.proxyId] != result.text {
@@ -615,11 +481,18 @@ final class TrayStore: ObservableObject {
       }
       if loadingLogSourceId == result.proxyId { loadingLogSourceId = nil }
       loadingLogRequestId = nil
+      logRequestTimeoutTask?.cancel()
+      logRequestTimeoutTask = nil
+      return
+    }
+    if fields[0] == "result",
+       let result: CommandResult = decodeFrame("result", fields[1]),
+       result.requestId == doctorRequestId {
+      finishDoctorRequest(error: result.displayMessage ?? "Doctor could not complete the check.")
       return
     }
     if fields[0] == "backup-preview",
-       let data = Data(base64Encoded: fields[1]),
-       let result = try? JSONDecoder().decode(BackupPreviewResult.self, from: data),
+       let result: BackupPreviewResult = decodeFrame("backup-preview", fields[1]),
        result.version == 1,
        result.requestId == backupPreviewRequestId,
        (result.status == "ready"
@@ -634,21 +507,91 @@ final class TrayStore: ObservableObject {
       backupPreview = result
       return
     }
-    if fields[0] == "result",
-       let data = Data(base64Encoded: fields[1]),
-       let result = try? JSONDecoder().decode(CommandResult.self, from: data),
-       result.version == 1,
-       result.requestId == busyRequestId {
+    if fields[0] == "result" {
+      guard let result: CommandResult = decodeFrame("result", fields[1]) else { return }
+      guard result.version == 1, result.requestId == busyRequestId else { return }
+      let isSilentRequest = silentRequestIDs.remove(result.requestId) != nil
       let isError = result.status == "error"
       lastResult = result
-      showMessage(
-        concise(
-          result.message,
-          fallback: result.status == "success" ? "Action completed" : "Action failed"
-        ),
-        isError: isError
-      )
+      if !isSilentRequest {
+        showMessage(
+          result.displayMessage
+            ?? (result.status == "success" ? "Action completed" : "Action failed"),
+          isError: isError
+        )
+      }
       endBusy()
+    }
+  }
+
+  /// Decodes one frame body, reporting the failure instead of dropping the
+  /// frame. Every frame goes through here: a payload this build cannot read
+  /// means the app and its bundled engine disagree, and the previous `try?`
+  /// per branch turned that into a spinner, a stale pane or nothing at all.
+  /// Returning nil skips the frame; validation guards (`protocolVersion == 2`,
+  /// `requestId == busyRequestId`) stay at the call sites because a stale or
+  /// duplicate frame is normal, not an error.
+  private func decodeFrame<T: Decodable>(_ kind: String, _ encoded: String) -> T? {
+    guard let data = Data(base64Encoded: encoded),
+          let value = try? JSONDecoder().decode(T.self, from: data)
+    else {
+      reportUnreadableFrame(kind)
+      return nil
+    }
+    return value
+  }
+
+  /// Reports a frame this build cannot decode, once per kind, and releases the
+  /// mutation slot if one is waiting on it.
+  private func reportUnreadableFrame(_ kind: String) {
+    guard unreadableFrames.insert(kind).inserted else { return }
+    let isState = kind == "snapshot" || kind == "snapshot-event"
+    let isSilentRequest = kind == "result" && busyRequestId.map { silentRequestIDs.remove($0) != nil } == true
+    if kind != "doctor" && !isSilentRequest {
+      showMessage(
+        isState
+          ? "AnyPick cannot read its service's state. Update AnyPick, then reopen it."
+          : "AnyPick could not read the service's \(kind) response. Reopen AnyPick and try again.",
+        isError: true
+      )
+    }
+    // Release only the slot this frame answers. A `logs`, `usage-event` or
+    // `status` frame has no request id, and releasing the mutation slot for one
+    // of those dropped the real ticket for a save/switch that was still
+    // running: its result then arrived with nothing waiting for it.
+    switch kind {
+    case "result", "protocol-error":
+      if let requestID = busyRequestId, lastResult?.requestId != requestID {
+        // The frame that owned this request is unreadable, so the operation
+        // never sees a result. Synthesize the failure here: freeing the slot
+        // alone left every sheet that waits on operationResult stuck.
+        lastResult = CommandResult(
+          version: 1,
+          requestId: requestID,
+          status: "error",
+          message: "AnyPick could not read its service's result. Reopen AnyPick and try again.",
+          code: "UNREADABLE_RESULT",
+          suggestions: nil,
+          mutated: nil
+        )
+      }
+      if busyRequestId != nil { endBusy() }
+    case "logs":
+      finishLogRequest()
+    case "doctor":
+      finishDoctorRequest(error: "AnyPick could not read the Doctor response. Reopen AnyPick and try again.")
+    case "backup-preview":
+      backupPreviewTimeoutTask?.cancel()
+      backupPreviewTimeoutTask = nil
+      backupPreviewRequestId = nil
+    default:
+      break
+    }
+    if isState {
+      // Without the state channel the app is blind: keep the pane honest (the
+      // generic error pane when there is nothing to show) and offer the
+      // restart, instead of "Starting…" forever with no explanation.
+      updateServiceState(.degraded("This build cannot read the service's state."))
     }
   }
 
@@ -666,6 +609,8 @@ final class TrayStore: ObservableObject {
     hubPublishedModels = snapshot.hubPublishedModels ?? []
     hubCatalogs = snapshot.hubCatalogs ?? []
     clientModelConfigs = snapshot.clientModelConfigs ?? []
+    codexProfiles = snapshot.codexProfiles ?? []
+    codexProfileSources = snapshot.codexProfileSources ?? []
     gateways = snapshot.gateways
     accountProviders = snapshot.accountProviders
     gatewayProviders = snapshot.gatewayProviders
@@ -703,7 +648,7 @@ final class TrayStore: ObservableObject {
     }
   }
 
-  private func showMessage(_ value: String, isError: Bool) {
+  func showMessage(_ value: String, isError: Bool) {
     messageDismissTask?.cancel()
     withAnimation(TrayMotion.message) {
       message = value
@@ -735,8 +680,65 @@ final class TrayStore: ObservableObject {
     }
   }
 
-  private func emit(_ command: String) {
+  func emit(_ command: String) {
     commandSink?(command)
+  }
+
+  /// Encode one outgoing command, reporting the failure instead of returning
+  /// nil into silence. Encoding a DTO should not fail, so reaching this means
+  /// the app and the engine disagree about a payload — a state worth telling
+  /// the user about, because the button they pressed did nothing at all.
+  func encodeCommand<T: Encodable>(_ value: T) -> Data? {
+    do {
+      return try JSONEncoder().encode(value)
+    } catch {
+      showMessage(
+        "AnyPick could not build that request. Reopen AnyPick and try again.",
+        isError: true
+      )
+      return nil
+    }
+  }
+
+  private func commandCanBeAccepted(silentFeedback: Bool = false) -> Bool {
+    guard commandSink != nil else {
+      if !silentFeedback {
+        showMessage("AnyPick service is not connected yet. Try again in a moment.", isError: true)
+      }
+      return false
+    }
+    switch serviceState {
+    case .degraded(let reason):
+      if !silentFeedback { showMessage(serviceUnavailableMessage(reason), isError: true) }
+      return false
+    case .stopped:
+      if !silentFeedback {
+        showMessage("AnyPick service is stopped. Reopen AnyPick and try again.", isError: true)
+      }
+      return false
+    case .starting, .handshaking, .ready:
+      // GoServiceProcess queues commands until its handshake completes.
+      return true
+    }
+  }
+
+  private func serviceUnavailableMessage(_ reason: String) -> String {
+    let compact = reason
+      .replacingOccurrences(of: "\n", with: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let longestToken = compact
+      .split(whereSeparator: { $0 == " " || $0 == "\t" })
+      .map(\.count)
+      .max() ?? 0
+    if compact.hasPrefix("The AnyPick service sent an unexpected")
+      || compact.hasPrefix("The AnyPick service sent an invalid")
+      || compact.contains("frame larger than")
+      || compact.count > 240
+      || longestToken >= 80
+    {
+      return "AnyPick service is unavailable. Reopen AnyPick and try again."
+    }
+    return "AnyPick service is unavailable. \(concise(reason, fallback: "Reopen AnyPick and try again."))"
   }
 
   private func concise(_ value: String?, fallback: String) -> String {

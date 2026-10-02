@@ -381,8 +381,10 @@ struct MenuBarMenu: View {
   }
 
   private func quit() {
+    // Route explicit tray Quit through the delegate so it is distinguished
+    // from Dock/⌘Q, which intentionally only withdraws the app to the tray.
     guard model.proxyHubEnabled || model.proxies.contains(where: \.enabled) else {
-      NSApp.terminate(nil)
+      AnyPickAppDelegate.requestQuit()
       return
     }
     let alert = NSAlert()
@@ -391,8 +393,10 @@ struct MenuBarMenu: View {
     alert.alertStyle = .warning
     alert.addButton(withTitle: "Quit")
     alert.addButton(withTitle: "Cancel")
+    // Escape must reach Cancel, not fall through to the destructive default.
+    alert.buttons[1].keyEquivalent = "\u{1b}"
     if alert.runModal() == .alertFirstButtonReturn {
-      NSApp.terminate(nil)
+      AnyPickAppDelegate.requestQuit()
     }
   }
 }

@@ -1,49 +1,93 @@
 import AppKit
 import SwiftUI
 
+/// Event categories for filtering the audit trail.
+enum ActivityCategory: String, CaseIterable, Identifiable {
+  case all = "All Events"
+  case routing = "Routing"
+  case accounts = "Accounts & APIs"
+  case proxies = "Proxy Hub"
+  case issues = "Issues"
+
+  var id: String { rawValue }
+
+  var symbol: String {
+    switch self {
+    case .all: return "clock.arrow.circlepath"
+    case .routing: return "arrow.triangle.2.circlepath"
+    case .accounts: return "person.crop.circle"
+    case .proxies: return "network"
+    case .issues: return "exclamationmark.triangle"
+    }
+  }
+
+  func matches(_ item: DesignActivity) -> Bool {
+    switch self {
+    case .all:
+      return true
+    case .routing:
+      let lower = "\(item.title) \(item.detail)".lowercased()
+      return lower.contains("uses") || lower.contains("routing") || lower.contains("switched") || lower.contains("route")
+    case .accounts:
+      let lower = "\(item.title) \(item.detail)".lowercased()
+      return lower.contains("account") || lower.contains("login") || lower.contains("gateway") || lower.contains("backup")
+    case .proxies:
+      let lower = "\(item.title) \(item.detail)".lowercased()
+      return lower.contains("proxy") || lower.contains("hub") || lower.contains("service") || lower.contains("port")
+    case .issues:
+      return item.status == .attention
+    }
+  }
+}
+
 struct ActivityView: View {
   @ObservedObject var model: MacOSDesignModel
   @State private var confirmClear = false
   @State private var confirmClearEvents = false
   @State private var searchQuery = ""
+  @State private var selectedCategory: ActivityCategory = .all
 
   var body: some View {
-    activityPane
-      .toolbar { activityToolbar }
-      .onChange(of: model.activityShowsLogs) { _, enabled in
-        searchQuery = ""
-        model.setActivityShowsLogs(enabled)
-        model.setLogPolling(enabled)
-      }
-      .onChange(of: model.selectedLogSourceID) {
-        if model.activityShowsLogs { model.setLogPolling(true) }
-      }
-      .onAppear {
-        if model.activityShowsLogs { model.setLogPolling(true) }
-      }
-      .onDisappear {
-        model.setLogPolling(false)
-      }
-      .confirmationDialog(
-        "Clear Visible Logs?",
-        isPresented: $confirmClear,
-        titleVisibility: .visible
-      ) {
-        Button("Clear", role: .destructive) { model.clearActivity() }
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text("Accounts, apps, and proxies are unchanged.")
-      }
-      .confirmationDialog(
-        "Clear Visible Events?",
-        isPresented: $confirmClearEvents,
-        titleVisibility: .visible
-      ) {
-        Button("Clear", role: .destructive) { model.clearActivity() }
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text("Accounts, apps, and proxies are unchanged.")
-      }
+    GeometryReader { geometry in
+      let contentHeight = max(420, geometry.size.height - 180)
+      activityPane(contentHeight: contentHeight)
+        .frame(width: geometry.size.width, height: geometry.size.height)
+    }
+    .toolbar { activityToolbar }
+    .onChange(of: model.activityShowsLogs) { _, enabled in
+      searchQuery = ""
+      model.setActivityShowsLogs(enabled)
+      model.setLogPolling(enabled)
+    }
+    .onChange(of: model.selectedLogSourceID) {
+      if model.activityShowsLogs { model.setLogPolling(true) }
+    }
+    .onAppear {
+      if model.activityShowsLogs { model.setLogPolling(true) }
+    }
+    .onDisappear {
+      model.setLogPolling(false)
+    }
+    .confirmationDialog(
+      "Clear Visible Logs?",
+      isPresented: $confirmClear,
+      titleVisibility: .visible
+    ) {
+      Button("Clear", role: .destructive) { model.clearActivity() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Accounts, apps, and proxies are unchanged.")
+    }
+    .confirmationDialog(
+      "Clear Visible Events?",
+      isPresented: $confirmClearEvents,
+      titleVisibility: .visible
+    ) {
+      Button("Clear", role: .destructive) { model.clearActivity() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Accounts, apps, and proxies are unchanged.")
+    }
   }
 
   /// Filter + search stay mounted. Adding/removing toolbar items when the
@@ -51,34 +95,53 @@ struct ActivityView: View {
   @ToolbarContentBuilder
   private var activityToolbar: some ToolbarContent {
     ToolbarItem(placement: .automatic) {
-      Menu {
-        Picker(
-          "Log Source",
-          selection: Binding(
-            get: { model.selectedLogSourceID },
-            set: { model.selectLogSource($0) }
-          )
-        ) {
-          if model.logSources.isEmpty {
-            Text("No Sources").tag("")
-          } else {
-            ForEach(model.logSources) { source in
-              Text(source.label).tag(source.id)
+      if model.activityShowsLogs {
+        Menu {
+          Picker(
+            "Log Source",
+            selection: Binding(
+              get: { model.selectedLogSourceID },
+              set: { model.selectLogSource($0) }
+            )
+          ) {
+            if model.logSources.isEmpty {
+              Text("No Sources").tag("")
+            } else {
+              ForEach(model.logSources) { source in
+                Text(source.label).tag(source.id)
+              }
             }
           }
+          // Inline (not menu) style: the sources list flat, with a checkmark
+          // on the selected one — no nested "Log Source >" submenu.
+          .pickerStyle(.inline)
+        } label: {
+          Label("Filter Logs", systemImage: "line.3.horizontal.decrease")
         }
-        // Inline (not menu) style: the sources list flat, with a checkmark
-        // on the selected one — no nested "Log Source >" submenu.
-        .pickerStyle(.inline)
-      } label: {
-        Label("Filter Logs", systemImage: "line.3.horizontal.decrease")
+        .labelStyle(.iconOnly)
+        .help("Filter logs by provider")
+        .disabled(model.logSources.isEmpty)
+        .accessibilityIdentifier("activity.logs.filter")
+      } else {
+        Menu {
+          Picker("Category", selection: $selectedCategory) {
+            ForEach(ActivityCategory.allCases) { cat in
+              Text(cat.rawValue).tag(cat)
+            }
+          }
+          .pickerStyle(.inline)
+        } label: {
+          Label(
+            "Filter Events",
+            systemImage: selectedCategory == .all
+              ? "line.3.horizontal.decrease"
+              : "line.3.horizontal.decrease.circle.fill"
+          )
+        }
+        .labelStyle(.iconOnly)
+        .help("Filter events by category")
+        .accessibilityIdentifier("activity.logs.filter")
       }
-      .labelStyle(.iconOnly)
-      .help("Filter logs by provider")
-      .disabled(!model.activityShowsLogs || model.logSources.isEmpty)
-      .opacity(model.activityShowsLogs ? 1 : 0)
-      .allowsHitTesting(model.activityShowsLogs)
-      .accessibilityIdentifier("activity.logs.filter")
     }
     ToolbarItem(placement: .primaryAction) {
       DesignToolbarSearch(
@@ -90,24 +153,25 @@ struct ActivityView: View {
   }
 
   @ViewBuilder
-  private var activityPane: some View {
+  private func activityPane(contentHeight: CGFloat) -> some View {
     DesignGroupedPane(fillHeight: true) {
       Section {
         paneHeader
         modeControl
         if model.activityShowsLogs {
           logStateNotice
-          logsRows
+          logsRows(height: contentHeight)
         } else if filteredActivity.isEmpty {
           emptyState(
             symbol: "clock.arrow.circlepath",
             message: searchQuery.isEmpty
-              // Design node QiTN4 (Activity Event).
-              ? "Changes to accounts and app settings will appear here."
+              ? (selectedCategory == .all
+                  ? "Changes to accounts and app settings will appear here."
+                  : "No \(selectedCategory.rawValue.lowercased()) match your filter.")
               : "No events match your search."
           )
         } else {
-          eventsWell
+          eventsWell(height: contentHeight)
         }
       } footer: {
         VStack(alignment: .leading, spacing: 8) {
@@ -166,7 +230,7 @@ struct ActivityView: View {
   /// fill the pane's full height (the enclosing `DesignGroupedPane` is opened
   /// with `fillHeight: true`) so the Activity view no longer floats with empty
   /// space below. Scrolls past a long list — the controls above stay put.
-  private var eventsWell: some View {
+  private func eventsWell(height: CGFloat) -> some View {
     ScrollView {
       LazyVStack(alignment: .leading, spacing: 0) {
         ForEach(eventSections, id: \.key) { section in
@@ -183,13 +247,7 @@ struct ActivityView: View {
       }
       .padding(8)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color(nsColor: .textBackgroundColor))
-    .clipShape(RoundedRectangle(cornerRadius: 6))
-    .overlay(
-      RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-    )
+    .frame(maxWidth: .infinity, minHeight: height, maxHeight: .infinity)
     .accessibilityIdentifier("activity.events.well")
   }
 
@@ -234,6 +292,17 @@ struct ActivityView: View {
       }
     }
     .listRowInsets(rowInsets)
+    .contextMenu {
+      Button("Copy Message") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.title, forType: .string)
+      }
+      Button("Copy Full Details") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(
+          "\(item.day) \(item.time): \(item.title) - \(item.detail)", forType: .string)
+      }
+    }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(activityAccessibilityLabel(for: item))
     .accessibilityIdentifier("activity.event.\(item.id)")
@@ -252,14 +321,14 @@ struct ActivityView: View {
   }
 
   @ViewBuilder
-  private var logsRows: some View {
+  private func logsRows(height: CGFloat) -> some View {
     if model.logState == .ready {
       LabeledContent("Status", value: "Live")
         .accessibilityIdentifier("activity.logs.live")
         .listRowInsets(rowInsets)
     }
     ActivityLogViewer(lines: Array(filteredLogLines.suffix(200)), placeholder: logPlaceholder)
-      .frame(maxWidth: .infinity, minHeight: 280, maxHeight: .infinity)
+      .frame(maxWidth: .infinity, minHeight: height, maxHeight: .infinity)
       .listRowInsets(rowInsets)
   }
 
@@ -359,8 +428,9 @@ struct ActivityView: View {
 
   private var filteredActivity: [DesignActivity] {
     let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else { return model.activity }
-    return model.activity.filter {
+    let categoryFiltered = model.activity.filter { selectedCategory.matches($0) }
+    guard !query.isEmpty else { return categoryFiltered }
+    return categoryFiltered.filter {
       [$0.time, $0.title, $0.detail].contains { $0.localizedCaseInsensitiveContains(query) }
     }
   }
@@ -391,7 +461,7 @@ private struct ActivityLogViewer: NSViewRepresentable {
     if let textView = scrollView.documentView as? NSTextView {
       textView.isEditable = false
       textView.isSelectable = true
-      textView.isRichText = true
+      textView.isRichText = false
       textView.drawsBackground = true
       textView.backgroundColor = .textBackgroundColor
       textView.textColor = .labelColor

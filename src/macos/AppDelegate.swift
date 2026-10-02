@@ -6,12 +6,15 @@ import SwiftUI
 @MainActor
 final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   private static weak var instance: AnyPickAppDelegate?
+  static weak var registeredMainWindow: NSWindow?
+  static var openMainWindowAction: (() -> Void)?
 
   let isFixture: Bool
   let store: TrayStore?
   let designModel: MacOSDesignModel
   private var serviceProcess: GoServiceProcess?
   private var terminationPending = false
+  private var trayRightClickMonitor: Any?
   /// Tray Quit (and `quitAnyPick`) set this so Dock/⌘Q can hide to the
   /// menu bar instead of killing the process.
   private var allowTerminate = false
@@ -48,6 +51,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     AnyPickAppIcon.applyToApp()
+    installTrayRightClickMonitor()
     let serviceSmoke = ProcessInfo.processInfo.environment["ANYPICK_APP_SERVICE_SMOKE_PATH"] != nil
     if serviceSmoke {
       // The installed-app smoke exercises the real bundled helper without
@@ -92,6 +96,13 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     startBundledService()
   }
 
+  func applicationWillTerminate(_ notification: Notification) {
+    if let trayRightClickMonitor {
+      NSEvent.removeMonitor(trayRightClickMonitor)
+      self.trayRightClickMonitor = nil
+    }
+  }
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     false
   }
@@ -117,6 +128,70 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     presentMainWindow()
     sender.activate(ignoringOtherApps: true)
     return true
+  }
+
+  private func installTrayRightClickMonitor() {
+    guard trayRightClickMonitor == nil else { return }
+    trayRightClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) {
+      [weak self] event in
+      guard
+        let self,
+        let window = event.window,
+        Self.isStatusItemWindow(window)
+      else {
+        return event
+      }
+      self.presentTrayContextMenu(in: window, at: event.locationInWindow)
+      return nil
+    }
+  }
+
+  private func presentTrayContextMenu(in window: NSWindow, at point: NSPoint) {
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+
+    let open = NSMenuItem(
+      title: "Open AnyPick",
+      action: #selector(openAnyPickFromTray(_:)),
+      keyEquivalent: ""
+    )
+    open.target = self
+    menu.addItem(open)
+
+    let settings = NSMenuItem(
+      title: "Settings…",
+      action: #selector(openSettingsFromTray(_:)),
+      keyEquivalent: ""
+    )
+    settings.target = self
+    menu.addItem(settings)
+
+    menu.addItem(.separator())
+
+    let quit = NSMenuItem(
+      title: "Quit AnyPick",
+      action: #selector(quitAnyPickFromTray(_:)),
+      keyEquivalent: "q"
+    )
+    quit.target = self
+    menu.addItem(quit)
+
+    guard let contentView = window.contentView else { return }
+    let contentPoint = contentView.convert(point, from: nil)
+    menu.popUp(positioning: nil, at: contentPoint, in: contentView)
+  }
+
+  @objc private func openAnyPickFromTray(_ sender: NSMenuItem) {
+    presentMainWindow()
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  @objc private func openSettingsFromTray(_ sender: NSMenuItem) {
+    openDesignSettings()
+  }
+
+  @objc private func quitAnyPickFromTray(_ sender: NSMenuItem) {
+    Self.requestQuit()
   }
 
   /// Hide windows and drop the Dock tile. Menu-bar extra stays.
@@ -147,8 +222,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     if NSApp.activationPolicy() != .regular {
       NSApp.setActivationPolicy(.regular)
     }
+    NSApp.activate(ignoringOtherApps: true)
     AnyPickAppIcon.applyToApp()
     for window in NSApp.windows where !Self.isStatusItemWindow(window) {
+      retainIfMainWindow(window)
       if window.title.isEmpty, window.frame.width > 180 {
         window.title = "AnyPick"
       }
@@ -156,18 +233,29 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     let prefersTray = isFixture
       && ProcessInfo.processInfo.environment["ANYPICK_MACOS_FLOW"]?.hasPrefix("tray") == true
     let tray = NSApp.windows.first { $0.title == "Menu Bar" }
-    let main = NSApp.windows.first(where: isMainWindow)
+    let main = Self.registeredMainWindow ?? NSApp.windows.first(where: isMainWindow)
     if prefersTray {
       tray?.makeKeyAndOrderFront(nil)
+    } else if let main {
+      main.makeKeyAndOrderFront(nil)
+      main.orderFrontRegardless()
     } else {
-      main?.makeKeyAndOrderFront(nil)
+      Self.openMainWindowAction?()
     }
   }
 
   private func startBundledService() {
     guard let store else { return }
+#if DEBUG
+    // Debug helpers intentionally keep the Go build version at `(devel)`;
+    // release helpers receive the marketing version from the bundle script.
+    // Keep both sides of the handshake on the same development identity so a
+    // locally installed Debug app can actually start its bundled service.
+    let appVersion = "(devel)"
+#else
     let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
       as? String ?? "(devel)"
+#endif
     let service = GoServiceProcess(
       appVersion: appVersion,
       launchAtLogin: MacOSHostEffects.launchAtLoginEnabled,
@@ -184,12 +272,9 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       Task { await service.restart() }
     }
     Task { await service.start() }
-#if DEBUG
     runServiceSmokeIfRequested(store: store)
-#endif
   }
 
-#if DEBUG
   private func runServiceSmokeIfRequested(store: TrayStore) {
     guard let marker = ProcessInfo.processInfo.environment["ANYPICK_APP_SERVICE_SMOKE_PATH"],
           !marker.isEmpty else { return }
@@ -213,12 +298,13 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       Darwin.exit(EXIT_FAILURE)
     }
   }
-#endif
 
   private func isMainWindow(_ window: NSWindow) -> Bool {
     if Self.isStatusItemWindow(window) { return false }
+    if window is NSPanel { return false }
     if window.identifier?.rawValue == "main" { return true }
-    return window.title == "AnyPick" && window.canBecomeMain && window.frame.width > 500
+    if window.title == "Settings" || window.title == "Menu Bar" { return false }
+    return window.canBecomeMain && window.frame.width > 500
   }
 
   private static func isStatusItemWindow(_ window: NSWindow) -> Bool {

@@ -103,6 +103,10 @@ func anypickDisplayName(_ client: String) -> String {
   // an alias so either install resolves to one row.
   case "workbuddy", "codebuddy": return "WorkBuddy"
   case "zcode": return "ZCode"
+  case "commandcode", "command-code": return "Command Code"
+  case "pi": return "Pi"
+  case "omp": return "Omp"
+  case "cline": return "Cline"
   default: return client
   }
 }
@@ -117,6 +121,9 @@ func nativeProviderName(_ providerId: String) -> String {
   case "opencode": return "OpenCode"
   case "grok": return "Grok"
   case "workbuddy", "codebuddy": return "WorkBuddy"
+  case "zai": return "Z.ai (GLM)"
+  case "cline": return "Cline"
+  case "cloudflare": return "Cloudflare AI Gateway"
   case "proxy-hub": return "Proxy Hub"
   default:
     return providerId
@@ -136,6 +143,7 @@ func nativeProviderFamily(_ providerId: String) -> String {
   case "codex", "openai": return "openai"
   case "gemini", "gemini-cli", "antigravity": return "gemini"
   case "grok", "xai", "x-ai": return "grok"
+  case "cloudflare", "cloudflare-aigateway": return "cloudflare"
   case "proxy-hub", "hub": return "proxy-hub"
   default: return normalized
   }

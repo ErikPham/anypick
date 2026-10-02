@@ -308,7 +308,7 @@ struct MenuBarProxiesRow: View {
           .lineLimit(1)
       }
       Spacer(minLength: 4)
-      if proxy.enabled {
+      if canRestartProxy(isRunning: proxy.status == .running, status: proxy.status) {
         Button {
           model.restartProxy(id: proxy.id)
         } label: {
@@ -325,7 +325,7 @@ struct MenuBarProxiesRow: View {
         .toggleStyle(.switch)
         .controlSize(.small)
         .disabled(model.isBusy)
-        .help(proxy.enabled ? "Stop \(proxy.name)" : "Start \(proxy.name)")
+        .help(proxy.status == .running ? "Stop \(proxy.name)" : "Start \(proxy.name)")
         .accessibilityIdentifier("tray.proxy.\(proxy.id).toggle")
     }
     .padding(.horizontal, 9)
@@ -334,7 +334,10 @@ struct MenuBarProxiesRow: View {
 
   private func proxyEnabled(_ proxy: DesignProxy) -> Binding<Bool> {
     Binding(
-      get: { model.proxies.first(where: { $0.id == proxy.id })?.enabled ?? false },
+      // `enabled` is the saved auto-start flag. The switch is the process:
+      // a stopped proxy that is still marked enabled must read as off, or
+      // turning it off invokes the toggle and starts the process.
+      get: { model.proxies.first(where: { $0.id == proxy.id })?.status == .running },
       set: { model.setProxyEnabled(id: proxy.id, enabled: $0) }
     )
   }

@@ -29,6 +29,10 @@ enum AppServiceProtocolError: LocalizedError {
   case invalidUTF8
   case unexpectedFrame(String)
   case invalidPayload(String)
+  /// A frame this build recognizes but cannot decode: the two sides disagree
+  /// about a payload. `detail` names the disagreeing key; `errorDescription`
+  /// stays generic so nothing engine-authored reaches the UI unvetted.
+  case decodeFailed(kind: String, detail: String)
   case incompatible(String)
 
   var errorDescription: String? {
@@ -37,14 +41,52 @@ enum AppServiceProtocolError: LocalizedError {
       "The AnyPick service sent a frame larger than the negotiated limit."
     case .invalidUTF8:
       "The AnyPick service sent invalid text."
-    case .unexpectedFrame(let kind):
-      "The AnyPick service sent an unexpected \(kind) frame."
+    case .unexpectedFrame:
+      "The AnyPick service sent an unexpected protocol frame."
     case .invalidPayload(let kind):
       "The AnyPick service sent an invalid \(kind) payload."
+    case .decodeFailed(let kind, _):
+      "The AnyPick service sent an invalid \(kind) payload."
     case .incompatible(let reason):
-      "This AnyPick app and its bundled service are incompatible: \(reason)"
+      "This AnyPick app and its bundled service are incompatible: \(safeProtocolReason(reason))"
     }
   }
+
+  /// Diagnostic detail for the app log. It names frame kinds and decoding keys,
+  /// never payload values, so it is the difference between "invalid payload"
+  /// and "the engine added a field this build requires" — and it is safe to
+  /// record where a reader can find it. A failure that only says "the service
+  /// sent an unexpected frame" cannot be acted on by anyone.
+  var diagnosticDetail: String {
+    switch self {
+    case .frameTooLarge:
+      return "frameTooLarge"
+    case .invalidUTF8:
+      return "invalidUTF8"
+    case .unexpectedFrame(let kind):
+      return "unexpectedFrame: \(kind)"
+    case .invalidPayload(let kind):
+      return "invalidPayload: \(kind)"
+    case .decodeFailed(let kind, let detail):
+      return "\(kind): \(detail)"
+    case .incompatible(let reason):
+      return "incompatible: \(safeProtocolReason(reason))"
+    }
+  }
+}
+
+private func safeProtocolReason(_ reason: String) -> String {
+  let compact = reason
+    .replacingOccurrences(of: "\n", with: " ")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  let longestToken = compact
+    .split(whereSeparator: { $0 == " " || $0 == "\t" })
+    .map(\.count)
+    .max() ?? 0
+  guard !compact.isEmpty, compact.count <= 160, longestToken < 80 else {
+    return "protocol negotiation failed"
+  }
+  return compact
 }
 
 private struct EngineHello: Decodable {
@@ -99,6 +141,7 @@ actor AppServiceClient {
   static let capabilities = [
     "cancel-v1",
     "command-dto-v1",
+    "doctor-v1",
     "explicit-refresh",
     "host-effects-v1",
     "post-mutation-events",
@@ -226,7 +269,7 @@ actor AppServiceClient {
     case .ready:
       let allowed = Set([
         "snapshot", "snapshot-event", "usage-event", "result", "logs",
-        "backup-preview", "protocol-error", "host-effect",
+        "backup-preview", "doctor", "protocol-error", "host-effect",
       ])
       guard allowed.contains(fields[0]) else {
         throw AppServiceProtocolError.unexpectedFrame(fields[0])
@@ -276,11 +319,19 @@ actor AppServiceClient {
   private func decode<T: Decodable>(_ encoded: String, kind: String) throws -> T {
     guard let data = Data(base64Encoded: encoded),
           data.base64EncodedString() == encoded,
-          data.count <= negotiatedMaxFrameBytes,
-          let value = try? JSONDecoder().decode(T.self, from: data) else {
+          data.count <= negotiatedMaxFrameBytes else {
       throw AppServiceProtocolError.invalidPayload(kind)
     }
-    return value
+    do {
+      return try JSONDecoder().decode(T.self, from: data)
+    } catch {
+      // `try?` here discarded the only clue about which field diverged, and
+      // the user got the same sentence for a version skew and a corrupt frame.
+      throw AppServiceProtocolError.decodeFailed(
+        kind: kind,
+        detail: String("\(error)".prefix(300))
+      )
+    }
   }
 
   private func encode<T: Encodable>(_ prefix: String, _ value: T) throws -> String {
@@ -291,5 +342,5 @@ actor AppServiceClient {
     return "\(prefix)\t\(data.base64EncodedString())"
   }
 
-  private static let requiredCapabilities = Set(["command-dto-v1", "snapshot-dto-v1"])
+  private static let requiredCapabilities = Set(["command-dto-v1", "doctor-v1", "snapshot-dto-v1"])
 }
