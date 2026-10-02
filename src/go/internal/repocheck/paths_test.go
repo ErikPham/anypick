@@ -57,6 +57,8 @@ func newFixtureRepo(t *testing.T) *fixtureRepo {
 		"fn main() {\n    println!(\"cargo:rerun-if-changed=../../go\");\n}\n")
 	fixture.write("src/tauri/app/src/protocol.rs",
 		"pub const PROTOCOL_VERSION: u32 = 2;\n\npub fn check(value: u32) -> bool { value == PROTOCOL_VERSION }\n")
+	fixture.write("src/tauri/ui/lib/wire.ts",
+		"export const PROTOCOL_VERSION = 2;\n")
 	fixture.write(".github/workflows/ci.yml",
 		"jobs:\n  go:\n    steps:\n      - run: make test\n        working-directory: src/go\n")
 	fixture.write(".githooks/pre-push", "#!/bin/sh\nexit 0\n")

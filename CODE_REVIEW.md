@@ -290,8 +290,9 @@ Apply the universal list, plus the list for every area the diff touches.
 ### Cross-language and release
 
 - [ ] A directory move under `src/` was preceded by `make check-paths`.
-- [ ] Desktop protocol version bumped in **all three**: `internal/buildinfo`,
-      `src/tauri/app/src/protocol.rs`, `src/macos/AppServiceClient.swift`.
+- [ ] Desktop protocol version bumped in **all four**: `internal/buildinfo`,
+      `src/tauri/app/src/protocol.rs`, `src/macos/AppServiceClient.swift`,
+      `src/tauri/ui/lib/wire.ts`.
 - [ ] A version change is applied through `make set-version` / `bump-version`;
       `VERSION` is canonical and the five secondary sources in
       `src/go/cmd/anypick-release/version.go` (`secondarySources`) must agree.

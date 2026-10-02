@@ -160,6 +160,11 @@ export function decodeFrame(line: string): ServiceFrame | null {
     return null;
   }
   if (!record(payload)) return null;
+  // Frames that declare a protocolVersion must match ours. Missing is fine
+  // (legacy / bare snapshot); a mismatch is ignored like any other bad frame.
+  if ('protocolVersion' in payload && payload.protocolVersion !== PROTOCOL_VERSION) {
+    return null;
+  }
 
   switch (kind) {
     case 'snapshot': {

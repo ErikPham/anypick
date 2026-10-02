@@ -5,10 +5,11 @@ import (
 	"sort"
 )
 
-// The desktop stdio protocol version is declared once per language. Nothing
-// links the declarations, so bumping one and missing another produces an app
-// that refuses its own handshake at run time while every test stays green: Go
-// only ever agrees with itself.
+// The desktop stdio protocol version is declared once per language (Go, Rust,
+// Swift, and the Tauri UI's wire.ts). Nothing links the declarations, so
+// bumping one and missing another produces an app that refuses its own
+// handshake at run time while every test stays green: Go only ever agrees
+// with itself.
 //
 // The Go authority is internal/buildinfo, not internal/desktop. desktop also
 // declares a ProtocolVersion, but that is the older tray protocol (1) and is
@@ -19,6 +20,9 @@ var goProtocolPattern = regexp.MustCompile(`(?m)^const ProtocolVersion = ([0-9]+
 
 // rustProtocolPattern reads the Tauri front end's constant.
 var rustProtocolPattern = regexp.MustCompile(`(?m)^pub const PROTOCOL_VERSION: u32 = ([0-9]+);`)
+
+// wireProtocolPattern reads the Tauri UI TypeScript constant.
+var wireProtocolPattern = regexp.MustCompile(`(?m)^export const PROTOCOL_VERSION = ([0-9]+);`)
 
 // swiftProtocolPattern reads the number the macOS client sends in its hello.
 var swiftProtocolPattern = regexp.MustCompile(`static let protocolVersion = ([0-9]+)`)
@@ -44,6 +48,7 @@ var protocolSources = []protocolSource{
 	{"go (authority)", "src/go/internal/buildinfo/buildinfo.go", goProtocolPattern, false},
 	{"rust", "src/tauri/app/src/protocol.rs", rustProtocolPattern, false},
 	{"swift", "src/macos/AppServiceClient.swift", swiftProtocolPattern, false},
+	{"wire.ts", "src/tauri/ui/lib/wire.ts", wireProtocolPattern, false},
 }
 
 // CheckProtocol verifies every front end declares the same protocol version the

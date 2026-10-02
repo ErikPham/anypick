@@ -9,6 +9,7 @@ import {
   invokeCommand,
   logsCommand,
   MESSAGE_VERSION,
+  PROTOCOL_VERSION,
   modelRolesCommand,
   mutateCommand,
   partiallyMutated,
@@ -57,6 +58,32 @@ describe('frame decoding', () => {
       expect(decoded.revision).toBe(8);
       expect(decoded.reason).toBe('state-changed');
     }
+  });
+
+  it('ignores a frame whose protocolVersion does not match', () => {
+    expect(
+      decodeFrame(
+        frame('snapshot-event', {
+          protocolVersion: PROTOCOL_VERSION + 1,
+          revision: 8,
+          reason: 'state-changed',
+          snapshot: snapshotFixture({ revision: 8 }),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it('still decodes a frame whose protocolVersion matches', () => {
+    const decoded = decodeFrame(
+      frame('result', {
+        protocolVersion: PROTOCOL_VERSION,
+        version: 1,
+        requestId: 'a',
+        status: 'success',
+        message: 'ok',
+      }),
+    );
+    expect(decoded?.kind).toBe('result');
   });
 
   it('ignores a frame kind it does not act on', () => {

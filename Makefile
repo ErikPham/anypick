@@ -173,7 +173,7 @@ check-paths: go-toolchain ## Every cross-file reference resolves (scripts, Xcode
 # links them, so bumping one and missing the others produces an app that refuses
 # its own handshake at runtime while every test stays green — Go only ever
 # agrees with itself. See internal/repocheck/protocol.go.
-check-protocol: go-toolchain ## All three front ends declare the same protocol version
+check-protocol: go-toolchain ## All four front ends declare the same protocol version
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-repocheck protocol
 
 check-release: go-toolchain ## Every version source agrees with VERSION

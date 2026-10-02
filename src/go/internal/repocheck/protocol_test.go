@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestCheckProtocolPassesOnTheFixture is the floor: three declarations that
+// TestCheckProtocolPassesOnTheFixture is the floor: four declarations that
 // agree, plus the client's frame guard, must come back clean.
 func TestCheckProtocolPassesOnTheFixture(t *testing.T) {
 	fixture := newFixtureRepo(t)
@@ -41,6 +41,13 @@ func TestCheckProtocolFindsDisagreement(t *testing.T) {
 					"actor AppServiceClient {\n  static let protocolVersion = 1\n}\n")
 			},
 			expect: "swift declares protocol 1, go declares 2",
+		},
+		{
+			name: "wire.ts is left behind",
+			breaks: func(f *fixtureRepo) {
+				f.write("src/tauri/ui/lib/wire.ts", "export const PROTOCOL_VERSION = 9;\n")
+			},
+			expect: "wire.ts declares protocol 9, go declares 2",
 		},
 		{
 			name: "a frame guard is left behind",
