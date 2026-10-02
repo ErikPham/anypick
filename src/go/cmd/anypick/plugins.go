@@ -177,7 +177,7 @@ func cmdPluginEnable(ctx context.Context, a *appView, args []string) int {
 	}
 	if err := confirmPluginTrust(
 		"Enabling "+name,
-		"Enable "+name+" and allow its code to run in the isolated plugin host?",
+		"Enable "+name+" and record digest trust for its package (native builds do not run plugin code)?",
 		globals.Yes,
 	); err != nil {
 		if errors.Is(err, errDeclined) {
@@ -260,7 +260,8 @@ func shortPluginDigest(digest string) string {
 }
 
 // confirmPluginTrust is intentionally a constructive confirmation gate: the
-// dangerous operation is granting code execution, not deleting a registry row.
+// operation records enable/digest trust. Native builds do not run plugin code
+// (ADR-0021 / SECURITY.md); the prompt must not claim a plugin host executes it.
 func confirmPluginTrust(gerund, question string, yes bool) error {
 	if yes {
 		return nil
