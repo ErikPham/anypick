@@ -51,7 +51,7 @@ export function RowMenu({
               id={pop.panelId}
               role="menu"
               style={{ top: pop.placement.top, left: pop.placement.left }}
-              className="fixed z-50 min-w-44 rounded-lg border border-separator-soft bg-canvas py-1 shadow-[0_8px_28px_rgb(0_0_0/0.28)]"
+              className="fixed z-50 min-w-44 rounded-lg border border-separator-soft bg-canvas/95 backdrop-blur-md p-1 shadow-[0_8px_28px_rgb(0_0_0/0.28)]"
             >
               {children(pop.close)}
             </div>,
@@ -90,8 +90,8 @@ export function MenuItem({
       role="menuitem"
       data-testid={testId}
       disabled={disabled}
-      className={`block w-full cursor-default border-0 bg-transparent px-3 py-1 text-left text-[12px] hover:not-disabled:bg-hover disabled:cursor-default disabled:opacity-50 ${
-        destructive ? 'text-red' : 'text-text'
+      className={`block w-full cursor-default rounded-control border-0 bg-transparent px-2.5 py-1 text-left text-[12px] hover:not-disabled:bg-accent hover:not-disabled:text-white disabled:cursor-default disabled:opacity-50 ${
+        destructive ? 'text-red hover:not-disabled:bg-red hover:not-disabled:text-white' : 'text-text'
       }`}
       onClick={onSelect}
     >

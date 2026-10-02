@@ -19,7 +19,7 @@ import {
 import { Chevron } from '../ui/Chevron';
 import { ProviderIcon } from '../shell/ProviderIcon';
 import { Symbol } from '../shell/Symbol';
-import { Button, Group, Pane, PaneActions, Row, RowActions, RowText } from '../ui/primitives';
+import { Button, Group, Pane, PaneActions, Row, RowActions, RowText, WarningGlyph } from '../ui/primitives';
 
 const ONBOARDING_KEY = 'anypick.onboardingDismissed';
 
@@ -95,6 +95,7 @@ export function OverviewPane({
         <Group title="Needs Attention" testId="overview-degraded">
           {snapshot.degradedConditions.map((condition) => (
             <Row key={condition.id} warning testId={`degraded-${condition.id}`}>
+              <WarningGlyph />
               <RowText title={condition.title} detail={condition.detail} />
             </Row>
           ))}
@@ -104,6 +105,7 @@ export function OverviewPane({
       {attention ? (
         <Group testId="overview-attention">
           <Row warning testId="overview-attention-row">
+            <WarningGlyph />
             <RowText title={attention.title} detail={attention.detail} />
             <RowActions>
               <Button onClick={() => onNavigate?.(destinationFor(attention.action))}>
@@ -226,6 +228,14 @@ export function OverviewPane({
 
       <Group title="Services" testId="overview-services">
         <Row testId="overview-services-row" onClick={() => onNavigate?.('proxies')}>
+          <span
+            className={`mr-2.5 flex-none ${
+              running === 0 ? 'text-secondary' : 'text-accent'
+            }`}
+            aria-hidden="true"
+          >
+            <Symbol name="server.rack" size={18} />
+          </span>
           <RowText
             title="Proxies"
             detail={
@@ -235,9 +245,15 @@ export function OverviewPane({
             }
           />
           <RowActions>
-            <span className="text-[12px] whitespace-nowrap text-secondary">
-              {running} of {total} running
-            </span>
+            <div className="flex items-center gap-1.5">
+              {running > 0 ? (
+                <span className="inline-block size-[7px] rounded-full bg-green flex-none" />
+              ) : null}
+              <span className="text-[12px] whitespace-nowrap text-secondary font-mono">
+                {running} of {total} running
+              </span>
+              <Chevron />
+            </div>
           </RowActions>
         </Row>
       </Group>
@@ -264,10 +280,16 @@ export function OverviewPane({
 
       {hub ? (
         <Group title="Proxy Hub" testId="overview-hub">
-          <Row>
+          <Row onClick={() => onNavigate?.('proxyHub')}>
+            <span className="mr-2.5 flex-none text-accent" aria-hidden="true">
+              <Symbol name="point.3.connected.trianglepath.dotted" size={18} />
+            </span>
             <RowText title="Proxy Hub" detail={hub.address ?? hub.detail} />
             <RowActions>
-              <span className="text-[12px] whitespace-nowrap text-secondary">{STATUS_LABEL[proxyStatus(hub)]}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px] whitespace-nowrap text-secondary">{STATUS_LABEL[proxyStatus(hub)]}</span>
+                <Chevron />
+              </div>
             </RowActions>
           </Row>
         </Group>

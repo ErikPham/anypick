@@ -29,6 +29,7 @@ import {
   CheckRow,
   Field,
   Group,
+  LabeledRow,
   Pane,
   PaneActions,
   Row,
@@ -125,50 +126,37 @@ export function AppDetailPane({
 
       {/* Connection Section */}
       <Group title="Connection">
-        <Row>
-          <RowText title="Uses" detail={app.selected?.label || 'None'} />
-        </Row>
+        <LabeledRow label="Uses" value={app.selected?.label || 'None'} />
         {app.selected?.detail ? (
-          <Row>
-            <RowText title="Identity" detail={app.selected.detail} />
-          </Row>
+          <LabeledRow label="Identity" value={app.selected.detail} />
         ) : null}
-        <Row>
-          <RowText
-            title="Transport"
-            detail={transportDisplayName(app.selected?.routeKind, isConfigured)}
-          />
-        </Row>
-        <Row testId="app.connection.change">
-          <RowText
-            title="Connection"
-            detail={isConfigured ? 'Connected to AnyPick' : 'No connection chosen'}
-          />
-          <RowActions>
+        <LabeledRow
+          label="Transport"
+          value={transportDisplayName(app.selected?.routeKind, isConfigured)}
+        />
+        <LabeledRow label="Connection" testId="app.connection.change">
+          <Button
+            kind="secondary"
+            disabled={busy.size > 0 || changingRows.length === 0}
+            onClick={() => setChangingRoutes(true)}
+          >
+            {isConfigured ? 'Change…' : 'Connect…'}
+          </Button>
+          {isManaged ? (
             <Button
               kind="secondary"
-              disabled={busy.size > 0 || changingRows.length === 0}
-              onClick={() => setChangingRoutes(true)}
+              disabled={busy.size > 0}
+              testId="app.connection.disconnect"
+              onClick={onReset}
             >
-              {isConfigured ? 'Change…' : 'Connect…'}
+              Disconnect…
             </Button>
-            {isManaged ? (
-              <Button
-                kind="secondary"
-                disabled={busy.size > 0}
-                testId="app.connection.disconnect"
-                onClick={onReset}
-              >
-                Disconnect…
-              </Button>
-            ) : null}
-          </RowActions>
-        </Row>
+          ) : null}
+        </LabeledRow>
       </Group>
 
       {/* Quick Panel Section */}
       <Group
-        title="Quick Panel"
         footer="When enabled, this app appears in the menu bar Quick Panel for quick switching."
       >
         <Row>
@@ -192,39 +180,29 @@ export function AppDetailPane({
         >
           {isManaged ? (
             <>
-              <Row>
-                <RowText
-                  title="Default"
-                  detail={cleanModelDisplayName(config.defaultModel ?? '') || 'None'}
-                />
-              </Row>
-              <Row>
-                <RowText
-                  title="Overrides"
-                  detail={
-                    Object.keys(config.modelRoles).length > 0
-                      ? `${Object.keys(config.modelRoles).length} models pinned`
-                      : 'None'
-                  }
-                />
-              </Row>
-              <Row testId={`app.models.row-${app.clientId}`}>
-                <RowText
-                  title="Manage Models"
-                  detail={modelProvenanceCaption(provenanceOf(config), providerLabelFor(config))}
-                />
-                <RowActions>
-                  <Button
-                    kind="secondary"
-                    testId="app.models.manage"
-                    disabled={busy.size > 0 || !config.editable}
-                    ariaLabel={`Manage models for ${config.client}`}
-                    onClick={() => setModelsOpen((v) => !v)}
-                  >
-                    {modelsOpen ? 'Done' : 'Manage…'}
-                  </Button>
-                </RowActions>
-              </Row>
+              <LabeledRow
+                label="Default"
+                value={cleanModelDisplayName(config.defaultModel ?? '') || 'None'}
+              />
+              <LabeledRow
+                label="Overrides"
+                value={
+                  Object.keys(config.modelRoles).length > 0
+                    ? `${Object.keys(config.modelRoles).length} models pinned`
+                    : 'None'
+                }
+              />
+              <LabeledRow label="Manage Models" testId={`app.models.row-${app.clientId}`}>
+                <Button
+                  kind="secondary"
+                  testId="app.models.manage"
+                  disabled={busy.size > 0 || !config.editable}
+                  ariaLabel={`Manage models for ${config.client}`}
+                  onClick={() => setModelsOpen((v) => !v)}
+                >
+                  {modelsOpen ? 'Done' : 'Manage…'}
+                </Button>
+              </LabeledRow>
               {modelsOpen ? (
                 <ModelEditor
                   config={config}

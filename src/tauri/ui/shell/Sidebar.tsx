@@ -92,11 +92,12 @@ export function Sidebar({
         {onOpenSettings ? (
           <button
             type="button"
-            className="inline-flex min-h-control cursor-default items-center justify-start gap-1.5 rounded-control border border-control-border bg-control px-[11px] py-0.5 text-[12px] text-text"
+            className="inline-flex min-h-control cursor-default items-center justify-start gap-1.5 rounded-control border border-control-border bg-control px-[11px] py-0.5 text-[12px] text-text hover:bg-hover active:bg-active"
             data-testid="sidebar-settings"
             onClick={onOpenSettings}
           >
-            Settings
+            <Symbol name="gearshape" size={13} />
+            <span>Settings</span>
           </button>
         ) : null}
       </div>

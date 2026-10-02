@@ -240,9 +240,9 @@ const BUTTON_KIND = {
   primary:
     'border-transparent bg-accent text-white shadow-[0_0.5px_1px_rgba(0,0,0,0.15)] hover:brightness-105 active:brightness-95 disabled:border-control-border/50 disabled:bg-control/50 disabled:text-secondary/40 disabled:shadow-none',
   secondary:
-    'border-control-border bg-control text-text shadow-[0_0.5px_1px_rgba(0,0,0,0.06)] hover:bg-hover active:bg-black/5 dark:active:bg-white/10 disabled:opacity-40 disabled:bg-control disabled:text-secondary',
-  quiet: 'border-transparent bg-transparent text-text shadow-none hover:bg-hover',
-  destructive: 'border-control-border bg-control text-red hover:bg-hover',
+    'border-control-border bg-control text-text shadow-[0_0.5px_1px_rgba(0,0,0,0.06)] hover:brightness-105 active:brightness-95 dark:hover:bg-[#48484a] dark:active:bg-[#323234] disabled:opacity-40 disabled:bg-control disabled:text-secondary',
+  quiet: 'border-transparent bg-transparent text-text shadow-none hover:bg-hover active:bg-black/5 dark:active:bg-white/10',
+  destructive: 'border-control-border bg-control text-red hover:brightness-105 active:brightness-95 dark:hover:bg-[#48484a] dark:active:bg-[#323234]',
 } as const;
 
 export function Button({
@@ -519,6 +519,32 @@ export function ValueText({ children, testId }: { children: ReactNode; testId?: 
     <span className="text-[12px] whitespace-nowrap text-secondary" data-testid={testId}>
       {children}
     </span>
+  );
+}
+
+/**
+ * A row mirroring macOS SwiftUI's `LabeledContent(label, value: ...)`:
+ * label text on the left, trailing value or controls on the right.
+ */
+export function LabeledRow({
+  label,
+  value,
+  children,
+  testId,
+}: {
+  label: string;
+  value?: ReactNode;
+  children?: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <Row testId={testId}>
+      <span className="shrink-0 text-[13px] text-text">{label}</span>
+      <RowActions>
+        {value !== undefined ? <ValueText>{value}</ValueText> : null}
+        {children}
+      </RowActions>
+    </Row>
   );
 }
 

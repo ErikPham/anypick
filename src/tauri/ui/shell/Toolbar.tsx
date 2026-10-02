@@ -1,4 +1,5 @@
 import type { Snapshot } from '../lib/contract';
+import { Symbol } from './Symbol';
 
 /**
  * The pane toolbar: the pane's title, a search field where the list is long
@@ -59,6 +60,9 @@ export function Toolbar({
             {/* The label is spoken, not drawn. Without it the placeholder is
                 the only name and a screen reader reads a bare "edit". */}
             <span className="sr-only">Search {title}</span>
+            <span className="flex-none text-tertiary" aria-hidden="true">
+              <Symbol name="magnifyingglass" size={11} />
+            </span>
             <input
               className="w-full min-w-0 border-0 bg-transparent p-0 text-[12px] text-text outline-none placeholder:text-tertiary"
               type="search"
@@ -67,6 +71,16 @@ export function Toolbar({
               placeholder={`Search ${title}`}
               data-testid="toolbar-search"
             />
+            {query ? (
+              <button
+                type="button"
+                className="flex-none cursor-default text-tertiary hover:text-text"
+                onClick={() => onQuery('')}
+                aria-label="Clear search"
+              >
+                <Symbol name="xmark.circle" size={11} />
+              </button>
+            ) : null}
           </label>
         ) : null}
         <button
