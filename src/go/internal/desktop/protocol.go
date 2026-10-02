@@ -234,8 +234,6 @@ func decodeB64Body(encoded string, into interface{}) error {
 	return json.Unmarshal(raw, into)
 }
 
-// ---- core → app emitters ----
-
 func frame(prefix string, v interface{}) string {
 	raw, err := json.Marshal(v)
 	if err != nil {

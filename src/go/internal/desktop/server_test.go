@@ -146,8 +146,6 @@ func fakeJWT2(claims map[string]string) string {
 		"." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
-// ---- round trip ----
-
 func TestDesktopServerRoundTrip(t *testing.T) {
 	env := newTrayEnv(t)
 	ctx := context.Background()

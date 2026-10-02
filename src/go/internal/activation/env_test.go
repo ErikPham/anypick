@@ -253,8 +253,6 @@ func errorsAsAny(err error, target **anyerr.Error) bool {
 	return false
 }
 
-// ---- shared plan-building helpers ----
-
 func (e *testEnv) writeOpenCodeLive(t *testing.T, email string) {
 	t.Helper()
 	path := filepath.Join(e.Home, ".opencode", "auth.json")

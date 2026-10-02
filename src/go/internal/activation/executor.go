@@ -27,7 +27,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// ExecuteResult mirrors ExecuteResult. Cleanup is the idempotent scoped
+// ExecuteResult is the outcome of Execute. Cleanup is the idempotent scoped
 // rollback for a successful ephemeral run.
 type ExecuteResult struct {
 	Plan          *Plan
@@ -42,7 +42,7 @@ type ExecuteResult struct {
 	Warnings      []string
 }
 
-// ExecuteOptions mirrors ExecuteOptions.
+// ExecuteOptions configures a single Execute call.
 type ExecuteOptions struct {
 	DryRun        bool
 	SkipIfActive  bool

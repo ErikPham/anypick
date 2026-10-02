@@ -90,7 +90,7 @@ func protocolsFromAPIStyle(style string) []transport.Protocol {
 	}
 }
 
-// MaterializeResolvedSource ports materializeResolvedSource.
+// MaterializeResolvedSource resolves a ref into the concrete source a plan needs.
 func MaterializeResolvedSource(ctx context.Context, ref refs.Ref, deps *Deps) (*ResolvedSource, error) {
 	display := refs.DisplayRef(ref)
 	switch ref.Kind {
@@ -265,7 +265,7 @@ func providerInfoOf(pv provider.Provider) transport.ProviderInfo {
 	return transport.ProviderInfo{ID: pv.ID(), CanProxy: pv.CanProxy(), HasAdapter: true}
 }
 
-// ExpandPreset ports expandPreset.
+// ExpandPreset expands a named preset into its source and binding for clientID.
 func ExpandPreset(ctx context.Context, name, clientID string, deps *Deps) (*presetExpansion, error) {
 	preset, err := deps.Presets.GetContext(ctx, name)
 	if err != nil {
@@ -312,7 +312,7 @@ func ExpandPreset(ctx context.Context, name, clientID string, deps *Deps) (*pres
 	}, nil
 }
 
-// PlanActivation ports planActivation.
+// PlanActivation builds the activation plan for req without mutating state.
 func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) (*Plan, error) {
 	clientID := req.Client
 	cad, err := deps.Clients.Get(clientID)
@@ -823,7 +823,6 @@ func loadProfileName(ref refs.Ref) string {
 	return ""
 }
 
-// buildTransport ports buildTransport.
 func buildTransport(
 	caps *client.Capabilities,
 	source *ResolvedSource,

@@ -408,8 +408,6 @@ func (s *Store) insertSourceRow(ctx context.Context, hubName string, position in
 	return err
 }
 
-// ---- cross-runtime config_json boundary ----
-
 // wireRef / wireSource mirror src/core/codec/proxy-hub.ts exactly. wireSource
 // also accepts the legacy Go-written flat shape so pre-cutover rows still
 // load; anything else fails closed instead of zero-decoding into an empty

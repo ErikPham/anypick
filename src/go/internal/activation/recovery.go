@@ -11,7 +11,7 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// RecoveryResult mirrors RecoveryResult.
+// RecoveryResult summarizes what RecoverIncompleteOperations completed, failed, or refused.
 type RecoveryResult struct {
 	Recovered int
 	Failed    []string

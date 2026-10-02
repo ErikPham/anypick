@@ -458,8 +458,6 @@ func isQuotaRefusal(status int, headerValue func(string) string, bodyPreview str
 	return upstream.MatchesQuotaErrorPattern(patterns, bodyPreview)
 }
 
-// ---- small helpers kept dependency-light for tests ----
-
 // poolSourceProvider reports whether the source references a provider pool and
 // returns that provider id.
 // PoolSourceAccount is the source account value that delegates to a provider's
@@ -637,8 +635,6 @@ func writeErr(w http.ResponseWriter, status int, code, message string) {
 	})
 	_, _ = w.Write(payload)
 }
-
-// ---- plumbing helpers ----
 
 type tcpAddr = net.TCPAddr
 
