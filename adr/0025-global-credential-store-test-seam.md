@@ -61,14 +61,13 @@ to independent judgment, and it is the reason that layer is not ceremony.
 - Mutation-checked. With the guard installed but not recording the consultation,
   the test fails on the new assertion; reverted, it passes.
 - `internal/provider`'s own `TestMain` guard is unchanged and still applies.
-- **Residual, and the reason this is proposed rather than settled:** the guard is
-  opt-in per test binary. A future package that drives the activation path has to
-  remember it, which is the same shape of failure that produced this record — a
-  rule that lives in one place and is not enforced where it is needed. The
-  durable fix is to inject the writer from the composition root (`internal/app`)
-  so that a test which does not explicitly ask for the real credential store
-  cannot get it, making the safe behaviour the default rather than a discipline.
-  That is deliberately left open.
-- §7 puts a change to a trust boundary on the High-risk route, which requires an
-  independent context. The author cannot supply that for their own change, so
-  this record stays **proposed** until one reviews it.
+- **Composition-root seam (implemented):** `AntigravityKeyringPut` defaults to a
+  no-op. `internal/app.compose` calls `EnableAntigravityKeyringWrites` only when
+  `testing.Testing()` is false, so production binaries still write and every
+  `go test` binary — including those that never install `guardAntigravityKeyring`
+  — cannot reach the real Keychain by default. Per-binary guards (Decision §2–3)
+  remain for recording that the mirror was consulted.
+- **Residual, and the reason this stays proposed:** §7 puts a change to a trust
+  boundary on the High-risk route, which requires an independent context. The
+  author cannot supply that for their own change, so this record stays
+  **proposed** until one reviews it.

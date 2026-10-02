@@ -98,12 +98,22 @@ type GeminiAntigravityFile = geminiAntigravityFile
 // Antigravity mirror it is not scoped by HOME or ANYPICK_HOME, so the temp
 // directories a test sets up do not protect it.
 //
-// This package guards itself in TestMain. A test in another package that drives
-// the real activation path cannot reach that guard — internal/accounts does
-// exactly this — and without a reachable seam it overwrites the developer's own
-// Antigravity credential with fixture tokens. Exporting the seam is what lets
-// those test binaries install the same guard.
-var AntigravityKeyringPut = writeAntigravityKeyring
+// The default is a no-op. The composition root (internal/app) installs the
+// production writer for real processes via EnableAntigravityKeyringWrites
+// (ADR-0025). Test binaries keep this no-op unless a test explicitly replaces
+// the hook — so a forgotten per-package guard cannot overwrite the developer's
+// Keychain. This package's TestMain still pins the same no-op for clarity.
+var AntigravityKeyringPut = discardAntigravityKeyring
+
+// discardAntigravityKeyring is the safe default for AntigravityKeyringPut.
+func discardAntigravityKeyring(*geminiAntigravityFile) error { return nil }
+
+// EnableAntigravityKeyringWrites installs the production OS credential-store
+// writer. Call only from the composition root for real processes; tests must
+// leave the no-op default (or install their own recording fake).
+func EnableAntigravityKeyringWrites() {
+	AntigravityKeyringPut = writeAntigravityKeyring
+}
 
 func writeAntigravityKeyring(payload *geminiAntigravityFile) error {
 	if payload == nil || strings.TrimSpace(payload.Token.RefreshToken) == "" {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 	"time"
 
 	"github.com/outof0/anypick/go/internal/accounts"
@@ -144,6 +145,13 @@ func New(root string) (*App, error) {
 }
 
 func (a *App) compose() error {
+	// ADR-0025: production binaries write the Antigravity OS credential
+	// mirror; go test keeps the provider package's no-op default so a
+	// forgotten per-package guard cannot reach the developer's Keychain.
+	if !testing.Testing() {
+		provider.EnableAntigravityKeyringWrites()
+	}
+
 	st := store.New(a.Root, a.DB)
 	a.Store = st
 
