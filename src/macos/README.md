@@ -150,8 +150,8 @@ System Settings → Wi‑Fi / Displays / Battery / Privacy & Security:
 - Toggles and pickers **instant-apply**. No OK/Apply on a pane.
 - Create / inspect / confirm flows are **sheets** with toolbar Cancel +
   primary action.
-- Destructive work uses `confirmationDialog` or `NSAlert`, never a
-  custom modal card.
+- Destructive work asks through one native alert (see
+  [Confirmations](#confirmations)), never a custom modal card.
 
 The **Settings scene** (`Settings { }` / ⌘,) contains app-wide preferences
 and Diagnostics. Task-specific options stay on the pane they affect. The
@@ -177,7 +177,7 @@ tints, and materials. Do not wrap them in a custom “design system”.
 | Commands | `Button`, `Menu`, toolbar `cancellationAction` / `confirmationAction` |
 | Empty / search miss | `ContentUnavailableView` |
 | Progress | `ProgressView` |
-| Confirm | `confirmationDialog` or AppKit `NSAlert` |
+| Confirm | `DesignConfirmation` + `.designConfirmation(_:)` |
 | Files | `NSSavePanel` / `NSOpenPanel` |
 | Brand mark | Provider / app rows: bundled logo via `DesignProviderIcon`. All other chrome: SF Symbol. No card, no badge plate. |
 
@@ -288,6 +288,70 @@ Create / choose / inspect flows (`Add Subscription`, `Add API Gateway`,
   engine published options for that connection, and it is skipped when a
   default model is already pinned (`appRouteOffersModelStep`,
   `appRouteNeedsModelChoice`).
+
+## Confirmations
+
+Every irreversible or outward-facing command asks through **one native
+alert**. There is a single spelling for it: a `DesignConfirmation` in the
+view's `@State`, attached with `.designConfirmation(_:)`
+(`SharedUI.swift`).
+
+```swift
+@State private var confirmation: DesignConfirmation?
+
+// …
+.designConfirmation($confirmation)
+
+// A command asks; it never builds the dialog itself. "Remove", not
+// "Remove Account" — see the width rule below.
+confirmation = DesignConfirmation(
+  id: "remove-account",
+  title: "Remove “\(account.name)” from AnyPick?",
+  message: "…one sentence about what actually changes…",
+  action: .confirm("Remove") { model.removeAccount(id: account.id) }
+)
+```
+
+Rules:
+
+- **One host per view.** SwiftUI only reliably presents the most recently
+  attached alert, so a pane that offers several confirmations keeps one request
+  in state and points it at whichever command asked (`AppDetailView`,
+  `ProxiesView`, `ActivityView`).
+- **Cancel is the host's job.** A caller lists only the answers. The host
+  appends `Cancel` last, which is what makes Cancel the rightmost button and
+  therefore the one under the default key and Escape — Return must never be a
+  destructive action.
+- **Button titles are bare verbs.** "Remove", not "Remove Account". This is
+  what puts the buttons on **one row**, and it is the only lever there is:
+  `confirmationDialog`, `.alert` and a hand-built `NSAlert` all produce the
+  identical native `_NSAlertPanel`, which gives its buttons a single 228pt
+  row. A title too wide for that row is not squeezed — it takes its own
+  full-width row, which is the "Remove Account and Cancel on two lines" report.
+  Measured: "Forget Books" (12 chars) fits, "Remove Login" (13) does not, and
+  the split is pixel width rather than length — "Remove Guest" (12) wraps.
+  `AnyPickTests.testConfirmationButtonsFitOnOneRow` scans every `.confirm("…")`
+  in the app, plus the action closure of the one hand-written `.alert`, and
+  fails the build on a title that is not on the measured list. The alert title
+  already carries the sentence ("Remove “Claude” from AnyPick?"), so the button
+  only has to be the verb.
+- **Three answers take three rows, and that is the platform's rule.** macOS
+  puts each of three or more alert buttons on its own row — measured, even
+  "No / Yes / Cancel" stacks. The backup-overwrite dialog is the only place in
+  the app that does not answer on a single line, and it is not a layout choice
+  made here.
+- **Say what does not happen.** "Removed from AnyPick" alone is not reassurance;
+  name what survives (`Codex stays signed in on this Mac`, `the remote API key
+  is not revoked`).
+- The one hand-written `.alert` is the `CLIENT_CONFIG_FOREIGN` takeover in
+  `MainWindow.swift` (the engine's refusal and its answer belong on the window
+  the user is already on). It follows the same width rule: "Replace", the verb
+  the engine's own `--allow-foreign-config` suggestion uses, where
+  "Manage with AnyPick" took a row of its own.
+- The menu-bar extra's Quit is a hand-built `NSAlert`
+  (`MenuBarMenu.swift`) — a status-item menu is not a pane and has no SwiftUI
+  host to attach to. It follows the same rules: "Quit" before "Cancel", with
+  Escape on Cancel.
 
 ## Menu bar extra
 
