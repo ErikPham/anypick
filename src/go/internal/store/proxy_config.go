@@ -32,7 +32,6 @@ func (s *AccountStore) GetProxyConfig(ctx context.Context, providerID, name stri
 	return out, nil
 }
 
-// SetProxyConfigContext is mutation-guarded (ADR 0009).
 func (s *AccountStore) SetProxyConfigContext(ctx context.Context, providerID, name string, cfg ProxyConfig) error {
 	return s.mutate(ctx, providerID, func(ctx context.Context) error {
 		return s.setProxyConfigContext(ctx, providerID, name, cfg)

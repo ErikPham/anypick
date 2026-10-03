@@ -75,8 +75,6 @@ var geminiCredentialFiles = []string{
 	"jetski-standalone-oauth-token",
 }
 
-// geminiRestoredCredential returns the first OAuth file present in the
-// client's config dir, or "" when the login has not been restored.
 func geminiRestoredCredential(home string) string {
 	dir := geminiDir(home)
 	for _, name := range geminiCredentialFiles {
@@ -360,7 +358,6 @@ func quoteEnvValue(v string) string {
 	return v
 }
 
-// stripKeysFromEnv rewrites an .env file without the given keys.
 func stripKeysFromEnv(path string, keys []string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {

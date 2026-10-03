@@ -46,11 +46,6 @@ function manyModels(count: number): HubPublishedModel[] {
 }
 
 /**
- * The shell owns the search field, so the pane receives it as a prop. These
- * tests drive the pane directly and pass their own, which is also how the
- * screenshot harness reaches this destination through the real toolbar.
- */
-/**
  * The shell owns the search field, so the pane takes the query as a prop.
  * This harness owns it the way the shell does, which is what lets a test type
  * into it and then check that Reset Filters clears it.

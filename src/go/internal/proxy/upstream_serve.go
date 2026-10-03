@@ -119,7 +119,9 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 		baseURL:   up.BaseURL,
 		sanitizer: up.SanitizeOpenAIBody,
 	})
-} // flattenedNativeUpstream flattens a native Anthropic target and its parent
+}
+
+// flattenedNativeUpstream flattens a native Anthropic target and its parent
 // Upstream into one *Upstream: the target wins, the parent fills whatever the
 // target leaves empty.
 //
@@ -129,6 +131,7 @@ func Serve(w http.ResponseWriter, r *http.Request, up *Upstream) {
 // in the pool skipped the header default that resolveUpstreamAuth applies, so
 // a target that left AuthHeader empty was forwarded with an empty header name
 // — a request the vendor answers 401, indistinguishable from a dead token.
+
 func flattenedNativeUpstream(up *Upstream) *Upstream {
 	t := up.Anthropic
 	if t == nil {
@@ -438,7 +441,6 @@ func rewriteContextWindowResponse(resp *http.Response, req *http.Request) error 
 	isAnthropic := path == "/v1/messages" || path == "/messages"
 	// OpenAI Responses SSE compaction signal
 	if path == "/v1/responses" {
-		// Check if client asked for streaming (prefers SSE)
 		if req.Header.Get("Accept") == "text/event-stream" || strings.Contains(req.URL.RawQuery, "stream") {
 			sse := openAIResponsesContextWindowSSE()
 			resp.StatusCode = 200
@@ -564,12 +566,9 @@ func stringOrEmpty(v any) string {
 	return s
 }
 
-// describeSanitizedOpenAI summarizes the body we actually sent upstream
-// after translation/sanitizer. Fingerprints only — no prompt text, no raw
-// dump. A previous revision wrote inbound+sanitized bodies to
-// last-11128.json; that file could hold prompts, history, file contents and
-// pasted secrets, so raw dumps are removed (P0). Diagnostics stay in the
-// redacted log line above.
+// Fingerprints only — no prompt text, no raw dump: a raw body could hold
+// prompts, history, file contents and pasted secrets (P0). Diagnostics stay in
+// the redacted log line above.
 
 func describeSanitizedOpenAI(body []byte) string {
 	var v map[string]any

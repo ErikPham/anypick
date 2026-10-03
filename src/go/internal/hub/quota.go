@@ -77,7 +77,6 @@ func SourceKey(providerID, account string) string {
 	return providerID + "\x00" + account
 }
 
-// keyOf names the source at index i in cfg.
 func keyOf(cfg Config, index int) string {
 	if index < 0 || index >= len(cfg.Sources) {
 		return ""
@@ -85,7 +84,6 @@ func keyOf(cfg Config, index int) string {
 	return SourceKey(cfg.Sources[index].ProviderID, cfg.Sources[index].Account)
 }
 
-// isCooling reports whether the source is inside a cooldown window.
 func (q *Quotas) isCooling(key string) bool {
 	if q == nil || key == "" {
 		return false

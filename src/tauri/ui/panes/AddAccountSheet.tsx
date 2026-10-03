@@ -686,7 +686,6 @@ function pasteError(error: unknown): string {
   return 'AnyPick could not store the pasted auth JSON.';
 }
 
-/** Reads the identity out of the engine's detection sentence. */
 export { accountIdentityFromDetection };
 
 /**

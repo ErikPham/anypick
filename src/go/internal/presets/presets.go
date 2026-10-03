@@ -67,7 +67,6 @@ func (s *Store) List() ([]Saved, error) {
 	return out, rows.Err()
 }
 
-// ListContext is the context-aware variant.
 func (s *Store) ListContext(ctx context.Context) ([]Saved, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+columns+` FROM presets ORDER BY name`)
 	if err != nil {
@@ -201,7 +200,6 @@ func (s *Store) DeleteByNameContext(ctx context.Context, name string) error {
 	})
 }
 
-// SourceRefOf returns the preset's source ref convenience helper.
 func SourceRefOf(p Saved) refs.Ref { return p.Spec.Source }
 
 type rowScanner interface{ Scan(dest ...any) error }

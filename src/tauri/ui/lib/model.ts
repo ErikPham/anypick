@@ -125,7 +125,6 @@ export function friendlyProxyName(label: string, providerId: string): string {
   return label;
 }
 
-/** `friendlyProxyStatusSubtitle`. */
 export function friendlyProxyStatusSubtitle(
   status: DesignStatus,
   port: number,

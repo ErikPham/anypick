@@ -681,8 +681,7 @@ func legacySHA256(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// DetachRoute removes an attached route.
-// defaultRouteID is the CLI-facing attachment used by `proxy hub owner`.
+// defaultRouteIDSuffix is the CLI-facing attachment used by `proxy hub owner`.
 const defaultRouteIDSuffix = "/default"
 
 // DefaultRouteID returns the implicit route id for a hub name.
@@ -705,7 +704,6 @@ func ClientRunRouteID(hubName, clientID, operationID string) string {
 	return ClientRouteID(hubName, clientID) + "/run-" + operationID
 }
 
-// routeByRow mirrors RouteByTokenContext but keyed by id.
 // RouteRowSnapshot captures one persisted route row verbatim (manifest,
 // token hash, timestamps) so activation compensation can restore EXACTLY what
 // existed before an AttachRoute overwrite.

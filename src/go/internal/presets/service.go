@@ -20,7 +20,6 @@ type Service struct {
 
 func NewService(s *Store) *Service { return &Service{Store: s} }
 
-// ListContext returns every saved preset ordered by name.
 func (s *Service) ListContext(ctx context.Context) ([]Saved, error) {
 	return s.Store.ListContext(ctx)
 }
@@ -35,7 +34,6 @@ func (s *Service) ExistsContext(ctx context.Context, name string) (bool, error) 
 	return s.Store.ExistsContext(ctx, name)
 }
 
-// UpsertContext creates or bumps the revision of a named preset.
 func (s *Service) UpsertContext(ctx context.Context, name string, spec bindings.Spec) (Saved, error) {
 	return s.Store.UpsertContext(ctx, name, spec)
 }
@@ -45,7 +43,6 @@ func (s *Service) MarkUsedContext(ctx context.Context, id string) error {
 	return s.Store.MarkUsedContext(ctx, id)
 }
 
-// DeleteByNameContext removes the named preset.
 func (s *Service) DeleteByNameContext(ctx context.Context, name string) error {
 	return s.Store.DeleteByNameContext(ctx, name)
 }

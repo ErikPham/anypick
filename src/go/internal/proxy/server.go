@@ -323,7 +323,6 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 	return &StatusRecorder{ResponseWriter: w, status: http.StatusOK}
 }
 
-// Status reports the status the handler committed.
 func (rec *StatusRecorder) Status() int { return rec.status }
 
 func (rec *StatusRecorder) WriteHeader(status int) {
@@ -552,7 +551,6 @@ func portBindable(host string, port int) bool {
 	return true
 }
 
-// registry tracks running servers keyed by provider/account.
 type registry struct {
 	mu sync.Mutex
 	m  map[string]*Server

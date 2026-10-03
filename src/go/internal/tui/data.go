@@ -407,21 +407,6 @@ func suggestAccountName(identity string) string {
 	return "main"
 }
 
-// ── Apps board (the product) ────────────────────────────────────
-//
-// The Apps board answers "what should Claude / Codex / ZCode use right now?"
-// for each routing app. A client appears here only if it is listed in
-// routingAppIDs; a client that is not listed must instead have a provider of
-// its own that AnyPick can log in for (gemini, kiro, opencode, workbuddy) —
-// that is what makes it "login-only" and switchable under Accounts.
-// TestEveryRegisteredClientIsReachableInTheTUI fails the build when a client
-// satisfies neither: an unlisted client with no provider of its own is simply
-// invisible in the TUI, which is how zcode shipped for a while.
-//
-// The list is explicit rather than a "client that is not also a provider"
-// heuristic because claude and codex *are* providers (AnyPick manages their
-// native logins) and still have to route.
-
 type AppStatus string
 
 const (
@@ -469,6 +454,9 @@ func clientNativeProvider(a *app.App, clientID string) string {
 // managed under Accounts: that login is a source, not a native switch target.
 // pi and omp are the same case: harness clients with no native switch
 // target, reachable only by pointing them at an AnyPick-managed source.
+// The list is explicit rather than a "client that is not also a provider"
+// heuristic because claude and codex *are* providers (AnyPick manages their
+// native logins) and still have to route.
 var routingAppAllowlist = []string{"claude", "codex", "zcode", "dsh", "commandcode", "pi", "omp"}
 
 // routingAppIDs returns the client ids that are routing apps, filtered against
@@ -579,8 +567,6 @@ func LoadApps(ctx context.Context, a *app.App) []AppRow {
 	return rows
 }
 
-// ── Route-build wizard: source options ──────────────────────────
-
 // SourceOption is one selectable source in the wizard's first step.
 type SourceOption struct {
 	Ref   refs.Ref
@@ -665,8 +651,6 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 	return opts
 }
 
-// ── Gateways board ──────────────────────────────────────────────
-
 // GatewayRow is one line of the Gateways board. The endpoint URL is shown
 // (not a secret); the API key is never read here.
 type GatewayRow struct {
@@ -694,12 +678,6 @@ func LoadGateways(ctx context.Context, a *app.App) []GatewayRow {
 	}
 	return rows
 }
-
-// ── Proxy board ─────────────────────────────────────────────────
-//
-// Read-only for now (full start/stop/pool editing lands in Phase 3). The board
-// lists every account-proxy source with its running status so the user can see
-// what is serving.
 
 // ProxyRow is one line of the Proxy board.
 type ProxyRow struct {

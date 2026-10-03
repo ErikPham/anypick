@@ -131,7 +131,6 @@ func GeminiToAnthropic(res *GeminiGenerateResponse, model string, inputTokensFal
 	}
 }
 
-// IsAnthropicError reports whether the response is an error payload.
 func (r *AnthropicMessageResponse) IsAnthropicError() bool {
 	return r.Type == "error"
 }

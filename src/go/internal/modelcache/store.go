@@ -42,7 +42,6 @@ func (s *Store) Get(ctx context.Context, provider, endpoint string) (*Entry, err
 	return &Entry{Provider: provider, Endpoint: endpoint, Models: models, FetchedAt: fetchedAt}, nil
 }
 
-// Write upserts one cached list.
 // ModelsForProvider returns every model id cached for a provider, across the
 // endpoints and account keys it was discovered on. Rotation uses it to decide
 // which accounts can serve a requested model; a miss is not an error, because
@@ -76,6 +75,7 @@ func (s *Store) ModelsForProvider(ctx context.Context, provider string) ([]strin
 	return models, nil
 }
 
+// Write upserts one cached list.
 func (s *Store) Write(ctx context.Context, e *Entry) error {
 	raw, err := json.Marshal(e.Models)
 	if err != nil {

@@ -463,8 +463,6 @@ func (p *zai) businessToken(ctx context.Context, credential zaiCredential) (stri
 	return token, nil
 }
 
-// ---- ZCode encrypted store -------------------------------------------------
-
 func (p *zai) readExternalCredential() (*zaiCredential, error) {
 	raw, err := os.ReadFile(p.credentialsPath())
 	if err != nil {
@@ -613,8 +611,6 @@ func writeZAICredential(path string, credential zaiCredential) error {
 	}
 	return atomicfile.Write(path, data, 0o600)
 }
-
-// ---- ZCode browser OAuth polling ------------------------------------------
 
 type zaiEnvelope struct {
 	Code json.RawMessage `json:"code"`

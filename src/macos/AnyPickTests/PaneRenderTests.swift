@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import XCTest
 
-// MARK: - Pane render smoke (interaction-crash gate)
 
 /// Every destination must build its body and lay out without trapping.
 /// Added after a "crash khi thao tác" report: SwiftUI body traps only
@@ -127,7 +126,6 @@ final class PaneRenderTests: XCTestCase {
     render(ProxyHubView(model: model))
   }
 
-  // MARK: - Model step in the connection flow
 
   private func modelConfigApp(
     roles: [DesignModelRole],

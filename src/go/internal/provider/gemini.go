@@ -291,7 +291,6 @@ func (p *gemini) oauthEmailFor(source string) string {
 		// not necessarily the Antigravity grant.
 		return ""
 	}
-	// google_accounts.json fallback.
 	acctRaw, err := os.ReadFile(p.livePath("google_accounts.json"))
 	if err != nil {
 		return ""
@@ -728,7 +727,6 @@ func stripGeminiEnvKeys(path string, keys []string) error {
 	return atomicfile.Write(path, []byte(strings.TrimRight(joinLines(kept), "\n")+"\n"), 0o600)
 }
 
-// geminiSettingsPathFromEnv resolves settings.json next to a .env path.
 func geminiSettingsPathFromEnv(envPath string) string {
 	return filepath.Join(filepath.Dir(envPath), "settings.json")
 }

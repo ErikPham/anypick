@@ -12,7 +12,6 @@ import (
 // closeGuard makes App.Close idempotent.
 type closeGuard struct{ once sync.Once }
 
-// Do runs fn exactly once.
 func (g *closeGuard) Do(fn func()) { g.once.Do(fn) }
 
 // ensureBootstrapState creates directories later milestones rely on and

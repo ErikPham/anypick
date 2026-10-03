@@ -37,7 +37,6 @@ const (
 	ScopeUnknown    LimitScope = "unknown"
 )
 
-// ClassifiedFailure mirrors ClassifiedFailure.
 type ClassifiedFailure struct {
 	Kind         FailureKind `json:"kind"`
 	Status       int         `json:"status,omitempty"`
@@ -143,8 +142,6 @@ func ClassifyUpstreamFailure(status int, headerValue func(string) string, bodyPr
 	}
 }
 
-// ---- CooldownRegistry -----------------------------------------------------
-
 // CooldownRegistry mirrors CooldownRegistry: in-memory per-key deadlines.
 type CooldownRegistry struct {
 	mu        sync.Mutex
@@ -187,8 +184,6 @@ func (c *CooldownRegistry) Size() int {
 	defer c.mu.Unlock()
 	return len(c.deadlines)
 }
-
-// ---- QuotaGuard state file ------------------------------------------------
 
 // MaxEvents mirrors MAX_EVENTS.
 const MaxEvents = 100

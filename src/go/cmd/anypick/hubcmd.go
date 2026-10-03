@@ -1,4 +1,3 @@
-// Proxy Hub command group: status, enable, source, owner, preview, start, stop.
 package main
 
 import (
@@ -151,7 +150,6 @@ func hubHealthEcho(healthURL, wantInstanceID string) bool {
 	return payload.OK && payload.InstanceID == wantInstanceID
 }
 
-// cmdHubStatus prints one hub config.
 func cmdHubStatus(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 		return usage()
@@ -178,7 +176,6 @@ func cmdHubStatus(ctx context.Context, a *appView, usage func() int, fs *flag.Fl
 	return int(anyerr.Success)
 }
 
-// cmdHubToken displays or rotates the hub's API key.
 func cmdHubToken(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
 	rotate := fs.Bool("rotate", false, "rotate and generate a fresh API key")
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() < 1 {
@@ -277,7 +274,6 @@ func cmdHubEnable(ctx context.Context, a *appView, usage func() int, fs *flag.Fl
 	return int(anyerr.Success)
 }
 
-// cmdHubPreview prints the manifest a client would fetch.
 func cmdHubPreview(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 		return usage()
@@ -366,7 +362,6 @@ func cmdHubSourceDryRun(ctx context.Context, a *appView, name, providerID, accou
 	return int(anyerr.Success)
 }
 
-// cmdHubSource toggles one hub source
 // cmdHubSource toggles one hub source: present → remove (pins naming it
 // drop), absent → attach (refused fast for unknown accounts).
 func cmdHubSource(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
@@ -467,7 +462,6 @@ func toggleHubSource(ctx, c context.Context, a *appView, name, providerID, accou
 	return fmt.Sprintf("sources updated for %s", name), nil, nil
 }
 
-// cmdHubOwner pins one model to one attached source and reloads the child.
 func cmdHubOwner(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 3 {
 		return usage()

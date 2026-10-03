@@ -1,4 +1,3 @@
-// Dry-run breadth (CLI parity part 2, slice A) plus the confirmDelete port.
 // Every mutating command prints its plan and exits BEFORE taking any
 // mutation lock or touching services (invariant #3): no DB writes, no file
 // writes, no journal rows, no spawned processes.

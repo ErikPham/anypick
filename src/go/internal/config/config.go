@@ -157,7 +157,6 @@ const configScope = "config/global"
 // with TS ConfigService.read).
 func (s *ConfigService) Read(ctx context.Context) (GlobalConfig, error) { return s.store.Read(ctx) }
 
-// Ensure proxies the bootstrap path used under .migrate.lock.
 func (s *ConfigService) Ensure(ctx context.Context) (GlobalConfig, error) {
 	return s.store.Ensure(ctx)
 }

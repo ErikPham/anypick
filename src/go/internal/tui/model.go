@@ -130,8 +130,6 @@ func New(ctx context.Context, a *app.App) *Model {
 	return &Model{app: a, ctx: ctx, board: boardApps}
 }
 
-// ── async result messages ────────────────────────────────────────
-
 type appsLoadedMsg struct{ rows []AppRow }
 type providersLoadedMsg struct{ rows []ProviderRow }
 type accountsLoadedMsg struct {
@@ -155,8 +153,6 @@ type actionMsg struct {
 
 // diagnoseMsg carries a per-client health report (doctor.DiagnoseClient).
 type diagnoseMsg struct{ report *doctor.Report }
-
-// ── commands ─────────────────────────────────────────────────────
 
 func loadAppsCmd(ctx context.Context, a *app.App) tea.Cmd {
 	return func() tea.Msg { return appsLoadedMsg{rows: LoadApps(ctx, a)} }
@@ -232,8 +228,6 @@ func clientIDOf(plan *activation.Plan) string {
 	return plan.Client
 }
 
-// ── diagnose (doctor) ──────────────────────────────────────────
-
 // diagnoseCmd runs read-only health checks for one routing client. It never
 // mutates anything — doctor.DiagnoseClient is a pure inspection.
 func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
@@ -254,8 +248,6 @@ func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
 		return diagnoseMsg{report: rep}
 	}
 }
-
-// ── import / export (transfer) ─────────────────────────────────
 
 // defaultExportPath writes an exported account beside the user's Downloads
 // folder when it exists, else the home directory. The file is owner-only
@@ -413,8 +405,6 @@ func toggleProxyCmd(ctx context.Context, a *app.App, providerID, name string, ru
 	}
 }
 
-// ── bubbletea interface ──────────────────────────────────────────
-
 func (m *Model) Init() tea.Cmd { return loadAppsCmd(m.ctx, m.app) }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -438,7 +428,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateWizardKey(msg)
 		}
 		if m.diagnosis != nil {
-			// Any key dismisses the diagnosis overlay.
 			m.diagnosis = nil
 			return m, nil
 		}
@@ -870,8 +859,6 @@ func (m *Model) updatePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
-		// A single-character key string is a printable rune; multi-char
-		// strings are special keys (tab, space, …) and are ignored.
 		if len(key) == 1 {
 			m.promptText += key
 		}
@@ -934,8 +921,6 @@ func (m *Model) proxyKey(key string) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
-
-// ── wizard key handling ──────────────────────────────────────────
 
 func (m *Model) updateWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	w := m.wizard
@@ -1100,8 +1085,6 @@ func (m *Model) wizardEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			w.text = w.text[:len(w.text)-1]
 		}
 	default:
-		// A single-character key string is a printable rune; multi-char
-		// strings are special keys (tab, space, …) and are ignored.
 		if len(key) == 1 {
 			w.text += key
 		}

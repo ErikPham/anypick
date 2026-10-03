@@ -1,5 +1,3 @@
-// Supervisor lifecycle commands (tray/start/status/stop) plus global-flag
-// pre-processing shared by every command.
 package main
 
 import (
@@ -73,7 +71,6 @@ func recordGlobalFlag(name string) bool {
 	return true
 }
 
-// extractGlobals removes leading global flags and records them.
 func extractGlobals(args []string) []string {
 	for len(args) > 0 && isGlobalFlag(args[0]) {
 		recordGlobalFlag(strings.TrimLeft(args[0], "-"))

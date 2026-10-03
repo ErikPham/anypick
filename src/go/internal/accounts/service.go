@@ -37,7 +37,7 @@ type Checkpoint struct {
 	Directory     string  `json:"directory"`
 }
 
-// SwitchResult mirrors SwitchResult (proxy fields omitted until phase 3).
+// SwitchResult mirrors SwitchResult; proxy fields are omitted.
 type SwitchResult struct {
 	Provider          string `json:"provider"`
 	ProviderName      string `json:"providerName"`
@@ -56,7 +56,6 @@ type CurrentResult struct {
 	LiveMatchKnown bool
 }
 
-// Service is the Go AccountService.
 type Service struct {
 	Store       *store.AccountStore
 	Providers   *provider.Registry

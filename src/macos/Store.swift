@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// Module: Store.swift — split from AnyPickTray.swift for maintainability.
 
 @MainActor
 final class TrayStore: ObservableObject {

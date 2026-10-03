@@ -342,7 +342,6 @@ func (r *Registry) IDs() []string {
 	return out
 }
 
-// RegisterBuiltin wires every built-in client adapter.
 func RegisterBuiltin(r *Registry, home string, anyPickRoots ...string) error {
 	anyPickRoot := ""
 	if len(anyPickRoots) > 0 {

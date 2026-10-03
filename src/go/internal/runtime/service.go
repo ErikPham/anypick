@@ -19,7 +19,6 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// Service applies configuration to clients.
 type Service struct {
 	Root     string
 	Home     string // live client home (~)
@@ -153,7 +152,6 @@ func (s *Service) GatewayApplyInputFor(ctx context.Context, profileName, clientI
 				profileName, profileName),
 			"CLIENT_CONFIG_INVALID")
 	}
-	// Smart routing: pick the surface that speaks THIS client's protocol.
 	endpoint := SmartEndpointFor(cad.Capabilities(), pr.Meta.Provider, pr.Meta.Endpoint, s.Catalog)
 
 	apiKey := pr.Secrets.APIKey
@@ -381,7 +379,6 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string, profil
 	return records, nil
 }
 
-// recoveryBackupNames derives a distinct backup filename for each source path.
 func recoveryBackupNames(sources []string) []string {
 	counts := map[string]int{}
 	for _, src := range sources {

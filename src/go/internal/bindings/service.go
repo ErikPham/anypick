@@ -37,7 +37,6 @@ func (s *Service) SetProviderModelRoles(ctx context.Context, providerID string, 
 	return s.Store.SetProviderModelRoles(ctx, providerID, roles)
 }
 
-// UpsertGlobalContext inserts or replaces the global binding for a client.
 func (s *Service) UpsertGlobalContext(ctx context.Context, g Global) (Global, error) {
 	return s.Store.UpsertGlobalContext(ctx, g)
 }
@@ -61,22 +60,18 @@ func (s *Service) RealignNativeClientBinding(ctx context.Context, providerID, ac
 	return err
 }
 
-// GetProjectContext returns one project binding, nil when none.
 func (s *Service) GetProjectContext(ctx context.Context, root, clientID string) (*Project, error) {
 	return s.Store.GetProjectContext(ctx, root, clientID)
 }
 
-// UpsertProjectContext inserts or replaces one project binding.
 func (s *Service) UpsertProjectContext(ctx context.Context, p Project) (Project, error) {
 	return s.Store.UpsertProjectContext(ctx, p)
 }
 
-// DeleteGlobalContext removes the global binding for a client.
 func (s *Service) DeleteGlobalContext(ctx context.Context, clientID string) error {
 	return s.Store.DeleteGlobalContext(ctx, clientID)
 }
 
-// DeleteProjectContext removes one project binding.
 func (s *Service) DeleteProjectContext(ctx context.Context, root, clientID string) error {
 	return s.Store.DeleteProjectContext(ctx, root, clientID)
 }

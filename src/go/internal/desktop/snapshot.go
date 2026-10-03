@@ -213,19 +213,6 @@ func (s *Server) currentSettings(ctx context.Context) Preferences {
 	return prefs
 }
 
-// buildSnapshot assembles the current state and registers opaque action
-// handlers for this revision. Field names match TraySnapshot exactly so the
-// existing native app can consume it unchanged.
-//
-// The body is a list of domain sections on snapshotBuilder. It used to be one
-// 532-line function that both built state and registered handlers; the split is
-// what makes the order readable, and each section keeps the mutable state it
-// needs on the builder instead of threading four locals through N helpers.
-//
-// TODO(gate:long-functions): the ratchet now stands at 52. The next names on
-// it are BuiltinDefinitions (387) and handleMutate (275) — handleMutate is the
-// one to do next, because it lives in the highest-churn file in the tree and
-// that combination is where regressions come from.
 // snapshotBuilder carries the mutable state one snapshot pass needs. It exists
 // so buildSnapshot reads as a list of domain sections instead of one 500-line
 // body: every section appends to the same Snapshot and registers handlers into
@@ -412,7 +399,6 @@ func (b *snapshotBuilder) accountsAndProxies(ctx context.Context) {
 }
 
 func (b *snapshotBuilder) accountProviders(ctx context.Context, pv provider.Provider, providerID string) {
-	// accountProviders rows for file-snapshot providers.
 	live, lerr := pv.DetectLive()
 	live.Identity = displaySafeIdentity(live.Identity)
 	methods, merr := b.srv.Deps.Accounts.LoginMethods(ctx, providerID, "")
@@ -472,7 +458,6 @@ func (b *snapshotBuilder) accountProviders(ctx context.Context, pv provider.Prov
 }
 
 func (b *snapshotBuilder) settings(ctx context.Context) {
-	// Settings reflect the persisted global config + login-item state.
 	b.snap.Settings = b.srv.currentSettings(ctx)
 	// A client config AnyPick could not bring back to its saved route is the
 	// most likely reason a user's CLI keeps failing while the app looks fine,
@@ -568,11 +553,7 @@ func clientShortLabel(clientID string, cad client.Adapter) string {
 }
 
 func (b *snapshotBuilder) crossProviderActions(ctx context.Context) {
-	// Apps view rows: every client id that appears anywhere — the five known
-	// apps plus any provider holding saved accounts (managedAppClientIDs).
 
-	// Cross-provider actions: each client sees every compatible account as a
-	// switching chip. Uses the transport adapter to determine pairing.
 	for _, clientID := range b.srv.Deps.Clients.IDs() {
 		cad, cerr := b.srv.Deps.Clients.Get(clientID)
 		if cerr != nil {
@@ -645,7 +626,6 @@ func (b *snapshotBuilder) crossProviderActions(ctx context.Context) {
 }
 
 func (b *snapshotBuilder) gatewayActions(ctx context.Context) {
-	// Gateway actions: each client sees every ready gateway as a chip.
 	if names, lerr := b.srv.Deps.Profiles.ListContext(ctx); lerr == nil {
 		sort.Strings(names)
 		for _, gwName := range names {
@@ -682,7 +662,6 @@ func (b *snapshotBuilder) gatewayActions(ctx context.Context) {
 }
 
 func (b *snapshotBuilder) hubActions(ctx context.Context) {
-	// Hub actions: each client sees every configured hub as a route chip.
 	// Offered while configured, even stopped: the macOS sheet and
 	// tray disable the row while the hub is down, so an unstarted hub stays
 	// visible in the switcher instead of vanishing from it.
@@ -807,7 +786,6 @@ func (b *snapshotBuilder) currentRouteActions(ctx context.Context, appIDs []stri
 }
 
 func (b *snapshotBuilder) routes(ctx context.Context, appIDs []string) {
-	// Routes: one row per app — what Apps view renders.
 	for _, clientID := range appIDs {
 		var binding *bindings.Global
 		if b.srv.Deps.Bindings != nil {
@@ -846,7 +824,6 @@ func (b *snapshotBuilder) routes(ctx context.Context, appIDs []string) {
 }
 
 func (b *snapshotBuilder) gateways(ctx context.Context) {
-	// Gateways: saved vendor profiles.
 	if names, lerr := b.srv.Deps.Profiles.ListContext(ctx); lerr == nil {
 		for _, name := range names {
 			pr, gerr := b.srv.Deps.Profiles.GetContext(ctx, name)
@@ -866,6 +843,9 @@ func (b *snapshotBuilder) gateways(ctx context.Context) {
 	}
 }
 
+// buildSnapshot assembles the current state and registers opaque action
+// handlers for this revision. Field names match TraySnapshot exactly so the
+// existing native app can consume it unchanged.
 func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	s.actionsMu.Lock() // see the revision field
 	s.revision++
@@ -905,7 +885,6 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	b.accountsAndProxies(ctx)
 	b.gatewayProviders(ctx)
 
-	// Apps view rows: every client id that appears anywhere.
 	appIDs := s.managedAppClientIDs()
 	b.crossProviderActions(ctx)
 	b.gatewayActions(ctx)
@@ -926,15 +905,8 @@ func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	// honest empty list, never a fabricated event.
 	snap.Activity = s.buildActivity(ctx)
 
-	// Log sources mirror the proxies that can actually serve ProxyLogs
-	// (providerID/accountName). The old per-provider "__provider__" placeholder
-	// never matched a real proxy.log file, so every log request returned empty
-	// and the Live Logs pane stayed blank.
 	snap.LogSources = logSourcesForProxies(snap.Proxies)
 
-	// Proxy Hub sections (H1/H2/H3): sources for every saved account, one
-	// lifecycle-managed proxy row per hub, catalog-backed routing conflicts and
-	// pinned published models. Hub entries append to Proxies/LogSources.
 	if err := s.buildHubSections(ctx, snap, b.registry, b.actionID); err != nil {
 		// Account proxy rows are already filled. A hub-store read must not
 		// drop the snapshot and leave Proxies empty.

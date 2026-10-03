@@ -315,7 +315,6 @@ export function isCloudflareProvider(provider: AccountProviderRow | undefined): 
   return provider?.id.toLowerCase() === 'cloudflare-aigateway';
 }
 
-/** `isZaiProvider`. */
 export function isZaiProvider(provider: AccountProviderRow | undefined): boolean {
   return provider?.id.toLowerCase() === 'zai';
 }

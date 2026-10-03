@@ -16,7 +16,6 @@ enum ModelRoleScope: String, CaseIterable, Identifiable {
   }
 }
 
-/// Where the values a picker shows came from.
 enum ModelRolesProvenance {
   /// Per-connection pins (or legacy pins without a marker).
   case custom
@@ -43,7 +42,6 @@ func modelScopeProviderName(app: DesignApp?, model: MacOSDesignModel) -> String?
   }
 }
 
-/// Provenance line under the pickers: where the shown values came from.
 func modelProvenanceCaption(provenance: ModelRolesProvenance, providerName: String?) -> String {
   switch provenance {
   case .custom:

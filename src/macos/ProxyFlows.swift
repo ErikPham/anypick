@@ -99,7 +99,6 @@ func parseModelIdentity(_ modelID: String, fallbackProvider: String) -> Publishe
     vendorKey = "cline"
   }
 
-  // Extract common model suffix tags
   var tag: String? = nil
   for suffix in ["-latest", "-preview", "-reasoning", "-instruct", "-turbo"] {
     if clean.hasSuffix(suffix) {

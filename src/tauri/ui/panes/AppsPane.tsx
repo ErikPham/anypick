@@ -43,15 +43,6 @@ import type { ModelRolesResult } from './AppRouteSheet';
 import { AppRouteSheet } from './AppRouteSheet';
 import { AppDetailPane } from './AppDetailPane';
 
-/**
- * Apps: every switchable client, grouped by provider.
- *
- * Mirrors macOS `AppsView.swift`:
- * - Grouped section with app count header
- * - Clean app rows with provider mark, subtitle, status tag, context menu, and chevron
- * - Clicking a row navigates to `AppDetailPane` (matching `NavigationLink(value: DesignRouteID.app(app.id))`)
- * - Bottom pane action: "Add App…" button
- */
 export function AppsPane({
   service,
   snapshot,
@@ -127,7 +118,6 @@ export function AppsPane({
     [changingClientId, snapshot.actions],
   );
 
-  // If an app is selected, render its detail view matching macOS AppDetailView.swift
   if (selectedClientId) {
     const selectedApp =
       entries.find((app) => app.clientId === selectedClientId) ??
@@ -258,14 +248,6 @@ export function AppsPane({
   );
 }
 
-/**
- * App list row matching macOS `AppsView.swift:68-122`:
- * - Provider mark
- * - Name + subtitle
- * - Status tag ("AnyPick proxy", "Direct", or orange "Set Up…")
- * - Ellipsis context menu for quick actions
- * - Chevron right
- */
 function AppListRow({
   app,
   busy,

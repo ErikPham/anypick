@@ -212,12 +212,6 @@ export function RowActions({ children }: { children: ReactNode }) {
  *
  * macOS keeps these out of the toolbar and off the window bottom; a second
  * inset container around them is exactly the dashboard look the contract bans.
- */
-/**
- * A pane's own commands, in a plain row under the last group.
- *
- * macOS keeps these out of the toolbar and off the window bottom; a second
- * inset container around them is exactly the dashboard look the contract bans.
  * They are **trailing** — `SharedUI.swift:424` pins the action row with
  * `.frame(maxWidth: .infinity, alignment: .trailing)` — and content-sized, so
  * they follow the last group rather than sitting against the window edge.

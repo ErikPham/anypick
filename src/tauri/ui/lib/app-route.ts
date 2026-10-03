@@ -274,7 +274,6 @@ export function primaryDisabled(input: {
   return input.stage === 'connection' && input.routeId === input.currentRouteId;
 }
 
-/** Cancel is hidden while applying and after success, as on macOS. */
 export function showsCancel(stage: RouteStage): boolean {
   return stage !== 'applying' && stage !== 'success';
 }

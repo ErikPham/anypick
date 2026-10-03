@@ -75,7 +75,6 @@ export function appSubtitle(app: AppEntry): string {
   return parts.join(' · ');
 }
 
-/** `appIssue`. */
 export function appIssue(app: AppEntry): string | undefined {
   if (app.issue) return app.issue;
   if (app.selected && app.selected.disabledReason) return app.selected.disabledReason;

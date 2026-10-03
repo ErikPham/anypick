@@ -1,9 +1,5 @@
 package catalog
 
-// Vendor model-list requests, ported from src/catalog/model-fetch.ts. The
-// wire shape belongs to the vendor, not to core; provider ids never appear in
-// a switch outside this file and the policy table above.
-
 import (
 	"context"
 	"encoding/json"

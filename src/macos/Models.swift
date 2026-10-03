@@ -961,7 +961,6 @@ class MacOSDesignModel: ObservableObject {
   }
 
   func saveCurrentLogin(_ login: DesignLiveLogin) -> Bool {
-    // Pick a distinct default name for each saved login.
     let existing = accounts.filter {
       $0.kind == .saved && $0.provider.caseInsensitiveCompare(login.providerName) == .orderedSame
     }.map(\.name)

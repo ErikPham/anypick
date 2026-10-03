@@ -261,8 +261,6 @@ func HealthCounters() json.RawMessage {
 	return raw
 }
 
-// ---- concurrency ceiling (design D6) ----
-
 // DefaultMaxInFlight is the per-listener concurrency ceiling. A loopback proxy
 // serving one developer does not need hundreds of streams, and a client that
 // opens that many is either broken or an agent fanning out deliberately —

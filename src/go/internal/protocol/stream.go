@@ -106,7 +106,6 @@ func TranslateStreamingResponse(upstream *http.Response, w http.ResponseWriter) 
 			return err
 		}
 	}
-	// Normal exit via [DONE].
 	t.finish()
 	return nil
 }

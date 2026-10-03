@@ -67,11 +67,13 @@ func (c *codeAssistProjectCache) set(token, project string) {
 // call, issues it (API-key or OAuth/Code Assist), and translates the response
 // back — synthesizing SSE for streaming requests exactly like the TypeScript
 // gemini-proxy (which always calls non-stream generateContent and fakes SSE).
+
 // geminiBuildError carries the exact (status, type, message) a leaf must surface
 // when the Gemini request build fails, so the shared egress and each caller's
 // own sink (write vs capture) stay in agreement. Network errors are returned
 // separately (cerr) so each leaf can reproduce writeGeminiError / w.capture
 // exactly, including the credential-error vs upstream-error type split.
+
 type geminiBuildError struct {
 	status  int
 	typ     string
@@ -400,7 +402,6 @@ func retryAfterMs(header string) int64 {
 	if secs, err := strconv.Atoi(header); err == nil && secs > 0 {
 		return int64(secs) * 1000
 	}
-	// HTTP-date form: compute the delta.
 	if t, perr := http.ParseTime(header); perr == nil {
 		ms := time.Until(t).Milliseconds()
 		if ms > 0 {

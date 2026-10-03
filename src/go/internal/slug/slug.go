@@ -41,7 +41,6 @@ func Normalize(raw, kind string) (string, error) {
 	name = replaceRuns(name, "_", "_")
 	name = replaceRuns(name, ".", ".")
 
-	// Trim leading/trailing separators.
 	name = strings.Trim(name, "-._")
 
 	if name == "" {

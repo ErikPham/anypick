@@ -6,10 +6,7 @@ import { validCodexProfileName } from '../lib/desktop-actions';
 import { Dialog } from '../ui/Dialog';
 import { Button, Field, Group, Row, Select } from '../ui/primitives';
 
-/**
- * CodexProfileSheet: modal dialog to Add or Edit a Codex Profile.
- * Mirrors macOS `CodexProfileSheet` in `src/macos/AppSheets.swift:793-920`.
- */
+/** Mirrors macOS `CodexProfileSheet` in `src/macos/AppSheets.swift:793-920`. */
 export function CodexProfileSheet({
   profile,
   sources,

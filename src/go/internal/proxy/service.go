@@ -53,9 +53,8 @@ type Status struct {
 }
 
 // Upstream describes where the builtin proxy forwards traffic.
-// Upstream describes where traffic forwards. OpenAI is the primary surface;
-// Anthropic is optional — when present, POST /v1/messages forwards natively
-// instead of being translated.
+// OpenAI is the primary surface; Anthropic is optional — when present, POST
+// /v1/messages forwards natively instead of being translated.
 type Upstream struct {
 	BaseURL *url.URL
 	Auth    string // credential injected into forwarded requests
@@ -573,7 +572,6 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		return s.startForwardedLocked(ctx, providerID, accountName, account.Proxy, outcome)
 	}
 
-	// Same-process reuse.
 	if existing, ok := s.servers.get(providerID, accountName); ok {
 		state, stateErr := s.Store.ReadProxyState(ctx, providerID, accountName)
 		if stateErr != nil {
@@ -700,7 +698,7 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 			)
 		}
 	} else {
-		// In-process mode (tests/library): same lifecycle as before.
+		// In-process mode (tests/library).
 		server := s.buildServer(providerID, accountName, instanceID, token, upstream)
 		if err := server.Listen(host, port); err != nil {
 			cleanupErr := s.abortStart(ctx, providerID, accountName, instanceID, endpoint, 0, "", originalCfg, mintedFresh)

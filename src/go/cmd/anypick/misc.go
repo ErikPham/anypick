@@ -1,5 +1,3 @@
-// providers / clients / doctor / update / completion plus the hidden pool and
-// hub serve children.
 package main
 
 import (
@@ -413,7 +411,6 @@ func servePoolChild(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// awaitSignal blocks until SIGINT/SIGTERM.
 func awaitSignal(ctx context.Context) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -434,7 +431,7 @@ func (h hubUpstreamResolver) ResolveUpstream(ctx context.Context, providerID, ac
 	return resolver.ResolveUpstream(ctx, providerID, account)
 }
 
-// hubQuotas builds the Proxy Hub's own quota guard from the validated global
+// hubQuotaGuard builds the Proxy Hub's own quota guard from the validated global
 // policy, persisting cooldowns beside the hub's runtime files. A policy with the
 // guard disabled returns nil, which turns the guard off entirely.
 func hubQuotaGuard(a *appView, hubName string) *hub.Quotas {

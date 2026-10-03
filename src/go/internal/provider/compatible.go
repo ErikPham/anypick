@@ -75,7 +75,6 @@ type storedCompatibleCredential struct {
 // Compatible is the Provider built from an inert definition.
 type Compatible struct{ Def CompatibleDefinition }
 
-// NewCompatible validates and wraps a definition.
 func NewCompatible(def CompatibleDefinition) (*Compatible, error) {
 	if def.ID == "" || def.Name == "" || len(def.Credentials) == 0 {
 		return nil, fmt.Errorf("compatible provider %q needs id, name, and credentials", def.ID)

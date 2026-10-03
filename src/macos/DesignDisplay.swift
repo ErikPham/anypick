@@ -184,7 +184,6 @@ func friendlyProxyName(label: String, providerId: String) -> String {
   return cleaned
 }
 
-/// Formats proxy status and port into a clean, human-friendly System Settings description.
 /// E.g. "Running · Port 62252" instead of raw "http://127.0.0.1:62252", and "Stopped" instead of "stopped".
 func friendlyProxyStatusSubtitle(status: DesignStatus, port: Int, detail: String) -> String {
   switch status {
@@ -224,8 +223,7 @@ func servicePort(from address: String?) -> Int? {
   return Int(portText)
 }
 
-/// Strips redundant vendor/namespace prefix from model names for unified display.
-/// E.g. "gemini/gemini-2.5-flash" -> "gemini-2.5-flash", "opencode/claude-3-7-sonnet" -> "claude-3-7-sonnet"
+/// E.g. "anthropic/claude-sonnet-4" displays as "claude-sonnet-4".
 func cleanModelDisplayName(_ raw: String) -> String {
   let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "" }
@@ -240,8 +238,7 @@ func cleanModelDisplayName(_ raw: String) -> String {
   return trimmed
 }
 
-/// Strips redundant vendor / provider prefix from source or account names for unified display.
-/// E.g. "gemini/lentaunao" -> "lentaunao", "gemini/stacktify" -> "stacktify", "hub/default/gemini/stacktify" -> "stacktify"
+/// E.g. "openai/gpt-5" displays as "gpt-5".
 func cleanSourceDisplayName(_ raw: String) -> String {
   let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else { return "" }
@@ -683,7 +680,6 @@ func addSavedAccountCanSubmit(
   return named && (hasIdentity || hasLiveLogin) && providerEnabled
 }
 
-/// Submit gate for the typed-credential path (API-key vendors).
 func addCredentialInputCanSubmit(
   name: String,
   secret: String,

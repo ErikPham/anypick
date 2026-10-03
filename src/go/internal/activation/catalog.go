@@ -38,7 +38,6 @@ func (i *CatalogIndex) SetGate(gate *pubgate.Gate) {
 	}
 }
 
-// Lookup returns one entry; found=false when absent.
 func (i *CatalogIndex) Lookup(providerID string) (CatalogEntry, bool) {
 	if i == nil {
 		return CatalogEntry{}, false
@@ -68,7 +67,6 @@ func (i *CatalogIndex) IDs() []string {
 	return out
 }
 
-// Set inserts or replaces one entry, reporting whether it existed.
 func (i *CatalogIndex) Set(providerID string, entry CatalogEntry) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -90,7 +88,6 @@ func (i *CatalogIndex) SetIfAbsent(providerID string, entry CatalogEntry) bool {
 	return true
 }
 
-// Delete removes one id if present, reporting whether it was.
 func (i *CatalogIndex) Delete(providerID string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()

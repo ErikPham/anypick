@@ -1,4 +1,3 @@
-// Presets, project bindings, ephemeral run, and client reset commands.
 package main
 
 import (
@@ -16,8 +15,6 @@ import (
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 )
-
-// ---- preset group -------------------------------------------------------
 
 func cmdPreset(ctx context.Context, a *appView, args []string) int {
 	if len(args) == 0 {
@@ -93,8 +90,6 @@ func cmdPresetRemove(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// ---- link / unlink / reset ----------------------------------------------
-//
 // TS semantics (src/core/binding-service.ts): `link` writes a PROJECT
 // binding, `unlink` removes project binding(s), and `reset` clears the
 // client's managed config AND its global binding. None of them touch global
@@ -307,8 +302,6 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// ---- run (ephemeral launch) ----------------------------------------------
-
 func cmdRun(ctx context.Context, a *appView, args []string) int {
 	head, passThrough := splitRunArgs(args)
 	fs := fsFor(head)
@@ -417,8 +410,8 @@ func runEphemeralCommand(
 		}
 		return code
 	}
-	// Ephemeral runs used to drop every warning on the floor: `run` has no
-	// "activated …" summary, so a silent plan warning was simply never seen.
+	// `run` prints no activation summary, so plan warnings would otherwise be
+	// dropped on the floor.
 	for _, w := range result.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}

@@ -32,7 +32,6 @@ func (a *kiroAdapter) Capabilities() *Capabilities {
 	}
 }
 
-// applyKiroEnv composes the env overlay for one endpoint/key pair.
 func applyKiroEnv(ctx *ApplyContext) map[string]string {
 	env := map[string]string{
 		"OPENAI_API_KEY": ctx.APIKey,

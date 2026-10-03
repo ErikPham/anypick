@@ -268,9 +268,6 @@ func (s *Store) CountProjectsContext(ctx context.Context, root string) (int64, e
 
 // DeleteAllProjects removes every project binding under a project root and
 // reports how many were removed (TS deleteProject(root)).
-// DeleteAllProjectsContext removes every project binding under a project root
-// and reports how many were removed (TS deleteProject(root)). No ctx-less form
-// — see the note on UpsertGlobalContext.
 func (s *Store) DeleteAllProjectsContext(ctx context.Context, root string) (int64, error) {
 	var removed int64
 	err := s.mutate(ctx, "project/"+root, func(c context.Context) error {

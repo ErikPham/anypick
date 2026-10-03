@@ -1,6 +1,5 @@
 import Foundation
 
-// Module: StoreTransfers.swift — account import/export/backup commands
 
 extension TrayStore {
   @discardableResult

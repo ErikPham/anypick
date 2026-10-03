@@ -51,8 +51,7 @@ type grokSession struct {
 	storageKey   string
 }
 
-// loadGrokSession is loadGrokSession: read the saved auth.json and pick a
-// usable OIDC session.
+// Reads the saved auth.json and picks a usable OIDC session.
 func loadGrokSession(authPath string) (grokSession, error) {
 	raw, err := os.ReadFile(authPath)
 	if err != nil {

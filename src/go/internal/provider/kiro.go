@@ -109,8 +109,6 @@ func (p *kiro) Login(ctx context.Context, methodID, source string) error {
 	return browserlogin.Run(ctx, p.loginCommand(), expandHome(p.home))
 }
 
-// ---- secret store paths ----
-
 func (p *kiro) secretDbPath() string {
 	if env := os.Getenv("ANYPICK_KIRO_SECRET_DB"); env != "" {
 		return expandHome(env)
@@ -134,8 +132,6 @@ func (p *kiro) cacheDir() string {
 	}
 	return filepath.Join(expandHome(p.home), ".aws", "sso", "cache")
 }
-
-// ---- keychain tier ----
 
 func kiroKeychainEnabled() bool {
 	return runtime.GOOS == "darwin" && os.Getenv("ANYPICK_KIRO_NO_KEYCHAIN") != "1"
@@ -176,8 +172,6 @@ func kiroKeychainWrite(secrets map[string]string) error {
 	}
 	return nil
 }
-
-// ---- sqlite tier (auth_kv mirror) ----
 
 func readAuthKv(dbPath string) map[string]string {
 	rows := map[string]string{}
@@ -238,8 +232,6 @@ func writeAuthKv(dbPath string, secrets map[string]string) error {
 	return tx.Commit()
 }
 
-// ---- two-tier read/write ----
-
 func (p *kiro) readSecrets() map[string]string {
 	secrets := map[string]string{}
 	if kiroKeychainEnabled() {
@@ -275,8 +267,6 @@ func (p *kiro) writeSecrets(secrets map[string]string) error {
 	}
 	return writeAuthKv(p.secretDbPath(), secrets)
 }
-
-// ---- SSO cache tier ----
 
 type tokenFile struct {
 	name string
@@ -322,8 +312,6 @@ func (p *kiro) liveTokenFiles() []tokenFile {
 	return found
 }
 
-// ---- identity ----
-
 func kiroIdentity(secrets map[string]string) string {
 	for _, key := range kiroSecretKeys {
 		raw := secrets[key]
@@ -357,8 +345,6 @@ func kiroIdentity(secrets map[string]string) string {
 	}
 	return ""
 }
-
-// ---- Provider surface ----
 
 func (p *kiro) DetectLive() (LiveAuthStatus, error) {
 	secrets := p.readSecrets()

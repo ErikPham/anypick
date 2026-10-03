@@ -213,15 +213,14 @@ func (s *AccountStore) PrepareSnapshot(providerID, name string) (snapshotDir, ac
 	return snap, paths.AccountDir(s.Root, providerID, name), nil
 }
 
-// WriteMeta atomically replaces an account's metadata + snapshot files in one
-// transaction. Callers MUST fill snapshotDir first. Any error leaves the
+// WriteMetaContext atomically replaces an account's metadata + snapshot files
+// in one transaction. Callers MUST fill snapshotDir first. Any error leaves the
 // previous rows + metadata exactly as they were (DATA-01): old snapshot files
 // are deleted and re-ingested together, never partially. This is the atomic
-// commit point — invariant #4 (ADR 0004).
-// WriteMeta is mutation-guarded (ADR 0009). It is the atomic commit point for
-// a snapshot, so it is the single worst place to lose serialization: two
-// concurrent saves of one provider could interleave the delete+re-ingest and
-// leave the account with neither the old nor the new snapshot.
+// commit point — invariant #4 (ADR 0004), and the single worst place to lose
+// serialization (ADR 0009): two concurrent saves of one provider could
+// interleave the delete+re-ingest and leave the account with neither the old
+// nor the new snapshot.
 func (s *AccountStore) WriteMetaContext(ctx context.Context, meta Meta, snapshotDir string) error {
 	return s.mutate(ctx, meta.Provider, func(ctx context.Context) error {
 		return s.writeMeta(ctx, meta, snapshotDir)
@@ -304,8 +303,6 @@ func (s *AccountStore) writeMeta(ctx context.Context, meta Meta, snapshotDir str
 	return nil
 }
 
-// DiscardPreparedSnapshot removes a staging dir we created. A provider
-// receives this path, so only delete below our dedicated staging root.
 // BatchWrite carries one account for WriteAccountsBatch (restore paths).
 type BatchWrite struct {
 	Meta        Meta
@@ -386,6 +383,8 @@ func (s *AccountStore) writeAccountsBatch(ctx context.Context, entries []BatchWr
 	return nil
 }
 
+// DiscardPreparedSnapshot removes a staging dir we created. A provider
+// receives this path, so only delete below our dedicated staging root.
 func (s *AccountStore) DiscardPreparedSnapshot(snapshotDir string) error {
 	root := paths.SnapshotStagingDir(s.Root)
 	if snapshotDir == root || !hasPathPrefix(snapshotDir, root) {
@@ -407,11 +406,10 @@ func hasPathPrefix(p, prefix string) bool {
 		p[:len(prefix)] == prefix && p[len(prefix)] == filepath.Separator
 }
 
-// WriteProxyState persists owner-only runtime state (PROXY-01 token included;
-// never surfaced in status output).
-// WriteProxyStateContext is mutation-guarded (ADR 0009). proxy_state carries
-// the per-instance proxy secret, so it must never be written outside the
-// coordinator.
+// WriteProxyStateContext persists owner-only runtime state (PROXY-01 token
+// included; never surfaced in status output). It is mutation-guarded (ADR
+// 0009): proxy_state carries the per-instance proxy secret, so it must never be
+// written outside the coordinator.
 func (s *AccountStore) WriteProxyStateContext(ctx context.Context, providerID, name string, state ProxyRuntimeState) error {
 	return s.mutate(ctx, providerID, func(ctx context.Context) error {
 		return s.writeProxyStateContext(ctx, providerID, name, state)
@@ -497,10 +495,9 @@ func (s *AccountStore) clearProxyStateContext(ctx context.Context, providerID, n
 // the atomic commit point for verified-dead cleanup (ADR 0004 discipline):
 // host-loss reconciliation enumerates proxy_state, so clearing the row before
 // the leases — or stranding either half through a partial failure — means no
-// later pass ever revisits the account. Either both halves land or neither.
-// ClearProxyStateAndLeasesContext is mutation-guarded (ADR 0009): the pair of
-// deletes is the atomic commit point for verified-dead cleanup, so it must not
-// interleave with another mutation of the same provider.
+// later pass ever revisits the account. Either both halves land or neither. The
+// pair of deletes is mutation-guarded (ADR 0009): it must not interleave with
+// another mutation of the same provider.
 func (s *AccountStore) ClearProxyStateAndLeasesContext(ctx context.Context, providerID, name string) error {
 	return s.mutate(ctx, providerID, func(ctx context.Context) error {
 		return s.clearProxyStateAndLeasesContext(ctx, providerID, name)
@@ -651,7 +648,6 @@ func (s *AccountStore) setActiveContext(ctx context.Context, providerID, name st
 	return err
 }
 
-// ClearActiveContext is mutation-guarded (ADR 0009).
 func (s *AccountStore) ClearActiveContext(ctx context.Context, providerID string) error {
 	return s.mutate(ctx, providerID, func(ctx context.Context) error {
 		return s.clearActiveContext(ctx, providerID)

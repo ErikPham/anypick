@@ -98,7 +98,6 @@ func (w *attemptWriter) headerValue(name string) string { return w.header.Get(na
 // statusCode is the captured status, 0 when nothing was captured.
 func (w *attemptWriter) statusCode() int { return w.status }
 
-// replay writes a captured failure to the caller verbatim.
 func (w *attemptWriter) replay() {
 	if w.committed {
 		return

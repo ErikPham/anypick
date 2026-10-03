@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 let anyPickBackupType = UTType(filenameExtension: "anypick-backup") ?? .data
 
-// Adapts the versioned tray snapshot/command protocol to the new design-system UI.
+// Adapts the versioned tray snapshot/command protocol to the design-system UI.
 // Snapshots stay redacted. A proxy API key is fetched only when the user copies
 // it, then pasted without being stored on the model.
 @MainActor

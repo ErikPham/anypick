@@ -88,7 +88,6 @@ var geminiCliCredentialFiles = []string{"oauth_creds.json"}
 
 var antigravityCredentialFiles = []string{"antigravity_oauth.json", "jetski-standalone-oauth-token"}
 
-// geminiCredentialFilesFor returns the candidate names for a source.
 func geminiCredentialFilesFor(source string) []string {
 	if source == antigravityOAuthSource {
 		return antigravityCredentialFiles

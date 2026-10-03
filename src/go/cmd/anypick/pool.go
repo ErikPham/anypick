@@ -1,4 +1,3 @@
-// Proxy lifecycle extras plus pool and hub command groups.
 package main
 
 import (
@@ -15,8 +14,6 @@ import (
 	"github.com/outof0/anypick/go/internal/pools"
 	"github.com/outof0/anypick/go/internal/refs"
 )
-
-// ---- proxy: config / disable / logs / restart -----------------------------
 
 func cmdProxyConfig(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
@@ -126,8 +123,6 @@ func followFile(path string, screen func(string) string) {
 		sleepMS(500)
 	}
 }
-
-// ---- proxy pool -------------------------------------------------------------
 
 func cmdPool(ctx context.Context, a *appView, args []string) int {
 	usage := func() int {

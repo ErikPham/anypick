@@ -251,6 +251,7 @@ func (s *Service) startForwardedLocked(
 // identity is the generation that actually served this call. A not-dispatched
 // recovery names the replacement; force termination of a stale generation is
 // refused so a concurrent replacement is not killed.
+
 // confirmInHostStamping positively re-probes the listener for the exact
 // generation stamp: instance echo AND responder PID equal to the supervised
 // runtime captured before dispatch. waitHealthInstance already proved the
@@ -1214,6 +1215,7 @@ func (s *Service) statusForwarded(
 // engine's own log file, like src/core/proxy-service.ts proxyLogs. Provider
 // text is untrusted: the exact persisted runtime token plus generic
 // credential patterns are redacted before anything crosses an output boundary.
+
 // ScreenProxyLog applies the same secret screening ProxyLogs uses so
 // `--follow` cannot bypass redaction by reading the raw file.
 func (s *Service) ScreenProxyLog(providerID, accountName, text string) string {

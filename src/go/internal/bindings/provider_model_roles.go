@@ -8,11 +8,6 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// Provider model-role defaults: one {role → model} map per provider,
-// applied to every connection of that provider that carries no explicit
-// choice. Explicit per-connection pins always win; the default only fills
-// roles the connection left unset, filtered to models its catalog serves.
-
 // ModelRolesProviderKey maps a route source onto its provider-defaults
 // bucket. Accounts key by provider; gateways and hubs key by their own
 // namespaced identity so "Production" (a gateway) can never collide with a
@@ -62,7 +57,9 @@ func (s *Store) GetProviderModelRoles(ctx context.Context, providerID string) (m
 
 // SetProviderModelRoles replaces the defaults for one provider bucket. An
 // empty map deletes the row: "no defaults" and "empty defaults" are the same
-// state, and a leftover empty row would read as a configured default.
+// state, and a leftover empty row would read as a configured default. Defaults
+// apply only to connections carrying no explicit pin, so an explicit
+// per-connection choice always wins.
 func (s *Store) SetProviderModelRoles(ctx context.Context, providerID string, roles map[string]string) error {
 	if providerID == "" {
 		return nil

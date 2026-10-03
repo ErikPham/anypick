@@ -382,8 +382,6 @@ func (m *Model) viewProxies() []string {
 	return rows
 }
 
-// ── wizard rendering ────────────────────────────────────────────
-
 func (m *Model) viewWizard() string {
 	w := m.wizard
 	stepName := map[wizardStep]string{
@@ -593,7 +591,6 @@ func (m *Model) viewDiagnosis() string {
 		return ""
 	}
 
-	// status label + color, mirroring the Apps status glyph convention.
 	// Every branch assigns style, so it needs no zero value here — giving it
 	// one is dead code staticcheck flags.
 	label := ""

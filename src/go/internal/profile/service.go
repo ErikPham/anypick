@@ -16,7 +16,6 @@ type Service struct {
 
 func NewService(s *Store) *Service { return &Service{Store: s} }
 
-// ListContext returns stored profile names, sorted.
 func (s *Service) ListContext(ctx context.Context) ([]string, error) {
 	return s.Store.ListContext(ctx)
 }

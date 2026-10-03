@@ -69,7 +69,6 @@ func TranslateResponse(body []byte) ([]byte, error) {
 		if json.Unmarshal(choice.Message.Content, &content) == nil {
 			texts = append(texts, content)
 		} else {
-			// Content parts array.
 			var parts []struct {
 				Type string `json:"type"`
 				Text string `json:"text"`

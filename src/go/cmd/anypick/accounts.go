@@ -1,5 +1,3 @@
-// Subcommand groups for the Go CLI. Handlers stay thin: every behavior lives
-// on a service; these files only parse flags, call services, and print.
 package main
 
 import (
@@ -45,8 +43,6 @@ func usageError(format string, args ...interface{}) int {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	return int(anyerr.InvalidUsage)
 }
-
-// ---- account group ------------------------------------------------------
 
 // appView aliases the composed application for command handlers.
 type appView = app.App
@@ -258,8 +254,6 @@ func cmdAccountImport(ctx context.Context, a *appView, args []string) int {
 	fmt.Printf("imported %s/%s\n", meta.Provider, meta.Name)
 	return int(anyerr.Success)
 }
-
-// ---- gateway extras -----------------------------------------------------
 
 func cmdGatewayShow(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)

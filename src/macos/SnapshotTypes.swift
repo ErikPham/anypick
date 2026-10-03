@@ -2,7 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// Module: Models.swift — split from AnyPickTray.swift for maintainability.
 
 struct RouteSnapshot: Decodable {
   let clientId: String

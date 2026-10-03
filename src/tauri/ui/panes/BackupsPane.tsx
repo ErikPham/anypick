@@ -8,14 +8,6 @@ import { Button, Group, Pane, PaneActions, Row, RowActions, RowText, WarningRow 
 import { RowMenu } from '../ui/RowMenu';
 import { CreateBackupSheet, RestoreBackupSheet } from './BackupSheets';
 
-/**
- * Export and import saved accounts.
- *
- * Mirrors macOS `BackupsView.swift`:
- * - Warning card at top: "Backup files contain working credentials"
- * - "Reviewed Backups" section with list or clean empty state
- * - Bottom pane actions: "Export Accounts…" and "Review Backup…"
- */
 export function BackupsPane({
   service,
   snapshot,
@@ -35,7 +27,6 @@ export function BackupsPane({
   const [reviewOpen, setReviewOpen] = useState(() => initialReviewOpen || Boolean(preview && preview.status === 'ready'));
   const [lastReviewedPath, setLastReviewedPath] = useState('');
 
-  // Auto-open review sheet when a preview frame arrives
   useEffect(() => {
     if (preview && (preview.status === 'ready' || preview.status === 'error')) {
       setReviewOpen(true);

@@ -212,7 +212,6 @@ func StaticModels(providerID string) []string {
 	return staticModels(catalog.Policy(providerID))
 }
 
-// staticModels mirrors staticModels in TS: friendly ids, then alias targets.
 func staticModels(policy *catalog.ModelPolicy) []string {
 	if policy == nil {
 		return nil

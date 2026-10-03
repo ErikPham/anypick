@@ -441,9 +441,7 @@ enum DesignBrandAsset {
     "mistral.svg", "modelscope.svg", "nvidia.svg", "qwen.svg",
   ]
 
-  /// Render policy for a brand file, pinned by tests: full-color marks stay
-  /// original in both appearances; monochrome single-fill marks template-tint
-  /// per appearance.
+/// The policy stated on `fullColorMarks`, pinned by tests.
   static func rendersOriginal(_ file: String) -> Bool {
     let lower = file.lowercased()
     if fullColorMarks.contains(lower) { return true }

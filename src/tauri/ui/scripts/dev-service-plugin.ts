@@ -130,7 +130,6 @@ export function devServicePlugin(repoRoot: string): Plugin {
         }
       });
 
-      // API routes
       server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
         const url = req.url || '';
 
@@ -143,7 +142,6 @@ export function devServicePlugin(repoRoot: string): Plugin {
           });
           sseClients.add(res);
 
-          // If we already have a snapshot, send it immediately
           if (lastSnapshotLine) {
             res.write(`data: ${JSON.stringify(lastSnapshotLine)}\n\n`);
           } else if (lastLine) {

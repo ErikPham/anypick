@@ -182,7 +182,6 @@ export function RestoreBackupSheet({
       return;
     }
 
-    // In web preview, read the file and stage to local temp path
     try {
       const content = await file.text();
       let targetPath = '';

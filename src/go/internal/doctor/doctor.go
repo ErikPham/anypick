@@ -82,7 +82,6 @@ func DiagnoseClient(ctx context.Context, deps Deps, clientID string) (*Report, e
 		rep.Findings = append(rep.Findings, Finding{Check: check, Status: status, Detail: detail})
 	}
 
-	// 1. The client app must actually be installed.
 	if cad, err := deps.Clients.Get(clientID); err != nil {
 		add("client", "fail", "unknown client "+clientID)
 	} else if insp, ierr := cad.Inspect(); ierr == nil && !insp.Present {
@@ -95,7 +94,6 @@ func DiagnoseClient(ctx context.Context, deps Deps, clientID string) (*Report, e
 		add("client", "ok", cad.Name()+" installed")
 	}
 
-	// 2. The route (global binding) and whether its source still resolves.
 	routeSet := false
 	b, berr := deps.Bindings.GetGlobalContext(ctx, clientID)
 	switch {

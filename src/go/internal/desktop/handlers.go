@@ -309,6 +309,3 @@ func evaluateGatewayStatus(statusCode int) error {
 	}
 	return nil
 }
-
-// handleHubSourceToggle lives in hub_snapshot.go: explicit Enabled is
-// honored, the hub config is created on first enable.

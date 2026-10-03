@@ -192,7 +192,6 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Which source serves this request?
 	sourceIdx := defaultSourceIndex(&cfg)
 	var requestedModel string
 	// outbound is the body the upstream receives: the client's bytes, or the
@@ -433,7 +432,6 @@ func moveFirst(list []int, index int) []int {
 	return out
 }
 
-// keysOf names each source in the list.
 func keysOf(cfg Config, indexes []int) []string {
 	keys := make([]string, 0, len(indexes))
 	for _, index := range indexes {

@@ -45,7 +45,6 @@ type ProxyConfig struct {
 
 func DefaultProxyConfig() ProxyConfig { return ProxyConfig{Enabled: false} }
 
-// Account mirrors Account.
 type Account struct {
 	Meta        Meta
 	SnapshotDir string

@@ -416,7 +416,6 @@ func providerSymbol(_ provider: String) -> String {
   DesignBrandAsset.fallbackSymbol(for: provider)
 }
 
-/// Returns clean canonical provider display name for Hub routing contexts.
 func hubProviderDisplayName(_ provider: String) -> String {
   switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "claude", "anthropic", "claude-code": return "Claude"

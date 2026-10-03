@@ -86,7 +86,6 @@ func MutationScopeForRef(ref Ref) string {
 	}
 }
 
-// DisplayRef renders a user-facing label.
 func DisplayRef(ref Ref) string {
 	switch ref.Kind {
 	case KindAccount:

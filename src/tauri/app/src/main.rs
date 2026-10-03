@@ -56,9 +56,7 @@ fn write_fixture_command(command: &str) -> Result<(), String> {
 }
 
 fn valid_fixture_line(line: &str) -> bool {
-    // Every frame kind the UI decodes. Dropping `doctor` here meant a fixture
-    // run could not exercise the Doctor report, and dropping the `-event` and
-    // `backup-preview` kinds meant the demo silently replayed stale state.
+// Every frame kind the UI decodes.
     line.len() <= MAX_FIXTURE_LINE_BYTES
         && [
             "snapshot\t",
@@ -361,7 +359,6 @@ fn main() {
         // there would be no way to reach the app again.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { .. } = event {
-                // graceful_quit stops the owned Go sidecar before exiting.
                 graceful_quit(window.app_handle().clone());
             }
         })
@@ -510,7 +507,6 @@ mod tests {
     fn zcode_app_installation_looks_for_a_directory() {
         let home = TempHome::new("zcode-app");
         assert!(!zcode_app_installed(Some(home.path())), "nothing installed");
-        // A regular file with the app's name is not an app.
         std::fs::write(home.path().join(".zcode"), b"not a directory").unwrap();
         assert!(
             !zcode_app_installed(Some(home.path())),

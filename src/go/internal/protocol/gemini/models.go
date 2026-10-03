@@ -168,7 +168,6 @@ func normalizeModelCatalog(available ModelCatalogInput) GeminiModelCatalog {
 	return GeminiModelCatalog{}
 }
 
-// modelAliasSet is a small set type used for alias matching.
 type modelAliasSet struct {
 	members map[string]bool
 }

@@ -20,13 +20,9 @@ import (
 	"github.com/outof0/anypick/go/internal/proxy"
 )
 
-// serve is the long-running core process — the Go analogue of what the tray
-// supervisor keeps alive under `pnpm dev`. It exposes a loopback-only,
-// token-free STATUS surface (accounts, proxy liveness) so tools and humans
-// can inspect the engine while detached proxies keep serving traffic.
-//
-// serve.go implements the `serve` status API; desktop stdio protocol lives
-// in internal/desktop.
+// cmdServe runs the long-running core: a loopback-only, token-free status
+// surface (accounts, proxy liveness) that detached proxies keep serving traffic
+// independently. The desktop stdio protocol lives in internal/desktop.
 
 func cmdServe(ctx context.Context, a *app.App, args []string) int {
 	fs := fsFor(args)
@@ -240,8 +236,6 @@ func serveStop(a *app.App) int {
 	return int(anyerr.Success)
 }
 
-// ---- pid/port bookkeeping ----
-
 func writeServeRecord(a *app.App, record *serveRecord) error {
 	return writeJSONFile(servePIDPath(a), record, 0o600)
 }
@@ -377,8 +371,6 @@ func serveStatusSnapshot(ctx context.Context, a *app.App) map[string]interface{}
 		"proxies":  proxiesOut,
 	}
 }
-
-// ---- small shared helpers ----
 
 func writeJSONFile(path string, v interface{}, mode os.FileMode) error {
 	data, err := json.MarshalIndent(v, "", "  ")

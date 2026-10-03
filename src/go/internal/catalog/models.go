@@ -2,10 +2,6 @@ package catalog
 
 import "strings"
 
-// Static model policies ported from src/catalog/providers.ts. Every id is
-// vendor-published; alias keys are stable logical names used by client
-// overlays. Values only ever resolve inside one provider.
-
 // ModelPolicy mirrors the optional model-policy members of CatalogProvider.
 type ModelPolicy struct {
 	// SuggestModels maps alias → canonical id (ModelMap).

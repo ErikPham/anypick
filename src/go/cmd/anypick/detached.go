@@ -1,5 +1,4 @@
-// Detached-child helpers shared by pool, hub, and supervisor lifecycle
-// commands. The child runs a hidden `_serve-*` subcommand; ownership is the
+// Detached-child helpers run a hidden `_serve-*` subcommand; ownership is the
 // structured ADR-0003 record persisted by internal/ownership — a bare PID is
 // never proof, so stop verifies live argv identity before signalling.
 package main

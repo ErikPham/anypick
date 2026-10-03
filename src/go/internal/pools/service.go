@@ -21,7 +21,6 @@ func (s *Service) GetContext(ctx context.Context, providerID string) (*Pool, err
 	return s.Store.GetContext(ctx, providerID)
 }
 
-// Set persists a full pool row (mode/strategy/enabled included).
 func (s *Service) Set(ctx context.Context, pool Pool) error {
 	return s.Store.Set(ctx, pool)
 }

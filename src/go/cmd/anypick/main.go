@@ -66,7 +66,7 @@ func run(args []string) int {
 	// parent that may hold mutation locks and must boot instantly.
 	maintenance := true
 	if len(args) > 0 && (strings.HasPrefix(args[0], "_") || args[0] == "desktop-service") {
-		maintenance = false // hidden helper children must boot instantly
+		maintenance = false
 	} else {
 		// Root-level global flags are accepted anywhere before pass-through
 		// payload; hidden helpers keep their argv byte-exact.
@@ -214,17 +214,17 @@ func run(args []string) int {
 	return int(code)
 }
 
-// runTuiSurface opens the terminal UI and maps its failure to an exit code.
-//
-// The UI is a bubbletea program over the same services the CLI commands use
-// (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime, so the
-// Ink/React tree in src/tui cannot be the one users get.
 // isExplicitTuiSurface reports whether argv names the terminal UI. It must not
 // consult config: it runs before the app is built, so nothing is touched.
 func isExplicitTuiSurface(args []string) bool {
 	return len(args) > 0 && (args[0] == "tui" || args[0] == "--tui")
 }
 
+// runTuiSurface opens the terminal UI and maps its failure to an exit code.
+//
+// The UI is a bubbletea program over the same services the CLI commands use
+// (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime, so the
+// Ink/React tree in src/tui cannot be the one users get.
 func runTuiSurface(ctx context.Context, a *app.App) int {
 	if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
 		// Invariant 7: refusing to run without a TTY is a usage problem,
@@ -295,11 +295,8 @@ func fsFor(_ []string) *flag.FlagSet { return cli.FsFor() }
 func reorder(args []string) []string { return cli.Reorder(args) }
 
 func cmdAdd(ctx context.Context, a *app.App, args []string) int {
-	// Canonical documented grammar (README, getting-started):
-	//   anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
-	//   anypick add gateway <name> --provider <id> [--endpoint url]
-	// The bare `add <provider>` form predates the docs and stays as a
-	// deprecated alias for `add account --current`.
+	// The bare `add <provider>` form predates the docs and stays as a deprecated
+	// alias for `add account --current`.
 	if len(args) > 0 && args[0] == "account" {
 		return cmdAddAccount(ctx, a, args[1:])
 	}
@@ -392,8 +389,6 @@ func cmdAddAccount(ctx context.Context, a *app.App, args []string) int {
 			return int(anyerr.InvalidUsage)
 		}
 	}
-	// --region today only exists for kiro API-key accounts, whose save path
-	// is not implemented yet (see the kiro note in the typed-input branch).
 	if *region != "" {
 		fmt.Fprintln(os.Stderr, "usage: --region is only supported for kiro API-key accounts, which are not implemented yet")
 		return int(anyerr.InvalidUsage)
