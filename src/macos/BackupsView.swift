@@ -9,7 +9,7 @@ struct BackupsView: View {
   @ObservedObject var model: MacOSDesignModel
   @State private var showingCreate = false
   @State private var backupPresentation: BackupPresentation?
-  @State private var pendingForgetBackup: DesignBackup?
+  @State private var confirmation: DesignConfirmation?
   /// Deep-link flow captured at entry and consumed once on appear.
   @State private var initialFlow: String?
   @State private var consumedInitialFlow = false
@@ -76,7 +76,7 @@ struct BackupsView: View {
                   }
                   Divider()
                   Button("Forget Review…", role: .destructive) {
-                    pendingForgetBackup = backup
+                    requestForget(backup)
                   }
                 } label: {
                   Image(systemName: "ellipsis.circle")
@@ -117,7 +117,7 @@ struct BackupsView: View {
               }
               Divider()
               Button("Forget Review…", role: .destructive) {
-                pendingForgetBackup = backup
+                requestForget(backup)
               }
             }
             .accessibilityIdentifier("backups.inventory.\(backup.id)")
@@ -146,23 +146,7 @@ struct BackupsView: View {
     .onChange(of: model.pendingImportBackupID) { _, id in
       if id != nil { presentImportedBackup() }
     }
-    .confirmationDialog(
-      "Forget This Backup Review?",
-      isPresented: Binding(
-        get: { pendingForgetBackup != nil },
-        set: { if !$0 { pendingForgetBackup = nil } }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Forget Review", role: .destructive) {
-        guard let backup = pendingForgetBackup else { return }
-        model.deleteBackup(id: backup.id)
-        pendingForgetBackup = nil
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("AnyPick discards this review and its staged copy. The original backup file is not deleted.")
-    }
+    .designConfirmation($confirmation)
     .onAppear {
       guard !consumedInitialFlow else { return }
       consumedInitialFlow = true
@@ -180,6 +164,16 @@ struct BackupsView: View {
   private func copyLocation(_ location: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(location, forType: .string)
+  }
+
+  private func requestForget(_ backup: DesignBackup) {
+    confirmation = DesignConfirmation(
+      id: "forget-backup-review",
+      title: "Forget This Backup Review?",
+      message:
+        "AnyPick discards this review and its staged copy. The original backup file is not deleted.",
+      action: .confirm("Forget") { model.deleteBackup(id: backup.id) }
+    )
   }
 
   private func backupSubtitle(for backup: DesignBackup) -> String {

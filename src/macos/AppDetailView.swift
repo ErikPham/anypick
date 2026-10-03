@@ -8,11 +8,9 @@ struct AppDetailView: View {
   @State private var showingModels = false
   @State private var showingCodexProfileSheet = false
   @State private var editingCodexProfile: DesignCodexProfile?
-  @State private var deletingCodexProfile: String?
   @State private var copiedCodexProfileID: String?
   @State private var copyFeedbackTask: Task<Void, Never>?
-  @State private var confirmReset = false
-  @State private var confirmRemove = false
+  @State private var confirmation: DesignConfirmation?
 
   private var app: DesignApp? { model.apps.first { $0.id == appID } }
 
@@ -59,15 +57,48 @@ struct AppDetailView: View {
           enabled: !model.isBusy,
           destructive: true,
           identifier: "app.reset"
-        ) { confirmReset = true }
+        ) { requestReset() }
       }
       DesignSheetButton(
         title: "Remove App",
         enabled: !model.isBusy,
         destructive: true,
         identifier: "app.remove"
-      ) { confirmRemove = true }
+      ) { requestRemoval() }
     }
+  }
+
+  private func requestReset() {
+    confirmation = DesignConfirmation(
+      id: "disconnect-app",
+      title: "Disconnect \(app?.name ?? "app") from AnyPick?",
+      message:
+        "The official direct login will be restored. AnyPick proxy routing and model overrides will be removed.",
+      action: .confirm("Disconnect") { model.resetAppConfiguration(appID: appID) }
+    )
+  }
+
+  private func requestRemoval() {
+    confirmation = DesignConfirmation(
+      id: "remove-app",
+      title: "Remove \(app?.name ?? "app") from AnyPick?",
+      message:
+        "This removes \(app?.name ?? "the app") from your configured apps list. If it was connected, AnyPick will disconnect and restore its official login.",
+      action: .confirm("Remove App") {
+        model.removeApp(appID: appID)
+        dismiss()
+      }
+    )
+  }
+
+  private func requestProfileRemoval(_ name: String) {
+    confirmation = DesignConfirmation(
+      id: "remove-codex-profile",
+      title: "Remove Codex profile \(name)?",
+      message:
+        "AnyPick will remove this profile’s managed route, authentication copy, and proxy settings. Codex’s main login is kept.",
+      action: .confirm("Remove") { model.removeCodexProfile(name: name) }
+    )
   }
 
   private var showsModelConfiguration: Bool {
@@ -120,7 +151,7 @@ struct AppDetailView: View {
                 .controlSize(.small)
                 .disabled(model.isBusy || app.routeOptions.isEmpty)
               if isAppManagedByAnyPick(app) {
-                Button("Disconnect…", role: .destructive) { confirmReset = true }
+                Button("Disconnect…", role: .destructive) { requestReset() }
                   .buttonStyle(.bordered)
                   .controlSize(.small)
                   .disabled(model.isBusy)
@@ -247,47 +278,7 @@ struct AppDetailView: View {
     }
     .onDisappear { copyFeedbackTask?.cancel() }
     .navigationTitle(app?.name ?? "App")
-    .confirmationDialog(
-      "Disconnect \(app?.name ?? "app") from AnyPick?",
-      isPresented: $confirmReset,
-      titleVisibility: .visible
-    ) {
-      Button("Disconnect", role: .destructive) { model.resetAppConfiguration(appID: appID) }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("The official direct login will be restored. AnyPick proxy routing and model overrides will be removed.")
-    }
-    .confirmationDialog(
-      "Remove \(app?.name ?? "app") from AnyPick?",
-      isPresented: $confirmRemove,
-      titleVisibility: .visible
-    ) {
-      Button("Remove App", role: .destructive) {
-        model.removeApp(appID: appID)
-        dismiss()
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("This removes \(app?.name ?? "the app") from your configured apps list. If it was connected, AnyPick will disconnect and restore its official login.")
-    }
-    .confirmationDialog(
-      "Remove Codex profile \(deletingCodexProfile ?? "")?",
-      isPresented: Binding(
-        get: { deletingCodexProfile != nil },
-        set: { if !$0 { deletingCodexProfile = nil } }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Remove Profile", role: .destructive) {
-        if let deletingCodexProfile {
-          model.removeCodexProfile(name: deletingCodexProfile)
-        }
-        deletingCodexProfile = nil
-      }
-      Button("Cancel", role: .cancel) { deletingCodexProfile = nil }
-    } message: {
-      Text("AnyPick will remove this profile’s managed route, authentication copy, and proxy settings. Codex’s main login is kept.")
-    }
+    .designConfirmation($confirmation)
   }
 
   private func codexProfileSummary(_ profile: DesignCodexProfile) -> String {
@@ -335,7 +326,7 @@ struct AppDetailView: View {
           showingCodexProfileSheet = true
         }
         Button("Remove Profile…", systemImage: "trash", role: .destructive) {
-          deletingCodexProfile = profile.name
+          requestProfileRemoval(profile.name)
         }
       } label: {
         Image(systemName: "ellipsis")
@@ -387,8 +378,7 @@ struct AppDetailView: View {
   /// "Claude account · Ready": the provider kind reads from the selected
   /// route, so a gateway or hub route never poses as an account.
   private func headerSubtitle(_ app: DesignApp) -> String {
-    // A hub route carries no provider of its own; without this it reads as
-    // "<App> account", which is exactly the wrong transport.
+// Without this a hub route reads as "<App> account" — the wrong transport.
     if selectedRoute?.kind == .hub {
       return "Proxy Hub · \(app.status.rawValue)"
     }

@@ -19,7 +19,7 @@ struct AddSavedAccountSheet: View {
   @State private var detectedSource = ""
   @State private var localSourceID = ""
   @State private var loginMethod = ""
-  @State private var confirmClear = false
+  @State private var confirmation: DesignConfirmation?
   @State private var isVerifying = false
   @State private var isDetecting = false
   @State private var credentialKind = ""
@@ -221,8 +221,8 @@ struct AddSavedAccountSheet: View {
     )
   }
 
-  /// Engine-provided reason shown inline when the primary action is disabled
-  /// or no usable provider is available.
+/// Engine-provided: why the primary action is disabled, or nil when a provider
+/// is usable.
   private var signInBlockerMessage: String? {
     addAccountBlockerMessage(
       provider: selectedProvider,
@@ -476,24 +476,22 @@ struct AddSavedAccountSheet: View {
         loginTask?.cancel()
         if isVerifying { model.cancelAccountLogin() }
       }
-      .confirmationDialog(
-        "Sign Out of \(sourceAppName)?",
-        isPresented: $confirmClear,
-        titleVisibility: .visible
-      ) {
-        Button("Sign Out", role: .destructive) {
-          detectedIdentity = ""
-          detectedSource = ""
-          model.clearLiveLogin(provider: provider)
-        }
-        .accessibilityIdentifier("account-flow.sign-out")
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text(
-          "AnyPick backs up this account before signing out on this Mac. Remote sessions stay active."
-        )
-      }
+      .designConfirmation($confirmation)
     }
+  }
+
+  private func requestSignOut() {
+    confirmation = DesignConfirmation(
+      id: "sign-out",
+      title: "Sign Out of \(sourceAppName)?",
+      message:
+        "AnyPick backs up this account before signing out on this Mac. Remote sessions stay active.",
+      action: .confirm("Sign Out", identifier: "account-flow.sign-out") {
+        detectedIdentity = ""
+        detectedSource = ""
+        model.clearLiveLogin(provider: provider)
+      }
+    )
   }
 
   private var detectedSourceText: String {
@@ -754,7 +752,7 @@ struct AddSavedAccountSheet: View {
       }
       if showsSignOutMenu {
         Menu {
-          Button("Sign Out on This Mac", role: .destructive) { confirmClear = true }
+          Button("Sign Out on This Mac", role: .destructive) { requestSignOut() }
         } label: {
           Image(systemName: "ellipsis.circle")
         }

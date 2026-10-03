@@ -6,8 +6,7 @@ struct ProxyDetailView: View {
   let proxyID: String
   @State private var didCopy = false
   @State private var didCopyApiKey = false
-  @State private var confirmStop = false
-  @State private var confirmRotate = false
+  @State private var confirmation: DesignConfirmation?
 
   private var proxy: DesignProxy? { model.proxies.first { $0.id == proxyID } }
 
@@ -125,7 +124,7 @@ struct ProxyDetailView: View {
                   )
                   if proxy.status == .running {
                     Button {
-                      confirmRotate = true
+                      requestRotate()
                     } label: {
                       Image(systemName: "arrow.triangle.2.circlepath")
                     }
@@ -190,30 +189,7 @@ struct ProxyDetailView: View {
       }
     }
     .navigationTitle(proxy?.name ?? "Proxy")
-    .confirmationDialog(
-      "Stop \(proxy?.name ?? "This Proxy")?",
-      isPresented: $confirmStop,
-      titleVisibility: .visible
-    ) {
-      Button("Stop Proxy", role: .destructive) {
-        model.setProxyEnabled(id: proxyID, enabled: false)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps using this proxy will not connect until it restarts.")
-    }
-    .confirmationDialog(
-      "Rotate API Key for \(proxy?.name ?? "This Proxy")?",
-      isPresented: $confirmRotate,
-      titleVisibility: .visible
-    ) {
-      Button("Rotate Key", role: .destructive) {
-        model.rotateProxyKey(id: proxyID)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps using the current API key will be disconnected until you update them with the new key.")
-    }
+    .designConfirmation($confirmation)
     .onChange(of: model.copiedKey) { _, copied in
       guard copied?.id == proxyID else { return }
       didCopyApiKey = true
@@ -221,6 +197,25 @@ struct ProxyDetailView: View {
         didCopyApiKey = false
       }
     }
+  }
+
+  private func requestStop() {
+    confirmation = DesignConfirmation(
+      id: "stop-proxy",
+      title: "Stop \(proxy?.name ?? "This Proxy")?",
+      message: "Apps using this proxy will not connect until it restarts.",
+      action: .confirm("Stop Proxy") { model.setProxyEnabled(id: proxyID, enabled: false) }
+    )
+  }
+
+  private func requestRotate() {
+    confirmation = DesignConfirmation(
+      id: "rotate-proxy-key",
+      title: "Rotate API Key for \(proxy?.name ?? "This Proxy")?",
+      message:
+        "Apps using the current API key will be disconnected until you update them with the new key.",
+      action: .confirm("Rotate Key") { model.rotateProxyKey(id: proxyID) }
+    )
   }
 
   private var connectedApps: [DesignApp] {
@@ -268,7 +263,7 @@ struct ProxyDetailView: View {
     Group {
       if proxy.status == .running {
         Button(role: .destructive) {
-          confirmStop = true
+          requestStop()
         } label: {
           if busyRow { ProgressView().controlSize(.small) } else { Text("Stop") }
         }

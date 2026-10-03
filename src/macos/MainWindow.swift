@@ -27,8 +27,11 @@ struct MainWindow: View {
     ) {
       if model.pendingTakeover != nil {
         // The refusal named CLIENT_CONFIG_FOREIGN: this is the confirmation its
-        // suggestion asked for, answered where the user already is.
-        Button("Manage with AnyPick", action: model.confirmPendingTakeover)
+        // suggestion asked for, answered where the user already is. "Replace"
+        // is the engine's own verb for it (see the --allow-foreign-config
+        // suggestion), and it fits beside Cancel on one row where
+        // "Manage with AnyPick" would take a row of its own.
+        Button("Replace", action: model.confirmPendingTakeover)
         Button("Cancel", role: .cancel, action: model.dismissFeedback)
       } else {
         // A lone dismissal is the default action, not a cancel role: the role

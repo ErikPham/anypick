@@ -4,7 +4,7 @@ struct AccountDetailView: View {
   @ObservedObject var model: MacOSDesignModel
   let accountID: String
   @State private var editing = false
-  @State private var confirmingRemoval = false
+  @State private var confirmation: DesignConfirmation?
   @State private var removalRequested = false
   @Environment(\.dismiss) private var dismiss
 
@@ -119,19 +119,7 @@ struct AccountDetailView: View {
     .sheet(isPresented: $editing) {
       EditAccountSheet(model: model, accountID: accountID)
     }
-    .confirmationDialog(
-      account.map { "Remove “\($0.name)” from AnyPick?" } ?? "Remove Account?",
-      isPresented: $confirmingRemoval,
-      titleVisibility: .visible
-    ) {
-      Button("Remove Account", role: .destructive) {
-        removalRequested = true
-        model.removeAccount(id: accountID)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(removalMessage)
-    }
+    .designConfirmation($confirmation)
     .onChange(of: model.accounts) { _, accounts in
       if removalRequested, !accounts.contains(where: { $0.id == accountID }) {
         dismiss()
@@ -183,8 +171,20 @@ struct AccountDetailView: View {
         enabled: !model.isBusy,
         destructive: true,
         identifier: "accounts.inspector.remove"
-      ) { confirmingRemoval = true }
+      ) { requestRemoval() }
     }
+  }
+
+  private func requestRemoval() {
+    confirmation = DesignConfirmation(
+      id: "remove-account",
+      title: account.map { "Remove “\($0.name)” from AnyPick?" } ?? "Remove Account?",
+      message: removalMessage,
+      action: .confirm("Remove") {
+        removalRequested = true
+        model.removeAccount(id: accountID)
+      }
+    )
   }
 
   private func usageRow(_ window: DesignUsageWindow) -> some View {

@@ -106,7 +106,7 @@ struct RestoreBackupSheet: View {
   var importedPackage = false
   @Environment(\.dismiss) private var dismiss
   @State private var selectedAccountIDs = Set<String>()
-  @State private var confirmDuplicates = false
+  @State private var confirmation: DesignConfirmation?
 
   private var backup: DesignBackup? { model.backups.first { $0.id == backupID } }
 
@@ -135,7 +135,7 @@ struct RestoreBackupSheet: View {
           if model.importBackupPackage() { dismiss() }
           return
         }
-        if duplicateCount > 0 { confirmDuplicates = true }
+        if duplicateCount > 0 { requestDuplicateChoice() }
         else { restore(overwrite: false) }
       }
     ) {
@@ -208,22 +208,26 @@ struct RestoreBackupSheet: View {
           (backup?.accounts ?? []).filter { $0.status != .unavailable }.map(\.id)
         )
       }
-      .confirmationDialog(
-        "Replace Existing Accounts?",
-        isPresented: $confirmDuplicates,
-        titleVisibility: .visible
-      ) {
-        Button("Skip") { restore(overwrite: false) }
-        Button("Replace", role: .destructive) { restore(overwrite: true) }
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text(
-          duplicateCount == 1
-            ? "1 selected account is already saved."
-            : "\(duplicateCount) selected accounts are already saved."
-        )
-      }
+      .designConfirmation($confirmation)
     }
+  }
+
+  /// The only confirmation with two answers: both restore the backup, they
+  /// differ in what happens to an account AnyPick already holds. Cancel stays
+  /// rightmost so Return still means "go back".
+  private func requestDuplicateChoice() {
+    confirmation = DesignConfirmation(
+      id: "replace-existing-accounts",
+      title: "Replace Existing Accounts?",
+      message:
+        duplicateCount == 1
+        ? "1 selected account is already saved."
+        : "\(duplicateCount) selected accounts are already saved.",
+      actions: [
+        .confirm("Skip", destructive: false) { restore(overwrite: false) },
+        .confirm("Replace") { restore(overwrite: true) },
+      ]
+    )
   }
 
   private func alreadySaved(_ account: DesignAccount) -> Bool {

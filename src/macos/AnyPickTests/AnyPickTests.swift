@@ -64,6 +64,80 @@ final class AnyPickTests: XCTestCase {
     }
   }
 
+  /// Titles measured to land on ONE row of a real `_NSAlertPanel` beside
+  /// Cancel. A macOS alert gives its buttons a single 228pt row; a title too
+  /// wide for it is not squeezed, it takes its own full-width row — which is
+  /// what put "Remove Account" and "Cancel" on two lines. `confirmationDialog`,
+  /// `.alert` and a hand-built `NSAlert` all produce the identical panel, so the
+  /// title is the only lever, and it is the reason every button here is a bare
+  /// verb while the alert title carries the sentence.
+  ///
+  /// Measured by presenting each title in an `NSAlert` and comparing the
+  /// buttons' frame origins. Re-measure before adding an entry: the split is
+  /// pixel width, not character count ("Forget Books", 12 characters, fits;
+  /// "Remove Guest", 12 characters, wraps).
+  private static let measuredSingleRowTitles: Set<String> = [
+    "Cancel", "Clear", "Disconnect", "Forget", "OK", "Remove", "Remove App",
+    "Replace", "Rotate Key", "Sign Out", "Stop All", "Stop Proxy",
+  ]
+
+  /// Titles allowed only in a confirmation that offers three answers, where
+  /// macOS gives each button its own row whatever its width — measured: even
+  /// "No / Yes / Cancel" stacks. Two buttons beside Cancel is the only layout
+  /// the platform keeps on one line.
+  private static let threeAnswerTitles: Set<String> = ["Replace", "Skip"]
+
+  func testConfirmationButtonsFitOnOneRow() throws {
+    // Scanned rather than reviewed: a widened title reappears with any edit
+    // that improves the wording, and the wrap is invisible in a fixture
+    // screenshot because the panel still looks like a native alert.
+    let macOSDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let sources = try FileManager.default.contentsOfDirectory(atPath: macOSDirectory.path)
+    var seen: Set<String> = []
+    for name in sources where name.hasSuffix(".swift") {
+      let text = try String(
+        contentsOf: macOSDirectory.appendingPathComponent(name),
+        encoding: .utf8
+      )
+      var literals = text.matches(of: /\.confirm\("([^"]+)"/).map { String($0.1) }
+      // One hand-written `.alert` bypasses the shared host: the
+      // CLIENT_CONFIG_FOREIGN takeover in MainWindow. Scan only its action
+      // closure — a whole-file `Button("…")` sweep would drag in context
+      // menus and toolbars, where the 228pt row rule does not apply.
+      if let alertStart = text.range(of: ".alert("),
+        let alertEnd = text.range(of: "} message:", range: alertStart.upperBound..<text.endIndex)
+      {
+        literals +=
+          text[alertStart.upperBound..<alertEnd.lowerBound]
+          .matches(of: /Button\("([^"]+)",?\s*(?:role: [^,]+,?)?action:/)
+          .map { String($0.1) }
+      } else if text.contains(".alert(") {
+        XCTFail("\(name) has an .alert whose action closure the scan could not bound")
+      }
+      for title in literals {
+        seen.insert(title)
+        let allowed =
+          Self.measuredSingleRowTitles.contains(title)
+          || Self.threeAnswerTitles.contains(title)
+        XCTAssertTrue(
+          allowed,
+          """
+          \(name) uses the confirmation button "\(title)", which is not on the \
+          measured list. A macOS alert gives its buttons one 228pt row beside \
+          Cancel, and a title too wide for it takes its own full-width row. Use \
+          a bare verb — the alert title already carries the sentence — or, for a \
+          three-answer confirmation, measure it and add it to threeAnswerTitles.
+          """
+        )
+      }
+    }
+    XCTAssertFalse(
+      seen.isEmpty, "the scan matched no .confirm(\"...\"); the gate would pass on nothing"
+    )
+  }
+
   func testAppServiceClientNegotiatesBeforeDeliveringFrames() async throws {
     let client = AppServiceClient(appVersion: "(devel)", launchAtLogin: false)
     let hello = try frame(
@@ -737,7 +811,6 @@ final class AnyPickTests: XCTestCase {
     let providers = conflict.candidates.filter(\.providerChoice)
     XCTAssertEqual(providers.map(\.actionID), ["overlap-1:provider/claude", "overlap-1:provider/openai"])
     XCTAssertTrue(providers.allSatisfy { $0.provider == $0.id.split(separator: "/").last.map(String.init) })
-    // Single-provider groups offer accounts only.
     let solo = DesignHubRouting.compile(
       sources: [sources[0]],
       catalogs: [catalogs[0]],

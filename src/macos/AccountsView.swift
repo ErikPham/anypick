@@ -13,7 +13,7 @@ struct AccountsView: View {
   @State private var searchQuery = ""
   @State private var editingAccount: DesignAccount?
   @State private var connectingGateway: DesignAccount?
-  @State private var pendingRemoval: DesignAccount?
+  @State private var confirmation: DesignConfirmation?
   @State private var consumedInitialFlow = false
 
   init(model: MacOSDesignModel) {
@@ -112,29 +112,7 @@ struct AccountsView: View {
       model.pendingGatewayConnectID = nil
       connectingGateway = gateway
     }
-    .confirmationDialog(
-      pendingRemoval.map { "Remove “\($0.name)” from AnyPick?" } ?? "Remove Account?",
-      isPresented: Binding(
-        get: { pendingRemoval != nil },
-        set: {
-          if !$0 {
-            pendingRemoval = nil
-            consumeStartupFlow()
-          }
-        }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Remove Account", role: .destructive) {
-        guard let account = pendingRemoval else { return }
-        model.removeAccount(id: account.id)
-        pendingRemoval = nil
-        consumeStartupFlow()
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text(removalMessage)
-    }
+    .designConfirmation($confirmation, onDismiss: consumeStartupFlow)
     .onAppear {
       guard !consumedInitialFlow, let flow = model.pendingStartupFlow else { return }
       consumedInitialFlow = true
@@ -148,7 +126,9 @@ struct AccountsView: View {
         case "add-account", "add-account-error": activeSheet = .addAccount
         case "add-gateway", "add-gateway-error": activeSheet = .addGateway
         case "remove-account":
-          pendingRemoval = model.accounts.first(where: { $0.kind == .saved })
+          if let account = model.accounts.first(where: { $0.kind == .saved }) {
+            requestRemoval(of: account)
+          }
         default: break
         }
       }
@@ -184,6 +164,15 @@ struct AccountsView: View {
     }
   }
 
+  private func requestRemoval(of account: DesignAccount) {
+    confirmation = DesignConfirmation(
+      id: "remove-account",
+      title: "Remove “\(account.name)” from AnyPick?",
+      message: removalMessage(for: account),
+      action: .confirm("Remove") { model.removeAccount(id: account.id) }
+    )
+  }
+
   private var inventory: some View {
     DesignGroupedPane(contentIdentifier: "accounts.list", actions: { paneActions }) {
       if !savedAccounts.isEmpty || (filter == .all && gateways.isEmpty) {
@@ -201,7 +190,7 @@ struct AccountsView: View {
                 allAccounts: model.accounts,
                 onEdit: { editingAccount = $0 },
                 onConnect: { connectingGateway = $0 },
-                onRemove: { pendingRemoval = $0 }
+                onRemove: { requestRemoval(of: $0) }
               )
             }
           }
@@ -224,7 +213,7 @@ struct AccountsView: View {
                 allAccounts: model.accounts,
                 onEdit: { editingAccount = $0 },
                 onConnect: { connectingGateway = $0 },
-                onRemove: { pendingRemoval = $0 }
+                onRemove: { requestRemoval(of: $0) }
               )
             }
           }
@@ -507,10 +496,7 @@ extension AccountsView {
     .accessibilityIdentifier("accounts.filter")
   }
 
-  private var removalMessage: String {
-    guard let account = pendingRemoval else {
-      return "This account will no longer be available in AnyPick."
-    }
+  private func removalMessage(for account: DesignAccount) -> String {
     if account.kind == .gateway {
       return "Only “\(account.name)” is removed from AnyPick. The remote API key is not revoked."
     }
@@ -566,9 +552,6 @@ extension AccountsView {
   }
 }
 
-/// "..." menu trigger. NSButton, not a SwiftUI Button/Menu: on macOS 26 a
-/// SwiftUI button under a toolbar search is copied into the titlebar.
-/// Menu items: Detail, Edit, Remove.
 private struct AccountRowAccessibilityActions: ViewModifier {
   let showsSwitch: Bool
   let showsConnect: Bool

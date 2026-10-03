@@ -5,7 +5,7 @@ struct ProxyHubView: View {
   @ObservedObject var model: MacOSDesignModel
   @State private var copiedAddress = false
   @State private var copiedApiKey = false
-  @State private var confirmRotate = false
+  @State private var confirmation: DesignConfirmation?
 
   var body: some View {
     DesignGroupedPane {
@@ -73,7 +73,7 @@ struct ProxyHubView: View {
                 action: { model.copyProxyAPIKey(id: "hub") }
               )
               Button {
-                confirmRotate = true
+                requestRotate()
               } label: {
                 Image(systemName: "arrow.triangle.2.circlepath")
               }
@@ -218,18 +218,7 @@ struct ProxyHubView: View {
         }
       }
     }
-    .confirmationDialog(
-      "Rotate Proxy Hub API Key?",
-      isPresented: $confirmRotate,
-      titleVisibility: .visible
-    ) {
-      Button("Rotate Key", role: .destructive) {
-        model.rotateProxyKey(id: "hub")
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps connected to Proxy Hub will be disconnected until you update them with the new key.")
-    }
+    .designConfirmation($confirmation)
     .onChange(of: model.copiedKey) { _, copied in
       guard copied?.id == "hub" else { return }
       copiedApiKey = true
@@ -237,6 +226,16 @@ struct ProxyHubView: View {
         copiedApiKey = false
       }
     }
+  }
+
+  private func requestRotate() {
+    confirmation = DesignConfirmation(
+      id: "rotate-hub-key",
+      title: "Rotate Proxy Hub API Key?",
+      message:
+        "Apps connected to Proxy Hub will be disconnected until you update them with the new key.",
+      action: .confirm("Rotate Key") { model.rotateProxyKey(id: "hub") }
+    )
   }
 
   private var hubAddress: String { "http://127.0.0.1:\(model.proxyHubPort)" }
@@ -282,7 +281,6 @@ struct ProxyHubView: View {
     "Include a saved account or gateway to publish its models on the Hub address. Independent per-account services appear under Proxies."
   }
 
-  /// Footer of a hub-source section.
   @ViewBuilder
   private func hubSourceFooter(isLast: Bool) -> some View {
     if isLast {

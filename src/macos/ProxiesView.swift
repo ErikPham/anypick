@@ -3,9 +3,7 @@ import SwiftUI
 
 struct ProxiesView: View {
   @ObservedObject var model: MacOSDesignModel
-  @State private var confirmStopAll = false
-  @State private var pendingStop: DesignProxy?
-  @State private var pendingRotate: DesignProxy?
+  @State private var confirmation: DesignConfirmation?
   @State private var searchQuery = ""
   @State private var startAllInProgress = false
   @State private var startAllTitle = "Start All Proxies"
@@ -60,50 +58,35 @@ struct ProxiesView: View {
           .frame(minWidth: 160, idealWidth: 180, maxWidth: 220)
       }
     }
-    .confirmationDialog(
-      "Stop All Proxies?",
-      isPresented: $confirmStopAll,
-      titleVisibility: .visible
-    ) {
-      Button("Stop All", role: .destructive) { model.stopAllProxies() }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps using these proxies will not connect until their services restart.")
-    }
-    .confirmationDialog(
-      "Stop \(pendingStop?.name ?? "proxy")?",
-      isPresented: Binding(
-        get: { pendingStop != nil },
-        set: { if !$0 { pendingStop = nil } }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Stop Proxy", role: .destructive) {
-        if let proxy = pendingStop {
-          model.setProxyEnabled(id: proxy.id, enabled: false)
-        }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps using this proxy will not connect until it restarts.")
-    }
-    .confirmationDialog(
-      "Rotate API Key for \(pendingRotate?.name ?? "proxy")?",
-      isPresented: Binding(
-        get: { pendingRotate != nil },
-        set: { if !$0 { pendingRotate = nil } }
-      ),
-      titleVisibility: .visible
-    ) {
-      Button("Rotate Key", role: .destructive) {
-        if let proxy = pendingRotate {
-          model.rotateProxyKey(id: proxy.id)
-        }
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Apps using the current API key will be disconnected until you update them with the new key.")
-    }
+    .designConfirmation($confirmation)
+  }
+
+  private func requestStopAll() {
+    confirmation = DesignConfirmation(
+      id: "stop-all-proxies",
+      title: "Stop All Proxies?",
+      message: "Apps using these proxies will not connect until their services restart.",
+      action: .confirm("Stop All") { model.stopAllProxies() }
+    )
+  }
+
+  private func requestStop(_ proxy: DesignProxy) {
+    confirmation = DesignConfirmation(
+      id: "stop-proxy",
+      title: "Stop \(proxy.name)?",
+      message: "Apps using this proxy will not connect until it restarts.",
+      action: .confirm("Stop Proxy") { model.setProxyEnabled(id: proxy.id, enabled: false) }
+    )
+  }
+
+  private func requestRotate(_ proxy: DesignProxy) {
+    confirmation = DesignConfirmation(
+      id: "rotate-proxy-key",
+      title: "Rotate API Key for \(proxy.name)?",
+      message:
+        "Apps using the current API key will be disconnected until you update them with the new key.",
+      action: .confirm("Rotate Key") { model.rotateProxyKey(id: proxy.id) }
+    )
   }
 
   /// The pane's one job: the Proxy Hub shortcut, then one row per account proxy.
@@ -146,7 +129,7 @@ struct ProxiesView: View {
           .accessibilityIdentifier("proxies.row.\(proxy.id)")
           .contextMenu {
             if proxy.status == .running {
-              Button("Stop", role: .destructive) { pendingStop = proxy }
+              Button("Stop", role: .destructive) { requestStop(proxy) }
                 .disabled(
                   model.isBusy || startAllInProgress || model.serviceOperations[proxy.id] != nil
                 )
@@ -165,7 +148,7 @@ struct ProxiesView: View {
                 Button("Copy API Key") { model.copyProxyAPIKey(id: proxy.id) }
               }
               Button("Rotate API Key…") {
-                pendingRotate = proxy
+                requestRotate(proxy)
               }
             } else {
               Button("Start") { model.setProxyEnabled(id: proxy.id, enabled: true) }
@@ -177,7 +160,7 @@ struct ProxiesView: View {
           .accessibilityAction(named: proxy.status == .running ? "Stop" : "Start") {
             guard !startAllInProgress else { return }
             if proxy.status == .running {
-              pendingStop = proxy
+              requestStop(proxy)
             } else {
               model.setProxyEnabled(id: proxy.id, enabled: true)
             }
@@ -216,7 +199,7 @@ struct ProxiesView: View {
         enabled: !model.isBusy && !startAllInProgress && hasRunningProxy,
         destructive: true,
         identifier: "proxies.stop-all"
-      ) { confirmStopAll = true }
+      ) { requestStopAll() }
     }
   }
 
@@ -235,7 +218,7 @@ struct ProxiesView: View {
       // the lifecycle state of the process, so it must never choose Stop.
       if proxy.status == .running {
         Button(role: .destructive) {
-          pendingStop = proxy
+          requestStop(proxy)
         } label: {
           ZStack {
             if busyRow { ProgressView().controlSize(.small) } else { Text("Stop") }

@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Event categories for filtering the audit trail.
 enum ActivityCategory: String, CaseIterable, Identifiable {
   case all = "All Events"
   case routing = "Routing"
@@ -42,8 +41,7 @@ enum ActivityCategory: String, CaseIterable, Identifiable {
 
 struct ActivityView: View {
   @ObservedObject var model: MacOSDesignModel
-  @State private var confirmClear = false
-  @State private var confirmClearEvents = false
+  @State private var confirmation: DesignConfirmation?
   @State private var searchQuery = ""
   @State private var selectedCategory: ActivityCategory = .all
 
@@ -68,26 +66,18 @@ struct ActivityView: View {
     .onDisappear {
       model.setLogPolling(false)
     }
-    .confirmationDialog(
-      "Clear Visible Logs?",
-      isPresented: $confirmClear,
-      titleVisibility: .visible
-    ) {
-      Button("Clear", role: .destructive) { model.clearActivity() }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Accounts, apps, and proxies are unchanged.")
-    }
-    .confirmationDialog(
-      "Clear Visible Events?",
-      isPresented: $confirmClearEvents,
-      titleVisibility: .visible
-    ) {
-      Button("Clear", role: .destructive) { model.clearActivity() }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("Accounts, apps, and proxies are unchanged.")
-    }
+    .designConfirmation($confirmation)
+  }
+
+  /// One question, two subjects: the pane's segmented control decides whether
+  /// the user is looking at logs or at events, and both clear the same store.
+  private func requestClear() {
+    confirmation = DesignConfirmation(
+      id: "clear-activity",
+      title: model.activityShowsLogs ? "Clear Visible Logs?" : "Clear Visible Events?",
+      message: "Accounts, apps, and proxies are unchanged.",
+      action: .confirm("Clear") { model.clearActivity() }
+    )
   }
 
   /// Filter + search stay mounted. Adding/removing toolbar items when the
@@ -185,14 +175,14 @@ struct ActivityView: View {
                 enabled: !filteredLogLines.isEmpty,
                 destructive: true,
                 identifier: "activity.clear-log"
-              ) { confirmClear = true }
+              ) { requestClear() }
             } else {
               DesignSheetButton(
                 title: "Clear Events…",
                 enabled: !filteredActivity.isEmpty,
                 destructive: true,
                 identifier: "activity.clear-events"
-              ) { confirmClearEvents = true }
+              ) { requestClear() }
             }
           }
         }
@@ -211,8 +201,8 @@ struct ActivityView: View {
 
   private let rowInsets = EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
 
-  /// Segmented control only — filter belongs in the toolbar (c2cES), not
-  /// beside the tabs (YwThk).
+/// Segmented control only — the category filter belongs in the toolbar, not
+/// beside the tabs.
   private var modeControl: some View {
     Picker("View", selection: $model.activityShowsLogs) {
       Text("Events").tag(false)

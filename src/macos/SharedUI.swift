@@ -72,8 +72,6 @@ struct DesignStatusLabel: View {
   }
 }
 
-/// Sleek horizontal quota capsule matching Image #5:
-/// `[Window Label]  [Progress Bar]  [36%]  [Oct 16]`
 /// Provider-reported usage for one window: the system progress indicator, the
 /// percentage, and the reset instant when the vendor reports one.
 ///
@@ -634,5 +632,136 @@ struct DesignSheetHost<Content: View>: View {
     .background(Color(nsColor: .windowBackgroundColor))
     .frame(minWidth: 320, idealWidth: width, maxWidth: 600)
     .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
+// MARK: - Confirmation
+
+/// One pending confirmation: the question, one sentence about its consequence,
+/// and the buttons that can answer it.
+///
+/// Every irreversible command in the app builds one of these and hands it to
+/// `designConfirmation(_:onDismiss:)`, so a confirmation is the same alert
+/// everywhere and the rules below are stated once instead of seventeen times.
+struct DesignConfirmation: Identifiable {
+  /// A button that answers the dialog. `destructive` marks the one that
+  /// discards something; a confirmation that offers two ways forward (Skip /
+  /// Replace) leaves it false on the harmless choice.
+  struct Action: Identifiable {
+    let title: String
+    var destructive: Bool
+    var identifier: String?
+    let perform: () -> Void
+
+    var id: String { title }
+
+    /// The common shape: one button that does the thing, with Cancel beside
+    /// it. `destructive` defaults to true because a question is only worth
+    /// asking when answering it destroys something.
+    ///
+    /// Keep `title` short. A macOS alert gives its buttons one 228pt row
+    /// beside Cancel; a title that does not fit is not squeezed, it is pushed
+    /// onto its own full-width row — which is what put "Remove Account" and
+    /// "Cancel" on two lines. Measured on `_NSAlertPanel`: 12 characters fit
+    /// ("Forget Books") and 13 do not ("Remove Login"), and the split is pixel
+    /// width, not length — "Remove Guest" (12) wraps while "Forget Books" (12)
+    /// does not. The alert title already names the command ("Remove “Claude”
+    /// from AnyPick?"), so the button only has to be the verb.
+    static func confirm(
+      _ title: String,
+      destructive: Bool = true,
+      identifier: String? = nil,
+      perform: @escaping () -> Void
+    ) -> Action {
+      Action(
+        title: title,
+        destructive: destructive,
+        identifier: identifier,
+        perform: perform
+      )
+    }
+  }
+
+  /// Distinct per command, so a pending request survives the body recomputes
+  /// that the id would otherwise blur together.
+  let id: String
+  let title: String
+  let message: String
+  /// In reading order. Cancel is appended by the host, so a caller cannot
+  /// forget it or put it in the wrong place.
+  let actions: [Action]
+
+  init(id: String, title: String, message: String, actions: [Action]) {
+    self.id = id
+    self.title = title
+    self.message = message
+    self.actions = actions
+  }
+
+  init(id: String, title: String, message: String, action: Action) {
+    self.init(id: id, title: title, message: message, actions: [action])
+  }
+}
+
+extension View {
+  /// Hosts the pane's confirmation. Exactly one per view: SwiftUI only
+  /// reliably presents the most recently attached alert, so a view that offers
+  /// several confirmations keeps a single request in state and points it at
+  /// whichever command asked.
+  ///
+  /// `pending` is cleared by every dismissal — the confirming button, Cancel or
+  /// Escape — and `onDismiss` runs there, which is where a cold-start flow has
+  /// to be marked consumed.
+  func designConfirmation(
+    _ pending: Binding<DesignConfirmation?>,
+    onDismiss: @escaping () -> Void = {}
+  ) -> some View {
+    modifier(DesignConfirmationHost(pending: pending, onDismiss: onDismiss))
+  }
+}
+
+private struct DesignConfirmationHost: ViewModifier {
+  @Binding var pending: DesignConfirmation?
+  let onDismiss: () -> Void
+
+  func body(content: Content) -> some View {
+    content.alert(
+      pending?.title ?? "",
+      isPresented: Binding(
+        get: { pending != nil },
+        set: { presented in
+          guard !presented else { return }
+          pending = nil
+          onDismiss()
+        }
+      ),
+      presenting: pending
+    ) { request in
+      // Cancel is spelled out last on purpose: the platform gives the default
+      // key to the last button, and the dismissing choice must own it.
+      switch request.actions.count {
+      case 0:
+        Button("Cancel", role: .cancel, action: {})
+      case 1:
+        answerButton(request.actions[0])
+        Button("Cancel", role: .cancel, action: {})
+      default:
+        // Three or more answers take one full-width row each. That is the
+        // platform's own rule — measured on `_NSAlertPanel`, even "No / Yes /
+        // Cancel" stacks — so the backup-overwrite dialog is the only place in
+        // the app that does not answer on a single line, and it is the
+        // platform's layout, not a choice made here.
+        answerButton(request.actions[0])
+        answerButton(request.actions[1])
+        Button("Cancel", role: .cancel, action: {})
+      }
+    } message: { request in
+      Text(request.message)
+    }
+  }
+
+  private func answerButton(_ action: DesignConfirmation.Action) -> some View {
+    Button(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
+      .modifier(DesignOptionalAccessibilityIdentifier(identifier: action.identifier))
   }
 }
