@@ -154,8 +154,8 @@ have to be able to finish after the operation that triggered them is cancelled.
      added; one whose login AnyPick already manages (gemini, kiro, opencode,
      workbuddy) must not.
 
-   `internal/transport/adapter_test.go` requires an explicit expectation for
-   every registered client in every adapter row, so a client that was
+   `internal/transport/adapter_matrix_test.go` requires an explicit expectation
+   for every registered client in every adapter row, so a client that was
    registered but never classified fails the build instead of shipping as
    `Unsupported`.
 3. Put the provider's **model policy** on the provider itself

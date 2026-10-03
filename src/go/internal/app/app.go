@@ -172,7 +172,7 @@ func (a *App) compose() error {
 	clientProfileStore := &client.ProfileStore{Root: a.Root, DB: a.DB.DB}
 
 	svc := accounts.New(st, provReg)
-	leases := &proxy.LeaseStore{DB: a.DB.DB}
+	leases := &proxy.LeaseStore{Root: a.Root, DB: a.DB.DB}
 	px := proxy.New(st, leases)
 	svc.Proxy = px
 

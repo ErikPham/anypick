@@ -288,6 +288,10 @@ func TestValidateExternalDepStepEnforcesMissingBinary(t *testing.T) {
 			Display: "kiro/work",
 			Adapter: transport.KiroAccountAdapter("kiro", "work", func() string { return "" }),
 		},
+		// The planner emits this step exactly when the resolved capability is
+		// ExternalManualProxy (planner.go), so a plan that carries the step
+		// carries the capability too.
+		Transport: ResolvedTransport{Capability: transport.ExternalManualProxy},
 	}
 	if err := validateExternalDep(missing); err == nil {
 		t.Fatal("missing kirolink must fail the step")
@@ -299,6 +303,14 @@ func TestValidateExternalDepStepEnforcesMissingBinary(t *testing.T) {
 		if ae.Code != "MISSING_DEPENDENCY" {
 			t.Fatalf("code = %q, want MISSING_DEPENDENCY", ae.Code)
 		}
+		// Both errors are MISSING_DEPENDENCY-free, but the code alone cannot
+		// tell a missing binary from a plan that no longer matches the disk.
+		// The suggestion set is what does: a missing binary has a command that
+		// fixes it, a stale plan has none. Asserting the code alone let the
+		// stale-plan branch be deleted with this test green.
+		if len(ae.Suggestions) != 1 || !strings.Contains(ae.Suggestions[0], "anypick doctor") {
+			t.Fatalf("missing-binary suggestions = %v, want the anypick doctor command", ae.Suggestions)
+		}
 	}
 
 	present := &Plan{
@@ -307,8 +319,53 @@ func TestValidateExternalDepStepEnforcesMissingBinary(t *testing.T) {
 			Display: "kiro/work",
 			Adapter: transport.KiroAccountAdapter("kiro", "work", func() string { return "/usr/local/bin/kirolink" }),
 		},
+		Transport: ResolvedTransport{Capability: transport.ManagedExternalProxy},
 	}
 	if err := validateExternalDep(present); err != nil {
 		t.Fatalf("present kirolink must pass the step: %v", err)
+	}
+
+	// The binary appeared after the plan was built. The plan still carries
+	// ExternalManualProxy and an empty endpoint, so continuing would no-op
+	// writeClientConfig and commit the binding anyway: fail and ask for a re-run.
+	drift := &Plan{
+		Client: "claude",
+		ResolvedSource: &ResolvedSource{
+			Display: "kiro/work",
+			Adapter: transport.KiroAccountAdapter("kiro", "work", func() string { return "/usr/local/bin/kirolink" }),
+		},
+		Transport: ResolvedTransport{Capability: transport.ExternalManualProxy},
+	}
+	err := validateExternalDep(drift)
+	if err == nil {
+		t.Fatal("a plan that no longer matches the disk must not proceed")
+	}
+	var driftErr *anyerr.Error
+	if !errorsAsAny(err, &driftErr) {
+		t.Fatalf("drift error is not anyerr: %T", err)
+	}
+	// The distinction from the missing-binary case above is behavioural, not
+	// cosmetic: the proxy is already installed, so `anypick doctor` and
+	// "install the provider proxy" are both wrong advice. The only correct
+	// action is to re-plan, and there is no command for that.
+	if len(driftErr.Suggestions) != 0 {
+		t.Fatalf("stale-plan suggestions = %v, want none: the binary is present, so no command fixes this", driftErr.Suggestions)
+	}
+	if !strings.Contains(driftErr.Message, "after this activation was planned") {
+		t.Fatalf("stale-plan message = %q, want it to name the drift", driftErr.Message)
+	}
+	// A distinct code and exit, so a consumer branching on either can tell a
+	// stale plan from an absent binary. cli.mdx publishes 7 as "Missing
+	// required dependency, such as an external proxy binary", and this is not
+	// that: the binary is there. STATE_CONFLICT derives Operational, which is
+	// what a plan that no longer matches the disk is.
+	if driftErr.Code != "STATE_CONFLICT" {
+		t.Fatalf("stale-plan code = %q, want STATE_CONFLICT", driftErr.Code)
+	}
+	if driftErr.ExitCode != anyerr.Operational {
+		t.Fatalf("stale-plan exit = %d, want Operational (%d)", driftErr.ExitCode, anyerr.Operational)
+	}
+	if driftErr.ExitCode == anyerr.MissingDependency {
+		t.Fatalf("stale-plan exit = MissingDependency (%d); the binary is present, so it is not a missing dependency", anyerr.MissingDependency)
 	}
 }

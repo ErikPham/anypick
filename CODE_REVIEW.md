@@ -42,12 +42,16 @@ an independent context audits the change, the author implements it, the audit is
 repeated on the result, and a further context audits the tests. It applies to
 hand-written changes too.
 
-This rule used to live only in `.pi/APPEND_SYSTEM.md`, which `.gitignore`
+This rule used to live only in .pi/APPEND_SYSTEM.md, which `.gitignore`
 excludes — so a clean clone, CI, and every agent session starting from `main`
 were reviewing against a rule they could not read. The copy there had also gone
 stale: it named pre-`src/` paths and still called TypeScript the behavioural
 authority, which ADR 0020 replaced. A rule that lives in the standard is
-followed; a rule in an ignored file is not.
+followed; a rule in an ignored file is not. The path is left as prose rather
+than a code span on purpose: `make check-paths` requires every cited markdown
+file to exist, and citing this one as a reference would fail on every clean
+clone while passing locally, which is the exact failure this paragraph is
+describing.
 
 ---
 

@@ -125,7 +125,7 @@ func newForwardedServices(t *testing.T) (*Service, *fakeLifecycle) {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	st := store.New(t.TempDir(), database)
-	svc := New(st, &LeaseStore{DB: database.DB})
+	svc := New(st, &LeaseStore{Root: t.TempDir(), DB: database.DB})
 	fake := &fakeLifecycle{forwards: map[string]bool{"pluginprov": true}}
 	svc.PluginLifecycle = fake
 	return svc, fake
@@ -1368,7 +1368,7 @@ func newForwardedServiceOnly(t *testing.T) *Service {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	st := store.New(t.TempDir(), database)
-	svc := New(st, &LeaseStore{DB: database.DB})
+	svc := New(st, &LeaseStore{Root: t.TempDir(), DB: database.DB})
 	fake := &fakeLifecycle{forwards: map[string]bool{"pluginprov": true}}
 	svc.PluginLifecycle = fake
 	return svc

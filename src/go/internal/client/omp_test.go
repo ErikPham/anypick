@@ -126,10 +126,12 @@ func TestOmpApplyRejectsUnbalancedMarkers(t *testing.T) {
 }
 
 func TestOmpResetStripsManagedBlock(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	home := t.TempDir()
 	a := newOmp(home)
 	if _, err := a.Apply(&ApplyContext{
-		Endpoint: "http://127.0.0.1:9000", APIKey: "sk", AnyPickRoot: t.TempDir(), Home: home,
+		Endpoint: "http://127.0.0.1:9000", APIKey: "sk", AnyPickRoot: root, Home: home,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -143,6 +145,8 @@ func TestOmpResetStripsManagedBlock(t *testing.T) {
 }
 
 func TestOmpResetKeepsUserContent(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	home := t.TempDir()
 	if err := os.MkdirAll(ompAgentDir(home), 0o700); err != nil {
 		t.Fatal(err)
@@ -153,7 +157,7 @@ func TestOmpResetKeepsUserContent(t *testing.T) {
 	}
 	a := newOmp(home)
 	if _, err := a.Apply(&ApplyContext{
-		Endpoint: "http://127.0.0.1:9000", APIKey: "sk", AnyPickRoot: t.TempDir(), Home: home,
+		Endpoint: "http://127.0.0.1:9000", APIKey: "sk", AnyPickRoot: root, Home: home,
 	}); err != nil {
 		t.Fatal(err)
 	}

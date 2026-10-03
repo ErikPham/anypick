@@ -116,6 +116,7 @@ func TestCodexApplyAndInspect(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
 	// Isolate CODEX_HOME to home.
+	t.Setenv("ANYPICK_HOME", root)
 	t.Setenv("CODEX_HOME", "")
 	reg := NewRegistry()
 	_ = RegisterBuiltin(reg, home)

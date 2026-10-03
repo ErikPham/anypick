@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-// mutationVerbs reports whether a method name reads as a persisted mutation.
+// MutationVerbs reports whether a method name reads as a persisted mutation.
 // The list is intentionally broad: a false positive costs one allowlist entry
 // with a sentence of justification, while a false negative costs silent
 // corruption or a coordinator deadlock.
@@ -26,12 +26,20 @@ import (
 // than from the original: bindings carried its own drifted copy of this check
 // (missing Attach, Detach, Migrate and Restore), and merging the two had to
 // keep both sides' coverage rather than the shared list's.
-func mutationVerbs(name string) bool {
+// MutationVerbs is the detection's entire signal, so it is exported rather than
+// mirrored: a second copy in a package that gates the coordinator went quiet
+// while looking green. Every gate that decides "is this a mutation" must read
+// this list, so a newly added verb cannot reach one gate and miss another.
+func MutationVerbs(name string) bool {
 	for _, verb := range []string{
 		"Write", "Set", "Clear", "Delete", "Patch", "Update", "Create", "Remove",
 		"Save", "Upsert", "Insert", "Discard", "Prepare", "Ingest", "Reset",
 		"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Attach", "Detach",
 		"Migrate", "Restore", "Record",
+		// ReleaseProxyRuntimeContext and CopySnapshotFiles are persisted
+		// mutations that self-lock today, but the gate never looked at a name
+		// starting with these verbs, so deleting their lock would have passed.
+		"Release", "Copy", "Heartbeat", "Reap",
 	} {
 		if strings.HasPrefix(name, verb) {
 			return true
@@ -95,9 +103,19 @@ type Finding struct {
 // once — and a check welded to *testing.T cannot itself be tested. Detection
 // returns findings; CheckNoCtxlessMutations only prints them.
 //
-// allowed maps an exempt method to the written reason it is safe; an empty
-// reason is itself a finding, because adding to the map is a decision, not a
-// workaround.
+// allowed maps an exempt method to the written reason it is safe, keyed by
+// "Type.Method": the receiver type name as ReceiverName reports it (so a
+// pointer and a value receiver share one key), a dot, then the method name.
+//
+// The type belongs in the key because these verbs are common method names.
+// Keying on the method alone let an http.ResponseWriter exemption extend
+// silently to every other type in the package, which is how a comment came to
+// name four implementations while the code exempted all of them. One directory
+// is one package and Go forbids two types with one name in a package, so
+// "Type.Method" is unambiguous without disambiguating pointer from value.
+//
+// An empty reason is itself a finding, because adding to the map is a decision,
+// not a workaround.
 func CtxlessMutations(dir string, allowed map[string]string) ([]Finding, error) {
 	fset := token.NewFileSet()
 	files, err := PackageFiles(dir, fset)
@@ -112,14 +130,15 @@ func CtxlessMutations(dir string, allowed map[string]string) ([]Finding, error) 
 				continue
 			}
 			name := fn.Name.Name
-			if !ast.IsExported(name) || !mutationVerbs(name) {
+			if !ast.IsExported(name) || !MutationVerbs(name) {
 				continue
 			}
-			if reason, ok := allowed[name]; ok {
+			key := ReceiverName(fn) + "." + name
+			if reason, ok := allowed[key]; ok {
 				if strings.TrimSpace(reason) == "" {
 					findings = append(findings, Finding{
-						Method: name,
-						Detail: name + " is allowlisted with no reason; say why it is safe",
+						Method: key,
+						Detail: key + " is allowlisted with no reason; say why it is safe",
 					})
 				}
 				continue
@@ -127,8 +146,8 @@ func CtxlessMutations(dir string, allowed map[string]string) ([]Finding, error) 
 			params := fn.Type.Params.List
 			if len(params) == 0 || !isContextType(params[0].Type) {
 				findings = append(findings, Finding{
-					Method: name,
-					Detail: "mutating method " + name + " must take context.Context first; " +
+					Method: key,
+					Detail: "mutating method " + key + " must take context.Context first; " +
 						"add a Context twin and delete this form",
 				})
 			}
@@ -137,20 +156,139 @@ func CtxlessMutations(dir string, allowed map[string]string) ([]Finding, error) 
 	return findings, nil
 }
 
-// CheckNoCtxlessMutations fails when an exported method in dir whose name
-// reads as a mutation does not take context.Context as its first parameter.
 // A mutating wrapper that starts from context.Background() cannot see a
-// coordinator lock its caller holds, so it re-acquires and blocks forever on
-// the in-process mutex — the process hangs instead of failing. Reads keep
-// their ctx-less form because they take no lock.
-//
-// allowed maps an exempt method to the written reason it is safe; an empty
-// reason fails, because adding to the map is a decision, not a workaround.
+// coordinator lock its caller holds, so it re-acquires and waits on the
+// in-process mutex until the budget runs out, then fails with
+// MUTATION_LOCK_TIMEOUT. Reads keep their ctx-less form because they take no
+// lock.
 func CheckNoCtxlessMutations(t *testing.T, dir string, allowed map[string]string) {
 	t.Helper()
 	findings, err := CtxlessMutations(dir, allowed)
 	if err != nil {
 		t.Fatalf("ctxfirst gate could not run: %v", err)
+	}
+	for _, finding := range findings {
+		t.Errorf("%s", finding.Detail)
+	}
+}
+
+// TakesCoordinatorLock reports whether a method body routes through the
+// mutation coordinator. A store's own mutate wrapper counts, as does the
+// WithMutationLock family, which a mutation spanning several provider scopes
+// uses directly.
+//
+// One implementation, shared: two stores each keeping their own copy is how a
+// verb or a wrapper added to one gate quietly missed the other, which is the
+// whole reason this package exists.
+func TakesCoordinatorLock(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			switch fn.Sel.Name {
+			case "mutate", "WithMutationLock", "WithMutationLocks":
+				found = true
+			}
+		case *ast.Ident:
+			switch fn.Name {
+			case "WithMutationLock", "WithMutationLocks":
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// ReceiverName is the bare type name a method is declared on, with any pointer
+// marker dropped: both `LeaseStore` and `*LeaseStore` report "LeaseStore".
+func ReceiverName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return ""
+	}
+	switch t := fn.Recv.List[0].Type.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if id, ok := t.X.(*ast.Ident); ok {
+			return id.Name
+		}
+	}
+	return ""
+}
+
+// UncoordinatedMutations reports the exported methods in dir whose name reads
+// as a persisted mutation and whose body never routes through the coordinator.
+// It is the second half of the same rule CtxlessMutations guards from the other
+// side: ctx-first is what lets a mutation see the caller's lock, and the lock
+// is what makes two actors on one provider serialise.
+//
+// receivers narrows the sweep to named types. Pass nil for every receiver.
+// Narrowing matters because the rule is about the type that owns persisted
+// state: a service method reaches the database through a store's ctx-first
+// mutator, so it is the store that carries the obligation, and gating the
+// service package too would only grow an exemption list (CODE_REVIEW.md §8,
+// health signals).
+//
+// allowed maps an exempt method to the written reason it is safe, keyed the
+// same way CtxlessMutations keys its map: "Type.Method". An empty reason is
+// itself a finding, for the same reason it is one there.
+func UncoordinatedMutations(dir string, receivers []string, allowed map[string]string) ([]Finding, error) {
+	fset := token.NewFileSet()
+	files, err := PackageFiles(dir, fset)
+	if err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]bool, len(receivers))
+	for _, r := range receivers {
+		wanted[r] = true
+	}
+	var findings []Finding
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || fn.Body == nil {
+				continue
+			}
+			name := fn.Name.Name
+			if !ast.IsExported(name) || !MutationVerbs(name) {
+				continue
+			}
+			recv := ReceiverName(fn)
+			if len(wanted) > 0 && !wanted[recv] {
+				continue
+			}
+			key := recv + "." + name
+			if reason, ok := allowed[key]; ok {
+				if strings.TrimSpace(reason) == "" {
+					findings = append(findings, Finding{
+						Method: key,
+						Detail: key + " is allowlisted with no reason; say why it is safe",
+					})
+				}
+				continue
+			}
+			if !TakesCoordinatorLock(fn.Body) {
+				findings = append(findings, Finding{
+					Method: key,
+					Detail: key + " mutates persisted state without the coordinator (ADR 0009 invariant #5)",
+				})
+			}
+		}
+	}
+	return findings, nil
+}
+
+// CheckUncoordinatedMutations is UncoordinatedMutations wired to a test.
+func CheckUncoordinatedMutations(t *testing.T, dir string, receivers []string, allowed map[string]string) {
+	t.Helper()
+	findings, err := UncoordinatedMutations(dir, receivers, allowed)
+	if err != nil {
+		t.Fatalf("coordinator gate could not run: %v", err)
 	}
 	for _, finding := range findings {
 		t.Errorf("%s", finding.Detail)

@@ -39,7 +39,7 @@ func TestCtxlessMutations(t *testing.T) {
 		{
 			name:   "a ctx-less mutator is reported",
 			source: receiver + "\nfunc (s *S) WriteThing(name string) error { return nil }\n",
-			want:   []string{"WriteThing"},
+			want:   []string{"S.WriteThing"},
 		},
 		{
 			name:   "a ctx-first mutator is clean",
@@ -60,18 +60,28 @@ func TestCtxlessMutations(t *testing.T) {
 		{
 			name:   "ctx in a later position does not satisfy the rule",
 			source: receiver + "\nfunc (s *S) WriteThing(name string, ctx context.Context) error { return nil }\n",
-			want:   []string{"WriteThing"},
+			want:   []string{"S.WriteThing"},
 		},
 		{
 			name:   "an allowlisted mutator with a reason is clean",
 			source: receiver + "\nfunc (s *S) PrepareThing() error { return nil }\n",
-			allow:  map[string]string{"PrepareThing": "creates a fresh staging dir; takes no lock"},
+			allow:  map[string]string{"S.PrepareThing": "creates a fresh staging dir; takes no lock"},
 		},
 		{
 			name:   "an allowlisted mutator with a blank reason is reported",
 			source: receiver + "\nfunc (s *S) PrepareThing() error { return nil }\n",
-			allow:  map[string]string{"PrepareThing": "   "},
-			want:   []string{"PrepareThing"},
+			allow:  map[string]string{"S.PrepareThing": "   "},
+			want:   []string{"S.PrepareThing"},
+		},
+		{
+			// The regression pin for the Type.Method key. Keyed on the method
+			// name alone, an http.ResponseWriter exemption extended to every
+			// other type in the package, so a persisted mutator on a second type
+			// passed a gate that looked like it was covering it.
+			name:   "an exemption for one type does not cover a second type",
+			source: receiver + "\ntype T struct{}\nfunc (t *T) WriteThing(name string) error { return nil }\n",
+			allow:  map[string]string{"S.WriteThing": "http.ResponseWriter implementation"},
+			want:   []string{"T.WriteThing"},
 		},
 	}
 	for _, tc := range cases {
@@ -109,7 +119,7 @@ func TestDirIsHonoured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the gate did not read the directory it was given: %v", err)
 	}
-	if len(findings) != 1 || findings[0].Method != "DeleteThing" {
+	if len(findings) != 1 || findings[0].Method != "S.DeleteThing" {
 		t.Fatalf("findings = %v, want the mutator from %s", findings, dir)
 	}
 }
@@ -150,13 +160,16 @@ func TestMutationVerbsKeepsItsCoverage(t *testing.T) {
 		"InsertThing", "DiscardThing", "PrepareThing", "IngestThing", "ResetThing",
 		"RotateThing", "RevokeThing", "MarkThing", "MoveThing", "ReplaceThing",
 		"ApplyThing", "AttachThing", "DetachThing", "MigrateThing", "RestoreThing",
+		// ReleaseProxyRuntimeContext and CopySnapshotFiles are persisted
+		// mutations; a gate blind to these names cannot see them lose a lock.
+		"ReleaseThing", "CopyThing", "HeartbeatThing", "ReapThing",
 	} {
-		if !mutationVerbs(verb) {
+		if !MutationVerbs(verb) {
 			t.Errorf("mutationVerbs(%q) = false: a verb left the list and six gates went quiet", verb)
 		}
 	}
 	for _, read := range []string{"GetThing", "ListThings", "CountThings", "DescribeThing"} {
-		if mutationVerbs(read) {
+		if MutationVerbs(read) {
 			t.Errorf("mutationVerbs(%q) = true: reads take no lock and must not be reported", read)
 		}
 	}

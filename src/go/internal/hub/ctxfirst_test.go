@@ -17,7 +17,7 @@ func TestMutatingMethodsTakeContext(t *testing.T) {
 		// attemptWriter implements http.ResponseWriter, whose methods are named
 		// Write/WriteHeader. They write a response, not persisted state, and
 		// take no lock.
-		"Write":       "http.ResponseWriter method; writes a response body, not state",
-		"WriteHeader": "http.ResponseWriter method; writes a response status, not state",
+		"attemptWriter.Write":       "http.ResponseWriter method; writes a response body, not state",
+		"attemptWriter.WriteHeader": "http.ResponseWriter method; writes a response status, not state",
 	})
 }

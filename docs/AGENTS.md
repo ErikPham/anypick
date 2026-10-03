@@ -43,7 +43,8 @@ claims that had to be walked back.
   app between saved accounts works natively via its session file. `cline` is a
   provider login without a client adapter. `../src/go/internal/client` lists
   what *exists*, not what *is allowed*.
-  `internal/transport/adapter_test.go` holds the exhaustive pairing matrix.
+  `internal/transport/adapter_matrix_test.go` holds the exhaustive pairing
+  matrix, sweeping the ids from `client.Registry.IDs()`.
 - **Binding and switching are different questions.** Binding a client to a
   foreign provider is the narrow list above. Switching which account is live is
   broader, because AnyPick restores the provider's own credential file, so

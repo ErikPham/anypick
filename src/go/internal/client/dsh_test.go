@@ -12,6 +12,7 @@ import (
 func TestDshApplyWritesEnvAndPatch(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	a := newDsh(home)
 
 	res, err := a.Apply(&ApplyContext{
@@ -99,6 +100,7 @@ func TestDshRequiresASelectedModel(t *testing.T) {
 func TestDshApplyWritesSettingsEndpoint(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	a := newDsh(home)
 	res, err := a.Apply(&ApplyContext{
 		Endpoint:     "http://127.0.0.1:9000",
@@ -413,6 +415,7 @@ func TestDshSettingsUnbalancedMarkersRefuseRewrite(t *testing.T) {
 // Merges preserve the file's existing permission bits and keep user content
 // outside the markers byte-identical.
 func TestDshMergePreservesPermissionsAndUserContent(t *testing.T) {
+	t.Setenv("ANYPICK_HOME", t.TempDir())
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.yaml")
 	user := "# user comment\ntheme: dark\n"

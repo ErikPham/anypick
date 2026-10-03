@@ -66,7 +66,7 @@ func newTrayEnv(t *testing.T) *trayEnv {
 		t.Fatal(err)
 	}
 	svc := accounts.New(st, provReg)
-	px := proxy.New(st, &proxy.LeaseStore{DB: database.DB})
+	px := proxy.New(st, &proxy.LeaseStore{Root: home, DB: database.DB})
 	px.Resolver = &trayUpstreamResolver{}
 	svc.Proxy = px
 

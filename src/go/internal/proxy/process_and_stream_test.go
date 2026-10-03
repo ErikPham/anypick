@@ -65,7 +65,7 @@ func TestCleanupLeasesRemovesOnlyMatchingInstance(t *testing.T) {
 	svc := &Service{Jobs: ls}
 	mk := func(id, inst string) {
 		t.Helper()
-		if err := ls.Create(Lease{
+		if err := ls.CreateContext(t.Context(), Lease{
 			LeaseID: id, Provider: "codex", Account: "work",
 			Port: 4000 + len(id), Host: "127.0.0.1",
 			OwnerPID: ownPID(), InstanceID: inst,
@@ -236,7 +236,7 @@ func TestServeExistingServesUntilTerminated(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls := ts.Service.Jobs
-	if err := ls.Create(Lease{
+	if err := ls.CreateContext(t.Context(), Lease{
 		LeaseID: "lease-child", Provider: "codex", Account: "serve-child",
 		Port: port, Host: "127.0.0.1", Endpoint: endpoint,
 		OwnerPID: ownPID(), InstanceID: instID,
@@ -309,7 +309,7 @@ func TestStopDropsStaleCrossProcessRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls := ts.Service.Jobs
-	if err := ls.Create(Lease{
+	if err := ls.CreateContext(t.Context(), Lease{
 		LeaseID: "lease-stale", Provider: "codex", Account: "stale-stop",
 		Port: 1, Host: "127.0.0.1", OwnerPID: 999999, InstanceID: "inst-stale",
 	}); err != nil {

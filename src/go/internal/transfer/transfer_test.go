@@ -301,10 +301,10 @@ func TestBackupExportInspectRestoreAtomic(t *testing.T) {
 			t.Fatalf("unexpected disposition: %+v", e)
 		}
 	}
-	if _, err := RestoreSelected(st, reg, dest, []BackupEntry{{Provider: "claude", Name: "alpha"}}, RestoreOptions{}); err == nil {
+	if _, err := RestoreSelectedContext(t.Context(), st, reg, dest, []BackupEntry{{Provider: "claude", Name: "alpha"}}, RestoreOptions{}); err == nil {
 		t.Fatal("replace without explicit approval was allowed")
 	}
-	metas, err := RestoreSelected(st, reg, dest, []BackupEntry{
+	metas, err := RestoreSelectedContext(t.Context(), st, reg, dest, []BackupEntry{
 		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},
 	}, RestoreOptions{Replace: []BackupEntry{{Provider: "claude", Name: "alpha"}}})
 	if err == nil {
@@ -313,7 +313,7 @@ func TestBackupExportInspectRestoreAtomic(t *testing.T) {
 	if len(metas) != 0 {
 		t.Fatal("failed restore returned metas")
 	}
-	metas, err = RestoreSelected(st, reg, dest, []BackupEntry{
+	metas, err = RestoreSelectedContext(t.Context(), st, reg, dest, []BackupEntry{
 		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},
 	}, RestoreOptions{Replace: []BackupEntry{
 		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},

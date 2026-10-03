@@ -28,6 +28,7 @@ make lint                      # staticcheck; wants it at $(go env GOPATH)/bin
 make check                     # every static gate: fmt-check, vet, cross-file references
 make review                    # check + test: the CODE_REVIEW.md §4 gates in one command
 make build                     # -> src/go/bin/anypick-dev
+make clean                     # remove build output; the only cleanup entry point
 
 make run ARGS="providers"      # build, then run a command
 make sandbox ARGS="providers"  # same, against a throwaway HOME + ANYPICK_HOME
@@ -129,18 +130,24 @@ Breaking one of these is a correctness or security regression, not a style nit.
    `src/go/internal/client` lists what *exists*, not what is *allowed* — never
    infer a pairing from the registry, and never publish one in docs or
    marketing copy without reading the adapter.
-   `internal/transport/adapter_test.go` requires an explicit expectation for
-   every registered client in every adapter row, so adding a client without
-   classifying it there fails the build.
+   `internal/transport/adapter_matrix_test.go` requires an explicit expectation
+   for every registered client in every adapter row, so adding a client without
+   classifying it there fails the build. It is an external test package for one
+   reason: `internal/client` imports `internal/transport`, so a test in
+   `package transport` cannot see the registry, and a hand-written client list is
+   exactly what let `grok` ship unclassified.
 2. **Proxy secrets never cross an output boundary.** Every local proxy
    authenticates each request with a per-instance secret (ADR 0006) and binds
    loopback only. `StartResult.Token` is deliberately discarded by every
    caller — the CLI, the TUI (`src/go/internal/tui/toggleProxyCmd`) and the desktop
    protocol all surface the endpoint only. JSON output lands in CI logs.
 3. **Activation is planned, journalled, then executed.** `ActivationPlan.steps`
-   is the single source of truth for both execution and rollback; the executor
-   must not re-derive behavior from transport capability, or planner and executor
-   can diverge silently.
+   is the single source of truth for execution; the executor must not re-derive
+   behavior from transport capability, or planner and executor can diverge
+   silently. Rollback is *not* a second planned list — it is the executor's undo
+   stack run in reverse plus the journal replay in `recovery.go`. The plan used
+   to carry a `Rollback` field nothing read, which asserted compensations the
+   executor never performed; it was deleted rather than left to drift.
 4. **`writeMeta` is the atomic commit point** for an account snapshot — a failed
    backup or import can never destroy the previously saved account (ADR 0004).
 5. **Every persisted mutation runs under the coordinator** with sorted, scoped
@@ -196,8 +203,9 @@ Breaking one of these is a correctness or security regression, not a style nit.
   Re-entrancy is carried in the context: `WithMutationLocks` skips scopes the
   context already holds. A store method that starts from
   `context.Background()` cannot see the lock its caller holds, so it calls
-  `AcquireFileLock` again and blocks forever on the in-process `pathMutex` —
-  the process hangs instead of failing. This already happened once, via
+  `AcquireFileLock` again and waits on the in-process `pathMutex` until the
+  budget runs out, then fails with `MUTATION_LOCK_TIMEOUT` (5s,
+  `internal/lock/lock.go:20`). This already happened once, via
   `SaveInput` → `WriteMeta`. That is why the ctx-less `WriteMeta`, `Delete`,
   `SetActive`, `ClearActive`, `PatchMeta`, `WriteProxyState`,
   `ClearProxyState` and `SetProxyConfig` were **deleted** rather than kept as

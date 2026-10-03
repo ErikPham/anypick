@@ -215,13 +215,9 @@ type RestoreOptions struct {
 	Replace []BackupEntry
 }
 
-// RestoreSelected restores a selection in one atomic batch under sorted,
+// RestoreSelectedContext restores a selection in one atomic batch under sorted,
 // provider-scoped coordinator locks (invariant #5). Replacing an existing
 // account requires its exact provider/name pair in opts.Replace.
-func RestoreSelected(st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
-	return RestoreSelectedContext(context.Background(), st, reg, path, selected, opts)
-}
-
 func RestoreSelectedContext(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path string, selected []BackupEntry, opts RestoreOptions) ([]store.Meta, error) {
 	// Sorted provider-scoped locks cover every account the batch touches so a
 	// concurrent save/refresh/remove cannot interleave (ADR 0009/0011).

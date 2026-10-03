@@ -56,15 +56,6 @@ func TestPlannerPersistentDirectStepOrder(t *testing.T) {
 		}
 	}
 
-	foundRollback := false
-	for _, r := range plan.Rollback {
-		if r.Kind == "RestoreNativeAuth" {
-			foundRollback = true
-		}
-	}
-	if !foundRollback {
-		t.Error("plan rollback must contain RestoreNativeAuth")
-	}
 	if plan.Transport.Capability != "direct" || plan.Transport.Protocol != "openai" {
 		t.Errorf("transport = %s/%s, want direct/openai",
 			plan.Transport.Capability, plan.Transport.Protocol)
@@ -251,16 +242,6 @@ func TestPlannerManagedProxyAccountStillWritesNativeAuth(t *testing.T) {
 	if !found {
 		t.Fatal("persistent managed-proxy account plan must include WriteNativeAuth")
 	}
-	// Rollback must still be able to restore the pre-activation live login.
-	foundRestore := false
-	for _, r := range plan.Rollback {
-		if r.Kind == "RestoreNativeAuth" {
-			foundRestore = true
-		}
-	}
-	if !foundRestore {
-		t.Fatal("plan rollback must contain RestoreNativeAuth when WriteNativeAuth is planned")
-	}
 }
 
 // TestPlannerRestoreOnlySkipsNativeAuthWrite: desktop rehydration rebuilds an
@@ -293,11 +274,6 @@ func TestPlannerRestoreOnlySkipsNativeAuthWrite(t *testing.T) {
 	for _, s := range plan.Steps {
 		if s.Kind == StepWriteNativeAuth {
 			t.Fatal("restore-only plan must not rewrite native auth")
-		}
-	}
-	for _, r := range plan.Rollback {
-		if r.Kind == "RestoreNativeAuth" {
-			t.Fatal("restore-only plan must not plan a native-auth rollback")
 		}
 	}
 }

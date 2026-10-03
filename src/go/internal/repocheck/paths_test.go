@@ -71,6 +71,15 @@ func newFixtureRepo(t *testing.T) *fixtureRepo {
 	fixture.writeBinary("assets/icon-32.png", pngMagic, []byte{0x00, 0x01})
 	fixture.writeBinary("assets/icon-1024.png", pngMagic, []byte{0x00})
 	fixture.writeBinary("src/macos/Resources/AppIcon.icns", icnsMagic, []byte{0x00})
+	// Every remaining reference source, so the tracked-documents check sees a
+	// clean tree. Stubs stay free of `make` targets and file citations: a
+	// fixture that invented either would add findings to unrelated cases.
+	for _, rel := range referenceSources {
+		if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
+			continue
+		}
+		fixture.write(rel, "# "+filepath.Base(rel)+"\n")
+	}
 	fixture.gitInit()
 	return fixture
 }
@@ -251,6 +260,16 @@ func TestCheckPathsFindsBrokenReferences(t *testing.T) {
 				f.git("rm", "-q", "--cached", "CODE_REVIEW.md")
 			},
 			expect: "CODE_REVIEW.md is not tracked by git",
+		},
+		{
+			// SECURITY.md is a reference source but not an authority document:
+			// untracked, it shrank both reference checks while every gate stayed
+			// green. The check now iterates referenceSources, so it is caught.
+			name: "a reference document that is not an authority document is untracked",
+			breaks: func(f *fixtureRepo) {
+				f.git("rm", "-q", "--cached", "SECURITY.md")
+			},
+			expect: "SECURITY.md is not tracked by git",
 		},
 		{
 			name: "a stray file sits at the repository root",

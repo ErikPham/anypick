@@ -12,7 +12,7 @@ import (
 // re-entrancy to break; the commit point (WriteMeta) is guarded.
 func TestMutatingMethodsTakeContext(t *testing.T) {
 	testgate.CheckNoCtxlessMutations(t, ".", map[string]string{
-		"PrepareSnapshot":         "creates a fresh staging dir only; no existing state is mutated and no lock is taken",
-		"DiscardPreparedSnapshot": "removes only a staging dir this process created; no row or snapshot is touched and no lock is taken",
+		"AccountStore.PrepareSnapshot":         "creates a fresh staging dir only; no existing state is mutated and no lock is taken",
+		"AccountStore.DiscardPreparedSnapshot": "removes only a staging dir this process created; no row or snapshot is touched and no lock is taken",
 	})
 }

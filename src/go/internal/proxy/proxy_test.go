@@ -416,12 +416,12 @@ func testLeaseStore(t *testing.T) *LeaseStore {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = database.Close() })
-	return &LeaseStore{DB: database.DB}
+	return &LeaseStore{Root: t.TempDir(), DB: database.DB}
 }
 
 func TestLeaseCRUDRoundTrip(t *testing.T) {
 	ls := testLeaseStore(t)
-	err := ls.Create(Lease{
+	err := ls.CreateContext(t.Context(), Lease{
 		LeaseID: "l1", Provider: "codex", Account: "work",
 		Port: 4140, Host: "127.0.0.1", Endpoint: "http://127.0.0.1:4140",
 		OwnerPID: ownPID(), InstanceID: "inst-1", BindingRefs: []string{"client/codex"},
@@ -441,7 +441,7 @@ func TestLeaseCRUDRoundTrip(t *testing.T) {
 	if len(list) != 1 {
 		t.Errorf("list by account = %d", len(list))
 	}
-	if err := ls.Delete("l1"); err != nil {
+	if err := ls.DeleteContext(t.Context(), "l1"); err != nil {
 		t.Fatal(err)
 	}
 	gone, _ := ls.Get("l1")
@@ -463,7 +463,7 @@ func TestReapStaleOnlyRemovesDeadOwnerPIDs(t *testing.T) {
 
 	mustCreate := func(id string, pid int) {
 		t.Helper()
-		if err := ls.Create(Lease{LeaseID: id, Provider: "p", Port: 1,
+		if err := ls.CreateContext(t.Context(), Lease{LeaseID: id, Provider: "p", Port: 1,
 			OwnerPID: pid}); err != nil {
 			t.Fatal(err)
 		}
@@ -471,7 +471,7 @@ func TestReapStaleOnlyRemovesDeadOwnerPIDs(t *testing.T) {
 	mustCreate("own", ownPID())
 	mustCreate("dead", deadPID)
 
-	reaped, err := ls.ReapStale()
+	reaped, err := ls.ReapStaleContext(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func TestHeartbeatIntervalFitsInsideTheExpiryWindow(t *testing.T) {
 func TestLeaseHeartbeatOnlyRefreshesTheOwningInstance(t *testing.T) {
 	ls := testLeaseStore(t)
 	for _, id := range []string{"a", "b"} {
-		if err := ls.Create(Lease{LeaseID: id, Provider: "p", Port: 1,
+		if err := ls.CreateContext(t.Context(), Lease{LeaseID: id, Provider: "p", Port: 1,
 			OwnerPID: 4242, InstanceID: "inst-" + id}); err != nil {
 			t.Fatal(err)
 		}
@@ -561,7 +561,7 @@ func TestLeaseHeartbeatOnlyRefreshesTheOwningInstance(t *testing.T) {
 func TestLeaseHeartbeatByInstanceRefreshesEveryOwnedRow(t *testing.T) {
 	ls := testLeaseStore(t)
 	for _, id := range []string{"x", "y"} {
-		if err := ls.Create(Lease{LeaseID: id, Provider: "p", Port: 1,
+		if err := ls.CreateContext(t.Context(), Lease{LeaseID: id, Provider: "p", Port: 1,
 			OwnerPID: 77, InstanceID: "inst-shared"}); err != nil {
 			t.Fatal(err)
 		}
@@ -569,12 +569,12 @@ func TestLeaseHeartbeatByInstanceRefreshesEveryOwnedRow(t *testing.T) {
 	}
 	// Rows the caller does not own must not be swept along: one from another
 	// instance, one from another process reusing the same instance id.
-	if err := ls.Create(Lease{LeaseID: "z", Provider: "p", Port: 1,
+	if err := ls.CreateContext(t.Context(), Lease{LeaseID: "z", Provider: "p", Port: 1,
 		OwnerPID: 77, InstanceID: "inst-other"}); err != nil {
 		t.Fatal(err)
 	}
 	backdate(t, ls, "z")
-	if err := ls.Create(Lease{LeaseID: "w", Provider: "p", Port: 1,
+	if err := ls.CreateContext(t.Context(), Lease{LeaseID: "w", Provider: "p", Port: 1,
 		OwnerPID: 88, InstanceID: "inst-shared"}); err != nil {
 		t.Fatal(err)
 	}
@@ -606,14 +606,14 @@ func TestReapStaleReapsExpiredLeaseUnderAReusedPID(t *testing.T) {
 
 	// Nothing listens on the endpoint, so the instance cannot prove itself.
 	// The old PID-only rule would have kept this lease forever.
-	if err := ls.Create(Lease{LeaseID: "reused", Provider: "p", Port: 1,
+	if err := ls.CreateContext(t.Context(), Lease{LeaseID: "reused", Provider: "p", Port: 1,
 		OwnerPID: alivePID, InstanceID: "inst-gone",
 		Endpoint: "http://127.0.0.1:1"}); err != nil {
 		t.Fatal(err)
 	}
 	backdate(t, ls, "reused")
 
-	reaped, err := ls.ReapStale()
+	reaped, err := ls.ReapStaleContext(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,13 +638,13 @@ func TestReapStaleKeepsExpiredLeaseWhoseInstanceStillEchoes(t *testing.T) {
 	defer srv.Close()
 	echoed = "inst-live"
 
-	if err := ls.Create(Lease{LeaseID: "live", Provider: "p", Port: 1,
+	if err := ls.CreateContext(t.Context(), Lease{LeaseID: "live", Provider: "p", Port: 1,
 		OwnerPID: alivePID, InstanceID: "inst-live", Endpoint: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
 	backdate(t, ls, "live")
 
-	if _, err := ls.ReapStale(); err != nil {
+	if _, err := ls.ReapStaleContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if l, _ := ls.Get("live"); l == nil {
@@ -663,12 +663,12 @@ func TestReapStaleKeepsFreshLeaseWhoseRecordedPIDIsGone(t *testing.T) {
 
 	// The heartbeat — not the pid — is what proves the owner is still there.
 	// A pid is only ever a veto, never a condemnation.
-	if err := ls.Create(Lease{LeaseID: "beating", Provider: "p", Port: 1,
+	if err := ls.CreateContext(t.Context(), Lease{LeaseID: "beating", Provider: "p", Port: 1,
 		OwnerPID: deadPID, InstanceID: "inst-beating"}); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := ls.ReapStale(); err != nil {
+	if _, err := ls.ReapStaleContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if l, _ := ls.Get("beating"); l == nil {
@@ -700,7 +700,7 @@ func newTestServices(t *testing.T) *testServices {
 	t.Cleanup(func() { _ = database.Close() })
 	st := store.New(t.TempDir(), database)
 	up := newUpstreamProbe(t)
-	svc := New(st, &LeaseStore{DB: database.DB})
+	svc := New(st, &LeaseStore{Root: t.TempDir(), DB: database.DB})
 	svc.Resolver = &fixedResolver{up: up.url}
 	return &testServices{Service: svc, Up: up}
 }

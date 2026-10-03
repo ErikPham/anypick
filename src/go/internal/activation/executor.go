@@ -42,7 +42,6 @@ type ExecuteResult struct {
 	Warnings      []string
 }
 
-// ExecuteOptions configures a single Execute call.
 type ExecuteOptions struct {
 	DryRun        bool
 	SkipIfActive  bool
@@ -329,18 +328,37 @@ func validateSnapshotCredential(ctx context.Context, plan *Plan, deps *Deps) err
 
 // validateExternalDep is the execution half of StepValidateExternalDep: the
 // planner emits the step when the resolved capability is ExternalManualProxy
-// (external binary missing at plan time). Re-resolve at execution time so a
-// binary installed between plan and execute is honoured, and a still-missing
-// binary fails here — in the step — rather than in a pre-loop gate.
+// (external binary missing at plan time). The plan is the authority
+// (invariant #3), so this asserts the planned shape and never re-derives it:
+// proceeding on a fresh answer is how planner and executor diverge silently.
 func validateExternalDep(plan *Plan) error {
-	if plan.ResolvedSource.Adapter.TransportFor(plan.Client) == transport.ExternalManualProxy {
-		return anyerr.Newf(
-			"Required external proxy for "+plan.ResolvedSource.Display+" is not installed.\n\nInstall the provider proxy and retry.",
-			"MISSING_DEPENDENCY",
-			anyerr.WithExitCode(anyerr.MissingDependency),
-			anyerr.WithSuggestions("anypick doctor "+plan.Client))
+	if plan.Transport.Capability != transport.ExternalManualProxy {
+		return nil
 	}
-	return nil
+	if plan.ResolvedSource.Adapter.TransportFor(plan.Client) != transport.ExternalManualProxy {
+		// The binary appeared after the plan was built. Carrying on would keep
+		// the planned ExternalManualProxy and its empty endpoint, so
+		// writeClientConfig would no-op and the binding would still commit.
+		//
+		// STATE_CONFLICT, not MISSING_DEPENDENCY: the dependency is present,
+		// and cli.mdx documents exit 7 as "Missing required dependency". A
+		// consumer branching on the exit code must be able to tell this from a
+		// genuinely absent binary. STATE_CONFLICT is the engine's established
+		// code for "the state you planned against is not the state on disk"
+		// (planner.go, undo.go, desktop/codex_profiles.go), it derives
+		// Operational because it is not a reserved family, and Operational is
+		// what a stale plan is. No suggestion, because no command fixes it:
+		// `anypick doctor` and "install the proxy" are both wrong advice for a
+		// user whose proxy is already installed.
+		return anyerr.Newf(
+			"External proxy for "+plan.ResolvedSource.Display+" was installed after this activation was planned.\n\nRe-run the activation so the plan matches what is on disk.",
+			"STATE_CONFLICT")
+	}
+	return anyerr.Newf(
+		"Required external proxy for "+plan.ResolvedSource.Display+" is not installed.\n\nInstall the provider proxy and retry.",
+		"MISSING_DEPENDENCY",
+		anyerr.WithExitCode(anyerr.MissingDependency),
+		anyerr.WithSuggestions("anypick doctor "+plan.Client))
 }
 
 // validateCredential asserts the credential behind the source is usable before
@@ -1135,9 +1153,9 @@ func commitGlobalBinding(ctx context.Context, plan *Plan, deps *Deps, actx *acti
 	actx.mutated = true
 	// Compensation uses the activation's own context, not a fresh one: it
 	// carries the coordinator locks Execute holds, and a context.Background()
-	// here would re-enter and deadlock the moment bindings takes a lock.
-	// WithoutCancel keeps those values while surviving the cancellation that
-	// probably triggered this rollback in the first place.
+	// here would re-enter and wait out the lock budget the moment bindings
+	// takes a lock. WithoutCancel keeps those values while surviving the
+	// cancellation that probably triggered this rollback in the first place.
 	undoCtx := context.WithoutCancel(ctx)
 	actx.undo = append(actx.undo, func() error {
 		if previous != nil {

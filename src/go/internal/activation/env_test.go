@@ -99,7 +99,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		Profiles: profileStore,
 	}
 	clientProfiles := &client.ProfileStore{Root: root, DB: database.DB}
-	leases := &proxy.LeaseStore{DB: database.DB}
+	leases := &proxy.LeaseStore{Root: root, DB: database.DB}
 	px := proxy.New(st, leases)
 	px.Resolver = &testUpstreamResolver{env: env}
 

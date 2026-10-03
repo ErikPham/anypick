@@ -38,7 +38,7 @@ func CheckPaths(root string) []Section {
 		checkGoSourcesNotIgnored(root),
 		checkGoSourcesTracked(root),
 		checkNoTrackedArtifacts(root),
-		checkAuthorityDocsTracked(root),
+		checkReferenceDocsTracked(root),
 		checkHooksTracked(root),
 		checkHooksInstalled(root),
 		checkRootEntries(root),

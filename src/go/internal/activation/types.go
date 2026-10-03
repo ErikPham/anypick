@@ -54,16 +54,8 @@ const (
 	ModeProfile    Mode = "profile"
 )
 
-// PlanStep is one planned execution step.
 type PlanStep struct {
 	Kind   StepKind               `json:"kind"`
-	Detail string                 `json:"detail,omitempty"`
-	Params map[string]interface{} `json:"params,omitempty"`
-}
-
-// RollbackStep is one compensation step paired with a PlanStep.
-type RollbackStep struct {
-	Kind   string                 `json:"kind"`
 	Detail string                 `json:"detail,omitempty"`
 	Params map[string]interface{} `json:"params,omitempty"`
 }
@@ -84,7 +76,6 @@ type ManagedProxyRef struct {
 	Token    string `json:"-"`
 }
 
-// ResolvedTransport is the transport a resolved source will use.
 type ResolvedTransport struct {
 	Capability   transport.Capability `json:"capability"`
 	Protocol     transport.Protocol   `json:"protocol"`
@@ -137,7 +128,6 @@ type Plan struct {
 	Model                 bindings.ModelSelection `json:"model"`
 	ModelCatalog          []string                `json:"-"`
 	Steps                 []PlanStep              `json:"steps"`
-	Rollback              []RollbackStep          `json:"rollback"`
 	Warnings              []Warning               `json:"warnings"`
 	BindingSpec           *bindings.Spec          `json:"-"`
 	Provenance            *bindings.Provenance    `json:"-"`

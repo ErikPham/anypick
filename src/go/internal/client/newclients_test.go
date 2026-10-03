@@ -13,6 +13,7 @@ import (
 func TestGeminiApplyWritesEnvAndMarker(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	a := newGemini(home)
 	res, err := a.Apply(&ApplyContext{
 		Endpoint:     "http://127.0.0.1:9000",
@@ -148,6 +149,7 @@ func TestKiroApplyPersistentAndIsolated(t *testing.T) {
 func TestOpenCodeApplyResetRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
+	t.Setenv("ANYPICK_HOME", root)
 	a := newOpenCode(home)
 
 	ctx := &ApplyContext{

@@ -25,7 +25,7 @@ import (
 func newPoolTestService(t *testing.T, database *db.DB, resolver UpstreamResolver) *Service {
 	t.Helper()
 	root := t.TempDir()
-	svc := New(store.New(root, database), &LeaseStore{DB: database.DB})
+	svc := New(store.New(root, database), &LeaseStore{Root: root, DB: database.DB})
 	svc.Resolver = resolver
 	svc.Pools = &pools.Store{Root: root, DB: database.DB}
 	for _, name := range []string{"a", "b"} {

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/outof0/anypick/go/internal/lock"
 )
 
 // Lease mirrors ProxyLease (src/types/bindings.ts). Leases record which
@@ -24,7 +26,28 @@ type Lease struct {
 }
 
 // LeaseStore owns the proxy_leases table (src/core/lease-store.ts).
-type LeaseStore struct{ DB *sql.DB }
+type LeaseStore struct {
+	Root string
+	DB   *sql.DB
+}
+
+// mutate serialises a structural lease change under the provider/account slot
+// lock so correctness does not depend on the caller holding it (ADR 0009). The
+// cleanup path at service.go already takes this scope alongside the provider
+// scope, so a caller that holds it re-enters instead of deadlocking.
+//
+// HeartbeatContext, HeartbeatInstanceContext and ReapStaleContext stay outside
+// the coordinator on purpose. The heartbeat goroutine's context is a
+// long-lived cancel context, so it can never carry a provider lock, and giving
+// it one per tick would serialise every 15s liveness write behind proxy
+// cleanup and drop ticks on the 5s lock budget. Reaping is a cross-provider
+// sweep with no single scope; the coordinator would only serialise reaps
+// against other reaps, which SQLite's single writer already does. Neither
+// changes which rows exist in a way a concurrent structural change can observe,
+// because both filter on identity and age the writer re-checks.
+func (s *LeaseStore) mutate(ctx context.Context, providerID, accountName string, fn func(context.Context) error) error {
+	return lock.WithMutationLock(ctx, s.Root, proxyScope(providerID, accountName), fn)
+}
 
 // HeartbeatInterval is deliberately shorter than the expiry window. A missed
 // tick must not immediately make a healthy detached proxy reclaimable.
@@ -60,27 +83,21 @@ func scanLease(row rowScanner) (*Lease, error) {
 	return &l, nil
 }
 
-// Create inserts a new lease.
-//
-// Deprecated: prefer CreateContext when the caller has a context. Kept until
-// remaining in-tree callers migrate (ADR-style Background wrappers).
-func (s *LeaseStore) Create(l Lease) error {
-	return s.CreateContext(context.Background(), l)
-}
-
 func (s *LeaseStore) CreateContext(ctx context.Context, l Lease) error {
-	now := nowISO()
-	if l.Host == "" {
-		l.Host = "127.0.0.1"
-	}
-	bindingRefs, _ := json.Marshal(l.BindingRefs)
-	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO proxy_leases (`+leaseColumns+`)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		l.LeaseID, l.Provider, nullIfEmpty(l.Account), l.Port,
-		nullIfEmpty(l.Host), nullIfEmpty(l.Endpoint), l.OwnerPID,
-		nullIfEmpty(l.InstanceID), string(bindingRefs), now, now)
-	return err
+	return s.mutate(ctx, l.Provider, l.Account, func(c context.Context) error {
+		now := nowISO()
+		if l.Host == "" {
+			l.Host = "127.0.0.1"
+		}
+		bindingRefs, _ := json.Marshal(l.BindingRefs)
+		_, err := s.DB.ExecContext(c,
+			`INSERT INTO proxy_leases (`+leaseColumns+`)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			l.LeaseID, l.Provider, nullIfEmpty(l.Account), l.Port,
+			nullIfEmpty(l.Host), nullIfEmpty(l.Endpoint), l.OwnerPID,
+			nullIfEmpty(l.InstanceID), string(bindingRefs), now, now)
+		return err
+	})
 }
 
 // Get returns a lease by id.
@@ -99,16 +116,18 @@ func (s *LeaseStore) GetContext(ctx context.Context, leaseID string) (*Lease, er
 	return l, err
 }
 
-// Delete removes a released lease.
-//
-// Deprecated: prefer DeleteContext when the caller has a context.
-func (s *LeaseStore) Delete(leaseID string) error {
-	return s.DeleteContext(context.Background(), leaseID)
-}
-
 func (s *LeaseStore) DeleteContext(ctx context.Context, leaseID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM proxy_leases WHERE lease_id = ?`, leaseID)
-	return err
+	// The scope is the lease's provider/account, which only the row knows, so
+	// it is read before the lock is taken. A lease that is already gone needs
+	// no lock: the delete was a no-op and still is.
+	l, err := s.GetContext(ctx, leaseID)
+	if err != nil || l == nil {
+		return err
+	}
+	return s.mutate(ctx, l.Provider, l.Account, func(c context.Context) error {
+		_, err := s.DB.ExecContext(c, `DELETE FROM proxy_leases WHERE lease_id = ?`, leaseID)
+		return err
+	})
 }
 
 // HeartbeatContext refreshes a lease only when the exact serving instance still
@@ -194,12 +213,6 @@ func (s *LeaseStore) ListByAccountContext(ctx context.Context, providerID, accou
 
 // ReapStale removes leases whose owner process is gone (owner_pid = this pid
 // marks in-process servers; after a crash the pid no longer exists).
-//
-// Deprecated: prefer ReapStaleContext when the caller has a context.
-func (s *LeaseStore) ReapStale() (int, error) {
-	return s.ReapStaleContext(context.Background())
-}
-
 func (s *LeaseStore) ReapStaleContext(ctx context.Context) (int, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT lease_id, owner_pid, instance_id, endpoint, updated_at

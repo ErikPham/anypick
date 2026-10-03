@@ -335,8 +335,14 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	}
 
 	var steps []PlanStep
-	var rollback []RollbackStep
 	warnings := []Warning{}
+
+	// There is deliberately no planned-rollback list beside `steps`. The
+	// planner used to fill a Plan.Rollback that nothing outside tests ever read,
+	// so it asserted compensations the executor never performed. Real
+	// compensation is the executor's undo stack run in reverse, plus the
+	// journal replay in recovery.go; a second description of it could only
+	// drift from the first.
 
 	var resolved *ResolvedSource
 	var model bindings.ModelSelection
@@ -548,9 +554,6 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			PlanStep{Kind: StepStartProxy},
 			PlanStep{Kind: StepWaitForHealth},
 		)
-		rollback = append(rollback,
-			RollbackStep{Kind: "ReleaseLease"},
-			RollbackStep{Kind: "StopProxy"})
 	}
 
 	// Ephemeral safety gate (invariant: ephemeral must never switch live login).
@@ -578,7 +581,6 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			Detail: resolved.Display,
 			Params: map[string]interface{}{"ref": refs.SerializeRef(resolved.Ref)},
 		})
-		rollback = append(rollback, RollbackStep{Kind: "RestoreNativeAuth"})
 	}
 
 	switch req.Mode {
@@ -587,10 +589,8 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 			steps = append(steps,
 				PlanStep{Kind: StepCreateTempClientHome},
 				PlanStep{Kind: StepSpawnChild})
-			rollback = append(rollback, RollbackStep{Kind: "RestoreTemporaryState"})
 		} else if caps.SupportsEnvironmentOverlay {
 			steps = append(steps, PlanStep{Kind: StepCreateEnvironmentOverlay})
-			rollback = append(rollback, RollbackStep{Kind: "RestoreTemporaryState"})
 		} else {
 			return nil, anyerr.Newf(
 				"Client "+clientID+" cannot run ephemerally: no isolated home or environment overlay support.",
@@ -641,7 +641,6 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 		Model:                 model,
 		ModelCatalog:          append([]string(nil), req.ModelCatalog...),
 		Steps:                 steps,
-		Rollback:              rollback,
 		Warnings:              warnings,
 		BindingSpec:           bindingSpec,
 		Provenance:            provenance,

@@ -141,7 +141,7 @@ func TestParityExternalExchange(t *testing.T) {
 		if len(insp.Entries) != 2 {
 			t.Fatalf("entries = %d, want 2", len(insp.Entries))
 		}
-		metas, err := RestoreSelected(st, reg, in, []BackupEntry{
+		metas, err := RestoreSelectedContext(t.Context(), st, reg, in, []BackupEntry{
 			{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "personal"},
 		}, RestoreOptions{})
 		if err != nil || len(metas) != 2 {
@@ -228,7 +228,7 @@ func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 	}
 
 	// Restoring one entry must never expand to the whole package.
-	metas, err := RestoreSelected(st, reg, path,
+	metas, err := RestoreSelectedContext(t.Context(), st, reg, path,
 		[]BackupEntry{{Provider: "codex", Name: "work"}}, RestoreOptions{})
 	if err != nil || len(metas) != 1 {
 		t.Fatalf("single-entry restore: metas=%d err=%v", len(metas), err)
@@ -243,7 +243,7 @@ func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 	// bytes. (Re-restoring over the just-restored 'work' would correctly demand
 	// explicit replacement approval — covered by TestBackupExportInspectRestoreAtomic.)
 	st2, reg2 := newTransferEnv(t)
-	metas, err2 := RestoreSelected(st2, reg2, path, []BackupEntry{
+	metas, err2 := RestoreSelectedContext(t.Context(), st2, reg2, path, []BackupEntry{
 		{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "personal"},
 	}, RestoreOptions{})
 	if err2 != nil || len(metas) != 2 {

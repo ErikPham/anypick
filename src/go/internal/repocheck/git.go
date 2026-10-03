@@ -15,16 +15,6 @@ import (
 // Each git failure is reported as a failure of the check, never as "nothing
 // found". A lookup that did not run must not read as a pass.
 
-// authorityDocs are the documents a clean checkout must carry. AGENTS.md points
-// at them, so an untracked one breaks review for every fresh clone and every
-// agent that starts from the repository.
-var authorityDocs = []string{
-	"AGENTS.md",
-	"CODE_REVIEW.md",
-	"CONTRIBUTING.md",
-	"src/macos/README.md",
-}
-
 // checkGoSourcesNotIgnored reports Go source git would ignore. The .gitignore
 // that swallowed src/go/internal/refs was unanchored, so the pattern matched at
 // any depth: main did not compile, and git said nothing.
@@ -104,18 +94,22 @@ func checkNoTrackedArtifacts(root string) Section {
 	return section
 }
 
-// checkAuthorityDocsTracked reports documents AGENTS.md points at that a clean
-// checkout would not have.
-func checkAuthorityDocsTracked(root string) Section {
-	section := Section{Name: "the authority documents are tracked"}
-	for _, doc := range authorityDocs {
+// checkReferenceDocsTracked reports the named documents the reference checks
+// read that a clean checkout would not have. A document that is untracked (or
+// deleted and committed) silently shrinks checkMakeReferences and
+// checkDocumentCitations: fewer files, fewer references, every gate still
+// green. referenceSources is the list those checks consume, so iterating it
+// here keeps the required set and the checked set from drifting apart.
+func checkReferenceDocsTracked(root string) Section {
+	section := Section{Name: "the reference documents are tracked"}
+	for _, doc := range referenceSources {
 		_, exit, err := git(root, "", "ls-files", "--error-unmatch", "--", doc)
 		switch {
 		case err != nil:
 			section.Findings = append(section.Findings, fail("cannot ask git about "+doc+": "+err.Error()))
 		case exit != 0:
 			section.Findings = append(section.Findings, fail(doc+" is not tracked by git",
-				"AGENTS.md points at it, so a clean checkout does not have the document"))
+				"a clean checkout does not have it, and the reference checks read it"))
 		default:
 			section.Checked = append(section.Checked, doc)
 		}
@@ -254,7 +248,6 @@ type indexRun struct {
 
 func newIndexRun(root string) *indexRun { return &indexRun{root: root} }
 
-// tracked lists tracked paths under prefix.
 func (r *indexRun) tracked(prefix string) ([]string, error) {
 	stdout, _, err := git(r.root, "", "ls-files", "-z", "--", prefix)
 	if err != nil {
