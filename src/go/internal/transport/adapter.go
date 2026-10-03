@@ -1,16 +1,15 @@
 // Package transport ports src/sources/account-adapters.ts and
 // src/core/capabilities.ts.
 //
-// INVARIANT (AGENTS.md #1): capability pairs come from these adapters.
-// claude, codex, opencode, zcode, dsh, commandcode, pi and omp may accept a source
-// from a different provider. gemini and kiro clients return Unsupported for
-// anything but their own. A workbuddy *account* may serve claude, codex,
-// opencode, zcode, dsh and commandcode through the proxy, while the workbuddy
-// *client* uses its own login directly (other providers stay Unsupported
-// there). cline is a provider login
-// with no client adapter yet — TransportFor("cline") is Unsupported on every
-// account adapter. The client registry lists what exists, never what is
-// allowed.
+// INVARIANT (AGENTS.md #1): capability pairs come from these adapters. The
+// client registry lists what exists, never what is allowed; adapter_matrix_test.go
+// carries the full matrix. gemini and kiro clients return Unsupported for
+// anything but their own. A workbuddy *account* serves claude, codex,
+// opencode, zcode, dsh, commandcode, pi and omp through the proxy, while the
+// workbuddy *client* uses its own login directly. cline is a provider login
+// with no registered client adapter; its own account adapter classifies the
+// cline client ManagedBuiltinProxy, and every other adapter returns
+// Unsupported for it.
 package transport
 
 import (
@@ -346,50 +345,6 @@ func PoolAdapterFor(providerID string, info ProviderInfo, proxyTransport Capabil
 	return a
 }
 
-// GenericAccountAdapter is the conservative fallback for third-party providers
-// without the extension contract.
-func GenericAccountAdapter(provider, name string, info ProviderInfo) Adapter {
-	native := []string{}
-	if provider == info.ID {
-		native = []string{info.ID}
-	}
-	a := Adapter{
-		Capabilities: baseAccountCapabilities(info.ID, func(c *Capabilities) {
-			c.NativeClients = native
-			c.RequiresNativeAuthWrite = true
-		}),
-	}
-	a.SourceRef = accountSourceRef(provider, name)
-	a.TransportFor = func(clientID string) Capability {
-		if clientID == info.ID {
-			return Direct
-		}
-		// Cross-provider transport stays deliberately narrow: the client
-		// registry says what exists; this adapter remains the authority for
-		// what is safe to pair (ADR 0011).
-		if info.CanProxy {
-			switch clientID {
-			case "claude", "codex", "opencode", "zcode", "dsh", "commandcode", "pi", "omp":
-				return ManagedBuiltinProxy
-			}
-		}
-		return Unsupported
-	}
-	return a
-}
-
-// AccountAdapterFor mirrors accountAdapterFor: providers own their transport
-// policy; core has only the generic fallback. adapterFor returns the
-// provider-specific adapter when the provider implements sourceAdapter.
-func AccountAdapterFor(info ProviderInfo, provider, name string, proxyEnabled bool, adapterFor func() *Adapter) Adapter {
-	if info.HasAdapter && adapterFor != nil {
-		if a := adapterFor(); a != nil {
-			return *a
-		}
-	}
-	return GenericAccountAdapter(provider, name, info)
-}
-
 // managedProxySet mirrors MANAGED_PROXY in src/core/transport-resolver.ts.
 // ExternalManualProxy is deliberately excluded: it is not a managed proxy
 // (no process to spawn/health-check), so --transport proxy must not accept it.
@@ -408,8 +363,6 @@ func ResolveTransportPolicy(a Adapter, clientID string, policy Policy) (Capabili
 	if policy == "" || policy == PolicyAuto {
 		return automatic, nil
 	}
-	// The policy-aware override runs first; adapters without one fall back to
-	// their automatic classification.
 	selected := automatic
 	if a.TransportForPolicy != nil {
 		selected = a.TransportForPolicy(clientID, policy)

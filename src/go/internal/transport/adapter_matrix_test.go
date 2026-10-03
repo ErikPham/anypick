@@ -169,43 +169,6 @@ func TestAccountAdapterPairingMatrix(t *testing.T) {
 			"gemini": transport.Unsupported, "kiro": transport.Unsupported,
 			"cline": transport.Unsupported, "workbuddy": transport.Unsupported,
 		}},
-
-		// Generic rows. The cross-provider allowlist is a second hardcoded list,
-		// independent of the pool's, so it needs its own sweep. Both rows below
-		// are unreachable in production today (GenericAccountAdapter has no
-		// caller outside adapter.go); the function is total, so its behaviour is
-		// still derivable and still worth pinning.
-		{"generic/third-party-proxy", transport.GenericAccountAdapter("vendorx", "acct", transport.ProviderInfo{ID: "vendorx", CanProxy: true}), map[string]transport.Capability{
-			"grok":   transport.Unsupported,
-			"claude": transport.ManagedBuiltinProxy, "codex": transport.ManagedBuiltinProxy,
-			"opencode": transport.ManagedBuiltinProxy, "zcode": transport.ManagedBuiltinProxy,
-			"dsh": transport.ManagedBuiltinProxy, "commandcode": transport.ManagedBuiltinProxy,
-			"pi": transport.ManagedBuiltinProxy, "omp": transport.ManagedBuiltinProxy,
-			"gemini": transport.Unsupported, "kiro": transport.Unsupported,
-			"cline": transport.Unsupported, "workbuddy": transport.Unsupported,
-		}},
-		{"generic/third-party-no-proxy", transport.GenericAccountAdapter("vendorx", "acct", transport.ProviderInfo{ID: "vendorx", CanProxy: false}), map[string]transport.Capability{
-			"grok":   transport.Unsupported,
-			"claude": transport.Unsupported, "codex": transport.Unsupported,
-			"opencode": transport.Unsupported, "zcode": transport.Unsupported,
-			"gemini": transport.Unsupported, "kiro": transport.Unsupported,
-			"dsh": transport.Unsupported, "commandcode": transport.Unsupported,
-			"pi": transport.Unsupported, "omp": transport.Unsupported,
-			"cline": transport.Unsupported, "workbuddy": transport.Unsupported,
-		}},
-		// The self-Direct branch is tested before the cross-provider allowlist,
-		// so a provider whose id is also a registered client gets Direct and not
-		// a proxy. That ordering is the invariant-1 hazard this row exists for.
-		{"generic/id-is-also-a-client", transport.GenericAccountAdapter("codex", "acct", transport.ProviderInfo{ID: "codex", CanProxy: true}), map[string]transport.Capability{
-			"grok":   transport.Unsupported,
-			"codex":  transport.Direct,
-			"claude": transport.ManagedBuiltinProxy, "opencode": transport.ManagedBuiltinProxy,
-			"zcode": transport.ManagedBuiltinProxy, "dsh": transport.ManagedBuiltinProxy,
-			"commandcode": transport.ManagedBuiltinProxy, "pi": transport.ManagedBuiltinProxy,
-			"omp": transport.ManagedBuiltinProxy, "gemini": transport.Unsupported,
-			"kiro": transport.Unsupported, "cline": transport.Unsupported,
-			"workbuddy": transport.Unsupported,
-		}},
 	}
 
 	// cline and grok are account adapters with no registered client, so the

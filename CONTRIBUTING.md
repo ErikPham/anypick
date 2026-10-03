@@ -127,9 +127,13 @@ have to be able to finish after the operation that triggered them is cancelled.
 ## Adding a client or account provider
 
 1. Implement `ClientAdapter` / `Provider`.
-2. Register it in-tree, or — for a third-party provider — pass it to the app
-   before services start resolving adapters. Registries are sealed once startup
-   begins.
+2. Register it in-tree. There is no runtime registration hook: `app.Options`
+   takes no provider, `app.New` takes a root string, and the registries are
+   sealed once startup begins, so nothing can be added after compose (ADR 0031).
+   For a provider that is a set of official endpoints and credential products,
+   add a declarative compatible-provider definition instead — that is the
+   supported extension point, and `provider.RegisterBuiltinCompatibles` loads
+   it at startup.
 
    Registering a *client* means touching every site that enumerates one. Miss
    one and the feature half-works — it shows up in the CLI but not the desktop

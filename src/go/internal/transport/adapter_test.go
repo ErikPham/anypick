@@ -74,33 +74,3 @@ func TestPoolAdapter(t *testing.T) {
 		t.Errorf("pool of non-proxying provider must be unsupported, got %s", got)
 	}
 }
-
-func TestGenericAdapterNarrowCrossProvider(t *testing.T) {
-	info := ProviderInfo{ID: "vendorx", CanProxy: true}
-	a := GenericAccountAdapter("vendorx", "acct", info)
-
-	if got := a.TransportFor("vendorx"); got != Direct {
-		t.Errorf("own client = %s, want direct", got)
-	}
-	if got := a.TransportFor("claude"); got != ManagedBuiltinProxy {
-		t.Errorf("cross-provider claude = %s", got)
-	}
-	if got := a.TransportFor("dsh"); got != ManagedBuiltinProxy {
-		t.Errorf("cross-provider dsh = %s", got)
-	}
-	if got := a.TransportFor("commandcode"); got != ManagedBuiltinProxy {
-		t.Errorf("cross-provider commandcode = %s", got)
-	}
-	if got := a.TransportFor("pi"); got != ManagedBuiltinProxy {
-		t.Errorf("cross-provider pi = %s", got)
-	}
-	if got := a.TransportFor("omp"); got != ManagedBuiltinProxy {
-		t.Errorf("cross-provider omp = %s", got)
-	}
-	if got := a.TransportFor("gemini"); got != Unsupported {
-		t.Errorf("cross-provider gemini must be unsupported, got %s", got)
-	}
-	if got := a.TransportFor("kiro"); got != Unsupported {
-		t.Errorf("cross-provider kiro must be unsupported, got %s", got)
-	}
-}
