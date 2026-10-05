@@ -45,6 +45,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -179,29 +180,47 @@ func runSecurityStdin(command string) error {
 	cmd := exec.Command("/usr/bin/security", "-i")
 	cmd.Stdin = strings.NewReader(command)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return securityFailure(err, out)
-	}
-	return nil
+	return securityResult(err, out)
 }
 
 func runSecurityArgs(args []string) error {
 	cmd := exec.Command("/usr/bin/security", args...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return securityFailure(err, out)
+	return securityResult(err, out)
+}
+
+// securityReportedFailure is an exit-0 keychain write that still failed.
+// add-generic-password can print SecKeychainItemCreateFromContent and
+// "returned -25299" while exiting 0, and the parenthesized text is the
+// password. Treating that as success drops the only full copy.
+func securityReportedFailure(output []byte) bool {
+	msg := string(output)
+	return strings.Contains(msg, "SecKeychainItemCreateFromContent") || strings.Contains(msg, "returned -")
+}
+
+func securityResult(err error, output []byte) error {
+	if err == nil && !securityReportedFailure(output) {
+		return nil
 	}
-	return nil
+	if err == nil {
+		err = errors.New("security reported a keychain error")
+	}
+	return securityFailure(err, output)
 }
 
 // securityFailure attaches a keychain diagnostic without the secret.
 // A truncated `security -i` line reports the leftover bytes as
-// `unknown command "<tail>"`, and that tail is the credential.
+// `unknown command "<tail>"`, and that tail is the credential. A refused
+// item does the same inside SecKeychainItemCreateFromContent's parentheses.
 func securityFailure(err error, output []byte) error {
 	msg := strings.TrimSpace(string(output))
-	if msg == "" || strings.Contains(msg, "unknown command") || strings.Contains(msg, antigravityKeyringPrefix) {
+	refused := strings.Contains(msg, "SecKeychainItemCreateFromContent") || strings.Contains(msg, "returned -")
+	if msg == "" || strings.Contains(msg, "unknown command") || strings.Contains(msg, antigravityKeyringPrefix) || refused {
 		if strings.Contains(msg, "unknown command") {
 			return fmt.Errorf("%w (security truncated the command)", err)
+		}
+		if refused {
+			return fmt.Errorf("%w (security refused the keychain item)", err)
 		}
 		return err
 	}

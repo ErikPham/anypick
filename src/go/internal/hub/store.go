@@ -845,7 +845,17 @@ func (s *Store) PruneAccountContext(ctx context.Context, providerID, account str
 			if err != nil {
 				return err
 			}
-			return s.rewriteHubDocAfterAccountDelete(c, cfg.Name, providerID, account)
+			rewritten, err := s.rewriteHubDocAfterAccountDelete(c, cfg.Name, providerID, account)
+			if err != nil {
+				return err
+			}
+			// Pins live in route JSON, which has no revision of its own.
+			// A pin-only prune still has to move the hub revision or a
+			// child that loaded the old routes stays in sync (ADR-0030).
+			if len(dropped) > 0 && !rewritten {
+				return s.bumpRevisionLocked(c, cfg.Name)
+			}
+			return nil
 		})
 		if derr != nil {
 			return pruned, derr
@@ -861,19 +871,19 @@ func (s *Store) PruneAccountContext(ctx context.Context, providerID, account str
 // config_json when the document still names the deleted account. An empty
 // row set is authoritative for that removal: filtering only the deleted
 // member keeps any pre-migration sibling that was never given a row.
-func (s *Store) rewriteHubDocAfterAccountDelete(ctx context.Context, hubName, providerID, account string) error {
+func (s *Store) rewriteHubDocAfterAccountDelete(ctx context.Context, hubName, providerID, account string) (bool, error) {
 	var data string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT config_json FROM proxy_hubs WHERE name = ?`, hubName).Scan(&data)
 	if err == sql.ErrNoRows {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	cfg, err := decodeHubConfig([]byte(data), hubName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	mentioned := false
 	for _, src := range cfg.Sources {
@@ -883,11 +893,11 @@ func (s *Store) rewriteHubDocAfterAccountDelete(ctx context.Context, hubName, pr
 		}
 	}
 	if !mentioned {
-		return nil
+		return false, nil
 	}
 	rows, err := s.loadSources(ctx, hubName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(rows) > 0 {
 		cfg.Sources = rows
@@ -901,14 +911,74 @@ func (s *Store) rewriteHubDocAfterAccountDelete(ctx context.Context, hubName, pr
 		}
 		cfg.Sources = kept
 	}
+	// Same bump as upsertConfigLocked. Copying the old revision left a
+	// running child looking synced while it still served the deleted account.
+	if cfg.Revision > 0 {
+		cfg.Revision++
+	} else {
+		cfg.Revision = 1
+	}
+	cfg.UpdatedAt = nowISO()
+	encoded, err := marshalTSConfig(*cfg, cfg.modelOwners)
+	if err != nil {
+		return false, err
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`UPDATE proxy_hubs SET config_json = ?, updated_at = ? WHERE name = ?`,
+		string(encoded), cfg.UpdatedAt, hubName)
+	return err == nil, err
+}
+
+// bumpRevisionLocked moves one hub's revision without rewriting membership.
+// The caller holds the hub lock. It re-reads the row so a rewrite that just
+// landed is what gets the new number, and a concurrent document is not
+// replaced by a stale copy.
+func (s *Store) bumpRevisionLocked(ctx context.Context, hubName string) error {
+	cfg, err := s.GetConfigContext(ctx, hubName)
+	if err != nil || cfg == nil {
+		return err
+	}
+	if cfg.Revision > 0 {
+		cfg.Revision++
+	} else {
+		cfg.Revision = 1
+	}
+	cfg.UpdatedAt = nowISO()
 	encoded, err := marshalTSConfig(*cfg, cfg.modelOwners)
 	if err != nil {
 		return err
 	}
 	_, err = s.DB.ExecContext(ctx,
 		`UPDATE proxy_hubs SET config_json = ?, updated_at = ? WHERE name = ?`,
-		string(encoded), nowISO(), hubName)
+		string(encoded), cfg.UpdatedAt, hubName)
 	return err
+}
+
+// NoteBoundPort records the port a hub child actually bound, without
+// bumping revision. The child loads config once (ADR-0030). Writing the
+// port back with a new revision would make that child look stale and the
+// next start would restart it. A matching port is a no-op. The write
+// re-reads under the hub lock so it cannot put a stale source list back.
+func (s *Store) NoteBoundPort(ctx context.Context, hubName string, port int) error {
+	if port <= 0 {
+		return nil
+	}
+	return s.withHubLock(ctx, hubName, func(c context.Context) error {
+		cfg, err := s.GetConfigContext(c, hubName)
+		if err != nil || cfg == nil || cfg.Port == port {
+			return err
+		}
+		cfg.Port = port
+		cfg.UpdatedAt = nowISO()
+		encoded, err := marshalTSConfig(*cfg, cfg.modelOwners)
+		if err != nil {
+			return err
+		}
+		_, err = s.DB.ExecContext(c,
+			`UPDATE proxy_hubs SET config_json = ?, updated_at = ? WHERE name = ?`,
+			string(encoded), cfg.UpdatedAt, hubName)
+		return err
+	})
 }
 
 func sourceIsAccount(src Source, providerID, account string) bool {

@@ -698,11 +698,65 @@ describe('codex profiles', () => {
       }),
     );
   });
+
+  it('keeps automatic profile creation local and syncs with codex-profile-sync', async () => {
+    localStorage.removeItem('anypick.codexAutoProfiles');
+    localStorage.removeItem('anypick.codexAutoProfileFingerprints');
+    const snapshot = snapshotFixture({
+      actions: [
+        ...snapshotFixture().actions,
+        {
+          id: 'act-codex',
+          clientId: 'codex',
+          sourceId: 'account/codex/work',
+          client: 'Codex',
+          label: 'Work',
+          detail: 'work@example.com',
+          kind: 'native',
+          presentation: 'native-account',
+          selected: true,
+          enabled: true,
+          routeKind: 'managed-account',
+        },
+      ],
+      codexProfiles: [],
+      codexProfileSources: [
+        {
+          sourceId: 'account/codex/personal',
+          kind: 'account',
+          label: 'Personal',
+          detail: '',
+          selected: false,
+          models: ['gpt-5'],
+        },
+      ],
+    });
+    const { bridge, user } = mount(
+      ({ service, snapshot: current }) => <AppsPane service={service} snapshot={current} />,
+      snapshot,
+    );
+    await user.click(screen.getByTestId('apps-row-codex'));
+    const toggle = screen.getByRole('switch', { name: 'Create profiles automatically' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(localStorage.getItem('anypick.codexAutoProfiles')).toBe('false');
+    expect(mutatePayloads(bridge).some((payload) => payload?.operation === 'setting-create-codex-profiles')).toBe(false);
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(mutatePayloads(bridge)).toEqual([
+      expect.objectContaining({ operation: 'codex-profile-sync', sourceIds: ['account/codex/personal'] }),
+    ]);
+    localStorage.removeItem('anypick.codexAutoProfiles');
+    localStorage.removeItem('anypick.codexAutoProfileFingerprints');
+  });
 });
 
 describe('backups', () => {
   it('exports the checked accounts to the path the user typed', async () => {
     const { bridge, user } = mount(({ service, snapshot }) => <BackupsPane service={service} snapshot={snapshot} />);
+    expect(screen.getByText(/temporary file/)).toBeInTheDocument();
+    expect(screen.queryByText(/~\/\.anypick\/backups/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Export Accounts…' }));
     await user.type(screen.getByTestId('backup-export-path'), '/tmp/accounts.anypick-backup');
     await user.click(screen.getByTestId('backup-export-submit'));

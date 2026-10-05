@@ -12,6 +12,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
+	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -109,6 +110,7 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 		} else if len(pruned) > 0 {
 			prunedMsg = fmt.Sprintf(" Hub references dropped: %s.", strings.Join(pruned, ", "))
 		}
+		refreshUnsyncedHubs(ctx, a, providerID, name)
 	}
 	emitOK(fmt.Sprintf("removed %s/%s%s", providerID, name, prunedMsg),
 		kv{Key: "ok", Value: true},
@@ -124,6 +126,23 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 // confirmPluginTrust then print a prompt and read stdin under cron and CI
 // instead of refusing outright, which breaks invariant #6 (never prompt
 // without a TTY) and gives scripts the wrong exit code.
+// refreshUnsyncedHubs restarts children that are still serving the deleted
+// account. In-sync hubs and port-0 hubs are left alone: the former already
+// match, and the latter cannot be echoed (ADR-0030).
+func refreshUnsyncedHubs(ctx context.Context, a *appView, providerID, name string) {
+	if a.ProxyHub == nil || a.Deps == nil || a.Deps.SpawnHubChild == nil {
+		return
+	}
+	configs, err := a.ProxyHub.ListConfigsContext(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: hub refresh for %s/%s failed: %s\n", providerID, name, err)
+		return
+	}
+	if err := hub.ReloadUnsynced(configs, a.Deps.SpawnHubChild); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: hub refresh for %s/%s failed: %s\n", providerID, name, err)
+	}
+}
+
 func isTTY(f *os.File) bool {
 	if f == nil {
 		return false

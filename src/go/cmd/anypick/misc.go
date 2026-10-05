@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -390,6 +391,15 @@ func serveHubChild(ctx context.Context, a *appView, args []string) int {
 		fmt.Fprintln(os.Stderr, "hub start failed:", err)
 		return int(anyerr.Operational)
 	}
+	// The parent health-checks the stored port. A kernel-assigned listener
+	// used to leave that port at 0, and freshness then skipped the child
+	// (ADR-0030). The write does not bump revision: this process is already
+	// serving the revision it loaded.
+	if port := portFromEndpoint(srv.Endpoint()); port > 0 && a.ProxyHub != nil {
+		if nerr := a.ProxyHub.NoteBoundPort(ctx, name, port); nerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: hub %s is listening but its port was not saved: %s\n", name, nerr)
+		}
+	}
 	proxy.Logf("proxy-hub listening on %s", srv.Endpoint())
 	awaitSignal(ctx)
 	_ = srv.Stop()
@@ -400,6 +410,18 @@ func serveHubChild(ctx context.Context, a *appView, args []string) int {
 // (hidden `_serve-pool <provider>`). All pool business logic — member ring,
 // failover, quota guard, ownership echo — lives in the proxy service; this
 // wrapper only dispatches, awaits a signal, and maps failures to exit codes.
+func portFromEndpoint(endpoint string) int {
+	i := strings.LastIndex(endpoint, ":")
+	if i < 0 || i+1 >= len(endpoint) {
+		return 0
+	}
+	n, err := strconv.Atoi(endpoint[i+1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 func servePoolChild(ctx context.Context, a *appView, args []string) int {
 	if len(args) != 1 {
 		return usageError("_serve-pool requires a provider id")

@@ -147,6 +147,109 @@ func TestPruneAccountSweepsHubs(t *testing.T) {
 	}
 }
 
+func TestPruneAccountBumpsRevisionWhenTheHubChanges(t *testing.T) {
+	st := newHubStore(t)
+	ctx := context.Background()
+	seedHubAccounts(t, st, "gemini/g", "codex/c")
+	for _, name := range []string{"pins", "member", "untouched"} {
+		sources := []Source{{ProviderID: "gemini", Account: "g"}}
+		if name == "member" {
+			sources = append(sources, Source{ProviderID: "codex", Account: "c"})
+		}
+		if _, err := st.UpsertConfigContext(ctx, Config{Name: name, Enabled: true, Sources: sources}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := mustNewProxyToken(t)
+	if err := st.AttachRouteContext(ctx, Route{RouteID: "x", HubName: "pins", ClientID: "cli", Token: token,
+		Models: []ModelRoute{{Model: "m", Owner: "codex/c", SourceIndex: -1}}}); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]int{}
+	for _, name := range []string{"pins", "member", "untouched"} {
+		cfg, err := st.GetConfigContext(ctx, name)
+		if err != nil || cfg == nil {
+			t.Fatal(err)
+		}
+		before[name] = cfg.Revision
+	}
+	if _, err := st.DB.Exec(`DELETE FROM accounts WHERE provider = 'codex' AND name = 'c'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PruneAccountContext(ctx, "codex", "c"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"pins", "member"} {
+		cfg, err := st.GetConfigContext(ctx, name)
+		if err != nil || cfg == nil {
+			t.Fatal(err)
+		}
+		if cfg.Revision != before[name]+1 {
+			t.Fatalf("%s revision = %d, want %d", name, cfg.Revision, before[name]+1)
+		}
+	}
+	untouched, err := st.GetConfigContext(ctx, "untouched")
+	if err != nil || untouched == nil {
+		t.Fatal(err)
+	}
+	if untouched.Revision != before["untouched"] {
+		t.Fatalf("untouched revision = %d, want %d", untouched.Revision, before["untouched"])
+	}
+	member, err := st.GetConfigContext(ctx, "member")
+	if err != nil || member == nil {
+		t.Fatal(err)
+	}
+	for _, src := range member.Sources {
+		if src.ProviderID == "codex" && src.Account == "c" {
+			t.Fatalf("deleted member still in the document: %+v", member.Sources)
+		}
+	}
+	again, err := st.PruneAccountContext(ctx, "codex", "c")
+	if err != nil || len(again) != 0 {
+		t.Fatalf("second prune = %v, %v", again, err)
+	}
+	member, err = st.GetConfigContext(ctx, "member")
+	if err != nil || member == nil || member.Revision != before["member"]+1 {
+		t.Fatalf("second prune moved revision: %+v %v", member, err)
+	}
+}
+
+func TestNoteBoundPortDoesNotBumpRevision(t *testing.T) {
+	st := newHubStore(t)
+	ctx := context.Background()
+	seedHubAccounts(t, st, "gemini/g")
+	saved, err := st.UpsertConfigContext(ctx, Config{
+		Name: "h", Enabled: true, Port: 0,
+		Sources: []Source{{ProviderID: "gemini", Account: "g"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.NoteBoundPort(ctx, "h", 43123); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := st.GetConfigContext(ctx, "h")
+	if err != nil || cfg == nil {
+		t.Fatal(err)
+	}
+	if cfg.Port != 43123 {
+		t.Fatalf("port = %d, want 43123", cfg.Port)
+	}
+	if cfg.Revision != saved.Revision {
+		t.Fatalf("revision = %d, want %d", cfg.Revision, saved.Revision)
+	}
+	if len(cfg.Sources) != 1 || cfg.Sources[0].Account != "g" {
+		t.Fatalf("sources changed: %+v", cfg.Sources)
+	}
+	if err := st.NoteBoundPort(ctx, "h", 43123); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = st.GetConfigContext(ctx, "h")
+	if err != nil || cfg == nil || cfg.Revision != saved.Revision || cfg.Port != 43123 {
+		t.Fatalf("repeat note changed the hub: %+v %v", cfg, err)
+	}
+}
+
 // Deleting the sole member cascades the membership row. The stale document
 // must not bring that source back, including after the same account name is
 // saved again.

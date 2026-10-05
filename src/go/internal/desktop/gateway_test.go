@@ -19,13 +19,20 @@ import (
 
 func gatewayTestServer(t *testing.T, status int, seenAuth *string) *httptest.Server {
 	t.Helper()
+	return gatewayTestServerBody(t, status, `{"data":[]}`, "application/json", seenAuth)
+}
+
+func gatewayTestServerBody(t *testing.T, status int, body, contentType string, seenAuth *string) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if seenAuth != nil {
 			*seenAuth = r.Header.Get("authorization")
 		}
-		w.Header().Set("Content-Type", "application/json")
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		_, _ = w.Write([]byte(body))
 	}))
 }
 
@@ -86,6 +93,46 @@ func TestGatewayTestProbesSuppliedCredentials(t *testing.T) {
 	})
 	if res.Status != "error" || !strings.Contains(res.Message, "unreachable") {
 		t.Fatalf("probe unreachable: %+v", res)
+	}
+}
+
+func TestGatewayTestRejectsNonCatalogResponses(t *testing.T) {
+	env := newTrayEnv(t)
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		ctype   string
+		want    string
+		success bool
+	}{
+		{name: "empty data", status: http.StatusOK, body: `{"data":[]}`, ctype: "application/json", success: true},
+		{name: "models key", status: http.StatusOK, body: `{"models":[]}`, ctype: "application/json", success: true},
+		{name: "array", status: http.StatusOK, body: `[]`, ctype: "application/json", success: true},
+		{name: "not found", status: http.StatusNotFound, body: `{"data":[]}`, ctype: "application/json", want: "404"},
+		{name: "bad request", status: http.StatusBadRequest, body: `{"data":[]}`, ctype: "application/json", want: "400"},
+		{name: "too many", status: http.StatusTooManyRequests, body: `{"data":[]}`, ctype: "application/json", want: "429"},
+		{name: "html", status: http.StatusOK, body: `<html>ok</html>`, ctype: "text/html", want: "not a model catalog"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := gatewayTestServerBody(t, tc.status, tc.body, tc.ctype, nil)
+			defer srv.Close()
+			res := runGatewayTest(t, env, Mutate{
+				Version: 1, RequestID: "gt-catalog", Operation: "gateway-test",
+				Name: "test", ProviderID: "custom",
+				Endpoint: srv.URL, APIKey: "sk-live",
+			})
+			if tc.success {
+				if res.Status != "success" {
+					t.Fatalf("probe %+v: %+v", tc, res)
+				}
+				return
+			}
+			if res.Status != "error" || !strings.Contains(res.Message, tc.want) {
+				t.Fatalf("probe %+v: %+v", tc, res)
+			}
+		})
 	}
 }
 

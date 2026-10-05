@@ -54,6 +54,51 @@ func childIdentity(endpoint string) (string, int, bool) {
 	return payload.InstanceID, payload.Revision, true
 }
 
+// ShouldPublishPort reports whether a starter should assign a free port
+// before spawn. A live child whose port is still 0 stays unpublished: a
+// stored port the child is not bound to makes the next health check fail,
+// and RestartStaleChild then refuses to signal it (ADR-0030).
+func ShouldPublishPort(current int, childLive bool) bool {
+	return current == 0 && !childLive
+}
+
+// HubsNeedingReload returns enabled hubs whose stored port can be checked
+// and whose child is not serving the stored revision. Port 0 is omitted.
+// The bound port is unknown, and a restart without an echo is forbidden.
+func HubsNeedingReload(configs []Config, synced func(endpoint string, revision int) bool) []string {
+	if synced == nil {
+		synced = ChildSynced
+	}
+	var names []string
+	for _, cfg := range configs {
+		if !cfg.Enabled || cfg.Port == 0 {
+			continue
+		}
+		endpoint := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+		if synced(endpoint, cfg.Revision) {
+			continue
+		}
+		names = append(names, cfg.Name)
+	}
+	return names
+}
+
+// ReloadUnsynced asks spawn to restart each hub from HubsNeedingReload.
+// spawn is SpawnHubChild: an in-sync child is not in the list, so this does
+// not restart a child that already serves the stored revision.
+func ReloadUnsynced(configs []Config, spawn func(name string) (int, error)) error {
+	if spawn == nil {
+		return nil
+	}
+	var first error
+	for _, name := range HubsNeedingReload(configs, ChildSynced) {
+		if _, err := spawn(name); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
 // RestartStaleChild stops the hub child serving endpoint when it runs an
 // older config revision than wantRevision, so the caller can spawn fresh.
 // A child already in sync is adopted untouched (false, nil). An empty

@@ -559,6 +559,15 @@ func (s *Server) startHub(ctx context.Context, hubName string) error {
 			cfg = &hub.Config{Name: hubName, Sources: []hub.Source{}}
 		}
 		cfg.Enabled = true
+		rec := ownership.Load(hubPIDPath(s.Deps.Root, hubName))
+		childLive := rec != nil && rec.VerifyLive()
+		if hub.ShouldPublishPort(cfg.Port, childLive) {
+			picked, perr := proxy.PickFreePort()
+			if perr != nil {
+				return perr
+			}
+			cfg.Port = picked
+		}
 		if _, uerr := s.Deps.Hub.UpsertConfigContext(c, *cfg); uerr != nil {
 			return uerr
 		}

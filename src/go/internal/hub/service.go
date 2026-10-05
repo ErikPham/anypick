@@ -44,6 +44,14 @@ func (s *Service) PruneAccount(ctx context.Context, providerID, account string) 
 	return s.Store.PruneAccountContext(ctx, providerID, account)
 }
 
+// NoteBoundPort records the port a running child bound. See Store.NoteBoundPort.
+func (s *Service) NoteBoundPort(ctx context.Context, hubName string, port int) error {
+	if s == nil || s.Store == nil {
+		return nil
+	}
+	return s.Store.NoteBoundPort(ctx, hubName, port)
+}
+
 func (s *Service) PreviewManifest(ctx context.Context, hubName string) (*ManifestPreview, error) {
 	return s.Store.PreviewManifest(ctx, hubName)
 }

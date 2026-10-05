@@ -106,7 +106,41 @@ func (s *AccountStore) ListAccounts(ctx context.Context, providerID string) ([]A
 
 // Get returns the account and materializes its snapshot cache for
 // provider.Restore / export. Returns nil when absent.
+//
+// Materialize deletes the cache directory and rewrites it. That window is
+// inside the provider lock (ADR 0011): Gemini Restore treats a missing
+// snapshot file as "delete the live credential", and a desktop snapshot
+// read can call Get while Use is restoring. The caller's ctx is what makes
+// the lock re-entrant, so a Get already inside mutate does not deadlock.
 func (s *AccountStore) Get(ctx context.Context, providerID, name string) (*Account, error) {
+	var account *Account
+	err := s.mutate(ctx, providerID, func(ctx context.Context) error {
+		got, gerr := s.get(ctx, providerID, name)
+		account = got
+		return gerr
+	})
+	return account, err
+}
+
+func (s *AccountStore) get(ctx context.Context, providerID, name string) (*Account, error) {
+	account, err := s.CachedAccount(ctx, providerID, name)
+	if err != nil || account == nil {
+		return account, err
+	}
+	if err := MaterializeSnapshot(s.Root, s.DB.DB, providerID, account.Meta.Name); err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+// CachedAccount returns the saved account and its on-disk snapshot directory
+// without rebuilding that directory and without the provider lock.
+//
+// The detached proxy child resolves upstream while its parent still holds the
+// provider lock and is blocked in the /health wait. Get from the child waits
+// on that lock, and the parent waits for the child. Reading the cache the
+// parent just materialized is the path that does not deadlock.
+func (s *AccountStore) CachedAccount(ctx context.Context, providerID, name string) (*Account, error) {
 	var metaJSON, proxyJSON string
 	err := s.DB.QueryRowContext(ctx, getAccountSQL, providerID, name).Scan(&name, &metaJSON, &proxyJSON)
 	if err == sql.ErrNoRows {
@@ -116,9 +150,6 @@ func (s *AccountStore) Get(ctx context.Context, providerID, name string) (*Accou
 		return nil, err
 	}
 	account := s.rowToAccount(providerID, name, metaJSON, proxyJSON)
-	if err := MaterializeSnapshot(s.Root, s.DB.DB, providerID, account.Meta.Name); err != nil {
-		return nil, err
-	}
 	return &account, nil
 }
 

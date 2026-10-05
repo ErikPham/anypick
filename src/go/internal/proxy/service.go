@@ -200,6 +200,13 @@ type UpstreamResolver interface {
 	ResolveUpstream(ctx context.Context, providerID, accountName string) (*Upstream, error)
 }
 
+// StartupUpstreamResolver reads an already-materialized snapshot and does not
+// take the provider lock. ServeExisting uses it. The parent holds that lock
+// until /health returns, so a locking read in the child deadlocks the start.
+type StartupUpstreamResolver interface {
+	ResolveStartupUpstream(ctx context.Context, providerID, accountName string) (*Upstream, error)
+}
+
 // Spawner launches a detached child that serves the proxy after this process
 // exits (the Go equivalent of TS detached spawn). nil → in-process serving,
 // used by library consumers and tests.

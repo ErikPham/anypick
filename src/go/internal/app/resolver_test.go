@@ -9,8 +9,11 @@ import (
 	"time"
 
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/provider"
+	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
@@ -59,6 +62,73 @@ func TestSnapshotResolverResolvesOpenCodeAccount(t *testing.T) {
 	}
 	if got, want := up.BaseURL.String(), "https://opencode.ai/zen/go/v1"; got != want {
 		t.Errorf("BaseURL = %s, want %s", got, want)
+	}
+}
+
+// StartProxy holds the provider lock, then asks the resolver for the upstream.
+// Get must re-enter that lock. A Background inside ResolveUpstream times out
+// on the mutex this call already owns.
+func TestSnapshotResolverReentersHeldProviderLock(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("ANYPICK_CLAUDE_NO_KEYCHAIN", "1")
+	t.Setenv("OPENCODE_DATA_DIR", filepath.Join(t.TempDir(), "absent"))
+
+	database, err := db.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	st := store.New(root, database)
+	reg := provider.NewRegistry()
+	if err := provider.RegisterBuiltin(reg, home); err != nil {
+		t.Fatal(err)
+	}
+	snap, _, err := st.PrepareSnapshot("opencode", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap, "auth.json"),
+		[]byte(`{"opencode-go":{"type":"api","key":"sk-saved-go"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteMetaContext(context.Background(),
+		store.Meta{Provider: "opencode", Name: "work"}, snap); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &snapshotUpstreamResolver{store: st, providers: reg}
+	err = lock.WithMutationLock(context.Background(), root, refs.ProviderScope("opencode"), func(c context.Context) error {
+		up, rerr := r.ResolveUpstream(c, "opencode", "work")
+		if rerr != nil {
+			return rerr
+		}
+		if up.Auth != "sk-saved-go" {
+			t.Errorf("Auth = %q, want the snapshot's key", up.Auth)
+		}
+		started, serr := r.ResolveStartupUpstream(c, "opencode", "work")
+		if serr != nil {
+			return serr
+		}
+		if started.Auth != "sk-saved-go" {
+			t.Errorf("startup Auth = %q, want the snapshot's key", started.Auth)
+		}
+		// An empty cache has to rebuild through Get. That Get must re-enter
+		// the lock this callback already holds.
+		if err := os.RemoveAll(paths.AccountSnapshotDir(root, "opencode", "work")); err != nil {
+			return err
+		}
+		up, rerr = r.ResolveUpstream(c, "opencode", "work")
+		if rerr != nil {
+			return rerr
+		}
+		if up.Auth != "sk-saved-go" {
+			t.Errorf("rebuilt Auth = %q, want the snapshot's key", up.Auth)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

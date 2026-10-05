@@ -14,6 +14,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/doctor"
+	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/transfer"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -384,7 +385,23 @@ func deleteCmd(ctx context.Context, a *app.App, providerID, name string) tea.Cmd
 		if err := a.Accounts.Delete(ctx, providerID, name); err != nil {
 			return actionMsg{err: err}
 		}
-		return actionMsg{text: fmt.Sprintf("deleted %s/%s", providerID, name)}
+		text := fmt.Sprintf("deleted %s/%s", providerID, name)
+		if a.ProxyHub != nil {
+			pruned, perr := a.ProxyHub.PruneAccount(ctx, providerID, name)
+			if perr != nil {
+				text += fmt.Sprintf(" (hub cleanup failed: %s)", perr)
+			} else if len(pruned) > 0 {
+				text += fmt.Sprintf(". Hub references dropped: %s", strings.Join(pruned, ", "))
+			}
+			if a.Deps != nil && a.Deps.SpawnHubChild != nil {
+				if configs, lerr := a.ProxyHub.ListConfigsContext(ctx); lerr != nil {
+					text += fmt.Sprintf(" (hub refresh failed: %s)", lerr)
+				} else if rerr := hub.ReloadUnsynced(configs, a.Deps.SpawnHubChild); rerr != nil {
+					text += fmt.Sprintf(" (hub refresh failed: %s)", rerr)
+				}
+			}
+		}
+		return actionMsg{text: text}
 	}
 }
 

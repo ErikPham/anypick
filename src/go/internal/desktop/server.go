@@ -1823,9 +1823,27 @@ func (s *Server) mutateAccountRemove(ctx context.Context, m Mutate, result Resul
 			} else if len(pruned) > 0 {
 				result.Message += fmt.Sprintf(" Hub references dropped: %s.", strings.Join(pruned, ", "))
 			}
+			s.refreshUnsyncedHubs(ctx, m.ProviderID, m.Name)
 		}
 	}
 	return result
+}
+
+// refreshUnsyncedHubs restarts children still serving a deleted account.
+// In-sync hubs are adopted by SpawnHubChild only when they are in the
+// reload list, and port 0 is left running: there is no echo address.
+func (s *Server) refreshUnsyncedHubs(ctx context.Context, providerID, name string) {
+	if s.Deps.Hub == nil || s.Deps.Activation == nil || s.Deps.Activation.SpawnHubChild == nil {
+		return
+	}
+	configs, err := s.Deps.Hub.ListConfigsContext(ctx)
+	if err != nil {
+		s.logErr(fmt.Errorf("hub refresh for %s/%s: %w", providerID, name, err))
+		return
+	}
+	if err := hub.ReloadUnsynced(configs, s.Deps.Activation.SpawnHubChild); err != nil {
+		s.logErr(fmt.Errorf("hub refresh for %s/%s: %w", providerID, name, err))
+	}
 }
 
 func (s *Server) mutateAccountRefresh(ctx context.Context, m Mutate, result Result) Result {

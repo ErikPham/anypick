@@ -153,7 +153,7 @@ export function BackupsPane({
       {/* Quick backup section */}
       <Group
         title="Quick Backup"
-        footer="Exports all accounts to ~/.anypick/backups without opening the selection sheet."
+        footer="Exports all accounts to a temporary file and reports that file's path. The file contains account credentials."
         testId="backups-create-quick"
       >
         <Row testId="backup-create-row">

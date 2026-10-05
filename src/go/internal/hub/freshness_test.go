@@ -101,6 +101,24 @@ func TestRestartStaleChildStopsOwnedStale(t *testing.T) {
 	}
 }
 
+func TestHubsNeedingReloadSkipsSyncedAndUnknownPorts(t *testing.T) {
+	configs := []Config{
+		{Name: "synced", Enabled: true, Port: 1, Revision: 4},
+		{Name: "stale", Enabled: true, Port: 2, Revision: 5},
+		{Name: "unknown", Enabled: true, Port: 0, Revision: 9},
+		{Name: "off", Enabled: false, Port: 3, Revision: 1},
+	}
+	got := HubsNeedingReload(configs, func(endpoint string, revision int) bool {
+		return endpoint == "http://127.0.0.1:1" && revision == 4
+	})
+	if len(got) != 1 || got[0] != "stale" {
+		t.Fatalf("reload = %v, want [stale]", got)
+	}
+	if ShouldPublishPort(0, true) || !ShouldPublishPort(0, false) || ShouldPublishPort(9, false) {
+		t.Fatal("ShouldPublishPort disagreed with the idle-port rule")
+	}
+}
+
 // /health carries the config revision the child started with: adopters
 // compare it against the stored revision instead of trusting liveness.
 func TestHealthCarriesConfigRevision(t *testing.T) {

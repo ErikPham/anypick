@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/compensation"
@@ -254,6 +255,7 @@ func recoveryScopes(entry journal.Entry) []string {
 	for _, resource := range entry.AffectedResources {
 		switch {
 		case strings.HasPrefix(resource, "client/") ||
+			strings.HasPrefix(resource, "client-profile/") ||
 			strings.HasPrefix(resource, "gateway/") ||
 			strings.HasPrefix(resource, "hub/"):
 			set[resource] = true
@@ -269,6 +271,11 @@ func recoveryScopes(entry journal.Entry) []string {
 	for k := range set {
 		out = append(out, k)
 	}
+	// client-profile/ sorts before client/. Acquiring both up front, in
+	// this order, is what WithMutationLocks also does. Taking only client/
+	// and locking client-profile/ later deadlocks with a profile activation
+	// that already holds client-profile/ and is waiting for client/.
+	sort.Strings(out)
 	return out
 }
 

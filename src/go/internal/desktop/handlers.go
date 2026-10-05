@@ -5,8 +5,10 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -281,13 +283,26 @@ func (s *Server) handleGatewayTest(ctx context.Context, m Mutate) Result {
 		return result
 	}
 	defer resp.Body.Close()
-	if statusErr := evaluateGatewayStatus(resp.StatusCode); statusErr != nil {
+	if statusErr := evaluateGatewayResponse(resp); statusErr != nil {
 		result = result.Fail(statusErr)
 		return result
 	}
 	result.Status = "success"
 	result.Message = "Gateway connection verified. Models were loaded successfully."
 	return result
+}
+
+func evaluateGatewayResponse(resp *http.Response) error {
+	if err := evaluateGatewayStatus(resp.StatusCode); err != nil {
+		return err
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return anyerr.Newf("gateway returned a response that is not a model catalog", "GATEWAY_CATALOG_INVALID",
+			anyerr.WithCause(err),
+			anyerr.WithSuggestions("The endpoint must answer GET /models with a JSON catalog."))
+	}
+	return evaluateGatewayCatalog(body)
 }
 
 func evaluateGatewayStatus(statusCode int) error {
@@ -299,7 +314,7 @@ func evaluateGatewayStatus(statusCode int) error {
 				"Check that your API key is valid and has not expired.",
 				"Ensure the key has permission to list models and make requests."))
 	}
-	if statusCode >= 500 {
+	if statusCode < 200 || statusCode >= 300 {
 		return anyerr.Newf(
 			fmt.Sprintf("gateway returned HTTP %d", statusCode),
 			"GATEWAY_HTTP_ERROR",
@@ -308,4 +323,30 @@ func evaluateGatewayStatus(statusCode int) error {
 				"Please wait a moment and try testing the connection again."))
 	}
 	return nil
+}
+
+// evaluateGatewayCatalog accepts an OpenAI-style `data` list, a `models`
+// list, or a bare JSON array. An empty list is a live gateway that has no
+// models. HTML and other objects are not a catalog, even on HTTP 200.
+func evaluateGatewayCatalog(body []byte) error {
+	fail := func() error {
+		return anyerr.Newf("gateway returned a response that is not a model catalog", "GATEWAY_CATALOG_INVALID",
+			anyerr.WithSuggestions("The endpoint must answer GET /models with a JSON catalog."))
+	}
+	var probe any
+	if json.Unmarshal([]byte(strings.TrimSpace(string(body))), &probe) != nil {
+		return fail()
+	}
+	switch doc := probe.(type) {
+	case []any:
+		return nil
+	case map[string]any:
+		if _, ok := doc["data"]; ok {
+			return nil
+		}
+		if _, ok := doc["models"]; ok {
+			return nil
+		}
+	}
+	return fail()
 }

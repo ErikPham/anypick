@@ -15,6 +15,7 @@ import (
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/ownership"
+	"github.com/outof0/anypick/go/internal/proxy"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -321,6 +322,34 @@ func cmdHubStart(ctx context.Context, a *appView, usage func() int, fs *flag.Fla
 				kv{Key: "hub", Value: name},
 				kv{Key: "pid", Value: pid})
 			return int(anyerr.Success)
+		}
+	}
+	// No live child. Publish a port before spawn so the next freshness check
+	// has an address. A child that is already running with port 0 returned
+	// above: assigning a port it is not bound to would make RestartStaleChild
+	// refuse to signal it (ADR-0030).
+	if hub.ShouldPublishPort(cfg.Port, false) {
+		picked, perr := proxy.PickFreePort()
+		if perr != nil {
+			return reportErr(perr)
+		}
+		err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
+			existing, gerr := a.ProxyHub.GetConfig(c, name)
+			if gerr != nil {
+				return gerr
+			}
+			if existing == nil || !existing.Enabled {
+				return anyerr.Newf("hub "+name+" is not enabled", "HUB_DISABLED")
+			}
+			if existing.Port != 0 {
+				return nil
+			}
+			existing.Port = picked
+			_, uerr := a.ProxyHub.UpsertConfig(c, *existing)
+			return uerr
+		})
+		if err != nil {
+			return reportErr(err)
 		}
 	}
 	pid, serr := spawnDetachedService(a.Root, []string{"_serve-hub", name}, pidFile)

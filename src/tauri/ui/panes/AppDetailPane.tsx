@@ -6,6 +6,11 @@ import type {
   Snapshot,
 } from '../lib/contract';
 import {
+  codexAutoProfilesEnabled,
+  planAutomaticCodexProfileSync,
+  setAutomaticCodexProfileCreation,
+} from '../lib/codex-auto-profiles';
+import {
   missingCodexProfileSources,
   removeCodexProfile,
   saveCodexProfile,
@@ -491,7 +496,7 @@ function CodexProfilesBlock({
 }) {
   const missing = missingCodexProfileSources(snapshot);
   const [sheetProfile, setSheetProfile] = useState<CodexProfileRowContract | null | undefined>(undefined);
-  const [autoCreate, setAutoCreate] = useState(false);
+  const [autoCreate, setAutoCreate] = useState(() => codexAutoProfilesEnabled());
 
   return (
     <>
@@ -550,11 +555,19 @@ function CodexProfilesBlock({
               checked={autoCreate}
               disabled={busy.size > 0}
               onChange={(enabled) => {
+                const profiled = new Set(snapshot.codexProfiles.map((profile) => profile.sourceId));
+                const baseline = enabled
+                  ? snapshot.codexProfileSources
+                      .filter((source) => source.kind === 'account' && profiled.has(source.sourceId))
+                      .map((source) => source.sourceId)
+                  : [];
+                setAutomaticCodexProfileCreation(enabled, baseline);
                 setAutoCreate(enabled);
-                service.mutate('setting-create-codex-profiles', {
-                  name: 'settings',
-                  enabled,
-                });
+                if (!enabled || busy.size > 0) return;
+                const sourceIds = planAutomaticCodexProfileSync(snapshot, false);
+                if (sourceIds.length === 0) return;
+                const action = syncCodexProfiles(sourceIds);
+                service.mutate(action.operation, action.extra);
               }}
             />
           </RowActions>

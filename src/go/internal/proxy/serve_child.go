@@ -27,7 +27,7 @@ func (s *Service) ServeExisting(ctx context.Context, providerID, accountName str
 	if state == nil || state.Endpoint == "" || state.Token == "" || state.InstanceID == "" {
 		return fmt.Errorf("no proxy state to serve for %s/%s", providerID, accountName)
 	}
-	upstream, err := s.Resolver.ResolveUpstream(ctx, providerID, accountName)
+	upstream, err := resolveChildUpstream(ctx, s.Resolver, providerID, accountName)
 	if err != nil {
 		return err
 	}
@@ -71,6 +71,19 @@ func (s *Service) ServeExisting(ctx context.Context, providerID, accountName str
 	}
 	_ = server.Close()
 	return s.cleanupStoppedInstance(ctx, providerID, accountName, state.InstanceID)
+}
+
+// resolveChildUpstream prefers the cache read. ResolveUpstream rebuilds the
+// snapshot under the provider lock, and the parent still holds that lock
+// while it waits for this process to answer /health.
+func resolveChildUpstream(ctx context.Context, resolver UpstreamResolver, providerID, accountName string) (*Upstream, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("proxy resolver is unavailable")
+	}
+	if startup, ok := resolver.(StartupUpstreamResolver); ok {
+		return startup.ResolveStartupUpstream(ctx, providerID, accountName)
+	}
+	return resolver.ResolveUpstream(ctx, providerID, accountName)
 }
 
 func (s *Service) cleanupStoppedInstance(ctx context.Context, providerID, accountName, instanceID string) error {

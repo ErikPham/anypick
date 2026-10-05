@@ -1276,7 +1276,17 @@ final class ProductionDesignModel: MacOSDesignModel {
         overwrite: true,
         activityLabel: "exporting account backup"
       )
-    else { return false }
+    else {
+      // A frame over 16 KiB already set store.message and returned nil.
+      // The window alert reads model.feedback, so the toast alone never shows.
+      let reason = store.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      showFeedback(
+        reason.isEmpty
+          ? "AnyPick could not export that backup. Select fewer accounts or shorten their names, then try again."
+          : reason,
+        kind: .error)
+      return false
+    }
     pendingOperations[requestID] = "account-backup-export"
     operationResult = nil
     return true

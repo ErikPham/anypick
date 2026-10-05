@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 
 import { resolveBridge, type BridgeEvent, type TrayBridge } from './lib/bridge';
+import { planAutomaticCodexProfileSync } from './lib/codex-auto-profiles';
 import type { Destination, Snapshot } from './lib/contract';
 import { createService, type ServiceHandle, type ServicePort } from './lib/service';
 import {
@@ -360,6 +361,13 @@ export function App({
     : selectedApp
     ? () => setSelectedAppId(null)
     : undefined;
+
+  useEffect(() => {
+    if (!snapshot || busy.size > 0) return;
+    const sourceIds = planAutomaticCodexProfileSync(snapshot, false);
+    if (sourceIds.length === 0) return;
+    service.port.mutate('codex-profile-sync', { sourceIds });
+  }, [snapshot, busy, service]);
 
   useEffect(() => {
     const paneTitle = activeTitle;

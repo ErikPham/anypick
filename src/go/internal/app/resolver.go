@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/activation"
@@ -24,71 +25,105 @@ type snapshotUpstreamResolver struct {
 }
 
 // ResolveUpstream finds the egress target for one saved account.
+// Every read rebuilds the cache from the committed blobs (ADR 0004). Hub
+// routing depends on that. Get holds the provider lock while it rebuilds
+// (ADR 0011). The caller's ctx is what makes the lock re-entrant (ADR 0009).
 func (r *snapshotUpstreamResolver) ResolveUpstream(ctx context.Context, providerID, accountName string) (*proxy.Upstream, error) {
 	pv, err := r.providers.Get(providerID)
 	if err != nil {
 		return nil, err
 	}
-	acct, err := r.store.Get(context.Background(), providerID, accountName)
+	acct, err := r.store.Get(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
 	}
 	if acct == nil {
-		// Gateway profiles (gateway-create) hold the credential in the profile
-		// store, not an account snapshot. A provider that can serve a gateway
-		// from a profile key implements GatewayUpstreamWithKey and receives it
-		// in memory.
-		//
-		// The key is deliberately never written to a snapshot .env: this runs
-		// once per request, so a cleartext write here races a concurrent
-		// `anypick backup` with a half-written file, and a stale copy keeps
-		// resolving after the key is rotated or deleted (invariants #2 and #4).
-		if r.profiles != nil {
-			if pr, perr := r.profiles.GetContext(ctx, accountName); perr == nil &&
-				pr != nil && pr.Meta.Provider == providerID && pr.Secrets.APIKey != "" {
-				// Providers with a per-account endpoint (Cloudflare AI
-				// Gateway) resolve from the stored endpoint plus the profile
-				// headers. The header map stays generic here; the provider
-				// maps its own keys onto wire headers.
-				if gw, ok := pv.(interface {
-					GatewayUpstreamWithEndpoint(endpoint, apiKey string, headers map[string]string) (*proxy.Upstream, error)
-				}); ok && pr.Meta.Endpoint != "" {
-					if up, uerr := gw.GatewayUpstreamWithEndpoint(pr.Meta.Endpoint, pr.Secrets.APIKey, pr.Secrets.Headers); uerr == nil {
-						return withCatalogScope(up, providerID, accountName), nil
-					}
-				}
-				if gw, ok := pv.(interface {
-					GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error)
-				}); ok {
-					if up, uerr := gw.GatewayUpstreamWithKey(pr.Secrets.APIKey); uerr == nil {
-						return withCatalogScope(up, providerID, accountName), nil
-					}
-				}
-			}
-		}
-		// Providers with a live-session gateway own how that session becomes
-		// an upstream. The resolver only dispatches the optional capability.
-		if gp, ok := pv.(interface {
-			GatewayUpstream() (*proxy.Upstream, error)
-		}); ok {
-			if up, uerr := gp.GatewayUpstream(); uerr == nil {
-				return withCatalogScope(up, providerID, accountName), nil
-			}
-		}
-		return nil, fmt.Errorf("no snapshot for %s/%s", providerID, accountName)
+		return r.resolveWithoutAccount(ctx, pv, providerID, accountName)
 	}
+	return resolveSnapshotUpstream(pv, acct.SnapshotDir, providerID, accountName)
+}
 
-	if compat, ok := pv.(interface {
+// ResolveStartupUpstream reads the cache the parent just materialized. The
+// detached proxy child calls this while that parent still holds the provider
+// lock and is blocked on /health. Get here would wait on the same lock.
+func (r *snapshotUpstreamResolver) ResolveStartupUpstream(ctx context.Context, providerID, accountName string) (*proxy.Upstream, error) {
+	pv, err := r.providers.Get(providerID)
+	if err != nil {
+		return nil, err
+	}
+	acct, err := r.store.CachedAccount(ctx, providerID, accountName)
+	if err != nil {
+		return nil, err
+	}
+	if acct == nil || !snapshotCacheReady(acct.SnapshotDir) {
+		return nil, fmt.Errorf("snapshot cache is not ready for %s/%s", providerID, accountName)
+	}
+	return resolveSnapshotUpstream(pv, acct.SnapshotDir, providerID, accountName)
+}
+
+func snapshotCacheReady(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
+}
+
+func resolveSnapshotUpstream(pv provider.Provider, snapshotDir, providerID, accountName string) (*proxy.Upstream, error) {
+	compat, ok := pv.(interface {
 		ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
-	}); ok {
-		up, uerr := compat.ResolveUpstream(acct.SnapshotDir)
-		if uerr != nil {
-			return nil, uerr
-		}
-		return withCatalogScope(up, providerID, accountName), nil
+	})
+	if !ok {
+		return nil, fmt.Errorf("provider %q does not expose a snapshot upstream", providerID)
 	}
+	up, err := compat.ResolveUpstream(snapshotDir)
+	if err != nil {
+		return nil, err
+	}
+	return withCatalogScope(up, providerID, accountName), nil
+}
 
-	return nil, fmt.Errorf("provider %q does not expose a snapshot upstream", providerID)
+// resolveWithoutAccount serves a gateway profile that has no account snapshot.
+func (r *snapshotUpstreamResolver) resolveWithoutAccount(ctx context.Context, pv provider.Provider, providerID, accountName string) (*proxy.Upstream, error) {
+	// Gateway profiles (gateway-create) hold the credential in the profile
+	// store, not an account snapshot. A provider that can serve a gateway
+	// from a profile key implements GatewayUpstreamWithKey and receives it
+	// in memory.
+	//
+	// The key is deliberately never written to a snapshot .env: this runs
+	// once per request, so a cleartext write here races a concurrent
+	// `anypick backup` with a half-written file, and a stale copy keeps
+	// resolving after the key is rotated or deleted (invariants #2 and #4).
+	if r.profiles != nil {
+		if pr, perr := r.profiles.GetContext(ctx, accountName); perr == nil &&
+			pr != nil && pr.Meta.Provider == providerID && pr.Secrets.APIKey != "" {
+			// Providers with a per-account endpoint (Cloudflare AI
+			// Gateway) resolve from the stored endpoint plus the profile
+			// headers. The header map stays generic here; the provider
+			// maps its own keys onto wire headers.
+			if gw, ok := pv.(interface {
+				GatewayUpstreamWithEndpoint(endpoint, apiKey string, headers map[string]string) (*proxy.Upstream, error)
+			}); ok && pr.Meta.Endpoint != "" {
+				if up, uerr := gw.GatewayUpstreamWithEndpoint(pr.Meta.Endpoint, pr.Secrets.APIKey, pr.Secrets.Headers); uerr == nil {
+					return withCatalogScope(up, providerID, accountName), nil
+				}
+			}
+			if gw, ok := pv.(interface {
+				GatewayUpstreamWithKey(apiKey string) (*proxy.Upstream, error)
+			}); ok {
+				if up, uerr := gw.GatewayUpstreamWithKey(pr.Secrets.APIKey); uerr == nil {
+					return withCatalogScope(up, providerID, accountName), nil
+				}
+			}
+		}
+	}
+	// Providers with a live-session gateway own how that session becomes
+	// an upstream. The resolver only dispatches the optional capability.
+	if gp, ok := pv.(interface {
+		GatewayUpstream() (*proxy.Upstream, error)
+	}); ok {
+		if up, uerr := gp.GatewayUpstream(); uerr == nil {
+			return withCatalogScope(up, providerID, accountName), nil
+		}
+	}
+	return nil, fmt.Errorf("no snapshot for %s/%s", providerID, accountName)
 }
 
 func withCatalogScope(up *proxy.Upstream, providerID, accountName string) *proxy.Upstream {
