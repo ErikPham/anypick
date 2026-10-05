@@ -72,7 +72,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 	// Compatible vendors participate in tests too (fault injection may swap
 	// adapters, never the pairing rules).
-	if err := provider.RegisterBuiltinCompatibles(provReg); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(provReg, home); err != nil {
 		t.Fatal(err)
 	}
 	clientReg := client.NewRegistry()

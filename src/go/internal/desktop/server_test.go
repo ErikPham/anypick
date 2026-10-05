@@ -58,7 +58,7 @@ func newTrayEnv(t *testing.T) *trayEnv {
 	if err := provider.RegisterBuiltin(provReg, home); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.RegisterBuiltinCompatibles(provReg); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(provReg, home); err != nil {
 		t.Fatal(err)
 	}
 	clientReg := client.NewRegistry()

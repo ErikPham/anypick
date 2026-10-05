@@ -259,3 +259,23 @@ func TestBuiltinDefinitionsAreValid(t *testing.T) {
 		}
 	}
 }
+
+// An isolated registry must never silently inherit the developer's real home:
+// with no home to scope Z.ai's native detector to, registration fails instead
+// of reading a live login the caller never named.
+func TestRegisterBuiltinCompatiblesRequiresHome(t *testing.T) {
+	reg := NewRegistry()
+	if err := RegisterBuiltinCompatibles(reg); err == nil {
+		t.Fatal("empty homes must fail instead of reading the real home")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "INVALID_USAGE" {
+		t.Fatalf("err = %v", err)
+	}
+	if reg.Has("openrouter") || reg.Has("zai") {
+		t.Fatal("failed registration must leave the registry empty")
+	}
+	if err := RegisterBuiltinCompatibles(reg, ""); err == nil {
+		t.Fatal("empty home must fail instead of registering against it")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "INVALID_USAGE" {
+		t.Fatalf("err = %v", err)
+	}
+}

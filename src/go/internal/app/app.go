@@ -40,7 +40,11 @@ import (
 // App is the composed service graph. Command handlers stay thin; every
 // behavior lives on a service.
 type App struct {
-	Root      string
+	Root string
+	// Home is the client home (~) every builtin provider and client was
+	// registered with. Tests set it to a temp dir so live reads (DetectLive,
+	// Backup, Inspect) can never reach the developer's real credentials.
+	Home      string
 	DB        *db.DB
 	Store     *store.AccountStore
 	Providers *provider.Registry
@@ -55,28 +59,22 @@ type App struct {
 	Proxy       *proxy.Service
 	Runtime     *runtimeView
 	// PoolSvc is the service boundary outer layers talk to; the raw store
-	// stays inside internal/pools. The name is deliberate: the facade ratchet
-	// counts the literal "a.Pools", and a field named `a.PoolSvc` does not
-	// contain it (the "a.PoolsSvc" prefix trap would have kept counting it).
+	// stays inside internal/pools. The name is a naming convention the facade
+	// gate does not require: that gate forbids reconstructed selector chains
+	// ending in one of ten literal tails (see facade_test.go), and these names
+	// happen to avoid all ten. Renaming a field to dodge a tail is not what
+	// keeps the coupling out.
 	PoolSvc *pools.Service
 	Hub     *hub.Store
 	// ProxyHub is what outer layers should use. Hub stays for a few engine
 	// paths that still need the table-owning store (e2e route snapshot helpers).
-	// The name deliberately does not start with "Hub": the facade ratchet
-	// counts the literal "a.Hub", and "a.HubService" matched it — the same
-	// substring trap that already fooled the "s.Deps.Store" pattern.
 	ProxyHub *hub.Service
-	Journal  *journal.OperationJournal // PresetSvc is the service boundary outer layers talk to; the raw store
-	// stays inside internal/presets. The name is deliberate: the facade
-	// ratchet counts the literal "a.Presets", and a field named `a.PresetSvc`
-	// does not contain it (the "a.PresetsSvc" prefix trap would have kept
-	// counting it, exactly like a.Bindings did).
+	Journal  *journal.OperationJournal
+	// PresetSvc is the service boundary outer layers talk to; the raw store
+	// stays inside internal/presets.
 	PresetSvc *presets.Service
 	// BindingSvc is the service boundary outer layers talk to; the raw store
-	// stays inside internal/bindings. The name is deliberate: the facade
-	// ratchet counts the literal "a.Bindings", and a field named
-	// `a.BindingsSvc` would still match it (prefix trap), so the field must
-	// not contain "a.Bindings" at all.
+	// stays inside internal/bindings.
 	BindingSvc *bindings.Service
 	// CodexProfileSvc stores named native route profiles; it is separate from
 	// the one active global binding exposed by BindingSvc.
@@ -103,10 +101,7 @@ type runtimeView struct {
 	Home    string
 	Clients *client.Registry
 	// ProfileSvc is the service boundary outer layers talk to; the raw store
-	// stays inside internal/profile. The name is deliberate: the facade ratchet
-	// counts the literal "a.Runtime.Profiles", and a field named `a.Runtime.ProfileSvc`
-	// does not contain it (the "a.Runtime.ProfilesSvc" prefix trap would have
-	// kept counting it).
+	// stays inside internal/profile.
 	ProfileSvc *profile.Service
 	Catalog    *catalog.Index
 }
@@ -115,6 +110,10 @@ type runtimeView struct {
 type Options struct {
 	// Root overrides the data root; empty resolves to ANYPICK_HOME/~/.anypick.
 	Root string
+	// Home overrides the client home (~) used for live credential and
+	// client-config paths; empty resolves to the real user home, exactly as
+	// before. Tests set it to a temp dir to isolate live reads.
+	Home string
 	// SkipMigrate skips filesystem migration + binding migration but still
 	// ensures bootstrap state (used by isolated tests).
 	SkipMigrate bool
@@ -128,7 +127,16 @@ type Options struct {
 }
 
 // New composes the graph without running bootstrap. Most callers want Ready.
+//
+// New binds the real user home and is the production entry point. Tests that
+// need a live read must go through Ready with Options.Home: New has no seam to
+// pass one, so a test using it would resolve adapters against the developer's
+// own ~/.claude, ~/.codex and ~/.gemini.
 func New(root string) (*App, error) {
+	return newWithHome(root, "")
+}
+
+func newWithHome(root, home string) (*App, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, anyerr.Wrapf(err, "create data root", "FS_PATH")
 	}
@@ -136,7 +144,7 @@ func New(root string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	a := &App{Root: root, DB: database}
+	a := &App{Root: root, Home: homeDir(home), DB: database}
 	if err := a.compose(); err != nil {
 		_ = database.Close()
 		return nil, err
@@ -158,15 +166,15 @@ func (a *App) compose() error {
 	gate := pubgate.New()
 	provReg := provider.NewRegistry()
 	provReg.SetGate(gate)
-	if err := provider.RegisterBuiltin(provReg, homeDir()); err != nil {
+	if err := provider.RegisterBuiltin(provReg, a.Home); err != nil {
 		return err
 	}
-	if err := provider.RegisterBuiltinCompatibles(provReg, homeDir()); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(provReg, a.Home); err != nil {
 		return err
 	}
 	clientReg := client.NewRegistry()
 	clientReg.SetGate(gate)
-	if err := client.RegisterBuiltin(clientReg, homeDir(), a.Root); err != nil {
+	if err := client.RegisterBuiltin(clientReg, a.Home, a.Root); err != nil {
 		return err
 	}
 	clientProfileStore := &client.ProfileStore{Root: a.Root, DB: a.DB.DB}
@@ -196,7 +204,7 @@ func (a *App) compose() error {
 	depCatalog.SetGate(gate)
 	rt := &runtime.Service{
 		Root:     a.Root,
-		Home:     homeDir(),
+		Home:     a.Home,
 		Clients:  clientReg,
 		Profiles: profileStore,
 		Catalog:  catalogRegistry,
@@ -324,7 +332,7 @@ func (a *App) compose() error {
 	a.CodexProfileSvc = client.NewProfileService(clientProfileStore)
 	svc.SetAfterSwitch(a.BindingSvc.RealignNativeClientBinding)
 	a.Runtime = &runtimeView{
-		Root: a.Root, Home: homeDir(), Clients: clientReg,
+		Root: a.Root, Home: a.Home, Clients: clientReg,
 		ProfileSvc: profileSvc, Catalog: catalogRegistry,
 	}
 	a.Deps = deps
@@ -356,7 +364,7 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 		}
 	}()
 
-	a, err := New(root)
+	a, err := newWithHome(root, opts.Home)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -470,7 +478,10 @@ func selfExecutable() (string, error) {
 	return os.Executable()
 }
 
-func homeDir() string {
+func homeDir(override string) string {
+	if override != "" {
+		return override
+	}
 	home, _ := os.UserHomeDir()
 	return home
 }

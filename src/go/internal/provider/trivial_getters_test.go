@@ -112,7 +112,7 @@ func TestCompatibleExtras(t *testing.T) {
 
 	// RegisterBuiltinCompatibles on fresh registry
 	reg := NewRegistry()
-	if err := RegisterBuiltinCompatibles(reg); err != nil {
+	if err := RegisterBuiltinCompatibles(reg, t.TempDir()); err != nil {
 		t.Fatalf("RegisterBuiltinCompatibles: %v", err)
 	}
 	if !reg.Has("openrouter") || !reg.Has("deepseek") {

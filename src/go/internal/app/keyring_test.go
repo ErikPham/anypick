@@ -32,7 +32,7 @@ func TestReadyKeepsKeyringNoopUnderTest(t *testing.T) {
 	t.Cleanup(func() { provider.AntigravityKeyringPut = previous })
 
 	root := filepath.Join(t.TempDir(), "anypick")
-	_, closeFn, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	_, closeFn, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatal(err)
 	}

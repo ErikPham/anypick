@@ -253,7 +253,7 @@ func TestEveryRegisteredClientIsReachableInTheTUI(t *testing.T) {
 	if err := provider.RegisterBuiltin(a.Providers, t.TempDir()); err != nil {
 		t.Fatalf("RegisterBuiltin(providers): %v", err)
 	}
-	if err := provider.RegisterBuiltinCompatibles(a.Providers); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(a.Providers, t.TempDir()); err != nil {
 		t.Fatalf("RegisterBuiltinCompatibles: %v", err)
 	}
 	if err := client.RegisterBuiltin(a.Clients, t.TempDir()); err != nil {

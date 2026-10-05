@@ -743,20 +743,14 @@ func BuiltinDefinitions() []CompatibleDefinition {
 // Z.ai is the one exception to the otherwise declarative table: its coding
 // subscription is also owned by the ZCode desktop app, so it needs a native
 // detector and browser login while retaining the compatible API-key product.
-// The optional home argument keeps the helper source-compatible with the
-// isolated registry fixtures while allowing the app composition root to pass
-// its real user home.
+// The home argument is required: falling back to the real user home would let
+// an isolated registry silently read the developer's live Z.ai login, so an
+// empty call fails instead of guessing.
 func RegisterBuiltinCompatibles(r *Registry, homes ...string) error {
-	var zaiHome string
-	if len(homes) > 0 {
-		zaiHome = homes[0]
-	} else {
-		var err error
-		zaiHome, err = os.UserHomeDir()
-		if err != nil {
-			return err
-		}
+	if len(homes) == 0 || homes[0] == "" {
+		return anyerr.Newf("RegisterBuiltinCompatibles requires an explicit home directory", "INVALID_USAGE")
 	}
+	zaiHome := homes[0]
 	for _, def := range BuiltinDefinitions() {
 		if def.ID == "zai" {
 			p, err := newZAI(zaiHome)

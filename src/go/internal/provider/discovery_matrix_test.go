@@ -153,7 +153,7 @@ func writeCodexMatrixAuth(t *testing.T, snap string) {
 // credential to seed is broken, not skipped.
 func TestCompatibleDiscoveryMatrix(t *testing.T) {
 	reg := NewRegistry()
-	if err := RegisterBuiltinCompatibles(reg); err != nil {
+	if err := RegisterBuiltinCompatibles(reg, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range reg.IDs() {

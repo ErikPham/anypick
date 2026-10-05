@@ -29,7 +29,7 @@ func writeAppPlugin(t *testing.T, dir string) {
 // end to end even though nothing can execute the package.
 func addEnabledPlugin(t *testing.T, root, dir string) {
 	t.Helper()
-	bootstrap, closeBootstrap, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	bootstrap, closeBootstrap, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestReadyDegradesEveryPluginCandidateWithoutAHost(t *testing.T) {
 	writeAppPlugin(t, dir)
 	addEnabledPlugin(t, root, dir)
 
-	ready, closeReady, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	ready, closeReady, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatalf("a degraded plugin must not abort app startup: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestPluginDiagnosticsReportsInertHost(t *testing.T) {
 	writeAppPlugin(t, dir)
 	addEnabledPlugin(t, root, dir)
 
-	ready, closeReady, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	ready, closeReady, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestReadyStillRefusesTamperedPluginPackage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "index.mjs"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	degraded, closeDegraded, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	degraded, closeDegraded, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatalf("an untrusted plugin must not abort app startup: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestReadySkipsPluginInspectionWhenBareOrDisabled(t *testing.T) {
 	addEnabledPlugin(t, root, dir)
 
 	bare, closeBare, err := Ready(context.Background(), Options{
-		Root: root, SkipMaintenance: true, Bare: true,
+		Root: root, Home: testHome(t), SkipMaintenance: true, Bare: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestReadySkipsPluginInspectionWhenBareOrDisabled(t *testing.T) {
 	closeBare()
 
 	t.Setenv("ANYPICK_NO_PLUGINS", "true")
-	disabled, closeDisabled, err := Ready(context.Background(), Options{Root: root, SkipMaintenance: true})
+	disabled, closeDisabled, err := Ready(context.Background(), Options{Root: root, Home: testHome(t), SkipMaintenance: true})
 	if err != nil {
 		t.Fatal(err)
 	}

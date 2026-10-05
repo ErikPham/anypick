@@ -30,7 +30,7 @@ func fullService(t *testing.T) (*Service, *store.AccountStore, string) {
 	if err := provider.RegisterBuiltin(reg, home); err != nil {
 		t.Fatal(err)
 	}
-	if err := provider.RegisterBuiltinCompatibles(reg); err != nil {
+	if err := provider.RegisterBuiltinCompatibles(reg, home); err != nil {
 		t.Fatal(err)
 	}
 	// seedGrokLive writes through this override (fake HOME).
