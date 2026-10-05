@@ -102,7 +102,7 @@ run it against the wrong project.
 | What did we consider before? | `docs/history/` — **superseded proposals, provenance only.** Not the current spec. |
 | What do users believe? | `docs/src/content/docs/` and `README.md` |
 | How is a change reviewed? | `CODE_REVIEW.md` — severity, checklists, and when a finding needs a gate |
-| How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. `design.pen` is product IA/content (not pixel-perfect; Pen is not 100% native). |
+| How must the macOS app look and behave? | `src/macos/README.md`. Ship native controls. The Pen design file is product IA/content (not pixel-perfect; Pen is not 100% native) and is **not committed**: `/design/` is gitignored, so it is available only to someone with the design workspace. `src/macos/README.md` holds the contract that is enforced. |
 
 Do not edit an accepted ADR to reflect new thinking; write a new one and mark the
 old superseded.
@@ -114,8 +114,14 @@ Breaking one of these is a correctness or security regression, not a style nit.
 1. **Capability pairs come from the adapters** in `src/go/internal/transport`.
    `claude`, `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and
    `omp` may accept a
-   source from a different provider. `gemini` and `kiro` clients return
-   `unsupported` for anything but their own. The workbuddy *client* uses
+   source from a different provider. A `gemini` or `kiro` *account* also serves
+   those eight through the proxy (`ManagedBuiltinProxy`); it is the `gemini` and
+   `kiro` *client* that returns `unsupported` for anything but their own, so
+   nothing can be pointed at them. Do not read the account rule as a client rule
+   or the reverse. The `grok` account adapter also serves the same eight
+   (`GrokAccountAdapter`); it is absent from earlier revisions of this list,
+   which is why the matrix test below is the authority and this prose is not.
+   The workbuddy *client* uses
    its own login directly, so every other adapter still returns `unsupported`
    for it; a workbuddy *account* still serves `claude`,
    `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and `omp`
@@ -138,9 +144,16 @@ Breaking one of these is a correctness or security regression, not a style nit.
    exactly what let `grok` ship unclassified.
 2. **Proxy secrets never cross an output boundary.** Every local proxy
    authenticates each request with a per-instance secret (ADR 0006) and binds
-   loopback only. `StartResult.Token` is deliberately discarded by every
-   caller — the CLI, the TUI (`src/go/internal/tui/toggleProxyCmd`) and the desktop
-   protocol all surface the endpoint only. JSON output lands in CI logs.
+   loopback only. `StartResult.Token` never reaches a status, start, snapshot or
+   log surface: the CLI (`anypick proxy start`), the TUI
+   (`src/go/internal/tui/toggleProxyCmd`) and the desktop protocol all surface the
+   endpoint only, and JSON output lands in CI logs. The one sanctioned exception
+   is the dedicated `anypick proxy token <provider> <account> [--rotate]`
+   command (ADR 0006 §6), which prints the bearer in human and `--json` form
+   because retrieving it is its purpose;
+   `cmd/anypick/status_secret_test.go` pins both halves of that split. An earlier
+   wording here claimed the token was discarded by *every* caller, which was
+   false and read as an argument against fixing a leak.
 3. **Activation is planned, journalled, then executed.** `ActivationPlan.steps`
    is the single source of truth for execution; the executor must not re-derive
    behavior from transport capability, or planner and executor can diverge

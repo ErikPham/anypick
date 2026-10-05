@@ -35,6 +35,17 @@ import (
 // docs/history/ARCHITECTURE_AND_ROADMAP_2026-09-08.md).
 // Bringing it to zero is the whole point: the budget mechanism is gone because
 // there is nothing irreducible left to tolerate.
+//
+// What this gate does NOT do, so the comments in app.go stopped claiming
+// otherwise: it has no field-name rule and does no counting. It matches the ten
+// literal tails below against reconstructed selector chains found only in
+// non-test files under cmd/anypick and internal/desktop. Two consequences worth
+// knowing before relying on it. A raw handle reached from a package outside
+// those two is invisible. And an expression whose root is not a bare identifier
+// yields the empty chain from selectorChain and is never matched at all. The
+// `PoolSvc` / `PresetSvc` / `BindingSvc` / `ProxyHub` / `ProfileSvc` names in
+// app.go are a naming convention that happens to dodge all ten tails, not
+// something this gate requires.
 
 // facadeForbidden are raw store handles that must never be reached from an
 // outer layer again. Each tail is matched against the reconstructed selector

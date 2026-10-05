@@ -4,10 +4,13 @@
 #
 # Why this exists: the review standard (CODE_REVIEW.md §7) attaches the risk
 # classification and the independent-review record to a *pull request*. This
-# repository has never used one -- 91 commits, zero merge commits, all direct to
-# main -- so nothing in .github/ has ever executed. The commit is therefore the
-# only reviewable unit that actually exists here, and this hook is the only gate
-# that can fire on it.
+# repository has never merged one -- zero merge commits, all direct to main --
+# so the PR-shaped half of .github/ has nothing to fire on. In particular
+# review-metadata.yml triggers on pull_request_target only, and ci.yml also
+# triggers on push to main, so CI does run on a direct push. The commit is
+# therefore the only reviewable unit here that no GitHub setting can be made to
+# require, and this hook is the only gate that fires on it without a human
+# enabling the branch ruleset first (.github/BRANCH_RULESET.md).
 #
 # It enforces three things CODE_REVIEW.md already requires and nothing enforced:
 #   1. Conventional Commits subject (§4) -- subjects ARE the changelog.

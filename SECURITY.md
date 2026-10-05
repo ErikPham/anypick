@@ -14,6 +14,36 @@ Include the affected version, a minimal reproduction, impact, and any relevant p
 
 AnyPick intentionally handles local credentials and client configuration. It writes only to AnyPick-managed state and explicit adapter-owned paths, and journals compensating actions before mutable activation steps. The reachable trust boundary is: loopback-only proxy listeners with per-instance request tokens (ADR 0006), OS keychain/credential-store items the providers own, and the live credential/config files the adapters rewrite (Claude/Codex/Cline/Gemini/OpenCode paths owned by `src/go/internal/provider` and `src/go/internal/client`).
 
+### What the loopback binding does and does not protect
+
+Loopback binding plus a per-instance bearer protects the *inbound* side of a
+proxy: another host on the network cannot reach the listener, and a local process
+that has not read the token cannot authenticate to it. It does nothing about
+where the proxy then sends traffic.
+
+Two outbound paths are chosen by configuration rather than by AnyPick, and both
+carry your API key and request bodies:
+
+- **`anypick gateway add|edit --endpoint <url>`.** Any URL is accepted, by design.
+  After a gateway profile is in use, every request through it is forwarded to
+  that host along with the credential. There is no allowlist and no SSRF guard,
+  because the destination is the operator's explicit choice. Treat a gateway
+  endpoint as you would treat the host you paste an API key into.
+- **`HTTP_PROXY` / `HTTPS_PROXY`.** The shared egress transport honours these
+  (`src/go/internal/egress`), so a poisoned environment variable can route
+  credentialed upstream traffic through a third-party proxy.
+
+Both are trust decisions, not defects. If you need a hard boundary, do not point
+a gateway at an untrusted host, and do not run AnyPick from an environment whose
+proxy variables you did not set.
+
+### Credential material at rest
+
+Backups and exports (`anypick account export`, the TUI export actions) are
+plaintext JSON containing live credentials, written with mode 0600 under the
+AnyPick data root. There is no passphrase option. Treat an export file with the
+same care as the credential itself.
+
 ## Required branch protection
 
 AnyPick enforces its invariants through automated gates (`make review`, and AST gates that are mutation-checked) and through human review. The gates live in the repository; the *requirement that they run before merge* does not, so it is recorded here as the verifiable source of truth. **This must be set in the repository's branch protection rule on GitHub — it cannot be expressed as a file in the tree.**

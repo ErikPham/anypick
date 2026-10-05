@@ -10,8 +10,8 @@ The product is a full macOS Dock app whose **main window must look and behave
 like a first-party macOS System Settings window**, not a website, not a
 dashboard, and not a custom design-tool mock. A menu-bar extra remains
 available as a compact power surface; it does not own the application
-lifecycle. Shipped `.app` trees are Node-free (ADR 0020): no `plugin-host.mjs`,
-private Node, npm/pnpm/tsx, or leaked developer paths.
+lifecycle. Shipped `.app` trees are Node-free (ADR 0020): no ESM plugin host, no
+private Node runtime, no npm/pnpm/tsx shim, and no leaked developer paths.
 
 If a change would look out of place next to **System Settings → Displays**
 or **System Settings → Battery**, it is the wrong change.
@@ -23,7 +23,11 @@ or **System Settings → Battery**, it is the wrong change.
    Accessibility: <https://developer.apple.com/design/human-interface-guidelines/designing-for-src/macos/>
 3. The shipped System Settings app on the machine you are designing on.
    Open it. Match spacing, control kinds, and pane rhythm. Do not guess.
-4. Product vocabulary and pane/sheet **content** in `design/design.pen`.
+4. Product vocabulary and pane/sheet **content** in the Pen design file. This
+   one is **not committed**: `/design/` is gitignored, so the file exists only
+   in a workspace that has it and `make check` cannot verify it. Everything
+   enforceable in it is restated in items 1 to 3 and in this file; treat the Pen
+   board as IA and copy guidance, and this document as the contract.
    Pen is not 100% native (Inter, Phosphor, drawn chrome) — ship SF Pro,
    SF Symbols, and system controls.
 5. `src/macos/AnyPickTests/` only for **isolation / credentials /
@@ -45,7 +49,8 @@ or **System Settings → Battery**, it is the wrong change.
 Edit this directory for chrome, panes, sheets, menu-bar content, store, and
 the production bridge. Nothing outside this tree renders macOS chrome.
 
-File layout: one type per file; extensions live in `Type+Feature.swift`
+File layout: one type per file, with extensions in the matching
+`Type+Feature.swift` file (`Store` and `Store+Transfers.swift`)
 (`MacOSDesignModel+Accounts.swift`, `TrayStore+Logs.swift`). New files
 must be registered in `sources.txt` and `AnyPick.xcodeproj` (app and test
 targets) — `testProjectUsesTheSharedSwiftSourceManifest` fails otherwise.

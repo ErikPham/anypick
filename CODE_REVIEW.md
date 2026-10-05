@@ -499,7 +499,7 @@ Done:
 - [x] `internal/provider/workbuddy.go` is gofmt-clean; `AGENTS.md` says six CI
       jobs; the PR template and the README no longer name deleted tooling.
 - [x] `src/tauri/README.md` rewritten against verified facts (it described the
-      pre-ADR-0020 world: a Node supervisor, `scripts/build-tauri-tray.mjs`,
+      pre-ADR-0020 world: a Node supervisor, a `scripts/` build entrypoint,
       `src/tray/**`, and "Windows remains unsupported").
 - [x] **`internal/bindings` no longer has a ctx-less form of anything.** Every
       wrapper is gone — mutators *and* reads — so no method on `bindings.Store`
