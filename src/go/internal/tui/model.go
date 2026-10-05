@@ -15,6 +15,7 @@ import (
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/doctor"
 	"github.com/outof0/anypick/go/internal/hub"
+	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/transfer"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -250,24 +251,19 @@ func diagnoseCmd(ctx context.Context, a *app.App, clientID string) tea.Cmd {
 	}
 }
 
-// defaultExportPath writes an exported account beside the user's Downloads
-// folder when it exists, else the home directory. The file is owner-only
-// (atomicfile.Write sets 0600) and holds credentials, so it is never echoed.
-func defaultExportPath(providerID, name string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	dir := filepath.Join(home, "Downloads")
-	if fi, serr := os.Stat(dir); serr != nil || !fi.IsDir() {
-		dir = home
-	}
-	return filepath.Join(dir, fmt.Sprintf("anypick-%s-%s.json", providerID, name))
+// defaultExportPath stages an exported account under the AnyPick data root,
+// never a browsed folder like ~/Downloads: the envelope holds live
+// credentials in plaintext, so a copy left where the OS surfaces downloads
+// outlives the user's intent to keep it. The caller echoes the exact path in
+// the export status line, so the file stays findable without being browsed.
+func defaultExportPath(root, providerID, name string) string {
+	return filepath.Join(paths.Root(root), "exports",
+		fmt.Sprintf("anypick-%s-%s.json", providerID, name))
 }
 
 func exportAccountCmd(ctx context.Context, a *app.App, providerID, name string) tea.Cmd {
 	return func() tea.Msg {
-		outPath := defaultExportPath(providerID, name)
+		outPath := defaultExportPath(a.Root, providerID, name)
 		if err := transfer.ExportEnvelope(a.Store, ctx, providerID, name, outPath); err != nil {
 			return actionMsg{err: err}
 		}
@@ -287,13 +283,14 @@ func exportProviderCmd(ctx context.Context, a *app.App, providerID string) tea.C
 		}
 		var exported []string
 		for _, acct := range accounts {
-			outPath := defaultExportPath(providerID, acct.Meta.Name)
+			outPath := defaultExportPath(a.Root, providerID, acct.Meta.Name)
 			if werr := transfer.ExportEnvelope(a.Store, ctx, providerID, acct.Meta.Name, outPath); werr != nil {
 				return actionMsg{err: werr}
 			}
 			exported = append(exported, acct.Meta.Name)
 		}
-		return actionMsg{text: fmt.Sprintf("exported %d account(s) for %s", len(exported), providerID)}
+		return actionMsg{text: fmt.Sprintf("exported %d account(s) for %s → %s",
+			len(exported), providerID, filepath.Join(paths.Root(a.Root), "exports"))}
 	}
 }
 

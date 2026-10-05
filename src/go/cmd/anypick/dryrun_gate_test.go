@@ -346,22 +346,26 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 
 // TestNonTTYConfirmationGate ports commands.ts confirmDelete semantics:
 // non-TTY refuses with exit 2 before consuming stdin or mutating anything;
-// --yes proceeds. TS gates ONLY account.remove and gateway.remove this way —
-// preset remove / unlink / reset have no confirmation upstream, so they are
-// deliberately not gated here (divergence from the slice brief, matching the
-// TypeScript authority).
+// --yes proceeds. reset and gateway reset clear the client's own login file,
+// so they take the same gate as account remove and gateway remove.
 func TestNoInputConfirmationGate(t *testing.T) {
 	isolateEnv(t)
 	clearGlobalsForParity()
 	seedRootForParity(t)
 	defer resetGlobals()()
-	code := -1
-	captureBoth(t, func() { code = run([]string{"--no-input", "account", "remove", "deepseek", "ds"}) })
-	if code != int(anyerr.InvalidUsage) {
-		t.Fatalf("--no-input account remove exited %d, want %d", code, int(anyerr.InvalidUsage))
-	}
-	if !strings.Contains(lastStderr, "requires --yes") {
-		t.Fatalf("stderr missing CONFIRMATION_REQUIRED: %.200q", lastStderr)
+	for _, args := range [][]string{
+		{"--no-input", "account", "remove", "deepseek", "ds"},
+		{"--no-input", "reset", "claude"},
+		{"--no-input", "gateway", "reset", "or", "--client", "claude"},
+	} {
+		code := -1
+		captureBoth(t, func() { code = run(args) })
+		if code != int(anyerr.InvalidUsage) {
+			t.Fatalf("--no-input %v exited %d, want %d", args, code, int(anyerr.InvalidUsage))
+		}
+		if !strings.Contains(lastStderr, "requires --yes") {
+			t.Fatalf("stderr missing CONFIRMATION_REQUIRED: %.200q", lastStderr)
+		}
 	}
 }
 
@@ -435,6 +439,112 @@ func TestNonTTYConfirmationGate(t *testing.T) {
 		}
 		if !strings.Contains(lastStderr, "requires --yes") {
 			t.Fatalf("stderr missing gate message: %.200q", lastStderr)
+		}
+	})
+
+	// seedThenBind leaves a live global binding so the gate tests can prove
+	// the refusal mutated nothing and the --yes run actually reset.
+	seedThenBind := func(t *testing.T) {
+		t.Helper()
+		isolateEnv(t)
+		clearGlobalsForParity()
+		seedRootForParity(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"use", "claude", "--with", "or"}) })
+		if code != 0 {
+			t.Fatalf("seed use exited %d (stderr %.200q)", code, lastStderr)
+		}
+	}
+	bindingFor := func(t *testing.T) bool {
+		t.Helper()
+		a, closeFn, err := appReadyForTest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeFn()
+		binding, gerr := a.BindingSvc.GetGlobalContext(context.Background(), "claude")
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		return binding != nil
+	}
+
+	t.Run("reset requires yes", func(t *testing.T) {
+		defer resetGlobals()()
+		seedThenBind(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"reset", "claude"}) })
+		if code != int(anyerr.InvalidUsage) {
+			t.Fatalf("non-TTY reset exited %d, want %d", code, int(anyerr.InvalidUsage))
+		}
+		if !strings.Contains(lastStderr, "requires --yes") {
+			t.Fatalf("stderr missing gate message: %.200q", lastStderr)
+		}
+		if !bindingFor(t) {
+			t.Fatal("reset without --yes removed the global binding")
+		}
+	})
+
+	t.Run("gateway reset requires yes", func(t *testing.T) {
+		defer resetGlobals()()
+		seedThenBind(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"gateway", "reset", "or", "--client", "claude"}) })
+		if code != int(anyerr.InvalidUsage) {
+			t.Fatalf("non-TTY gateway reset exited %d, want %d", code, int(anyerr.InvalidUsage))
+		}
+		if !strings.Contains(lastStderr, "requires --yes") {
+			t.Fatalf("stderr missing gate message: %.200q", lastStderr)
+		}
+		if !bindingFor(t) {
+			t.Fatal("gateway reset without --yes removed the global binding")
+		}
+	})
+
+	t.Run("gated reset reports CONFIRMATION_REQUIRED as JSON", func(t *testing.T) {
+		defer resetGlobals()()
+		seedThenBind(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"--json", "reset", "claude"}) })
+		if code != 2 {
+			t.Fatalf("gated --json reset exited %d, want 2", code)
+		}
+		if strings.TrimSpace(lastStdout) != "" {
+			t.Fatalf("error path must keep stdout machine-pure, got %.200q", lastStdout)
+		}
+		var v struct {
+			OK       bool   `json:"ok"`
+			Code     string `json:"code"`
+			ExitCode int    `json:"exitCode"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(lastStderr)), &v); err != nil {
+			t.Fatalf("stderr is not JSON (%v): %.300q", err, lastStderr)
+		}
+		if v.OK || v.Code != "CONFIRMATION_REQUIRED" || v.ExitCode != 2 {
+			t.Fatalf("stderr JSON = %+v, want {ok:false code:CONFIRMATION_REQUIRED exitCode:2}", v)
+		}
+	})
+
+	t.Run("yes proceeds for reset", func(t *testing.T) {
+		defer resetGlobals()()
+		seedThenBind(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"--yes", "reset", "claude"}) })
+		if code != 0 {
+			t.Fatalf("--yes reset exited %d (stderr %.200q)", code, lastStderr)
+		}
+		if bindingFor(t) {
+			t.Fatal("--yes reset left the global binding behind")
+		}
+	})
+
+	t.Run("yes proceeds for gateway reset", func(t *testing.T) {
+		defer resetGlobals()()
+		seedThenBind(t)
+		code := -1
+		captureBoth(t, func() { code = run([]string{"--yes", "gateway", "reset", "or", "--client", "claude"}) })
+		if code != 0 {
+			t.Fatalf("--yes gateway reset exited %d (stderr %.200q)", code, lastStderr)
 		}
 	})
 

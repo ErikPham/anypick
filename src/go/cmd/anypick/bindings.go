@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -270,7 +271,7 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 func cmdReset(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
-		return usageError("usage: anypick reset <client>")
+		return usageError("usage: anypick reset <client> [--yes]")
 	}
 	clientID := fs.Arg(0)
 	cad, gerr := a.Clients.Get(clientID)
@@ -284,6 +285,14 @@ func cmdReset(ctx context.Context, a *appView, args []string) int {
 		}
 		emitResetDryRun(clientID, g != nil, false)
 		return int(anyerr.Success)
+	}
+	// Reset rewrites the client's own login file, so refusing without --yes
+	// on a headless stdin is the only safe default (invariant #7).
+	switch err := confirmDelete("client "+clientID, globals.Yes); {
+	case errors.Is(err, errDeclined):
+		return int(anyerr.Success)
+	case err != nil:
+		return reportErr(err)
 	}
 	// `c`, not the outer ctx: re-entrancy is carried in the context (ADR 0009),
 	// and the delete error must be returned — dropping it reported "reset" for

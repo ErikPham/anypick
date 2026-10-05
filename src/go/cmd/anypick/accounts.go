@@ -402,8 +402,9 @@ func cmdGatewayReset(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	clientID := fs.String("client", "", "client to reset from the gateway profile")
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 || *clientID == "" {
-		return usageError("usage: anypick gateway reset <gateway> --client <clientId>")
+		return usageError("usage: anypick gateway reset <gateway> --client <clientId> [--yes]")
 	}
+	gateway := fs.Arg(0)
 	if _, err := a.Clients.Get(*clientID); err != nil {
 		return reportErr(err)
 	}
@@ -414,6 +415,14 @@ func cmdGatewayReset(ctx context.Context, a *appView, args []string) int {
 		}
 		emitResetDryRun(*clientID, g != nil, true)
 		return int(anyerr.Success)
+	}
+	// Same gate as reset: the mutation below rewrites the client's own login
+	// file, and a headless stdin gets no prompt (invariant #7).
+	switch err := confirmDelete("client "+*clientID+" of gateway "+gateway, globals.Yes); {
+	case errors.Is(err, errDeclined):
+		return int(anyerr.Success)
+	case err != nil:
+		return reportErr(err)
 	}
 	err := lock.WithMutationLock(ctx, a.Root, "client/"+*clientID, func(context.Context) error {
 		cad, gerr := a.Clients.Get(*clientID)
