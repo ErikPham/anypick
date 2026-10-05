@@ -127,8 +127,15 @@ func TestExpandPresetErrors(t *testing.T) {
 	if _, err := env.Deps.Presets.Svc.UpsertContext(context.Background(), "ep-p", spec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ExpandPreset(ctx, "ep-p", "claude", env.Deps); err == nil || !strings.Contains(err.Error(), "PRESET_CLIENT_MISMATCH") && !strings.Contains(err.Error(), "not") {
-		t.Fatalf("client mismatch should error, got %v", err)
+	// The original disjunct paired the code with a bare "not" substring, which
+	// matches nearly every English error, so the assertion degraded to "any
+	// error passes". Assert the message that actually distinguishes this case.
+	_, err := ExpandPreset(ctx, "ep-p", "claude", env.Deps)
+	if err == nil {
+		t.Fatal("preset bound to codex must not expand for claude")
+	}
+	if !strings.Contains(err.Error(), "is for OpenAI Codex, not Claude Code") {
+		t.Fatalf("client mismatch must name both clients, got %v", err)
 	}
 	// Nested preset source
 	nested := bindings.Spec{Client: "codex", Source: refs.PresetRef("ep-p"), Model: bindings.OmittedModel()}
@@ -184,10 +191,9 @@ func TestPrepareClientRecoveryAndBindingHelpers(t *testing.T) {
 	if err := commitProjectBinding(context.Background(), PlanStep{}, plan, env.Deps, ExecuteOptions{}, actx); err == nil {
 		t.Fatal("commitProjectBinding wrong mode should error")
 	}
-	// commitGlobalBinding invalid mode should error
+	// An empty plan must not commit a binding. This logged the error and
+	// passed either way, so a nil return proved nothing about the call.
 	if err := commitGlobalBinding(context.Background(), plan, env.Deps, actx); err == nil {
-		// plan has no BindingSpec so it errors even though mode matches persistent;
-		// this still exercises the branch. Accept either error.
-		t.Logf("commitGlobalBinding error as expected: %v", err)
+		t.Fatal("commitGlobalBinding accepted a plan with no BindingSpec")
 	}
 }
