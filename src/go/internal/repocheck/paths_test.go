@@ -28,7 +28,7 @@ func newFixtureRepo(t *testing.T) *fixtureRepo {
 	fixture.write("VERSION", "1.0.0\n")
 	fixture.write("AGENTS.md",
 		"# Agent instructions\n\nBuild it with `make build`, then `make test`.\n\n"+
-			"```bash\nmake build\n```\n")
+			"Locking lives in `internal/lock/lock.go`.\n\n```bash\nmake build\n```\n")
 	fixture.write("CODE_REVIEW.md", "# Review standard\n")
 	fixture.write("CONTRIBUTING.md", "# Contributing\n")
 	// One decision, citing a document that exists: the citation check needs a
@@ -37,6 +37,11 @@ func newFixtureRepo(t *testing.T) *fixtureRepo {
 	fixture.write("adr/0001-example.md", "# ADR-0001: an example\n\n- Task: see `CODE_REVIEW.md`\n")
 	fixture.write("src/go/go.mod", "module example.test/engine\n\ngo 1.26\n")
 	fixture.write("src/go/main.go", "package main\n\nfunc main() {}\n")
+	// One non-markdown citation of a tracked file, cited from AGENTS.md above.
+	// The citation check runs two extractions and guards each independently, so
+	// a fixture carrying only markdown spans would report a dead non-markdown
+	// walk even when the rule under test is sound.
+	fixture.write("src/go/internal/lock/lock.go", "package lock\n\nconst Timeout = 5\n")
 	fixture.write("src/go/internal/buildinfo/buildinfo.go",
 		"package buildinfo\n\n// ProtocolVersion is the stdio protocol the app negotiates.\nconst ProtocolVersion = 2\n")
 	fixture.write("src/macos/README.md", "# macOS app\n\nRun `make test-macos`.\n")
@@ -456,11 +461,124 @@ func TestRootEntriesReportsADirectoryOnce(t *testing.T) {
 func TestDocumentCitationsIgnoreGlobs(t *testing.T) {
 	fixture := newFixtureRepo(t)
 	fixture.write("AGENTS.md",
-		"# Agent instructions\n\nA rule about every `*.md` and each `docs/*.md`.\n")
+		"# Agent instructions\n\nA rule about every `*.md` and each `docs/*.md`, "+
+			"and locking lives in `internal/lock/lock.go`.\n")
 	fixture.git("add", "-A")
 
 	found := Findings([]Section{checkDocumentCitations(fixture.root)})
 	if len(found) != 0 {
 		t.Fatalf("a glob is not a citation: %v", details(found))
+	}
+}
+
+// TestDocumentCitationsRequireTrackedNonMarkdownFiles covers the defect that
+// motivated the rule: AGENTS.md and src/macos/README.md both named design.pen as
+// a normative source, `/design/` is gitignored, and the markdown-only pattern
+// could not see a `.pen` path at all. The gate reported a clean tree while
+// pointing every new contributor at a file no clone has.
+func TestDocumentCitationsRequireTrackedNonMarkdownFiles(t *testing.T) {
+	t.Run("an untracked file is reported even though it exists on disk", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write(".gitignore", "/design/\n")
+		fixture.write("design/design.pen", "{}\n")
+		fixture.write("AGENTS.md", "# Agent instructions\n\nIA lives in `design/design.pen`.\n")
+		fixture.git("add", "-A")
+		// The file is present and ignored: a presence-only check passes here.
+		if _, err := os.Stat(filepath.Join(fixture.root, "design", "design.pen")); err != nil {
+			t.Fatal(err)
+		}
+
+		found := Findings([]Section{checkDocumentCitations(fixture.root)})
+		if len(found) != 1 {
+			t.Fatalf("findings = %v, want one for the untracked citation", details(found))
+		}
+		if !strings.Contains(found[0].Detail, "design/design.pen") ||
+			!strings.Contains(found[0].Detail, "no clean checkout has") {
+			t.Fatalf("finding = %q, want it to name the path and say no checkout has it", found[0].Detail)
+		}
+	})
+
+	t.Run("a tracked file passes", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write("design/design.pen", "{}\n")
+		fixture.write("AGENTS.md", "# Agent instructions\n\nIA lives in `design/design.pen`.\n")
+		fixture.git("add", "-A")
+
+		if found := Findings([]Section{checkDocumentCitations(fixture.root)}); len(found) != 0 {
+			t.Fatalf("a tracked citation must pass: %v", details(found))
+		}
+	})
+
+	t.Run("a bare basename resolves", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write("AGENTS.md",
+			"# Agent instructions\n\nSee `buildinfo.go` and `protocol.rs`.\n")
+		fixture.git("add", "-A")
+
+		if found := Findings([]Section{checkDocumentCitations(fixture.root)}); len(found) != 0 {
+			t.Fatalf("a tracked basename is a citation: %v", details(found))
+		}
+	})
+
+	t.Run("a deleted file in a provenance record is not a finding", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write("adr/0002-example.md",
+			"# ADR-0002\n\nThe engine was `src/core/app.ts`. It has been deleted.\n")
+		fixture.git("add", "-A")
+
+		if found := Findings([]Section{checkDocumentCitations(fixture.root)}); len(found) != 0 {
+			t.Fatalf("an ADR may name what it deleted: %v", details(found))
+		}
+	})
+
+	t.Run("a deleted file in a current-state document is a finding", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write("AGENTS.md",
+			"# Agent instructions\n\nWire it through `src/core/app.ts`.\n")
+		fixture.git("add", "-A")
+
+		found := Findings([]Section{checkDocumentCitations(fixture.root)})
+		if len(found) != 1 {
+			t.Fatalf("findings = %v, want one for the deleted path", details(found))
+		}
+	})
+
+	t.Run("a Swift naming convention is not a citation", func(t *testing.T) {
+		fixture := newFixtureRepo(t)
+		fixture.write("AGENTS.md",
+			"# Agent instructions\n\nExtensions live in `Type+Feature.swift`.\n")
+		fixture.git("add", "-A")
+
+		if found := Findings([]Section{checkDocumentCitations(fixture.root)}); len(found) != 0 {
+			t.Fatalf("a layout convention is not a file: %v", details(found))
+		}
+	})
+}
+
+// TestNonMarkdownCitationPatternCannotMatchEverything keeps the pattern narrow
+// on purpose. Widening it to "any backtick span with a dot" sweeps env vars,
+// versions and other projects' paths into the findings, and a gate that cries
+// wolf is a gate that gets deleted.
+func TestNonMarkdownCitationPatternCannotMatchEverything(t *testing.T) {
+	for _, notACitation := range []string{
+		"`GOPATH=$HOME/go`",
+		"`go1.26.7`",
+		"`~/.codex/auth.json`",
+		"`v1.0.1`",
+		"`localhost:8080`",
+	} {
+		if m := nonMarkdownCitationPattern.FindStringSubmatch(notACitation); m != nil {
+			t.Fatalf("%s must not be treated as a citation, matched %q", notACitation, m[1])
+		}
+	}
+	for _, citation := range []string{
+		"`design/design.pen`",
+		"`internal/lock/lock.go`",
+		"`buildinfo.go`",
+		"`check-node-free-app.sh`",
+	} {
+		if nonMarkdownCitationPattern.FindStringSubmatch(citation) == nil {
+			t.Fatalf("%s must be treated as a citation", citation)
+		}
 	}
 }
