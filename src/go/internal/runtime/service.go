@@ -301,6 +301,55 @@ func (s *Service) ApplyGatewayProfileWithOptions(
 	return cad.Apply(actx)
 }
 
+// clientConfigSources lists the live files an adapter may overwrite, so
+// PrepareClientConfigRecovery can snapshot them first. A nil result with a nil
+// error means the client writes no live file.
+func (s *Service) clientConfigSources(clientID string, profileNames ...string) ([]string, error) {
+	home := clientHome(s)
+	var sources []string
+	switch clientID {
+	case "claude":
+		sources = append(sources, filepath.Join(home, ".claude", "settings.json"))
+	case "codex":
+		profileName := ""
+		if len(profileNames) > 0 {
+			profileName = strings.TrimSpace(profileNames[0])
+		}
+		if profileName == "" {
+			return append(sources, codexConfigPath(s), client.CodexModelCatalogPath(home)), nil
+		}
+		return client.CodexProfilePaths(home, s.Root, profileName), nil
+	case "zcode":
+		sources = append(sources, client.ZCodeConfigPaths(home)...)
+	case "commandcode":
+		sources = append(sources, client.CommandCodeConfigPaths(home)...)
+	case "workbuddy":
+		sources = append(sources, client.WorkBuddyModelsPaths(home)...)
+	case "gemini":
+		sources = append(sources, client.GeminiConfigPaths(home)...)
+	case "opencode":
+		sources = append(sources, client.OpenCodeConfigPaths(home)...)
+	case "dsh":
+		sources = append(sources, client.DshConfigPaths(home)...)
+	case "pi":
+		sources = append(sources, client.PiConfigPaths(home)...)
+	case "omp":
+		sources = append(sources, client.OmpConfigPaths(home)...)
+	case "kiro":
+		// kiro persistent writes only AnyPick-root env files and touches no
+		// live client file, so there is nothing to snapshot here.
+		return nil, nil
+	default:
+		// Fail closed. A registered client missing from this switch would get no
+		// compensation record and no error, so its config write would be
+		// unrecoverable at the moment it matters — and it would surface as a
+		// corrupted config rather than a missing backup.
+		return nil, anyerr.Newf("no client-config recovery path for client "+clientID,
+			"CLIENT_CONFIG_RECOVERY_UNSUPPORTED")
+	}
+	return sources, nil
+}
+
 // PrepareClientConfigRecovery persists exact file compensation BEFORE an
 // adapter may touch disk: "src=>dest" records the executor can restore.
 func (s *Service) PrepareClientConfigRecovery(clientID, journalID string, profileNames ...string) ([]string, error) {
@@ -308,39 +357,11 @@ func (s *Service) PrepareClientConfigRecovery(clientID, journalID string, profil
 	if err != nil {
 		return nil, err
 	}
-	var sources []string
-	switch cad.ID() {
-	case "claude":
-		sources = append(sources, filepath.Join(clientHome(s), ".claude", "settings.json"))
-	case "codex":
-		profileName := ""
-		if len(profileNames) > 0 {
-			profileName = strings.TrimSpace(profileNames[0])
-		}
-		if profileName != "" {
-			sources = append(sources, client.CodexProfilePaths(clientHome(s), s.Root, profileName)...)
-		} else {
-			sources = append(sources, codexConfigPath(s), client.CodexModelCatalogPath(clientHome(s)))
-		}
-	case "zcode":
-		sources = append(sources, client.ZCodeConfigPaths(clientHome(s))...)
-	case "commandcode":
-		sources = append(sources, client.CommandCodeConfigPaths(clientHome(s))...)
-	case "workbuddy":
-		sources = append(sources, client.WorkBuddyModelsPaths(clientHome(s))...)
-	case "gemini":
-		sources = append(sources, client.GeminiConfigPaths(clientHome(s))...)
-	case "opencode":
-		sources = append(sources, client.OpenCodeConfigPaths(clientHome(s))...)
-	case "dsh":
-		sources = append(sources, client.DshConfigPaths(clientHome(s))...)
-	case "pi":
-		sources = append(sources, client.PiConfigPaths(clientHome(s))...)
-	case "omp":
-		sources = append(sources, client.OmpConfigPaths(clientHome(s))...)
-	default:
-		// kiro persistent writes only AnyPick-root env files and touches no
-		// live client file, so there is nothing to snapshot here.
+	sources, err := s.clientConfigSources(cad.ID(), profileNames...)
+	if err != nil {
+		return nil, err
+	}
+	if sources == nil {
 		return nil, nil
 	}
 	recoveryDir := filepath.Join(s.Root, "recovery", "clients", clientID)

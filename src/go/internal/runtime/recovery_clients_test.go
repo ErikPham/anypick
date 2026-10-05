@@ -1,10 +1,14 @@
 package runtime
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/client"
 )
 
 // A failed activation must be able to roll back these clients: every live
@@ -101,5 +105,49 @@ func TestPrepareRecoveryKiroHasNoLiveFiles(t *testing.T) {
 	}
 	if len(records) != 0 {
 		t.Fatalf("kiro records = %v, want none (no live files written)", records)
+	}
+}
+
+// unmappedClientAdapter is a registered client with no recovery path in
+// PrepareClientConfigRecovery. The registry lookup must succeed so the test
+// reaches the switch rather than failing earlier on an unknown id.
+type unmappedClientAdapter struct{}
+
+func (unmappedClientAdapter) ID() string                         { return "unmapped-test-client" }
+func (unmappedClientAdapter) Name() string                       { return "Unmapped Test Client" }
+func (unmappedClientAdapter) Capabilities() *client.Capabilities { return &client.Capabilities{} }
+func (unmappedClientAdapter) Apply(*client.ApplyContext) (*client.ApplyResult, error) {
+	return nil, nil
+}
+func (unmappedClientAdapter) Reset() error { return nil }
+func (unmappedClientAdapter) Inspect() (*client.InspectResult, error) {
+	return nil, nil
+}
+
+// A registered client with no recovery path must fail loudly. Returning
+// (nil, nil) here gave the caller no compensation record and no error, so the
+// config write it was about to perform would have been unrecoverable.
+func TestPrepareRecoveryFailsClosedForUnmappedClient(t *testing.T) {
+	s := testService(t)
+	const orphan = "unmapped-test-client"
+	if err := s.Clients.Register(unmappedClientAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Clients.Get(orphan); err != nil {
+		t.Fatalf("stub client must resolve through the registry, got %v", err)
+	}
+	records, err := s.PrepareClientConfigRecovery(orphan, "journal-orphan")
+	if err == nil {
+		t.Fatalf("unmapped client returned no error and records %v; want CLIENT_CONFIG_RECOVERY_UNSUPPORTED", records)
+	}
+	var ae *anyerr.Error
+	if !errors.As(err, &ae) {
+		t.Fatalf("error type = %T, want *anyerr.Error", err)
+	}
+	if ae.Code != "CLIENT_CONFIG_RECOVERY_UNSUPPORTED" {
+		t.Fatalf("error code = %q, want CLIENT_CONFIG_RECOVERY_UNSUPPORTED", ae.Code)
+	}
+	if !strings.Contains(ae.Message, orphan) {
+		t.Fatalf("error message %q must name the client %q so the fix is obvious", ae.Message, orphan)
 	}
 }
