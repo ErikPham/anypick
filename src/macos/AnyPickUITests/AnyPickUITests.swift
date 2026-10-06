@@ -223,7 +223,15 @@ final class AnyPickUITests: XCTestCase {
       dismissWelcome(app)
     }
 
-    app.typeKey(",", modifierFlags: .command)
+    // SwiftUI Settings { } often ignores ⌘, under XCUITest. AppCommands puts
+    // Settings… under Go; the app menu may also expose it — prefer Go.
+    let goMenu = app.menuBars.menuItems["Go"].firstMatch
+    if goMenu.waitForExistence(timeout: 2) {
+      goMenu.click()
+    }
+    let settingsMenu = app.menuItems["Settings…"].firstMatch
+    waitFor(settingsMenu, "Go → Settings… menu item")
+    settingsMenu.click()
     let tabs = element(app, "settings.tabs")
     waitFor(tabs, "Settings window (settings.tabs)")
     attachScreenshot("settings-general")
