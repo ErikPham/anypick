@@ -101,15 +101,6 @@ xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
 ```
 
-Audit a change against System Settings with:
-
-```bash
-python3 .claude/skills/design-checklist/scripts/route_review.py \
-  --surface desktop-app --artifact preferences --platform macos
-```
-
-Then read `.claude/skills/design-checklist/references/platform-macos.md`.
-
 ## Running a build you are reviewing
 
 `make run-macos-dev` builds the app, installs it as `~/Applications/AnyPick Dev.app`

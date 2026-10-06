@@ -83,7 +83,7 @@ GOPATH := $(HOME)/go
 export GOPATH
 
 .PHONY: help go-toolchain build run sandbox test test-race vet fmt fmt-check lint \
-        check review ci check-paths check-protocol check-release check-artifact hooks \
+        check review ci check-paths check-protocol check-actions check-release check-artifact hooks \
         plan-release set-version bump-version \
         open-macos build-macos test-macos test-macos-ui verify-macos run-macos-dev install-macos \
         install-tauri build-tauri-ui typecheck-tauri-ui test-tauri-ui \
@@ -151,7 +151,7 @@ lint: go-toolchain ## staticcheck over the engine (CODE_REVIEW.md §4)
 # it can run on every iteration and in the pre-push hook. `lint` is deliberately
 # not part of it — it needs a tool this machine may not have — and CI installs
 # that tool before running it.
-check: fmt-check vet check-paths check-protocol check-release ## Every static gate that needs only Go and git
+check: fmt-check vet check-paths check-protocol check-actions check-release ## Every static gate that needs only Go and git
 
 # review is CODE_REVIEW.md §4: the static gates plus the test suite, in one
 # command. It is what "I reviewed this change" means in this repository.
@@ -175,6 +175,9 @@ check-paths: go-toolchain ## Every cross-file reference resolves (scripts, Xcode
 # agrees with itself. See internal/repocheck/protocol.go.
 check-protocol: go-toolchain ## All four front ends declare the same protocol version
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-repocheck protocol
+
+check-actions: go-toolchain ## Every workflow action is pinned to a full SHA with a version comment
+	cd $(GO_DIR) && $(GO) run ./cmd/anypick-repocheck actions
 
 check-release: go-toolchain ## Every version source agrees with VERSION
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-release check
@@ -218,8 +221,9 @@ test-macos: ## Build and unit-test the app and the bundled helper contract
 
 # XCUITest over the fixture: the three ship-acceptance flows through the real
 # UI (welcome + checklist, tray first run, empty Accounts -> Add Account).
-# Not in test-macos or CI yet: macOS UI tests need Developer Mode
+# Not in test-macos: macOS UI tests need Developer Mode
 # (`sudo DevToolsSecurity -enable`) and an Accessibility grant on this Mac.
+# CI runs it in the non-blocking `macos-ui` job.
 test-macos-ui: ## Drive the onboarding, tray first-run, and add-account flows (XCUITest, fixture)
 	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPickUITests \
 	  -destination platform=macOS CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
