@@ -209,4 +209,104 @@ final class AnyPickUITests: XCTestCase {
     attachScreenshot("2-tray-after-save")
     app.terminate()
   }
+
+  // Settings smoke (QA): one run covers tabs, one control per pane, and the
+  // About version string that General and the app menu both read from the bundle.
+  func testSettingsPanesAndAboutVersion() {
+    let app = launch(fixture: "ready")
+    // Ready may still show Welcome when onboarding is unfinished; leave it so
+    // Settings is reachable without the sheet eating key commands.
+    let welcome = app.sheets.containing(
+      NSPredicate(format: "label == %@", "Welcome to AnyPick")
+    ).firstMatch
+    if welcome.waitForExistence(timeout: 2) {
+      dismissWelcome(app)
+    }
+
+    app.typeKey(",", modifierFlags: .command)
+    let tabs = element(app, "settings.tabs")
+    waitFor(tabs, "Settings window (settings.tabs)")
+    attachScreenshot("settings-general")
+
+    let expectedTabs = ["General", "Usage", "Proxies", "Security", "Diagnostics"]
+    for name in expectedTabs {
+      XCTAssertTrue(
+        tabs.staticTexts[name].firstMatch.exists || tabs.buttons[name].firstMatch.exists
+          || app.outlines.staticTexts[name].firstMatch.exists
+          || app.tables.staticTexts[name].firstMatch.exists,
+        "Settings sidebar missing \(name)")
+    }
+
+    func selectTab(_ name: String) {
+      let candidates: [XCUIElement] = [
+        tabs.staticTexts[name].firstMatch,
+        tabs.buttons[name].firstMatch,
+        app.outlines.staticTexts[name].firstMatch,
+        app.tables.cells.staticTexts[name].firstMatch,
+        app.tables.staticTexts[name].firstMatch,
+      ]
+      let hit = candidates.first { $0.exists }
+      XCTAssertNotNil(hit, "no sidebar control for \(name)")
+      hit?.click()
+      // Navigation title lands on the Settings window.
+      waitFor(app.staticTexts[name].firstMatch, "\(name) navigation title")
+    }
+
+    selectTab("General")
+    waitFor(element(app, "settings.getting-started"), "settings.getting-started")
+    let version = element(app, "settings.version")
+    waitFor(version, "settings.version")
+    let short = marketingVersion(of: app)
+    XCTAssertEqual(
+      version.label.isEmpty ? (version.value as? String ?? "") : version.label,
+      "Version \(short)",
+      "General About must match CFBundleShortVersionString")
+
+    selectTab("Usage")
+    waitFor(element(app, "settings.quota-guard"), "settings.quota-guard")
+
+    selectTab("Proxies")
+    waitFor(element(app, "settings.open-proxies"), "settings.open-proxies")
+
+    selectTab("Security")
+    waitFor(app.staticTexts["Hide Tokens"].firstMatch, "Hide Tokens row")
+    waitFor(app.staticTexts["Local Access Only"].firstMatch, "Local Access Only row")
+    waitFor(app.staticTexts["Account Backups"].firstMatch, "Account Backups row")
+    attachScreenshot("settings-security")
+
+    selectTab("Diagnostics")
+    waitFor(element(app, "settings.run-doctor"), "settings.run-doctor")
+
+    // Menu About AnyPick shows the same marketing version (no build number).
+    let aboutItem = app.menuItems["About AnyPick"].firstMatch
+    waitFor(aboutItem, "About AnyPick menu item")
+    aboutItem.click()
+    let about = app.dialogs.firstMatch.exists ? app.dialogs.firstMatch : app.windows.matching(
+      NSPredicate(format: "title CONTAINS %@", "AnyPick")
+    ).element(boundBy: 0)
+    // Standard about panel surfaces the marketing version as static text.
+    let versionInAbout = about.staticTexts.matching(
+      NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", short, short)
+    ).firstMatch
+    waitFor(versionInAbout, "About panel version \(short)")
+    attachScreenshot("settings-about-panel")
+    app.terminate()
+  }
+
+  /// CFBundleShortVersionString of the app under test — the same source General
+  /// and About AnyPick read. Stays free of a hardcoded 1.1.0 until set-version.
+  private func marketingVersion(of _: XCUIApplication) -> String {
+    // Same bundle id hideOtherApps filters on; XCUIApplication.bundleID is not
+    // available on every macOS XCTest SDK this project builds against.
+    let productBundleID = "dev.anypick.app"
+    let matches = NSWorkspace.shared.runningApplications.filter {
+      $0.bundleIdentifier == productBundleID
+    }
+    XCTAssertFalse(matches.isEmpty, "no running app for bundle \(productBundleID)")
+    let url = matches[0].bundleURL
+    XCTAssertNotNil(url, "running app has no bundleURL")
+    let short = Bundle(url: url!)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    XCTAssertNotNil(short.flatMap { $0.isEmpty ? nil : $0 }, "CFBundleShortVersionString missing")
+    return short!
+  }
 }
