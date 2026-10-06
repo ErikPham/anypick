@@ -24,3 +24,15 @@ make build
 ./src/go/bin/anypick-dev --help
 ./src/go/bin/anypick-dev tui
 ```
+
+## Headless / Linux server
+
+The CLI is a static Go binary: no GUI toolkit and no TTY required for non-interactive
+commands. Without a terminal, `anypick tui` exits with `NO_TTY`; use `anypick list`,
+`anypick use`, `anypick status`, `anypick serve`, or the desktop app instead.
+
+Data lives under `~/.anypick` (override with `ANYPICK_HOME`). `anypick serve`
+listens on `127.0.0.1` only — reach it from another host with an SSH tunnel.
+Update by downloading a new release archive, `npm install --global anypick@latest`,
+or `anypick update` (checks GitHub Releases).
+

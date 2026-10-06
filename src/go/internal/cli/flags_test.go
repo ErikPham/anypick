@@ -29,3 +29,12 @@ func TestReorder(t *testing.T) {
 		}
 	}
 }
+
+func TestWantsHelp(t *testing.T) {
+	if !WantsHelp([]string{"--help"}) || !WantsHelp([]string{"-h"}) || !WantsHelp([]string{"help"}) {
+		t.Fatal("expected help args")
+	}
+	if WantsHelp(nil) || WantsHelp([]string{"--json"}) {
+		t.Fatal("unexpected help")
+	}
+}

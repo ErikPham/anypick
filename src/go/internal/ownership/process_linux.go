@@ -36,15 +36,20 @@ func processStartStamp(pid int) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	line := string(raw)
-	// comm may contain spaces and parentheses; everything after the final ')'
-	// is the fixed-position field list.
+	return parseProcStartStamp(pid, string(raw))
+}
+
+// parseProcStartStamp reads overall field 22 (starttime) from a /proc/<pid>/stat
+// line. After the closing ')' of comm, fields[0] is state (overall field 3), so
+// starttime is fields[19]. Index 20 is vsize and grows after spawn — reading it
+// made VerifyLive fail for every real Go child on Linux (supervisor orphans).
+func parseProcStartStamp(pid int, line string) (uint64, error) {
 	idx := strings.LastIndex(line, ")")
 	if idx < 0 || idx+2 >= len(line) {
 		return 0, fmt.Errorf("/proc/%d/stat: unexpected shape", pid)
 	}
 	fields := strings.Fields(line[idx+2:])
-	const starttimeField = 20 // field 22 overall, index 20 after state+ppid
+	const starttimeField = 19 // overall field 22; fields[0] == state (overall 3)
 	if len(fields) <= starttimeField {
 		return 0, fmt.Errorf("/proc/%d/stat: too few fields", pid)
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -30,6 +32,9 @@ func cmdServe(ctx context.Context, a *app.App, args []string) int {
 	detach := fs.Bool("detach", false, "run in a detached child, print endpoint, exit")
 	stop := fs.Bool("stop", false, "stop a previously detached instance")
 	if err := fs.Parse(reorder(args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return int(anyerr.Success)
+		}
 		return int(anyerr.InvalidUsage)
 	}
 

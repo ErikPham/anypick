@@ -48,3 +48,14 @@ func Reorder(args []string) []string {
 	}
 	return append(flags, pos...)
 }
+
+// WantsHelp reports whether args ask for help without running the command.
+func WantsHelp(args []string) bool {
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help", "help":
+			return true
+		}
+	}
+	return false
+}
