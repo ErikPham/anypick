@@ -22,5 +22,9 @@
   },
   "include": [
     "./**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "scripts/screenshot.mts"
   ]
 }

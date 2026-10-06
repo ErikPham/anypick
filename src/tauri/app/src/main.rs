@@ -56,7 +56,7 @@ fn write_fixture_command(command: &str) -> Result<(), String> {
 }
 
 fn valid_fixture_line(line: &str) -> bool {
-// Every frame kind the UI decodes.
+    // Every frame kind the UI decodes.
     line.len() <= MAX_FIXTURE_LINE_BYTES
         && [
             "snapshot\t",
