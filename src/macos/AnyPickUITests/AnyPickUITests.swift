@@ -58,10 +58,12 @@ final class AnyPickUITests: XCTestCase {
     XCTAssertTrue(element.waitForExistence(timeout: timeout), "\(what) never appeared")
   }
 
+  /// Kept only when the test fails. XCUIScreen captures the whole display, so on a
+  /// Mac someone is using a passing run must not leave other windows in the xcresult.
   private func attachScreenshot(_ name: String) {
     let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     shot.name = name
-    shot.lifetime = .keepAlways
+    shot.lifetime = .deleteOnSuccess
     add(shot)
   }
 
