@@ -1,17 +1,35 @@
 # Changelog
 
-**This file is frozen at the 1.0.0 JavaScript release.** Later notes are
-generated from Conventional Commits by `changelogithub` and published on
-[GitHub Releases](https://github.com/outof0/anypick/releases). Do not append
-here.
-
-The 1.0.0 section below is **historical**: it describes the pre-cutover
-JavaScript CLI (then named `hotplug`). Native builds today are the Go
-engine in `src/go/` (ADR 0020). They do not load plugin entry modules
-(ADR 0021). Current command names use `anypick`, and the data directory is
-`~/.anypick`.
+Each release gets a short summary here. The full notes, generated from
+Conventional Commits by `changelogithub`, are on
+[GitHub Releases](https://github.com/outof0/anypick/releases).
 
 This project follows [Semantic Versioning](https://semver.org/).
+
+## 1.1.0
+
+First native release. **The project is now AnyPick**: it was `hotplug` up to
+1.0.0. Commands use `anypick`, and the data directory is `~/.anypick`.
+
+### Added
+- Native desktop apps from one Go engine (ADR 0020): a signed and notarized
+  universal macOS app (macOS 14+) with a System Settings-style window and a
+  menu-bar quick panel, and Linux (AppImage, deb, rpm) and Windows (MSI, NSIS)
+  installers. Each desktop payload is smoke-tested on its own OS before it is
+  staged.
+- Native CLI and terminal UI archives for macOS Intel/Apple Silicon, Linux
+  x64/arm64 and Windows x64/arm64, with build provenance attestations and an
+  SBOM attached to the release.
+
+### Changed
+- **Breaking for npm users:** the `anypick` npm package is now a thin launcher
+  (Node 18+) that downloads the matching checksum-verified native CLI from
+  GitHub Releases into `~/.cache/anypick`. The native CLI does not run
+  third-party plugins (ADR 0021). Pin `anypick@1.0.0` to keep the old
+  JavaScript package.
+
+The 1.0.0 section below is **historical**: it describes the pre-cutover
+JavaScript CLI, then named `hotplug`.
 
 ## 1.0.0 - 2026-07-27
 

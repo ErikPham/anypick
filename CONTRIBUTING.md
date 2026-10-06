@@ -212,8 +212,9 @@ fix(gemini): write the Antigravity credential back to the OS credential store
 - The scope is the area a reader would recognise (`tui`, `proxy`, `gemini`,
   `docs`), not a file name.
 
-Do not edit `CHANGELOG.md`. It is frozen at 1.0.0; later notes are generated
-from commits.
+`CHANGELOG.md` holds one short, hand-written summary per release, written
+when the release is cut; the full notes are generated from commits and
+published on GitHub Releases. Do not add per-change entries to it.
 
 ### Cutting a release
 
