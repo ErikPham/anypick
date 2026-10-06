@@ -295,8 +295,8 @@ describe('what the primary button says', () => {
     expect(primaryTitle({ ...base, mode: 'newAccount' })).toBe('Sign In with Claude');
   });
 
-  it('says Add Account once a new sign-in has an identity', () => {
-    expect(primaryTitle({ ...base, mode: 'newAccount', hasIdentity: true })).toBe('Add Account');
+  it('says Add Login once a new sign-in has an identity', () => {
+    expect(primaryTitle({ ...base, mode: 'newAccount', hasIdentity: true })).toBe('Add Login');
   });
 
   it('names the account a paste will replace', () => {
@@ -310,7 +310,7 @@ describe('what the primary button says', () => {
   it('does not promise to replace on a first paste attempt', () => {
     // The name is a label, not a collision. Calling the first attempt Replace
     // would tell the user their account is about to be overwritten.
-    expect(primaryTitle({ ...base, mode: 'paste', accountName: ' Work ' })).toBe('Add Account');
+    expect(primaryTitle({ ...base, mode: 'paste', accountName: ' Work ' })).toBe('Add Login');
   });
 });
 

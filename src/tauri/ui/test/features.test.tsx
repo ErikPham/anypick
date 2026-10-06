@@ -118,7 +118,7 @@ describe('accounts and gateways', () => {
     // what is already signed in; "New Account" starts a browser sign-in.
     await user.click(screen.getByTestId('accounts-add'));
     await user.type(screen.getByTestId('account-flow.name'), 'Work');
-    await user.click(screen.getByRole('button', { name: 'Add Account' }));
+    await user.click(screen.getByRole('button', { name: 'Add Login' }));
     // A successful save closes the sheet.
     expect(screen.queryByTestId('account-flow.provider')).not.toBeInTheDocument();
 
@@ -509,7 +509,7 @@ describe('pasted auth json', () => {
     );
     // A document the engine could not read is not an invitation to overwrite
     // the account it could not read.
-    expect(screen.getByTestId('account-flow.save')).toHaveTextContent('Add Account');
+    expect(screen.getByTestId('account-flow.save')).toHaveTextContent('Add Login');
     expect(screen.getByTestId('account-flow.error')).toHaveTextContent(
       'The document could not be parsed.',
     );

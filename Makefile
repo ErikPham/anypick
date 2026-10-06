@@ -219,8 +219,8 @@ test-macos: ## Build and unit-test the app and the bundled helper contract
 	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPick \
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
 
-# XCUITest over the fixture: the three ship-acceptance flows through the real
-# UI (welcome + checklist, tray first run, empty Accounts -> Add Account).
+# XCUITest over the fixture: the ship-acceptance flows through the real
+# UI (welcome + checklist, tray first run, empty Accounts -> Add Login).
 # Not in test-macos: macOS UI tests need Developer Mode
 # (`sudo DevToolsSecurity -enable`) and an Accessibility grant on this Mac.
 # CI runs it in the non-blocking `macos-ui` job.
