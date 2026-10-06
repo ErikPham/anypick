@@ -31,11 +31,12 @@ final class AnyPickUITests: XCTestCase {
     }
   }
 
-  private func launch(fixture: String, flow: String? = nil, tray: String? = nil) -> XCUIApplication {
+  private func launch(fixture: String, flow: String? = nil, tray: String? = nil, openSettings: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["ANYPICK_MACOS_FIXTURE"] = fixture
     if let flow { app.launchEnvironment["ANYPICK_MACOS_FLOW"] = flow }
     if let tray { app.launchEnvironment["ANYPICK_MACOS_TRAY"] = tray }
+    if openSettings { app.launchEnvironment["ANYPICK_UITEST_OPEN_SETTINGS"] = "1" }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     hideOtherApps()
@@ -213,9 +214,9 @@ final class AnyPickUITests: XCTestCase {
   // Settings smoke (QA): one run covers tabs, one control per pane, and the
   // About version string that General and the app menu both read from the bundle.
   func testSettingsPanesAndAboutVersion() {
-    let app = launch(fixture: "ready")
-    // Ready may still show Welcome when onboarding is unfinished; leave it so
-    // Settings is reachable without the sheet eating key commands.
+    // Open path is fixture-only (ANYPICK_UITEST_OPEN_SETTINGS → openDesignSettings).
+    // Menu/⌘, against SwiftUI Settings { } is flaky under XCUITest; content asserts stay.
+    let app = launch(fixture: "ready", openSettings: true)
     let welcome = app.sheets.containing(
       NSPredicate(format: "label == %@", "Welcome to AnyPick")
     ).firstMatch
@@ -223,21 +224,11 @@ final class AnyPickUITests: XCTestCase {
       dismissWelcome(app)
     }
 
-    // ⌘, and the app-menu Settings… item are unreliable under XCUITest.
-    // Go is a menu *bar* item (not a menu item); open it, then Settings…,
-    // which calls openDesignSettings() (same path as the tray).
-    app.activate()
-    let go = app.menuBarItems["Go"].firstMatch
-    waitFor(go, "Go menu bar item")
-    go.click()
-    let settingsMenu = go.menuItems["Settings…"].firstMatch
-    waitFor(settingsMenu, "Go → Settings…")
-    settingsMenu.click()
-
-    // Gate on a real Settings control first — settings.tabs can lag in AX.
+    let settingsWindow = app.windows["Settings"].firstMatch
+    waitFor(settingsWindow, "Settings window")
     waitFor(element(app, "settings.getting-started"), "Settings General (settings.getting-started)")
     let tabs = element(app, "settings.tabs")
-    waitFor(tabs, "Settings window (settings.tabs)")
+    waitFor(tabs, "Settings sidebar (settings.tabs)")
     attachScreenshot("settings-general")
 
     let expectedTabs = ["General", "Usage", "Proxies", "Security", "Diagnostics"]

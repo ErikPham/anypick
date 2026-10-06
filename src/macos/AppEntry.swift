@@ -92,7 +92,11 @@ struct AppCommands: Commands {
           )
       }
       Divider()
-      Button("Settings…") { openDesignSettings() }
+      // SettingsLink owns the Settings scene open path; a plain Button +
+      // sendAction often no-ops under XCUITest even when the menu click lands.
+      SettingsLink {
+        Text("Settings…")
+      }
     }
   }
 

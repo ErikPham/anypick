@@ -55,7 +55,5 @@ struct SettingsView: View {
     }
     .frame(minWidth: 700, minHeight: 460)
     .followingDesignAppearance(model.appearance)
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("settings.tabs")
   }
 }

@@ -75,6 +75,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     if isFixture {
+      if ProcessInfo.processInfo.environment["ANYPICK_UITEST_OPEN_SETTINGS"] == "1" {
+        DispatchQueue.main.async { openDesignSettings() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { openDesignSettings() }
+      }
       if ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_PATH"] != nil {
         // Settle delay for layout-accurate captures (slow first paint would
         // otherwise freeze a half-laid-out window into the PNG).

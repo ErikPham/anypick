@@ -16,10 +16,19 @@ extension View {
 
 @MainActor
 func openDesignSettings() {
-  if !NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-    _ = NSApplication.shared.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+  if NSApp.activationPolicy() != .regular {
+    NSApp.setActivationPolicy(.regular)
   }
-  NSApplication.shared.activate(ignoringOtherApps: true)
+  _ = NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    || NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+  NSApp.activate(ignoringOtherApps: true)
+  // Settings can open without becoming key under automation; order it front.
+  DispatchQueue.main.async {
+    for window in NSApp.windows where window.title == "Settings" {
+      window.makeKeyAndOrderFront(nil)
+      window.orderFrontRegardless()
+    }
+  }
 }
 
 extension DesignApp {
