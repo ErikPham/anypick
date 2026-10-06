@@ -58,30 +58,60 @@ final class AnyPickUITests: XCTestCase {
     XCTAssertTrue(element.waitForExistence(timeout: timeout), "\(what) never appeared")
   }
 
+  /// Kept only when the test fails. XCUIScreen captures the whole display, so on a
+  /// Mac someone is using a passing run must not leave other windows in the xcresult.
   private func attachScreenshot(_ name: String) {
     let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     shot.name = name
-    shot.lifetime = .keepAlways
+    shot.lifetime = .deleteOnSuccess
     add(shot)
   }
 
-  private func dismissWelcome(_ app: XCUIApplication) {
+  private func welcomeSheet(_ app: XCUIApplication) -> XCUIElement {
     // The sheet title is a header whose text lives in its AX label, which the
     // subscript lookup does not match on macOS; match the label explicitly.
     let sheet = app.sheets.containing(
       NSPredicate(format: "label == %@", "Welcome to AnyPick")
     ).firstMatch
     waitFor(sheet, "Welcome sheet")
-    attachScreenshot("1-welcome")
-    let primary = sheet.buttons["sheet.primary"].firstMatch
-    waitFor(primary, "Welcome Continue button")
-    XCTAssertEqual(primary.title, "Continue")
-    primary.click()
+    return sheet
+  }
+
+  /// Leaves Welcome by its secondary action, for tests that start from the
+  /// Get Started checklist rather than from adding a login.
+  private func dismissWelcome(_ app: XCUIApplication) {
+    let sheet = welcomeSheet(app)
+    let notNow = sheet.buttons["sheet.cancel"].firstMatch
+    waitFor(notNow, "Welcome Not Now button")
+    XCTAssertEqual(notNow.title, "Not Now")
+    notNow.click()
     XCTAssertTrue(sheet.waitForNonExistence(timeout: timeout), "Welcome sheet did not dismiss")
   }
 
-  // Design step 1: First launch → Welcome → Save a Login → Point an App.
-  func testFirstLaunchWelcomeThenChecklistOpensAccountsAndApps() {
+  private func waitForAddLoginSheet(_ app: XCUIApplication, _ after: String) {
+    waitFor(element(app, "account-flow.save"), "Add Login sheet after \(after)")
+  }
+
+  // Design step 1: First launch → Welcome → Add Login… lands on the Add sheet,
+  // not on a pane the user still has to find the button in.
+  func testWelcomeAddLoginOpensAddSheet() {
+    let app = launch(fixture: "empty")
+    let sheet = welcomeSheet(app)
+    attachScreenshot("1-welcome")
+    let primary = sheet.buttons["sheet.primary"].firstMatch
+    waitFor(primary, "Welcome Add Login button")
+    XCTAssertEqual(primary.title, "Add Login…")
+    primary.click()
+    XCTAssertTrue(sheet.waitForNonExistence(timeout: timeout), "Welcome sheet did not dismiss")
+    waitForAddLoginSheet(app, "Welcome")
+    attachScreenshot("1-welcome-add-login-sheet")
+    app.terminate()
+  }
+
+  // Design step 1, checklist path: Not Now → Add a Login opens the same sheet;
+  // cancelling it leaves the empty Accounts pane, whose Add Login… opens it
+  // again. Point an App opens Apps.
+  func testChecklistAddLoginAndEmptyAccountsShareOneSheet() {
     var app = launch(fixture: "empty")
     dismissWelcome(app)
 
@@ -89,17 +119,23 @@ final class AnyPickUITests: XCTestCase {
     waitFor(checklist, "Get Started checklist")
     let saveRow = element(app, "overview.onboarding.save-login")
     let routeRow = element(app, "overview.onboarding.choose-route")
-    waitFor(saveRow, "Save a Login row")
+    waitFor(saveRow, "Add a Login row")
     waitFor(routeRow, "Point an App row")
     XCTAssertEqual(saveRow.value as? String, "Not done")
     XCTAssertEqual(routeRow.value as? String, "Not done")
     attachScreenshot("1-checklist")
 
     // Each row collapses into its action button, which carries the row id.
-    XCTAssertEqual(saveRow.label, "Save…")
+    XCTAssertEqual(saveRow.label, "Add Login…")
     saveRow.click()
+    waitForAddLoginSheet(app, "the checklist")
+    attachScreenshot("1-checklist-add-login-sheet")
+    let cancel = app.sheets.buttons["sheet.cancel"].firstMatch
+    waitFor(cancel, "Add Login sheet Cancel")
+    cancel.click()
     waitFor(app.staticTexts["No Accounts"].firstMatch, "Accounts pane (No Accounts)")
-    attachScreenshot("1-save-login-opened-accounts")
+    button(app, "Add Login…").click()
+    waitForAddLoginSheet(app, "empty Accounts")
     app.terminate()
 
     // Fresh launch for the second CTA so each CTA starts from the checklist.
@@ -115,25 +151,21 @@ final class AnyPickUITests: XCTestCase {
     app.terminate()
   }
 
-  // Design step 2, branch without a live login: tray first-run → Open Accounts.
-  // Design step 3: Empty Accounts → Add Account… → tray leaves first run.
-  func testTrayFirstRunOpenAccountsThenAddAccountLeavesFirstRun() {
+  // Design step 2, branch without a live login: tray first-run → Add Login….
+  // Design step 3: the Add sheet saves an account → tray leaves first run.
+  func testTrayFirstRunAddLoginThenAddAccountLeavesFirstRun() {
     let app = launch(fixture: "empty", flow: "tray-first-run")
     let tray = app.windows["Menu Bar"].firstMatch
     waitFor(tray, "Menu Bar window")
     waitFor(tray.staticTexts["Add a login to start"].firstMatch, "tray first-run headline")
     let save = tray.descendants(matching: .any)["tray.first-run.save"].firstMatch
     waitFor(save, "tray.first-run.save")
-    XCTAssertTrue(tray.buttons["Open Accounts"].firstMatch.exists, "first-run CTA is not Open Accounts")
+    XCTAssertTrue(tray.buttons["Add Login…"].firstMatch.exists, "first-run CTA is not Add Login…")
     attachScreenshot("2-tray-first-run-no-live-login")
     save.click()
 
-    waitFor(app.staticTexts["No Accounts"].firstMatch, "Accounts empty state after Open Accounts")
-    attachScreenshot("3-empty-accounts")
-    button(app, "Add Account…").click()
-
     let source = element(app, "account-flow.source")
-    waitFor(element(app, "account-flow.save"), "Add Account sheet")
+    waitForAddLoginSheet(app, "the tray")
     if source.exists {
       let newAccount = source.radioButtons["New Account"].firstMatch
       if newAccount.exists { newAccount.click() } else { source.buttons["New Account"].firstMatch.click() }
@@ -145,12 +177,12 @@ final class AnyPickUITests: XCTestCase {
     }
     attachScreenshot("3-add-account-sheet")
     let submit = element(app, "account-flow.save")
-    XCTAssertTrue(submit.isEnabled, "Add Account primary button is disabled")
+    XCTAssertTrue(submit.isEnabled, "Add Login sheet primary button is disabled")
     submit.click()
 
     XCTAssertTrue(
       app.staticTexts["No Accounts"].firstMatch.waitForNonExistence(timeout: timeout),
-      "Accounts pane still empty after Add Account")
+      "Accounts pane still empty after adding an account")
     attachScreenshot("3-account-added")
 
     XCTAssertTrue(

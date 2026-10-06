@@ -92,6 +92,29 @@ jobs:
         id: sha
         run: echo "sha=$(git rev-parse HEAD)" | tee "$GITHUB_OUTPUT"
 
+  # The same gates CI runs on every push (`make review`: static checks plus
+  # the Go suite), rerun on the exact commit being released. Builds start in
+  # parallel so a release is not slower, but nothing is tagged, uploaded or
+  # published unless this job passed.
+  verify:
+    name: Gates on the release commit
+    needs: plan
+    if: needs.plan.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
+
+      - name: make review
+        run: make review
+
   build-cli:
     name: Build the cross-platform CLI archives
     needs: plan
@@ -419,6 +442,8 @@ jobs:
           security unlock-keychain -p "$APPLE_CERT_PASSWORD" "$keychain"
           security import "$RUNNER_TEMP/anypick-cert.p12" -k "$keychain" \
             -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          # Word splitting is the point: one argument per existing keychain path.
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '" ')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_CERT_PASSWORD" "$keychain"
           rm "$RUNNER_TEMP/anypick-cert.p12"
@@ -460,11 +485,11 @@ jobs:
 
   publish:
     name: Tag, release and deploy
-    needs: [plan, build-cli, build-linux, build-windows, build-macos]
+    needs: [plan, verify, build-cli, build-linux, build-windows, build-macos]
     # Skipped platform builds (out-of-scope inputs) do not block: only the
     # in-scope builds must be green. The CLI archives are always built because
     # they power npm and Homebrew even when a desktop scope is narrowed.
-    if: always() && needs.plan.outputs.mode != 'none' && needs.build-cli.result == 'success' && needs.build-macos.result == 'success' && (inputs.release-scope != 'all' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success'))
+    if: always() && needs.plan.outputs.mode != 'none' && needs.verify.result == 'success' && needs.build-cli.result == 'success' && needs.build-macos.result == 'success' && (inputs.release-scope != 'all' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -575,8 +600,11 @@ jobs:
           else
             echo "Windows desktop scope is disabled; skipping WinGet and Scoop manifests."
           fi
-          find "$RUNNER_TEMP/package-manifests" -type f -print -quit | grep -q . && \
-            (cd "$RUNNER_TEMP/package-manifests" && zip -qr "$stage/AnyPick-package-manager-manifests.zip" .) || true
+          # `A && B || true` also swallowed a failing zip, publishing a release
+          # without its manifests. Skip only when there is nothing to zip.
+          if find "$RUNNER_TEMP/package-manifests" -type f -print -quit | grep -q .; then
+            (cd "$RUNNER_TEMP/package-manifests" && zip -qr "$stage/AnyPick-package-manager-manifests.zip" .)
+          fi
 
       # Every in-scope platform is staged and green at this point (macOS
       # always; Linux/Windows only under release-scope=all). Only now does

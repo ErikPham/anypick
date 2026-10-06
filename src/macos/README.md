@@ -101,15 +101,6 @@ xcodebuild -project src/macos/AnyPick.xcodeproj -scheme AnyPick \
   -destination platform=macOS CODE_SIGNING_ALLOWED=NO build
 ```
 
-Audit a change against System Settings with:
-
-```bash
-python3 .claude/skills/design-checklist/scripts/route_review.py \
-  --surface desktop-app --artifact preferences --platform macos
-```
-
-Then read `.claude/skills/design-checklist/references/platform-macos.md`.
-
 ## Running a build you are reviewing
 
 `make run-macos-dev` builds the app, installs it as `~/Applications/AnyPick Dev.app`
@@ -252,7 +243,7 @@ Rules:
   background or a window-bottom footer.
 - Service lifecycle (Start/Stop/Restart) also lives **in the Service row**
   as a trailing button. Panes carry **no titlebar buttons**: collection
-  actions (Add Account, Start Hub, Stop All…) live once, under the last
+  actions (Add Login, Start Hub, Stop All…) live once, under the last
   group — with 20+ rows prefer navigation (sidebar, search, row drill-in)
   over duplicating actions where they fall below the fold.
   The log-source filter is the exception that proves it: with no toolbar,
@@ -386,7 +377,7 @@ Main window sidebar (peer destinations, System Settings style):
 | --- | --- |
 | Overview | Attention + Get Started + summary. Not a marketing dashboard. |
 | Apps | Every switchable installed client/provider. Native-only clients switch saved accounts; only compatible-routing clients expose custom providers and model configuration. Codex also manages named profiles here: choose a saved account or route, optional model and transport, edit existing profiles, then copy the profile's Terminal launch command. Proxy profiles use a discovered source model when no model is selected. |
-| Accounts & APIs | Searchable saved logins and API endpoints. **Add Account** owns importing the current local login and provider sign-in; there is no separate “Save Current Login” toolbar action. |
+| Accounts & APIs | Searchable saved logins and API endpoints. **Add Login** owns importing the current local login and provider sign-in; there is no separate “Save Current Login” toolbar action. |
 | Proxy Hub | One local endpoint, its sources, published models, and service lifecycle. |
 | Proxies | Per-account translation processes and their service lifecycle. |
 | Activity | Searchable events and live logs in a bounded, independently scrolling region. |

@@ -176,9 +176,9 @@ export function sourceFooter(mode: SourceMode, providerLabel: string): string {
 }
 
 /**
- * `primaryTitle`. What the button will do, which is not always "Add Account".
+ * `primaryTitle`. What the button will do, which is not always "Add Login".
  *
- * A button that says Add Account while it starts a browser sign-in, or names
+ * A button that says Add Login while it starts a browser sign-in, or names
  * the exact account it will replace, is the difference between a form and a
  * flow.
  */
@@ -204,7 +204,7 @@ export function primaryTitle(input: {
   if (input.mode === 'newAccount' && !input.hasIdentity) {
     return `Sign In with ${input.providerLabel}`;
   }
-  return 'Add Account';
+  return 'Add Login';
 }
 
 /** Whether this provider exposes more than one local store to read. */

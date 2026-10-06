@@ -259,7 +259,7 @@ export function AccountsPane({
 
       <PaneActions>
         <Button kind="secondary" disabled={paused} testId="accounts-add" onClick={() => setAdding(true)}>
-          Add Account…
+          Add Login…
         </Button>
         {snapshot.gatewayProviders.length > 0 ? (
           <Button

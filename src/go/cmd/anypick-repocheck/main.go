@@ -9,6 +9,7 @@
 //
 //	anypick-repocheck paths [root]
 //	anypick-repocheck protocol [root]
+//	anypick-repocheck actions [root]
 //
 // root defaults to the working directory; both subcommands walk up to the
 // repository root from there.
@@ -43,6 +44,8 @@ func run(args []string, out, errOut io.Writer) int {
 		check = repocheck.CheckPaths
 	case "protocol":
 		check = repocheck.CheckProtocol
+	case "actions":
+		check = repocheck.CheckActions
 	default:
 		usage(errOut)
 		return 2
@@ -75,5 +78,5 @@ func run(args []string, out, errOut io.Writer) int {
 }
 
 func usage(errOut io.Writer) {
-	fmt.Fprintln(errOut, "usage: anypick-repocheck {paths|protocol} [root]")
+	fmt.Fprintln(errOut, "usage: anypick-repocheck {paths|protocol|actions} [root]")
 }

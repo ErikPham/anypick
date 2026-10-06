@@ -319,7 +319,7 @@ export function AddAccountSheet({
 
   return (
     <Dialog
-      title="Add Account"
+      title="Add Login"
       onCancel={onClose}
       testId="account-flow.provider"
       width="form"

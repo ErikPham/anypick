@@ -135,7 +135,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 			"Choose which "+pv.Name()+" sign-in source to use.",
 			"ACCOUNT_SOURCE_REQUIRED",
 			anyerr.WithSuggestions(
-				fmt.Sprintf("Select an available sign-in source for %s in the Add Account sheet.", pv.Name()),
+				fmt.Sprintf("Select an available sign-in source for %s in the Add Login sheet.", pv.Name()),
 				"Or pass --source <source> together with --auth-method <id> on the command line."))
 	}
 
@@ -168,7 +168,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 			"Choose which "+pv.Name()+" sign-in source to use.",
 			"ACCOUNT_SOURCE_REQUIRED",
 			anyerr.WithSuggestions(
-				fmt.Sprintf("Select an available sign-in source for %s in the Add Account sheet.", pv.Name()),
+				fmt.Sprintf("Select an available sign-in source for %s in the Add Login sheet.", pv.Name()),
 				"Or pass --source <source> together with --auth-method "+method.ID+" on the command line."))
 	}
 	if opts.Source != "" && method.Source != "" && opts.Source != method.Source {

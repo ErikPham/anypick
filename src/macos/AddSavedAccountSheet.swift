@@ -238,7 +238,7 @@ struct AddSavedAccountSheet: View {
       return typed.isEmpty ? "Replace Account" : "Replace \(typed)"
     }
     if sourceMode == .newAccount, !hasIdentity { return "Sign In with \(providerLabel)" }
-    return "Add Account"
+    return "Add Login"
   }
 
   private var autoDetectionKey: String {
@@ -247,7 +247,7 @@ struct AddSavedAccountSheet: View {
 
   var body: some View {
     DesignSheetHost(
-      title: "Add Account",
+      title: "Add Login",
       width: 440,
       primaryTitle: primaryTitle,
       primaryDisabled: !canSubmit || model.isBusy || awaitingSaveResult,
