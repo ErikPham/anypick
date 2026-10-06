@@ -314,7 +314,8 @@ The macOS app’s main window must look like an app Apple could ship:
   load-bearing. Do not narrate the current task in a comment.
 - The docs site (`docs/`) has its own formatter and lint policy; `cd docs` before
   running anything for it.
-- **Do not edit `CHANGELOG.md`.** It is frozen at 1.0.0; later notes are
+- **Do not add per-change entries to `CHANGELOG.md`.** It holds one short
+  summary per release, written when the release is cut; full notes are
   generated from commits by `changelogithub`. A behavior change is recorded by
   writing a Conventional Commit subject a release reader would understand —
   `CONTRIBUTING.md` has the format.

@@ -82,7 +82,7 @@ CONFIGURATION ?= Debug
 GOPATH := $(HOME)/go
 export GOPATH
 
-.PHONY: help go-toolchain build run sandbox test test-race vet fmt fmt-check lint \
+.PHONY: help go-toolchain build run sandbox test test-race readme-supported vet fmt fmt-check lint \
         check review ci check-paths check-protocol check-release check-artifact hooks \
         plan-release set-version bump-version \
         open-macos build-macos test-macos test-macos-ui verify-macos run-macos-dev install-macos \
@@ -125,6 +125,11 @@ test: go-toolchain ## Run the Go suite
 
 test-race: go-toolchain ## Run the Go suite under the race detector
 	cd $(GO_DIR) && $(GO) test -race ./... -count=1 -timeout 900s
+
+# README's Supported table is generated from the provider and client registries;
+# internal/docsync's test fails in `make test` when the two drift.
+readme-supported: go-toolchain ## Regenerate README's Supported table from the registries
+	cd $(GO_DIR) && ANYPICK_UPDATE_README=1 $(GO) test ./internal/docsync -run TestReadmeSupportedMatchesRegistry -count=1
 
 vet: go-toolchain ## go vet over the engine
 	cd $(GO_DIR) && $(GO) vet ./...
