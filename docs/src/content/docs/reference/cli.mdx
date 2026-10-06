@@ -4,8 +4,9 @@ description: Every AnyPick command, global flag, exit code, and environment vari
 ---
 
 The command name is `anypick`. Download a checksum-listed archive from the
-GitHub Release, or install the thin npm launcher when that channel is enabled.
-During development, run the same command tree from a checkout with
+GitHub Release, or install the thin npm launcher with
+`npm install --global anypick` (Node 18+; downloads the matching native CLI on
+first run). During development, run the same command tree from a checkout with
 `make run ARGS="…"`; for example, `make run ARGS="list accounts"`.
 
 The native macOS application is a separate app-owned target. It launches its
@@ -315,8 +316,7 @@ anypick update
 The command is advisory only: it queries the GitHub releases API for the
 newest published tag and compares it with the running version. It does not
 replace the package manager or native-app updater. The printed guidance points
-at the npm launcher (when that channel is enabled), the release page, or a
-source checkout:
+at the npm launcher, the release page, or a source checkout:
 
 ```bash
 git pull && make build

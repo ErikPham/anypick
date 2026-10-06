@@ -1,9 +1,11 @@
 <Aside type="caution" title="Release channels">
 The GitHub Release is the canonical source for signed native artifacts. The CLI
 is published there as checksum-listed archives, and through the thin npm
-launcher when that channel is enabled (`npm install --global anypick`). The
-native macOS, Linux and Windows assets are linked from the latest release. Build
-from this repository when you are testing unreleased changes.
+launcher (`npm install --global anypick`, Node 18+), which downloads the
+matching native CLI from GitHub Releases on first run. From 1.1.0 that package
+replaces the old JavaScript `anypick@1.0.x` on npm. The native macOS, Linux and
+Windows assets are linked from the latest release. Build from this repository
+when you are testing unreleased changes.
 </Aside>
 
 For the native macOS source target (macOS 14+, Xcode, and Go required):

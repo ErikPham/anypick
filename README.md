@@ -65,18 +65,22 @@ configured Homebrew tap.
 # Native macOS app, Linux/Windows installers, and CLI archives:
 # https://github.com/outof0/anypick/releases/latest
 
-# npm is an opt-in launcher for this Go CLI. Leave it off until a release
-# enables `publish-npm`; `npm install -g anypick` currently resolves to the
-# older JavaScript 1.0.0 package.
+# Thin Node launcher (Node 18+). On first run it downloads the matching
+# native CLI archive from GitHub Releases into ~/.cache/anypick.
+# Breaking change from 1.1.0: the npm package is this launcher for the native
+# CLI. It no longer runs third-party plugins (ADR 0021). Pin anypick@1.0.0 if
+# you still need the old JavaScript package.
+npm install --global anypick
 ```
 
 When the external taps are configured and the corresponding publish switch is
 enabled, the package-manager commands are:
 
 ```bash
-brew tap outof0/tap
-brew install outof0/tap/anypick
-brew install --cask outof0/tap/anypick
+# Homebrew — coming soon (the outof0/homebrew-tap repository is not public yet)
+# brew tap outof0/tap
+# brew install outof0/tap/anypick
+# brew install --cask outof0/tap/anypick
 
 winget install outof0.AnyPick   # after the manifest is accepted into winget-pkgs
 scoop bucket add outof0 https://github.com/outof0/scoop-bucket
