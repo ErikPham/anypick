@@ -223,15 +223,19 @@ final class AnyPickUITests: XCTestCase {
       dismissWelcome(app)
     }
 
-    // SwiftUI Settings { } often ignores ⌘, under XCUITest. AppCommands puts
-    // Settings… under Go; the app menu may also expose it — prefer Go.
-    let goMenu = app.menuBars.menuItems["Go"].firstMatch
-    if goMenu.waitForExistence(timeout: 2) {
-      goMenu.click()
-    }
-    let settingsMenu = app.menuItems["Settings…"].firstMatch
-    waitFor(settingsMenu, "Go → Settings… menu item")
+    // ⌘, and the app-menu Settings… item are unreliable under XCUITest.
+    // Go is a menu *bar* item (not a menu item); open it, then Settings…,
+    // which calls openDesignSettings() (same path as the tray).
+    app.activate()
+    let go = app.menuBarItems["Go"].firstMatch
+    waitFor(go, "Go menu bar item")
+    go.click()
+    let settingsMenu = go.menuItems["Settings…"].firstMatch
+    waitFor(settingsMenu, "Go → Settings…")
     settingsMenu.click()
+
+    // Gate on a real Settings control first — settings.tabs can lag in AX.
+    waitFor(element(app, "settings.getting-started"), "Settings General (settings.getting-started)")
     let tabs = element(app, "settings.tabs")
     waitFor(tabs, "Settings window (settings.tabs)")
     attachScreenshot("settings-general")

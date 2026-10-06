@@ -53,7 +53,6 @@ struct AnyPickMenuBarLabel: View {
 struct AppCommands: Commands {
   @ObservedObject var model: MacOSDesignModel
   @Environment(\.openWindow) private var openWindow
-  @Environment(\.openSettings) private var openSettings
 
   var body: some Commands {
     // The standard panel appends CFBundleVersion as "(1)"; an empty `.version`
@@ -93,7 +92,7 @@ struct AppCommands: Commands {
           )
       }
       Divider()
-      Button("Settings…") { openSettings() }
+      Button("Settings…") { openDesignSettings() }
     }
   }
 
