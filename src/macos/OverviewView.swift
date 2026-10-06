@@ -160,11 +160,13 @@ struct OverviewView: View {
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("overview.hide-onboarding")
         } header: {
+          // Identify the header only: an identifier on the Section would
+          // overwrite every row's own overview.onboarding.* identifier.
           Text("Get Started")
+            .accessibilityIdentifier("overview.get-started")
         } footer: {
           Text(onboardingFooter)
         }
-        .accessibilityIdentifier("overview.get-started")
       }
 
       // Avoid an empty section above the checklist on first run.

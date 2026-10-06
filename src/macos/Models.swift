@@ -950,6 +950,8 @@ class MacOSDesignModel: ObservableObject {
     }
     rebuildHubSources()
     phase = .ready
+    // A saved account ends first run, as the production tray's .auto scene does.
+    if trayScene == .firstRun { trayScene = .ready }
     recordActivity(
       title: "\(account.name) saved",
       detail: "\(provider) login is now available to supported apps.",
