@@ -59,7 +59,7 @@ struct AccountsView: View {
           title: "No Accounts",
           message: "Add the login already on this Mac, sign in, or add an API gateway.",
           symbol: "person.badge.plus",
-          actionTitle: "Add Account…",
+          actionTitle: "Add Login…",
           action: { activeSheet = .addAccount }
         )
       } else if savedAccounts.isEmpty && gateways.isEmpty {
@@ -113,7 +113,11 @@ struct AccountsView: View {
       connectingGateway = gateway
     }
     .designConfirmation($confirmation, onDismiss: consumeStartupFlow)
+    .onChange(of: model.addLoginRequested) { _, requested in
+      if requested { consumeAddLoginRequest() }
+    }
     .onAppear {
+      consumeAddLoginRequest()
       guard !consumedInitialFlow, let flow = model.pendingStartupFlow else { return }
       consumedInitialFlow = true
       // The Accounts pane is mounted inside NavigationSplitView/NavigationStack.
@@ -141,7 +145,7 @@ struct AccountsView: View {
       // in the body), and a Return binding would make any keystroke in the
       // pane add an account.
       DesignSheetButton(
-        title: "Add Account…",
+        title: "Add Login…",
         enabled: !model.isBusy,
         identifier: "accounts.save-login"
       ) { activeSheet = .addAccount }
@@ -153,6 +157,19 @@ struct AccountsView: View {
         ),
         identifier: "accounts.add-gateway"
       ) { activeSheet = .addGateway }
+    }
+  }
+
+  /// Opens the Add sheet for a request made elsewhere. Deferred for the same
+  /// reason as the startup flow below, and long enough for the Welcome sheet
+  /// to finish closing: AppKit drops a sheet presented while another is still
+  /// animating out of the same window.
+  private func consumeAddLoginRequest() {
+    guard model.addLoginRequested else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+      guard model.addLoginRequested else { return }
+      model.addLoginRequested = false
+      if activeSheet == nil { activeSheet = .addAccount }
     }
   }
 

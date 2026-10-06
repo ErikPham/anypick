@@ -1441,6 +1441,37 @@ final class AnyPickTests: XCTestCase {
     XCTAssertTrue(model.usageWindows(for: saved).isEmpty)
   }
 
+  // Welcome's Add Login… must land on the Add sheet in Accounts. The sheet's
+  // isPresented binding calls dismissFirstRunWelcome again as it closes; that
+  // second call used to reset the destination to Overview.
+  @MainActor
+  func testWelcomeAddLoginRequestsAddSheetOnAccounts() {
+    let model = MacOSDesignModel(
+      destination: .overview, phase: .ready, appearance: .system, activityShowsLogs: false,
+      apps: [], accounts: [], proxies: [], activity: [], backups: [])
+    model.showFirstRunWelcome = true
+
+    model.addLoginFromWelcome()
+    model.dismissFirstRunWelcome()
+
+    XCTAssertFalse(model.showFirstRunWelcome)
+    XCTAssertEqual(model.destination, .accounts)
+    XCTAssertTrue(model.addLoginRequested)
+  }
+
+  @MainActor
+  func testWelcomeNotNowStaysOnOverviewWithoutAddRequest() {
+    let model = MacOSDesignModel(
+      destination: .overview, phase: .ready, appearance: .system, activityShowsLogs: false,
+      apps: [], accounts: [], proxies: [], activity: [], backups: [])
+    model.showFirstRunWelcome = true
+
+    model.dismissFirstRunWelcome()
+
+    XCTAssertEqual(model.destination, .overview)
+    XCTAssertFalse(model.addLoginRequested)
+  }
+
   /// The engine's stdout arrives in chunks, and a frame is usually larger than
   /// one read. Chunks must reach the protocol client in arrival order: a
   /// task-per-chunk hand-off serviced them out of order, which desynchronized

@@ -57,7 +57,10 @@ struct AppCommands: Commands {
 
   var body: some Commands {
     CommandGroup(after: .newItem) {
-      Button("Add Account…") { open(.accounts) }
+      Button("Add Login…") {
+        model.requestAddLogin()
+        open(.accounts)
+      }
         .keyboardShortcut("n", modifiers: .command)
     }
     // No Edit → Undo: mutations apply server-side with no compensation

@@ -78,7 +78,7 @@ struct MenuBarFirstRun: View {
           } else {
             Image(systemName: model.currentLiveLogin == nil ? "person.badge.plus" : "square.and.arrow.down")
           }
-          Text(model.currentLiveLogin == nil ? "Open Accounts" : "Save This Login")
+          Text(model.currentLiveLogin == nil ? "Add Login…" : "Save This Login")
         }
         .frame(maxWidth: .infinity)
       }

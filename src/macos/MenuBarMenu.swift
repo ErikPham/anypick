@@ -140,7 +140,10 @@ struct MenuBarMenu: View {
 
   private var firstRunBody: some View {
     VStack(alignment: .leading, spacing: 9) {
-      MenuBarFirstRun(model: model) { open(.accounts) }
+      MenuBarFirstRun(model: model) {
+        model.requestAddLogin()
+        open(nil)
+      }
       trayFooterHairline
       homeFooter()
     }

@@ -574,6 +574,7 @@ struct DesignSheetHost<Content: View>: View {
   var primaryIdentifier: String?
   var primaryRole: ButtonRole? = nil
   var showsCancel = true
+  var cancelTitle = "Cancel"
   var onCancel: () -> Void
   var onPrimary: () -> Void
   @ViewBuilder var content: () -> Content
@@ -610,7 +611,7 @@ struct DesignSheetHost<Content: View>: View {
         Spacer(minLength: 0)
         if showsCancel {
           DesignSheetButton(
-            title: "Cancel",
+            title: cancelTitle,
             keyEquivalent: "\u{1b}",
             identifier: "sheet.cancel",
             action: onCancel

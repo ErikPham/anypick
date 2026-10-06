@@ -7,14 +7,14 @@ struct FirstRunWelcomeSheet: View {
     DesignSheetHost(
       title: "Welcome to AnyPick",
       width: 480,
-      primaryTitle: "Continue",
-      showsCancel: false,
+      primaryTitle: "Add Login…",
+      cancelTitle: "Not Now",
       onCancel: model.dismissFirstRunWelcome,
-      onPrimary: model.dismissFirstRunWelcome
+      onPrimary: model.addLoginFromWelcome
     ) {
       Form {
         Section {
-          Text("Connect your coding tools with a provider account or API gateway. Credentials and local services stay on this Mac.")
+          Text("Use the AI accounts you already have with the coding apps you use. Logins are stored on this Mac.")
             .font(.subheadline)
             .foregroundStyle(.secondary)
         }
@@ -29,11 +29,6 @@ struct FirstRunWelcomeSheet: View {
             title: "Flexible connections",
             detail: "Provider accounts and API gateways",
             symbol: "arrow.triangle.branch"
-          )
-          welcomeRow(
-            title: "Only what you need",
-            detail: "Starts account proxies only when required",
-            symbol: "server.rack"
           )
         } footer: {
           Text("You can add or change connections at any time.")
@@ -113,14 +108,14 @@ struct OverviewView: View {
         Section {
           setupRow(
             done: model.hasSavedLogin,
-            title: "Save a Login",
+            title: "Add a Login",
             detail: model.hasSavedLogin
               ? "A login is saved on this Mac."
               : "Use a login already on this Mac.",
-            actionTitle: "Save…",
+            actionTitle: "Add Login…",
             identifier: "overview.onboarding.save-login"
           ) {
-            model.destination = .accounts
+            model.requestAddLogin()
           }
           setupRow(
             done: model.hasInstalledApp,

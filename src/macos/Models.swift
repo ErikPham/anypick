@@ -58,6 +58,10 @@ class MacOSDesignModel: ObservableObject {
   @Published var pendingTakeover: DesignTakeoverOffer?
   @Published var pendingStartupFlow: String?
   @Published var pendingGatewayConnectID: String?
+  /// Set by every "Add Login…" entry point outside Accounts (Welcome, the
+  /// checklist, the tray, File → Add Login…). AccountsView consumes it and
+  /// opens the Add sheet, so each one lands on the same step, not the pane.
+  @Published var addLoginRequested = false
   @Published var pendingGatewayConnectName: String?
   /// Set by tray search to drill into one account once the Accounts pane shows.
   /// MainWindow consumes (pushes the detail) and clears it.
@@ -1649,7 +1653,22 @@ class MacOSDesignModel: ObservableObject {
     showGettingStarted = false
   }
 
+  /// Opens Accounts with the Add Login sheet up.
+  func requestAddLogin() {
+    addLoginRequested = true
+    destination = .accounts
+  }
+
+  /// Welcome's primary action: leave Welcome and go straight to adding a login.
+  func addLoginFromWelcome() {
+    dismissFirstRunWelcome()
+    requestAddLogin()
+  }
+
   func dismissFirstRunWelcome() {
+    // The sheet's isPresented binding calls this again as it closes; a second
+    // call must not send an Add Login request back to Overview.
+    guard showFirstRunWelcome else { return }
     showFirstRunWelcome = false
     // Don't pin showGettingStarted here: the checklist derives from real
     // state (isFirstRun / core complete), and pinning it defeated the
