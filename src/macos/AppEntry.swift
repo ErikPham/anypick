@@ -56,6 +56,17 @@ struct AppCommands: Commands {
   @Environment(\.openSettings) private var openSettings
 
   var body: some Commands {
+    // The standard panel appends CFBundleVersion as "(1)"; an empty `.version`
+    // drops it so the panel reads exactly what General → About shows.
+    CommandGroup(replacing: .appInfo) {
+      Button("About AnyPick") {
+        NSApp.orderFrontStandardAboutPanel(options: [
+          .applicationVersion: AppVersion.marketing,
+          .version: "",
+        ])
+        NSApp.activate(ignoringOtherApps: true)
+      }
+    }
     CommandGroup(after: .newItem) {
       Button("Add Login…") {
         model.requestAddLogin()

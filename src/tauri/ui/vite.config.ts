@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const reactPath = dirname(require.resolve('react/package.json'));
 const reactDomPath = dirname(require.resolve('react-dom/package.json'));
 
+import { appVersionDefine } from './scripts/app-version';
 import { devServicePlugin } from './scripts/dev-service-plugin';
 
 /** Browser bundle for the Tauri helper. Source lives in ui/; output is frontend/. */
@@ -19,6 +20,7 @@ export default defineConfig({
   envDir: repoRoot,
   publicDir: resolve(root, 'assets'),
   base: './',
+  define: appVersionDefine(repoRoot),
   plugins: [react(), tailwindcss(), devServicePlugin(repoRoot)],
   resolve: {
     // pnpm can surface react under both react@… and react-dom@…/node_modules/react.

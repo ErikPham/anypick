@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act, useMemo, useState, type MutableRefObject } from 'react';
@@ -941,6 +944,20 @@ describe('settings', () => {
       expect.objectContaining({ operation: 'setting-show-quota', name: 'settings', enabled: false }),
     );
     expect(bridge.commands().some((entry) => entry.kind === 'doctor')).toBe(true);
+  });
+
+  it('ends with the same version string tauri.conf.json ships', () => {
+    const conf = JSON.parse(readFileSync(resolve(__dirname, '../../app/tauri.conf.json'), 'utf8')) as { version: string };
+    const { port } = createService({ bridge: new FakeBridge() });
+    render(
+      <SettingsSheet
+        settings={snapshotFixture().settings}
+        snapshot={snapshotFixture()}
+        service={port}
+        onClose={() => undefined}
+      />,
+    );
+    expect(screen.getByTestId('settings-version').textContent).toBe(`AnyPick ${conf.version}`);
   });
 });
 

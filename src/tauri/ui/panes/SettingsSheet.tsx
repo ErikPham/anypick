@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { aboutLine } from '../lib/app-version';
 import type { Destination, Preferences, Snapshot } from '../lib/contract';
 import {
   SETTING_ROWS,
@@ -311,6 +312,9 @@ export function SettingsSheet({
           </RowActions>
         </Row>
       </Group>
+      <p data-testid="settings-version" className="pt-1 text-center text-[12px] text-secondary select-text">
+        {aboutLine()}
+      </p>
     </Dialog>
   );
 }
