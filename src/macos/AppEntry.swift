@@ -6,7 +6,8 @@ struct AnyPickMenuBarScene: Scene {
   @Environment(\.openWindow) private var openWindow
 
   var body: some Scene {
-    MenuBarExtra {
+    // A main-window render stays out of the menu bar too.
+    MenuBarExtra(isInserted: .constant(!AnyPickAppDelegate.rendersOffscreen)) {
       MenuBarMenu(model: model)
         .onAppear {
           AnyPickAppDelegate.openMainWindowAction = {

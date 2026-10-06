@@ -8,6 +8,17 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   private static weak var instance: AnyPickAppDelegate?
   static weak var registeredMainWindow: NSWindow?
   static var openMainWindowAction: (() -> Void)?
+  /// A fixture render of the main window (`ANYPICK_MACOS_RENDER_PATH`, not a
+  /// tray flow). The app never activates, the window is parked off every
+  /// display and only its own pixels are read, so a render on a Mac someone is
+  /// using neither takes focus nor captures anything else on screen.
+  static let rendersOffscreen: Bool = {
+    let environment = ProcessInfo.processInfo.environment
+    let fixture = environment["ANYPICK_MACOS_FIXTURE"] != nil
+      || environment["ANYPICK_MACOS_DESIGN"] == "1"
+    return fixture && environment["ANYPICK_MACOS_RENDER_PATH"] != nil
+      && environment["ANYPICK_MACOS_FLOW"]?.hasPrefix("tray") != true
+  }()
 
   let isFixture: Bool
   let store: TrayStore?
@@ -58,6 +69,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       // entering AppKit's interactive window/menu tracking loops.
       NSApp.setActivationPolicy(.accessory)
       for window in NSApp.windows { window.orderOut(nil) }
+    } else if Self.rendersOffscreen {
+      NSApp.setActivationPolicy(.accessory)
+      parkWindowsForRender()
+      DispatchQueue.main.async { [weak self] in self?.parkWindowsForRender() }
     } else {
       NSApp.setActivationPolicy(.regular)
       NSApp.activate(ignoringOtherApps: true)
@@ -223,6 +238,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func presentMainWindow() {
+    if Self.rendersOffscreen {
+      parkWindowsForRender()
+      return
+    }
     if NSApp.activationPolicy() != .regular {
       NSApp.setActivationPolicy(.regular)
     }
@@ -317,6 +336,22 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     return name.contains("StatusBar") || name.contains("MenuBar") || name.contains("StatusItem")
   }
 
+  /// Keeps the main window ordered in, so SwiftUI keeps painting it, but off
+  /// every display, click-through, and never key.
+  private func parkWindowsForRender() {
+    let mains = NSApp.windows.filter { !Self.isStatusItemWindow($0) && isMainWindow($0) }
+    if mains.isEmpty {
+      Self.openMainWindowAction?()
+      return
+    }
+    for window in mains {
+      retainIfMainWindow(window)
+      window.ignoresMouseEvents = true
+      window.setFrameOrigin(NSPoint(x: -32_000, y: -32_000))
+      window.orderFrontRegardless()
+    }
+  }
+
   private func captureIfRequested(attemptsRemaining: Int) {
     guard let renderPath = ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_PATH"] else {
       return
@@ -336,22 +371,29 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     }
     contentView.layoutSubtreeIfNeeded()
     window.displayIfNeeded()
-    // CGWindowListCreateImage is obsoleted on macOS 15+ SDKs; render the view
-    // hierarchy off-screen instead (own window only, no capture permission).
     // SwiftUI paints asynchronously: an early attempt freezes a half-painted
     // window, so only the last attempt writes.
     guard attemptsRemaining <= 1 else {
       retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)
       return
     }
-    let bounds = contentView.bounds
-    guard let representation = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
-      retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)
-      return
+    // The window server's copy of this process's own window first: it holds
+    // what SwiftUI actually composited. `cacheDisplay` redraws through AppKit
+    // and comes back blank for SwiftUI's layer-backed content.
+    guard let image = RenderCapture.ownWindowImage(window) ?? RenderCapture.cachedDisplay(contentView)
+    else {
+      fputs("[macOS] Render produced no image.\n", stderr)
+      exit(EXIT_FAILURE)
     }
-    contentView.cacheDisplay(in: bounds, to: representation)
-    if let data = representation.representation(using: .png, properties: [:]) {
-      try? data.write(to: URL(fileURLWithPath: renderPath), options: .atomic)
+    if RenderCapture.isBlank(image) {
+      fputs("[macOS] Render is a single flat color; not writing \(renderPath).\n", stderr)
+      exit(EXIT_FAILURE)
+    }
+    guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+      (try? data.write(to: URL(fileURLWithPath: renderPath), options: .atomic)) != nil
+    else {
+      fputs("[macOS] Could not write \(renderPath).\n", stderr)
+      exit(EXIT_FAILURE)
     }
     exit(EXIT_SUCCESS)
   }
@@ -364,6 +406,63 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       return
     }
     fputs("[macOS] Could not capture a visible window.\n", stderr)
-    exit(EXIT_SUCCESS)
+    exit(EXIT_FAILURE)
+  }
+}
+
+/// Reads pixels of AnyPick's own windows for fixture renders. Nothing here can
+/// see another app's window or the desktop.
+enum RenderCapture {
+  private typealias WindowListCreateImage = @convention(c) (
+    CGRect, UInt32, UInt32, UInt32
+  ) -> Unmanaged<CGImage>?
+
+  /// `CGWindowListCreateImage` for one window this process owns, looked up at
+  /// run time because the macOS 15 SDK marks it obsoleted. Reading your own
+  /// window needs no Screen Recording grant. Returns nil if the symbol is gone.
+  static func ownWindowImage(_ window: NSWindow) -> CGImage? {
+    guard window.windowNumber > 0,
+      let handle = dlopen(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY),
+      let symbol = dlsym(handle, "CGWindowListCreateImage")
+    else { return nil }
+    let create = unsafeBitCast(symbol, to: WindowListCreateImage.self)
+    let includingWindow: UInt32 = 1 << 3  // kCGWindowListOptionIncludingWindow
+    let ignoreFramingBestResolution: UInt32 = (1 << 0) | (1 << 3)
+    return create(.null, includingWindow, UInt32(window.windowNumber), ignoreFramingBestResolution)?
+      .takeRetainedValue()
+  }
+
+  static func cachedDisplay(_ view: NSView) -> CGImage? {
+    guard let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+      return nil
+    }
+    view.cacheDisplay(in: view.bounds, to: representation)
+    return representation.cgImage
+  }
+
+  /// True when every pixel of a 32×32 downsample is within a few levels of the
+  /// first: the white or transparent frame a failed render leaves behind.
+  static func isBlank(_ image: CGImage) -> Bool {
+    let side = 32
+    var pixels = [UInt8](repeating: 0, count: side * side * 4)
+    let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+      guard
+        let context = CGContext(
+          data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8,
+          bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+      else { return false }
+      context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+      return true
+    }
+    guard drawn else { return true }
+    let first = Array(pixels[0..<4])
+    for index in stride(from: 0, to: pixels.count, by: 4) {
+      for channel in 0..<4 where abs(Int(pixels[index + channel]) - Int(first[channel])) > 3 {
+        return false
+      }
+    }
+    return true
   }
 }
