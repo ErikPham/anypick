@@ -75,6 +75,7 @@
 		110000000000000000000005 /* AppIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 220000000000000000000005 /* AppIcon.png */; };
 		120000000000000000000001 /* AnyPickTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000001 /* AnyPickTests.swift */; };
 		12000000000000000000003E /* PaneRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 230000000000000000000002 /* PaneRenderTests.swift */; };
+		130000000000000000000001 /* AnyPickUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 250000000000000000000001 /* AnyPickUITests.swift */; };
 		120000000000000000000002 /* AppServiceClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AppServiceClient.swift */; };
 		120000000000000000000003 /* SnapshotTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SnapshotTypes.swift */; };
 		120000000000000000000004 /* DesignTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* DesignTypes.swift */; };
@@ -141,6 +142,13 @@
 
 /* Begin PBXContainerItemProxy section */
 		900000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 600000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 500000000000000000000001;
+			remoteInfo = AnyPick;
+		};
+		900000000000000000000003 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 600000000000000000000001 /* Project object */;
 			proxyType = 1;
@@ -215,12 +223,14 @@
 		20000000000000000000002B /* DesignDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignDisplay.swift; sourceTree = "<group>"; };
 		210000000000000000000001 /* AnyPick.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AnyPick.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		210000000000000000000002 /* AnyPickTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		210000000000000000000003 /* AnyPickUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnyPickUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		220000000000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		220000000000000000000004 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Resources/icons; sourceTree = "<group>"; };
 		220000000000000000000005 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; name = AppIcon.png; path = ../../assets/icon-1024.png; sourceTree = "<group>"; };
 		220000000000000000000006 /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = Resources/AppIcon.icns; sourceTree = "<group>"; };
 		230000000000000000000001 /* AnyPickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickTests.swift; sourceTree = "<group>"; };
 		230000000000000000000002 /* PaneRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneRenderTests.swift; sourceTree = "<group>"; };
+		250000000000000000000001 /* AnyPickUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyPickUITests.swift; sourceTree = "<group>"; };
 		240000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		240000000000000000000002 /* AnyPick.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AnyPick.entitlements; sourceTree = "<group>"; };
 		240000000000000000000003 /* bundle-go-helper.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "bundle-go-helper.sh"; sourceTree = "<group>"; };
@@ -242,6 +252,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		400000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -253,6 +270,7 @@
 				300000000000000000000004 /* Configuration */,
 				300000000000000000000005 /* Scripts */,
 				300000000000000000000006 /* AnyPickTests */,
+				300000000000000000000008 /* AnyPickUITests */,
 				300000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -366,11 +384,20 @@
 			path = AnyPickTests;
 			sourceTree = "<group>";
 		};
+		300000000000000000000008 /* AnyPickUITests */ = {
+			isa = PBXGroup;
+			children = (
+				250000000000000000000001 /* AnyPickUITests.swift */,
+			);
+			path = AnyPickUITests;
+			sourceTree = "<group>";
+		};
 		300000000000000000000007 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				210000000000000000000001 /* AnyPick.app */,
 				210000000000000000000002 /* AnyPickTests.xctest */,
+				210000000000000000000003 /* AnyPickUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -414,6 +441,23 @@
 			productReference = 210000000000000000000002 /* AnyPickTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		500000000000000000000003 /* AnyPickUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 700000000000000000000004 /* Build configuration list for PBXNativeTarget "AnyPickUITests" */;
+			buildPhases = (
+				400000000000000000000008 /* Sources */,
+				400000000000000000000009 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				900000000000000000000004 /* PBXTargetDependency */,
+			);
+			name = AnyPickUITests;
+			productName = AnyPickUITests;
+			productReference = 210000000000000000000003 /* AnyPickUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -428,6 +472,10 @@
 						CreatedOnToolsVersion = 26.4.1;
 					};
 					500000000000000000000002 = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = 500000000000000000000001;
+					};
+					500000000000000000000003 = {
 						CreatedOnToolsVersion = 26.4.1;
 						TestTargetID = 500000000000000000000001;
 					};
@@ -448,6 +496,7 @@
 			targets = (
 				500000000000000000000001 /* AnyPick */,
 				500000000000000000000002 /* AnyPickTests */,
+				500000000000000000000003 /* AnyPickUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -655,6 +704,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		400000000000000000000008 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				130000000000000000000001 /* AnyPickUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -662,6 +719,11 @@
 			isa = PBXTargetDependency;
 			target = 500000000000000000000001 /* AnyPick */;
 			targetProxy = 900000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		900000000000000000000004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 500000000000000000000001 /* AnyPick */;
+			targetProxy = 900000000000000000000003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -840,6 +902,36 @@
 			};
 			name = Release;
 		};
+		800000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = AnyPick;
+			};
+			name = Debug;
+		};
+		800000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.anypick.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = AnyPick;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -866,6 +958,15 @@
 			buildConfigurations = (
 				800000000000000000000005 /* Debug */,
 				800000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		700000000000000000000004 /* Build configuration list for PBXNativeTarget "AnyPickUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				800000000000000000000007 /* Debug */,
+				800000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

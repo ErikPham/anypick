@@ -85,7 +85,7 @@ export GOPATH
 .PHONY: help go-toolchain build run sandbox test test-race vet fmt fmt-check lint \
         check review ci check-paths check-protocol check-release check-artifact hooks \
         plan-release set-version bump-version \
-        open-macos build-macos test-macos verify-macos run-macos-dev install-macos \
+        open-macos build-macos test-macos test-macos-ui verify-macos run-macos-dev install-macos \
         install-tauri build-tauri-ui typecheck-tauri-ui test-tauri-ui \
         check-tauri-ui build-tauri run-tauri check-parity screenshots-tauri-ui \
         build-docs check-docs clean
@@ -215,6 +215,15 @@ build-macos: ## Build the app unsigned; a build phase bundles the Go helper
 test-macos: ## Build and unit-test the app and the bundled helper contract
 	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPick \
 	  -destination platform=macOS CODE_SIGNING_ALLOWED=NO test
+
+# XCUITest over the fixture: the three ship-acceptance flows through the real
+# UI (welcome + checklist, tray first run, empty Accounts -> Add Account).
+# Not in test-macos or CI yet: macOS UI tests need Developer Mode
+# (`sudo DevToolsSecurity -enable`) and an Accessibility grant on this Mac.
+test-macos-ui: ## Drive the onboarding, tray first-run, and add-account flows (XCUITest, fixture)
+	xcodebuild -project $(MACOS_DIR)/AnyPick.xcodeproj -scheme AnyPickUITests \
+	  -destination platform=macOS CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual \
+	  DEVELOPMENT_TEAM= test
 
 verify-macos: build-macos go-toolchain ## Build, then assert ADR 0020 on the built bundle
 	@derived="$${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData}"; \
