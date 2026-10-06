@@ -5,7 +5,7 @@ import Header from "../components/Header.astro";
 import RoutingConcept from "../components/RoutingConcept.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 
-const sourceCommand = "npm install --global anypick";
+const releasesUrl = "https://github.com/outof0/anypick/releases/latest";
 
 const capabilities = [
   {
@@ -128,17 +128,12 @@ const proof = [
               <a class="secondary-cta" href="#workflow">See the workflow</a>
             </div>
 
-            <div class="install-shell mt-8 max-w-lg">
-              <span class="prompt" aria-hidden="true">$</span>
-              <code>{sourceCommand}</code>
-              <button type="button" data-copy={sourceCommand} aria-label="Copy source command">
-                <Icon name="ph:copy" class="copy-icon h-4 w-4" />
-                <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
-                <span>Copy</span>
-              </button>
-            </div>
+            <a class="download-link mt-8 max-w-lg" href={releasesUrl}>
+              <Icon name="ph:download-simple" class="h-4 w-4" aria-hidden="true" />
+              <span>Download on GitHub Releases</span>
+              <Icon name="ph:arrow-up-right" class="ml-auto h-4 w-4" aria-hidden="true" />
+            </a>
             <p class="mt-3 font-mono text-xs text-[#8b93a7]">macOS 14+ signed app · CLI archives on GitHub Releases · npm launcher when enabled</p>
-            <p class="sr-only" aria-live="polite" data-copy-status></p>
           </div>
 
           <div class="hero-product relative mx-auto w-full max-w-[38rem] lg:mr-0">
@@ -292,27 +287,6 @@ const proof = [
     </footer>
   </div>
 
-  <script>
-    const status = document.querySelector("[data-copy-status]");
-
-    document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const value = button.dataset.copy;
-        if (!value) return;
-        await navigator.clipboard.writeText(value);
-        button.querySelector(".copy-icon")?.classList.add("hidden");
-        button.querySelector(".check-icon")?.classList.remove("hidden");
-        const label = button.querySelector("span");
-        if (label) label.textContent = "Copied";
-        if (status) status.textContent = "Source command copied";
-        window.setTimeout(() => {
-          button.querySelector(".copy-icon")?.classList.remove("hidden");
-          button.querySelector(".check-icon")?.classList.add("hidden");
-          if (label) label.textContent = "Copy";
-        }, 1800);
-      });
-    });
-  </script>
 </BaseLayout>
 
 <style>
@@ -428,53 +402,28 @@ const proof = [
     outline-offset: 3px;
   }
 
-  .install-shell {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
+  .download-link {
+    display: flex;
     align-items: center;
     gap: 0.75rem;
     min-height: 3.4rem;
-    padding: 0.45rem 0.45rem 0.45rem 1rem;
+    padding: 0.45rem 1rem;
     border: 1px solid rgb(255 255 255 / 0.12);
     border-radius: 0.85rem;
     background: rgb(4 6 12 / 0.7);
     box-shadow: 0 14px 40px rgb(0 0 0 / 0.22);
-  }
-
-  .install-shell .prompt {
-    color: #7c3aed;
-    font-family: var(--font-mono);
-  }
-
-  .install-shell code {
-    overflow: hidden;
     color: #d6d9e0;
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .install-shell button {
-    display: inline-flex;
-    min-height: 2.45rem;
-    align-items: center;
-    gap: 0.4rem;
-    border: 0;
-    border-radius: 0.6rem;
-    padding: 0 0.75rem;
-    background: rgb(255 255 255 / 0.07);
-    color: #98a2b3;
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     font-weight: 600;
+    text-decoration: none;
   }
 
-  .install-shell button:hover {
-    background: rgb(255 255 255 / 0.11);
+  .download-link:hover {
+    border-color: rgb(255 255 255 / 0.2);
     color: white;
   }
 
-  .install-shell button:focus-visible {
+  .download-link:focus-visible {
     outline: 2px solid #c4b5fd;
     outline-offset: 2px;
   }
@@ -740,10 +689,6 @@ const proof = [
   }
 
   @media (max-width: 40rem) {
-    .install-shell button span {
-      display: none;
-    }
-
     .plan-code li {
       grid-template-columns: auto minmax(0, 1fr);
     }

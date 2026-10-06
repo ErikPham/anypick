@@ -72,8 +72,8 @@ func antigravityPayloadFromLiveFile(p *gemini) *geminiAntigravityFile {
 
 // authoritativeAntigravityCredential prefers the IDE's state database. A
 // stale portable file is common after a switch, and treating it as live auth
-// is exactly how the UI can say "lentaunao" while Antigravity still uses
-// stacktify.com@gmail.com.
+// is exactly how the UI can say "user@example.com" while Antigravity still uses
+// other@example.com.
 func (p *gemini) authoritativeAntigravityCredential() *geminiAntigravityFile {
 	state := p.antigravityStateCredential()
 	if state == nil {

@@ -210,7 +210,7 @@ func TestGeminiRestoreSwitchesAntigravityNativeState(t *testing.T) {
 		antigravityTokenInfo("old-access", "Bearer", "old-refresh", time.Now().Add(time.Hour)))
 	// This is the stale portable mirror that caused AnyPick to display a
 	// different email from the account Antigravity itself still held.
-	antigravityTokenFile(t, geminiDir, "antigravity_oauth.json", "lentaunao@gmail.com")
+	antigravityTokenFile(t, geminiDir, "antigravity_oauth.json", "user@example.com")
 	if err := os.WriteFile(filepath.Join(geminiDir, "oauth_creds.json"),
 		[]byte(`{"refresh_token":"old-cli"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestGeminiRestoreSwitchesAntigravityNativeState(t *testing.T) {
 			"expiry":        time.Now().Add(time.Hour).Format(time.RFC3339Nano),
 		},
 		"auth_method": "consumer",
-		"email":       "lentaunao@gmail.com",
+		"email":       "user@example.com",
 	}
 	raw, err := json.Marshal(newPayload)
 	if err != nil {
@@ -268,7 +268,7 @@ func TestGeminiRestoreSwitchesAntigravityNativeState(t *testing.T) {
 		t.Fatalf("stale Gemini CLI credential survived Antigravity restore: %v", err)
 	}
 	live, err = provider.DetectLiveSource(antigravityOAuthSource)
-	if err != nil || live.Identity != "lentaunao@gmail.com" {
+	if err != nil || live.Identity != "user@example.com" {
 		t.Fatalf("post-restore live = %+v err=%v", live, err)
 	}
 }
@@ -319,13 +319,13 @@ func TestAntigravityIdentityReadsMatchingMirrorIDToken(t *testing.T) {
 	writeAntigravityState(t, home, antigravityTokenSentinel,
 		antigravityTokenInfo("ya29.state", "Bearer", "1//state", time.Now().Add(time.Hour)))
 	writeAntigravityMirror(t, dir, antigravityCredentialFiles[0], "1//state", "",
-		geminiJWTForEmail("lentaunao@gmail.com"))
+		geminiJWTForEmail("user@example.com"))
 
 	live, err := newGemini(home).DetectLiveSource(antigravityOAuthSource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if live.Identity != "lentaunao@gmail.com" {
+	if live.Identity != "user@example.com" {
 		t.Fatalf("identity = %q, want the matching mirror's id_token email", live.Identity)
 	}
 }
@@ -373,7 +373,7 @@ func TestGeminiRefreshPersistsIDToken(t *testing.T) {
 			"refresh_token": "1//rotated",
 			"token_type":    "Bearer",
 			"expires_in":    3600,
-			"id_token":      geminiJWTForEmail("lentaunao@gmail.com"),
+			"id_token":      geminiJWTForEmail("user@example.com"),
 		})
 	}))
 	defer tokenServer.Close()
@@ -394,7 +394,7 @@ func TestGeminiRefreshPersistsIDToken(t *testing.T) {
 	if err != nil || reloaded == nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if reloaded.Email != "lentaunao@gmail.com" {
+	if reloaded.Email != "user@example.com" {
 		t.Fatalf("identity after refresh = %q, want the id_token email", reloaded.Email)
 	}
 	if reloaded.Token.RefreshToken != "1//rotated" {
@@ -423,7 +423,7 @@ func TestAntigravityHydrateFallsBackToUserInfo(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer ya29.rotated" {
 			t.Errorf("userinfo Authorization = %q", r.Header.Get("Authorization"))
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"email": "lentaunao@gmail.com"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"email": "user@example.com"})
 	}))
 	defer userInfo.Close()
 	geminiOAuthUserInfoEndpoint = userInfo.URL
@@ -454,7 +454,7 @@ func TestAntigravityHydrateFallsBackToUserInfo(t *testing.T) {
 	if err != nil || hydrated == nil {
 		t.Fatalf("hydrate: %v", err)
 	}
-	if hydrated.Email != "lentaunao@gmail.com" {
+	if hydrated.Email != "user@example.com" {
 		t.Fatalf("hydrated email = %q", hydrated.Email)
 	}
 }

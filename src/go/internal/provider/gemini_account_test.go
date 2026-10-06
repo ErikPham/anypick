@@ -315,8 +315,8 @@ func TestGeminiDescribeSnapshotExtractsIDTokenEmail(t *testing.T) {
 	snapshot := t.TempDir()
 
 	// Header: {"alg":"RS256"} -> eyJhbGciOiJSUzI1NiJ9
-	// Payload: {"email":"lentaunao@gmail.com"} -> eyJlbWFpbCI6ImxlbnRhdW5hb0BnbWFpbC5jb20ifQ
-	fakeJWT := "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImxlbnRhdW5hb0BnbWFpbC5jb20ifQ.signature"
+	// Payload: {"email":"user@example.com"} -> eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ
+	fakeJWT := "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20ifQ.signature"
 	credJSON := `{"auth_method":"","email":"","id_token":"` + fakeJWT + `","token":{"access_token":"ya29.x","refresh_token":"1//x"}}`
 	if err := os.WriteFile(filepath.Join(snapshot, "antigravity_oauth.json"), []byte(credJSON), 0o600); err != nil {
 		t.Fatal(err)
@@ -326,8 +326,8 @@ func TestGeminiDescribeSnapshotExtractsIDTokenEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DescribeSnapshot: %v", err)
 	}
-	if info.Identity != "lentaunao@gmail.com" {
-		t.Fatalf("info.Identity = %q, want lentaunao@gmail.com", info.Identity)
+	if info.Identity != "user@example.com" {
+		t.Fatalf("info.Identity = %q, want user@example.com", info.Identity)
 	}
 }
 

@@ -507,7 +507,7 @@ final class AnyPickTests: XCTestCase {
   }
 
   func testCleanSourceDisplayNameStripsRedundantPrefixes() {
-    XCTAssertEqual(cleanSourceDisplayName("gemini/lentaunao"), "lentaunao")
+    XCTAssertEqual(cleanSourceDisplayName("gemini/user"), "user")
     XCTAssertEqual(cleanSourceDisplayName("gemini/stacktify"), "stacktify")
     XCTAssertEqual(cleanSourceDisplayName("stacktify"), "stacktify")
     XCTAssertEqual(cleanSourceDisplayName("opencode/main"), "main")
