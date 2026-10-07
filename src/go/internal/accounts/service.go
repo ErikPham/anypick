@@ -207,12 +207,32 @@ func (s *Service) PatchMeta(ctx context.Context, providerID, name string, patch 
 	return s.Store.PatchMetaContext(ctx, providerID, name, patch)
 }
 
+// Get returns a saved account with its snapshot cache materialized, and so
+// takes the provider lock. Reach for CachedAccount on a display path instead:
+// a browser sign-in holds that lock for its whole user-paced flow
+// (browserlogin.DefaultTimeout), and a read that needs no files on disk must
+// not queue behind it.
 func (s *Service) Get(ctx context.Context, providerID, name string) (*store.Account, error) {
 	normalized, err := slug.AccountName(name)
 	if err != nil {
 		return nil, err
 	}
 	return s.Store.Get(ctx, providerID, normalized)
+}
+
+// CachedAccount is the display read: the saved account's metadata and paths
+// without materializing its snapshot cache and without the provider lock.
+// Snapshot builders run on a ticker and must never block on a sign-in that
+// holds refs.ProviderScope for up to ten minutes; a Get here would instead burn
+// the 5s lock budget and then fall back to the provider/name label because the
+// read failed. Materialization is the only thing Get adds, so callers that need
+// real files (Restore, export, fingerprinting) keep using Get.
+func (s *Service) CachedAccount(ctx context.Context, providerID, name string) (*store.Account, error) {
+	normalized, err := slug.AccountName(name)
+	if err != nil {
+		return nil, err
+	}
+	return s.Store.CachedAccount(ctx, providerID, normalized)
 }
 
 // Save backs up live auth into a named account. writeMeta stays the atomic

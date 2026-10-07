@@ -246,7 +246,7 @@ func proxyRowLabel(ctx context.Context, b *snapshotBuilder, providerID, name str
 		short = provider.ShortNameOf(pv)
 	}
 	display := ""
-	if acc, err := b.srv.Deps.Accounts.Get(ctx, providerID, name); err == nil && acc != nil {
+	if acc, err := b.srv.Deps.Accounts.CachedAccount(ctx, providerID, name); err == nil && acc != nil {
 		for _, candidate := range []string{acc.Meta.Label, acc.Meta.Identity, acc.Meta.Name} {
 			if strings.TrimSpace(candidate) != "" {
 				display = strings.TrimSpace(candidate)
@@ -730,7 +730,7 @@ func (b *snapshotBuilder) currentRouteActions(ctx context.Context, appIDs []stri
 			if srcRef.Kind == refs.KindAccount {
 				kind = "native"
 				routeKind = b.routeKindForSource(ctx, clientID, srcRef)
-				if accRow, aerr := b.srv.Deps.Accounts.Get(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
+				if accRow, aerr := b.srv.Deps.Accounts.CachedAccount(ctx, srcRef.Provider, srcRef.Name); aerr == nil && accRow != nil {
 					pv2, _ := b.srv.Deps.Providers.Get(srcRef.Provider)
 					sn := srcRef.Provider
 					if pv2 != nil {
@@ -1262,7 +1262,7 @@ func (b *snapshotBuilder) routeKindForSource(
 	if err != nil || pv == nil {
 		return "direct-account"
 	}
-	account, err := b.srv.Deps.Accounts.Get(ctx, source.Provider, source.Name)
+	account, err := b.srv.Deps.Accounts.CachedAccount(ctx, source.Provider, source.Name)
 	if err != nil || account == nil {
 		return routeKindForAccount(pv, clientID, source.Name, false)
 	}
