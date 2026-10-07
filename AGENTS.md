@@ -223,7 +223,14 @@ Breaking one of these is a correctness or security regression, not a style nit.
   `SetActive`, `ClearActive`, `PatchMeta`, `WriteProxyState`,
   `ClearProxyState` and `SetProxyConfig` were **deleted** rather than kept as
   conveniences: the compiler now refuses the call. Reads keep their ctx-less
-  form because they take no lock.
+  form, but *not* because every read is lock-free: `AccountStore.Get` takes the
+  provider lock because it re-materializes the snapshot cache, and `Get` is the
+  wrong read for a display path. A browser sign-in holds `refs.ProviderScope`
+  for its whole user-paced flow, so a ticker read that queues behind it burns
+  the 5s budget and then fails with `MUTATION_LOCK_TIMEOUT`. Use
+  `AccountStore.CachedAccount` (or `accounts.Service.CachedAccount`) for
+  metadata-only display reads; reach for `Get` only when the files must exist on
+  disk.
 - **A mutation scope is not a resource identity.** `refs.ProviderScope` (lock
   scope, collapses accounts onto their provider) and `refs.Serialize` (precise
   identity, used for journal `affectedResources`) look interchangeable and are

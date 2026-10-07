@@ -306,7 +306,7 @@ func (s *Server) appendHubPublished(ctx context.Context, snap *Snapshot, hubName
 				// be restored without guessing which hub owns the account.
 				ownerRef = "hub/" + hubName + "/" + src.ProviderID + "/" + src.Account
 				ownerLabel = src.Account
-				if acc, aerr := s.Deps.Accounts.Get(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
+				if acc, aerr := s.Deps.Accounts.CachedAccount(ctx, src.ProviderID, src.Account); aerr == nil && acc != nil && acc.Meta.Label != "" {
 					ownerLabel = acc.Meta.Label
 				}
 			} else if m.Owner != "" {
@@ -815,7 +815,7 @@ func (s *Server) handleHubSourceToggle(ctx context.Context, m Mutate) Result {
 			// fail here with the account named. Toggling off is always
 			// allowed: detaching a missing source is a no-op success.
 			if s.Deps.Accounts != nil {
-				acc, aerr := s.Deps.Accounts.Get(ctx, m.ProviderID, account)
+				acc, aerr := s.Deps.Accounts.CachedAccount(ctx, m.ProviderID, account)
 				if aerr != nil {
 					return aerr
 				}
