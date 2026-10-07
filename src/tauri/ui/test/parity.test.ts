@@ -22,7 +22,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { macosIdentifiers, normalizeTauri, tauriIdentifiers } from './inventory';
-import { OUT_OF_SCOPE, PARITY } from './parity-map';
+import { OUT_OF_SCOPE, PARITY, type ParityRow } from './parity-map';
 
 const macosDir = resolve(__dirname, '../../../macos');
 const macosSources = readdirSync(macosDir)
@@ -39,6 +39,135 @@ function outOfScopeReason(id: string): string | undefined {
     if (id.startsWith(prefix)) return reason;
   }
   return undefined;
+}
+
+/**
+ * Tauri ids that two or more `done` rows legitimately share, with the exact
+ * macOS ids in each group and the reason one Tauri control carries them all.
+ *
+ * A shared id is legitimate when macOS names one control twice — a list-row
+ * button and its detail-pane twin, or two row shapes over one model list —
+ * because this app deliberately has one control. The macOS ids are pinned, so a
+ * new row on an allowlisted id changes the group and fails rather than slipping
+ * in behind an existing exemption. These eight groups predate this check; the
+ * ninth, `onboarding-choose-route`, was the defect and is now a row of its own.
+ */
+const SHARED_TAURI_ID_REASONS = new Map<string, { macos: string[]; reason: string }>([
+  [
+    'app.disconnect-menu',
+    {
+      macos: ['app.connection.disconnect', 'app.reset'],
+      reason:
+        "macOS names the disconnect command twice: the app row action (`app.reset`) and the detail pane's Connection button (`app.connection.disconnect`). Tauri reaches the one command from the row menu.",
+    },
+  ],
+  [
+    'accounts-inspector.usage.{x}',
+    {
+      macos: ['account.usage.{x}', 'accounts.inspector.usage.{x}'],
+      reason:
+        'One quota row rendered by two macOS surfaces (the Accounts inspector and the account sheet). Tauri has one AccountDetailSheet.',
+    },
+  ],
+  [
+    'account-edit-label',
+    {
+      macos: ['account-edit.error', 'account-edit.name'],
+      reason:
+        "macOS names the edit field and its save-error section. Tauri's LabelSheet has no separate error slot: the engine's failure arrives as a result frame in the notice banner.",
+    },
+  ],
+  [
+    'hub.strategy.{x}',
+    {
+      macos: ['hub.rotation.{x}', 'hub.strategy', 'hub.strategy.{x}'],
+      reason:
+        'macOS names the same rotation control three ways: the bare id when one source exists, the interpolated id, and `hub.rotation.<id>` for the toggle. Tauri emits one segmented control per rotation row.',
+    },
+  ],
+  [
+    'published-models.row-picker-{x}',
+    {
+      macos: [
+        'hub.model-route.{x}',
+        'published-models.row-picker.{x}',
+        'published-models.switch-picker.{x}',
+      ],
+      reason:
+        "One routing picker on three macOS row shapes: the hub pane's per-model row, and the published-model row and switch row. Tauri has one picker in PublishedModelsPane, reached from all three.",
+    },
+  ],
+  [
+    'published-models.row-{x}',
+    {
+      macos: ['published-models.row.{x}', 'published-models.switch-row.{x}'],
+      reason: 'Two macOS row shapes over the same model list. Tauri renders one row per model.',
+    },
+  ],
+  [
+    'published-models.inspect-{x}',
+    {
+      macos: ['published-models.inspect.{x}', 'published-models.switch-inspect.{x}'],
+      reason:
+        'The same info button on the two macOS row shapes. Tauri has one inspect button per model row.',
+    },
+  ],
+  [
+    'proxies.row-action.{x}',
+    {
+      macos: ['proxies.inspector.lifecycle', 'proxies.row-action.{x}'],
+      reason:
+        'macOS names the list-row lifecycle button and its inspector twin. Tauri has one Start/Stop button per row, which sends the one command.',
+    },
+  ],
+]);
+
+/**
+ * Every `done` row sharing a Tauri id with another, unless the id is
+ * allowlisted with exactly that group of macOS ids.
+ *
+ * Returned as strings so a failure names the id and both macOS features, which
+ * is what makes the false claim visible rather than just red.
+ */
+function sharedIdViolations(
+  rows: readonly ParityRow[],
+  allowed: ReadonlyMap<string, { macos: string[]; reason: string }>,
+): string[] {
+  const byTauri = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.status !== 'done') continue;
+    byTauri.set(row.tauri, [...(byTauri.get(row.tauri) ?? []), row.macos]);
+  }
+  const duplicates = [...byTauri.entries()].filter(([, macos]) => macos.length > 1);
+
+  const unexcused = duplicates
+    .filter(([tauri]) => !allowed.has(tauri))
+    .map(([tauri, macos]) => `${tauri} <- ${macos.join(', ')}`);
+
+  // An allowlisted group that changed — a row added to the id, or a duplicate
+  // quietly fixed — has to touch its entry, so the allowlist cannot rot.
+  const drifted = duplicates
+    .filter(([tauri, macos]) => {
+      const entry = allowed.get(tauri);
+      if (!entry) return false;
+      return [...macos].sort().join('\n') !== [...entry.macos].sort().join('\n');
+    })
+    .map(([tauri, macos]) => `${tauri}: map has ${macos.join(', ')}`);
+
+  const dead = [...allowed.keys()].filter((tauri) => (byTauri.get(tauri) ?? []).length < 2);
+
+  // A bare exemption is how a duplicate becomes permanent without anyone
+  // deciding, the same reason `skip` rows require a reason.
+  const unreasoned = [...allowed.entries()]
+    .filter(([, entry]) => entry.reason.trim().length === 0)
+    .map(([tauri]) => `${tauri}: allowlisted with no reason`);
+
+  return [
+    ...unexcused,
+    ...drifted,
+    ...dead.map((tauri) => `${tauri}: allowlisted but no longer shared`),
+    ...unreasoned,
+  ];
 }
 
 describe('the macOS to Tauri feature map', () => {
@@ -132,6 +261,35 @@ describe('the macOS to Tauri feature map', () => {
       unbacked,
       `parity-map.ts claims these Tauri elements exist but the UI does not emit them:\n${unbacked.join('\n')}`,
     ).toEqual([]);
+  });
+
+  it('does not let two done rows share a Tauri id without a written reason', () => {
+    // Two `done` rows on one Tauri element are how a missing port hides: the
+    // `use-app` row pointed at `onboarding-choose-route`, which the
+    // `choose-route` row already claimed, so "Use an App" had no counterpart
+    // while the map still reported it ported and the report read 100%.
+    expect(
+      sharedIdViolations(PARITY, SHARED_TAURI_ID_REASONS),
+      'a done row shares a Tauri id with no written reason',
+    ).toEqual([]);
+  });
+
+  it('fails a synthetic duplicate Tauri id', () => {
+    // Proves the check above can fail: a pair of `done` rows pointing at one
+    // element, with no allowlist entry, is exactly the `use-app` shape.
+    const synthetic: ParityRow[] = [
+      { macos: 'overview.onboarding.choose-route', tauri: 'onboarding-choose-route', status: 'done' },
+      { macos: 'overview.onboarding.use-app', tauri: 'onboarding-choose-route', status: 'done' },
+    ];
+    expect(sharedIdViolations(synthetic, new Map())).toEqual([
+      'onboarding-choose-route <- overview.onboarding.choose-route, overview.onboarding.use-app',
+    ]);
+    // An allowlist entry naming the group clears it, so the allowlist is the
+    // only thing standing between a real duplicate and a green run.
+    const excused = new Map([
+      ['onboarding-choose-route', { macos: ['overview.onboarding.choose-route', 'overview.onboarding.use-app'], reason: 'synthetic' }],
+    ]);
+    expect(sharedIdViolations(synthetic, excused)).toEqual([]);
   });
 
   it('reports Tauri elements no macOS feature maps to', () => {

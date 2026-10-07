@@ -50,7 +50,7 @@ export const PARITY: ParityRow[] = [
   { macos: 'overview.onboarding.choose-route', tauri: 'onboarding-choose-route', status: 'done' },
   { macos: 'overview.onboarding.save-login', tauri: 'onboarding-save-login', status: 'done' },
   { macos: 'overview.onboarding.proxy-hub', tauri: 'onboarding-hub', status: 'done' },
-  { macos: 'overview.onboarding.use-app', tauri: 'onboarding-choose-route', status: 'done' },
+  { macos: 'overview.onboarding.use-app', tauri: 'onboarding-use-app', status: 'done' },
 
   // ── Apps ───────────────────────────────────────────────────────────────────
   { macos: 'apps.list', tauri: 'apps', status: 'done' },

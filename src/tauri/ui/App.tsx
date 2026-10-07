@@ -586,7 +586,14 @@ function DestinationPane({
 }) {
   switch (destination) {
     case 'overview':
-      return <OverviewPane key={`overview-${gettingStartedKey}`} snapshot={snapshot} onNavigate={onNavigate} />;
+      return (
+        <OverviewPane
+          key={`overview-${gettingStartedKey}`}
+          snapshot={snapshot}
+          onNavigate={onNavigate}
+          onRefresh={() => service.refresh()}
+        />
+      );
     case 'apps':
       return (
         <AppsPane

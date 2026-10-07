@@ -62,6 +62,27 @@ final class AnyPickTests: XCTestCase {
         "AnyPick.xcodeproj does not reference shared source \(entry)"
       )
     }
+
+    // The manifest and the project are two halves of one registration, so
+    // checking only the manifest leaves a file the project compiles but the
+    // manifest omits invisible — which is how `FrameChunkBuffer.swift` was
+    // built without a row. `contentsOfDirectory` is not recursive, so this is
+    // the top-level set; the test targets' files live in subdirectories and are
+    // registered separately.
+    let topLevelSources = try FileManager.default
+      .contentsOfDirectory(atPath: macOSDirectory.path)
+      .filter { $0.hasSuffix(".swift") }
+    for source in topLevelSources {
+      XCTAssertTrue(
+        entries.contains(source),
+        "src/macos/\(source) is compiled but absent from sources.txt"
+      )
+    }
+    XCTAssertEqual(
+      entries.count,
+      topLevelSources.count,
+      "sources.txt and the top-level Swift files disagree on how many sources exist"
+    )
   }
 
   /// Titles measured to land on ONE row of a real `_NSAlertPanel` beside
