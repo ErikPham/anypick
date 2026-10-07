@@ -75,6 +75,7 @@ Environment Variables**), then Run:
 | `ANYPICK_MACOS_APPEARANCE` | `system`, `light`, `dark` | `system` |
 | `ANYPICK_MACOS_ACTIVITY_MODE` | `events`, `logs` | `events` |
 | `ANYPICK_MACOS_RENDER_PATH` | path — renders the window to a PNG and exits | — |
+| `ANYPICK_MACOS_RENDER_SIZE` | `WIDTHxHEIGHT` in points, for renders | saved window size |
 
 Preview the fixture, not a screenshot of a previous session:
 

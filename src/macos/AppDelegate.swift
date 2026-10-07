@@ -344,12 +344,30 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       Self.openMainWindowAction?()
       return
     }
+    let size = Self.renderContentSize()
     for window in mains {
       retainIfMainWindow(window)
+      if let size, window.contentRect(forFrameRect: window.frame).size != size {
+        window.setContentSize(size)
+      }
       window.ignoresMouseEvents = true
       window.setFrameOrigin(NSPoint(x: -32_000, y: -32_000))
       window.orderFrontRegardless()
     }
+  }
+
+  /// `ANYPICK_MACOS_RENDER_SIZE=980x680` pins the content size in points, so a
+  /// render does not depend on the window frame a previous session saved.
+  private static func renderContentSize() -> NSSize? {
+    guard let raw = ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_SIZE"] else {
+      return nil
+    }
+    let parts = raw.lowercased().split(separator: "x").compactMap { Double($0) }
+    guard parts.count == 2, parts[0] >= 400, parts[1] >= 300 else {
+      fputs("[macOS] Ignoring ANYPICK_MACOS_RENDER_SIZE=\(raw); expected WIDTHxHEIGHT.\n", stderr)
+      return nil
+    }
+    return NSSize(width: parts[0], height: parts[1])
   }
 
   private func captureIfRequested(attemptsRemaining: Int) {
@@ -364,24 +382,31 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
       == true
     let tray = visible.first { $0.title == "Menu Bar" }
     let main = visible.first(where: isMainWindow) ?? visible.first
-    let window = prefersTray ? (tray ?? main) : (main?.attachedSheet ?? main)
-    guard let window, let contentView = window.contentView, !contentView.bounds.isEmpty else {
+    let host = prefersTray ? (tray ?? main) : main
+    guard let host, let contentView = host.contentView, !contentView.bounds.isEmpty else {
       retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)
       return
     }
     contentView.layoutSubtreeIfNeeded()
-    window.displayIfNeeded()
+    host.displayIfNeeded()
+    host.attachedSheet?.displayIfNeeded()
     // SwiftUI paints asynchronously: an early attempt freezes a half-painted
     // window, so only the last attempt writes.
     guard attemptsRemaining <= 1 else {
       retryCapture(renderPath: renderPath, attemptsRemaining: attemptsRemaining)
       return
     }
-    // The window server's copy of this process's own window first: it holds
-    // what SwiftUI actually composited. `cacheDisplay` redraws through AppKit
-    // and comes back blank for SwiftUI's layer-backed content.
-    guard let image = RenderCapture.ownWindowImage(window) ?? RenderCapture.cachedDisplay(contentView)
-    else {
+    // Prefer the main window (README framing). If a sheet is attached, composite
+    // it centered so Add Login reads in-window — not a detached sheet crop.
+    let image: CGImage?
+    if !prefersTray, let sheet = host.attachedSheet,
+      let composed = RenderCapture.mainWithSheetImage(main: host, sheet: sheet)
+    {
+      image = composed
+    } else {
+      image = RenderCapture.ownWindowImage(host) ?? RenderCapture.cachedDisplay(contentView)
+    }
+    guard let image else {
       fputs("[macOS] Render produced no image.\n", stderr)
       exit(EXIT_FAILURE)
     }
@@ -431,6 +456,29 @@ enum RenderCapture {
     let ignoreFramingBestResolution: UInt32 = (1 << 0) | (1 << 3)
     return create(.null, includingWindow, UInt32(window.windowNumber), ignoreFramingBestResolution)?
       .takeRetainedValue()
+  }
+
+  /// Main window plus its attached sheet, for README “in-window” sheet shots.
+  static func mainWithSheetImage(main: NSWindow, sheet: NSWindow) -> CGImage? {
+    guard let base = ownWindowImage(main), let overlay = ownWindowImage(sheet) else { return nil }
+    let width = base.width
+    let height = base.height
+    guard
+      let context = CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: 8,
+        bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return nil }
+    context.draw(base, in: CGRect(x: 0, y: 0, width: width, height: height))
+    let scaleX = CGFloat(width) / main.frame.width
+    let scaleY = CGFloat(height) / main.frame.height
+    let sheetSize = CGSize(
+      width: sheet.frame.width * scaleX, height: sheet.frame.height * scaleY)
+    let origin = CGPoint(
+      x: (CGFloat(width) - sheetSize.width) / 2,
+      y: (CGFloat(height) - sheetSize.height) / 2)
+    context.draw(overlay, in: CGRect(origin: origin, size: sheetSize))
+    return context.makeImage()
   }
 
   static func cachedDisplay(_ view: NSView) -> CGImage? {

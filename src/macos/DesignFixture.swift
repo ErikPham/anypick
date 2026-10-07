@@ -331,7 +331,7 @@ enum DesignFixture {
       ),
       DesignProxy(
         id: "kiro-bridge", name: "Kiro Bridge", detail: "Personal Builder · Kiro",
-        symbol: "shippingbox.fill", provider: "kiro", status: .attention, port: 41_413,
+        symbol: "shippingbox.fill", provider: "kiro", status: .stopped, port: 41_413,
         enabled: false
       ),
     ]
