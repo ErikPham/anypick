@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"slices"
 	"sort"
 	"sync"
 
@@ -85,15 +84,4 @@ func (i *Index) Delete(id string) bool {
 	}
 	delete(i.items, id)
 	return true
-}
-
-func equalProvider(a, b Provider) bool {
-	return a.ID == b.ID &&
-		a.Name == b.Name &&
-		a.Description == b.Description &&
-		a.APIStyle == b.APIStyle &&
-		a.DefaultEndpoint == b.DefaultEndpoint &&
-		a.AnthropicEndpoint == b.AnthropicEndpoint &&
-		slices.Equal(a.Protocols, b.Protocols) &&
-		slices.Equal(a.FirstPartyClientIDs, b.FirstPartyClientIDs)
 }

@@ -1,7 +1,6 @@
 package activation
 
 import (
-	"slices"
 	"sort"
 	"sync"
 
@@ -82,8 +81,4 @@ func (i *CatalogIndex) Delete(providerID string) bool {
 	}
 	delete(i.items, providerID)
 	return true
-}
-
-func equalCatalogEntry(a, b CatalogEntry) bool {
-	return a.Name == b.Name && a.APIStyle == b.APIStyle && slices.Equal(a.Protocols, b.Protocols)
 }
