@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -58,6 +59,34 @@ func TestTernary(t *testing.T) {
 	}
 }
 
+// TestEveryRegisteredClientHasADisplayName iterates the client registry rather
+// than a hand-kept list. The list this replaces named eight ids and missed
+// workbuddy, which is exactly how "Workbuddy" shipped: designAppName's default
+// branch capitalises any id into something plausible, so a missing case looked
+// like a deliberate name and nothing failed. This asserts every registered
+// client has an EXPLICIT case, not a fabricated one.
+func TestEveryRegisteredClientHasADisplayName(t *testing.T) {
+	reg := client.NewRegistry()
+	if err := client.RegisterBuiltin(reg, t.TempDir(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	ids := reg.IDs()
+	if len(ids) == 0 {
+		t.Fatal("no clients registered: this check proved nothing")
+	}
+	for _, id := range ids {
+		name, ok := designAppNameExplicit(id)
+		if !ok {
+			t.Errorf("designAppNameExplicit(%q) has no case: the default branch would fabricate %q",
+				id, strings.ToUpper(id[:1])+id[1:])
+			continue
+		}
+		if name == "" {
+			t.Errorf("designAppNameExplicit(%q) returned an empty name", id)
+		}
+	}
+}
+
 func TestDesignAppName(t *testing.T) {
 	cases := map[string]string{
 		"claude":      "Claude Code",
@@ -66,6 +95,8 @@ func TestDesignAppName(t *testing.T) {
 		"kiro":        "Kiro",
 		"grok":        "Grok",
 		"opencode":    "OpenCode",
+		"workbuddy":   "WorkBuddy",
+		"codebuddy":   "WorkBuddy",
 		"commandcode": "Command Code",
 		"custom":      "Custom",
 	}
@@ -77,6 +108,10 @@ func TestDesignAppName(t *testing.T) {
 	// Case-insensitive
 	if got := designAppName("CLAUDE"); got != "Claude Code" {
 		t.Fatalf("designAppName case-insensitive=%q", got)
+	}
+	// An empty id must not panic on client[:1].
+	if got := designAppName(""); got != "" {
+		t.Fatalf("designAppName(empty)=%q want empty", got)
 	}
 }
 
