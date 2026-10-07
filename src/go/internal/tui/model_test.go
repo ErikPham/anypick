@@ -109,6 +109,13 @@ func TestHelpOpensAndCloses(t *testing.T) {
 		t.Fatalf("? = showHelp %v, want true", got.showHelp)
 	}
 
+	// h is the same command: the docs once promised it and shipped it dead,
+	// and the vim reflex is the point of having both spellings.
+	got, _ = updateModel(t, m, key('h'))
+	if !got.showHelp {
+		t.Fatalf("h = showHelp %v, want true", got.showHelp)
+	}
+
 	got, _ = updateModel(t, got, special(tea.KeyEsc))
 	if got.showHelp {
 		t.Errorf("esc from help left showHelp = true, want false")

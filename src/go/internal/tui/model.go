@@ -610,7 +610,9 @@ func (m *Model) updateBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		}
-	case "?":
+	case "?", "h":
+		// h is an alias of ?: the docs used to promise it, users type it out of
+		// vim instinct, and it costs nothing to make the reflex work.
 		m.showHelp = true
 		return m, nil
 	case "tab":

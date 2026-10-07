@@ -173,9 +173,7 @@ preset.
 | <kbd>g</kbd> | Gateways |
 | <kbd>p</kbd> | Proxies |
 | <kbd>d</kbd> | Diagnose |
-| <kbd>t</kbd> | Compatibility tray runtime (source cutover path) |
-| <kbd>Shift+D</kbd> | Start or reuse the compatibility supervisor, then close this UI |
-| <kbd>h</kbd> | Help for this screen |
+| <kbd>h</kbd> / <kbd>?</kbd> | Help for this screen |
 | <kbd>q</kbd> | Close the terminal UI (existing compatibility processes are unchanged) |
 
 ## Other boards (supporting cast)
@@ -244,10 +242,6 @@ With `NO_COLOR=1` the shapes still carry meaning; plain terminals fall back to
 
 - <kbd>q</kbd> — leave the terminal UI; existing compatibility processes are
   unchanged.
-- <kbd>Shift+D</kbd> — start or reuse the source compatibility supervisor, then
-  close the TUI.
-- <kbd>t</kbd> — `runtime / tray`: inspect that compatibility path and flip the
-  bare-command default with <kbd>f</kbd>.
 
 These shortcuts do not own or terminate an `AnyPick.app` launched from Xcode.
 The native app owns its bundled Go helper and is controlled through normal app

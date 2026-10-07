@@ -84,11 +84,11 @@ func (m *Model) View() string {
 	case boardGateways:
 		title = "anypick / gateways"
 		body = m.viewGateways()
-		hints = "↑↓ move · a/d edit (ph3) · esc apps · r reload · ? help"
+		hints = "↑↓ move · esc apps · r reload · ? help"
 	case boardProxy:
 		title = "anypick / proxy"
 		body = m.viewProxies()
-		hints = "↑↓ move · s/r (ph3) · esc apps · r reload · ? help"
+		hints = "↑↓ move · esc apps · r reload · ? help"
 	}
 
 	var out strings.Builder
