@@ -31,6 +31,15 @@ It will not switch accounts, install packages, touch native auth files, or chang
 your bindings. Anything outside the allowlist is reported as **manual only**,
 with the suggestion printed next to it — the terminal UI shows the same split.
 
+The temporary-overlay action is the one to read carefully. An overlay is a
+directory under the system temp directory, and nothing in it records which
+process owns it, so `--fix` judges it by age alone and refuses anything modified
+in the last hour. A long `anypick run` session can outlive that hour, and the
+repair would then delete the isolated home of a running client. If you have a
+long-running `run` open, skip this action and delete the directory by hand once
+that session ends. Every other action on the list proves its target is dead
+before touching it.
+
 A stale lock file is deliberately **not** on the list. AnyPick's locks are
 `flock(2)` descriptors that the kernel releases when the holding process exits,
 so a crash leaves nothing stale to delete — and a "repair" that removed a lock
