@@ -589,7 +589,14 @@ func (s *Server) rehydrateManagedBindings(ctx context.Context) error {
 			if err != nil || pv == nil {
 				continue
 			}
-			account, err := s.Deps.Accounts.Get(ctx, source.Provider, source.Name)
+			// CachedAccount, not Get: this reads Proxy.Enabled and nothing
+			// else, and Get takes the provider lock to re-materialize the
+			// snapshot cache. Startup runs while another process may hold that
+			// scope for a browser sign-in, and a ticker-style read that queues
+			// behind it burns the 5s budget and fails. The commit that fixed
+			// the display reads left this one on Get and described it as
+			// needing real files, which was not true of this call site.
+			account, err := s.Deps.Accounts.CachedAccount(ctx, source.Provider, source.Name)
 			if err != nil || account == nil {
 				continue
 			}
