@@ -597,10 +597,20 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	// This activation spawns a persistent detached proxy; register cleanup
 	// immediately so neither the normal nor the race suite leaks _serve-proxy
 	// children (review finding: orphaned processes across runs).
+	//
+	// The wait is the point. `proxy stop` SIGTERMs the child and returns once
+	// the child's health endpoint stops answering, which is not the same as the
+	// process having exited and released its files. t.TempDir() then removes the
+	// root, and under load the child is still writing into it: the suite failed
+	// with "TempDir RemoveAll cleanup: directory not empty" on exactly this
+	// test. assertNoLeakedChildren polls until no child matches this test's temp
+	// root, which is the condition cleanup actually needs, and it names the pids
+	// when the wait runs out instead of leaving an unexplained unlinkat.
 	t.Cleanup(func() {
 		if code := run([]string{"proxy", "stop", "deepseek", "ds"}); code != 0 {
 			t.Errorf("cleanup proxy stop exited %d", code)
 		}
+		assertNoLeakedChildren(t, "link-without-with proxy teardown")
 	})
 	a, closeFn, err := appReadyForTest()
 	if err != nil {
