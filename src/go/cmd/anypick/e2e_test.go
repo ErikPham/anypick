@@ -931,3 +931,36 @@ func TestHubRouteLifecycleEndToEnd(t *testing.T) {
 func DefaultHubRouteIDForTest(hubName, client string) string {
 	return hubName + "/route-" + client
 }
+
+// TestCurrentReportsTheEffectiveBinding pins the gateway fallback. The
+// troubleshooting page sends users to `current <provider>` to see "what is
+// actually in effect"; a gateway binding leaves the native account pointer
+// empty, and the command used to answer "no active account" with exit 0 — a
+// false negative indistinguishable from success, on a page about diagnosing
+// exactly that confusion.
+func TestCurrentReportsTheEffectiveBinding(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+
+	if code := run([]string{"add", "gateway", "gw", "--provider", "openrouter",
+		"--endpoint", "https://openrouter.ai/api/v1", "--api-key", "sk-x"}); code != 0 {
+		t.Fatalf("add gateway exited %d", code)
+	}
+	if code := run([]string{"use", "claude", "--with", "gw"}); code != 0 {
+		t.Fatalf("use exited %d", code)
+	}
+
+	var stdout, stderr string
+	exit := 0
+	stdout, stderr = captureBoth(t, func() { exit = run([]string{"current", "claude"}) })
+	if exit != 0 {
+		t.Fatalf("current exited %d: %s", exit, stderr)
+	}
+	if !strings.Contains(stdout, "gw") {
+		t.Fatalf("current did not name the bound gateway: %q", stdout)
+	}
+	if strings.Contains(stdout, "no active account") {
+		t.Fatalf("current still reports no active account with a gateway bound: %q", stdout)
+	}
+}

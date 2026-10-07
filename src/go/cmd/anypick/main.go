@@ -799,15 +799,41 @@ func cmdCurrent(ctx context.Context, a *app.App, args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: anypick current <provider>")
 		return int(anyerr.InvalidUsage)
 	}
-	cur, err := a.Accounts.Current(ctx, fs.Arg(0))
+	providerID := fs.Arg(0)
+	cur, err := a.Accounts.Current(ctx, providerID)
 	if err != nil {
 		return reportErr(err)
+	}
+	// The native account pointer is only one of the sources a client can be
+	// bound to. The troubleshooting page sends users here to see "what is
+	// actually in effect", and `use claude --with gw` binds a gateway while
+	// leaving the account pointer empty — which used to print "no active
+	// account" with exit 0, a false negative indistinguishable from success.
+	// When no native account is active, report the global binding's source.
+	if cur.Active == "" {
+		if g, gerr := a.BindingSvc.GetGlobalContext(ctx, providerID); gerr == nil && g != nil {
+			source := refs.DisplayRef(g.Spec.Source)
+			if globals.JSON {
+				data, _ := json.MarshalIndent(struct {
+					BoundSource string `json:"boundSource"`
+					Transport   string `json:"transport,omitempty"`
+				}{source, g.Spec.TransportPolicy}, "", "  ")
+				fmt.Println(string(data))
+				return int(anyerr.Success)
+			}
+			fmt.Printf("%s: bound to %s", providerID, source)
+			if g.Spec.TransportPolicy != "" {
+				fmt.Printf(" via %s", g.Spec.TransportPolicy)
+			}
+			fmt.Println()
+			return int(anyerr.Success)
+		}
 	}
 	// TS prints a human table by default and JSON only under --json; keep the
 	// same contract here (machine stream stays exactly one JSON value).
 	if !globals.JSON {
 		if cur.Active == "" {
-			fmt.Printf("%s: no active account\n", fs.Arg(0))
+			fmt.Printf("%s: no active account\n", providerID)
 			return int(anyerr.Success)
 		}
 		line := fmt.Sprintf("%s: %s", fs.Arg(0), cur.Active)
