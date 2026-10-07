@@ -389,6 +389,13 @@ func (s *Service) RuntimeState(ctx context.Context, providerID, name string) (*s
 // RotateToken replaces the proxy's authentication token with a freshly minted
 // secret. If the proxy is currently running, it is stopped and restarted so the
 // new secret takes effect immediately.
+//
+// The read-modify-write of proxy_state runs under the same scopes as Configure:
+// proxy_state is the only copy of the bearer, so a concurrent start that
+// samples the row before the rotation and writes it back afterwards would leave
+// the listener serving the pre-rotation secret while the caller is handed the
+// new one (ADR 0009, invariant 5). Stop and StartProxy re-enter these scopes
+// through the closure's context.
 func (s *Service) RotateToken(ctx context.Context, providerID, accountName string) (string, error) {
 	acc, err := s.Store.Get(ctx, providerID, accountName)
 	if err != nil {
@@ -401,26 +408,34 @@ func (s *Service) RotateToken(ctx context.Context, providerID, accountName strin
 	if err != nil {
 		return "", anyerr.Wrapf(err, "generate proxy token", "PROXY_ROTATE_FAILED")
 	}
-	st, serr := s.StatusContext(ctx, providerID, accountName)
-	wasRunning := serr == nil && st != nil && st.Running
-	if wasRunning {
-		if err := s.Stop(ctx, providerID, accountName); err != nil {
-			return "", err
+	err = lock.WithMutationLocks(ctx, s.Store.Root, []string{
+		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
+	}, func(c context.Context) error {
+		st, serr := s.StatusContext(c, providerID, accountName)
+		wasRunning := serr == nil && st != nil && st.Running
+		if wasRunning {
+			if err := s.Stop(c, providerID, accountName); err != nil {
+				return err
+			}
 		}
-	}
-	prior, _ := s.Store.ReadProxyState(ctx, providerID, accountName)
-	state := store.ProxyRuntimeState{AccountName: accountName}
-	if prior != nil {
-		state = *prior
-	}
-	state.Token = newToken
-	if err := s.Store.WriteProxyStateContext(ctx, providerID, accountName, state); err != nil {
+		prior, _ := s.Store.ReadProxyState(c, providerID, accountName)
+		state := store.ProxyRuntimeState{AccountName: accountName}
+		if prior != nil {
+			state = *prior
+		}
+		state.Token = newToken
+		if err := s.Store.WriteProxyStateContext(c, providerID, accountName, state); err != nil {
+			return err
+		}
+		if wasRunning {
+			if _, err := s.StartProxy(c, providerID, accountName); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, rotateLockTimeout)
+	if err != nil {
 		return "", err
-	}
-	if wasRunning {
-		if _, err := s.StartProxy(ctx, providerID, accountName); err != nil {
-			return "", err
-		}
 	}
 	return newToken, nil
 }
@@ -481,6 +496,13 @@ func (s *Service) Close() {
 }
 
 const healthTimeout = 5 * time.Second
+
+// rotateLockTimeout is the budget for RotateToken's mutation scopes. The 5s
+// default is sized for a single write; a rotation that has to stop and restart
+// a proxy legitimately takes longer, and timing out would leave the caller
+// holding a token the listener does not serve. A variable so the blocked-path
+// test can prove the failure without waiting out the default.
+var rotateLockTimeout = 30 * time.Second
 
 // Configure updates one account's proxy preference under the same scopes used
 // by start/stop. A zero port asks the kernel for a free loopback port when
