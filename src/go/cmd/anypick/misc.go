@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/agentbridge"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/buildinfo"
@@ -75,16 +77,73 @@ func cmdClients(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// cmdDoctor runs read-only health checks over the local installation.
+// doctorFlagValues holds the parsed `doctor` flags.
+type doctorFlagValues struct {
+	Fix    *bool
+	DryRun *bool
+	Yes    *bool
+	ShortY *bool
+}
+
+// registerDoctorFlags registers the `doctor` command's flags on fs. It is a
+// named function rather than inline registration so the parity gate can read
+// the real registration instead of a hand-kept copy of it — a copy is what let
+// the golden tree advertise `--fix` for a handler that parsed nothing.
+func registerDoctorFlags(fs *flag.FlagSet) doctorFlagValues {
+	return doctorFlagValues{
+		Fix:    fs.Bool("fix", false, "apply the allowlisted safe repairs"),
+		DryRun: fs.Bool("dry-run", false, "with --fix, print the plan and change nothing"),
+		Yes:    fs.Bool("yes", false, "with --fix, skip the confirmation prompt"),
+		// The docs show `doctor --fix -y`; `-y` is the short form of the global
+		// --yes, but isGlobalFlag only knows the long name, so the handler has
+		// to register the alias or the documented invocation fails to parse.
+		ShortY: fs.Bool("y", false, "alias of --yes"),
+	}
+}
+
+// cmdDoctor runs read-only health checks over the local installation, and —
+// with --fix — applies the six allowlisted repairs in internal/doctor.
+//
+// The flag set is real: the golden tree advertises --fix, and a substring scan
+// for "--json" used to let every other flag through unparsed, so
+// `doctor --definitely-not-a-flag` printed a report and exited 0.
 func cmdDoctor(ctx context.Context, a *appView, args []string) int {
+	fs := fsFor(args)
+	flags := registerDoctorFlags(fs)
+	if err := fs.Parse(reorder(args)); err != nil {
+		return usageError("usage: anypick doctor [target] [--fix [--dry-run] [-y]]")
+	}
+	// The documented `anypick doctor <target>` form is accepted for
+	// compatibility; the Go diagnosis is installation-wide, so a target is
+	// ignored rather than silently narrowing (or widening) the report.
+	if fs.NArg() > 1 {
+		return usageError("usage: anypick doctor [target] [--fix [--dry-run] [-y]]")
+	}
+
 	report := doctor.DiagnoseInstallation(ctx, doctor.InstallationDeps{
 		Root: a.Root, Providers: a.Providers, Clients: a.Clients, Accounts: a.Accounts,
 		Bindings: a.BindingSvc, Proxy: a.Proxy, Environment: currentDoctorEnvironment(),
 		PluginDiagnostics: a.PluginDiagnostics,
 	})
-	if wantJSON(args) {
-		jsonOut(report)
+
+	if !*flags.Fix {
+		renderDoctorReport(report)
 		return int(anyerr.Success)
+	}
+	// --dry-run and --yes are also global flags, and normalizeGlobalFlags
+	// strips them before dispatch; reading both keeps the handler correct
+	// whichever layer consumed them.
+	return runDoctorFix(ctx, a, report,
+		*flags.DryRun || globals.DryRun,
+		*flags.Yes || *flags.ShortY || globals.Yes)
+}
+
+// renderDoctorReport prints the read-only diagnosis exactly as before --fix
+// existed, so `doctor` and `doctor --json` stay unchanged (lane 9 of PR-4).
+func renderDoctorReport(report doctor.InstallationReport) {
+	if globals.JSON {
+		jsonOut(report)
+		return
 	}
 	fmt.Printf("anypick doctor — %s\n", report.Status)
 	for _, f := range report.Findings {
@@ -94,7 +153,98 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 		}
 		fmt.Printf("  [%s] %s %s\n", f.Status, f.Check, detail)
 	}
+}
+
+// runDoctorFix plans and (unless --dry-run) applies the allowlisted repairs.
+// A dry run prints the plan and returns before any confirmation, because it
+// mutates nothing and must work in CI. A real run goes through confirmDelete,
+// which owns the no-TTY rule and the CONFIRMATION_REQUIRED/exit-2 contract
+// (AGENTS.md invariant 7).
+func runDoctorFix(ctx context.Context, a *appView, report doctor.InstallationReport, dryRun, yes bool) int {
+	deps := doctorFixDeps(ctx, a)
+	plan := doctor.PlanFixes(ctx, deps)
+
+	if dryRun {
+		// One JSON value on stdout (invariant 7), or one "[dry-run]" line per
+		// planned action in human mode. Nothing is applied either way.
+		if globals.JSON {
+			jsonOut(struct {
+				DryRun  bool                   `json:"dryRun"`
+				Action  string                 `json:"action"`
+				Planned []doctor.FixAction     `json:"planned"`
+				Manual  []doctor.ManualFinding `json:"manual"`
+			}{DryRun: true, Action: "doctor.fix", Planned: plan.Actions, Manual: plan.Manual})
+			return int(anyerr.Success)
+		}
+		for _, action := range plan.Actions {
+			fmt.Println("[dry-run] " + doctor.DryRunMessage(action))
+		}
+		for _, manual := range plan.Manual {
+			fmt.Println("[dry-run] manual only: " + manual.Detail)
+		}
+		if len(plan.Actions) == 0 {
+			fmt.Println("anypick doctor --fix: nothing to repair")
+		}
+		return int(anyerr.Success)
+	}
+
+	if err := confirmDelete("the allowlisted doctor repairs", yes); err != nil {
+		if err == errDeclined {
+			return int(anyerr.Success)
+		}
+		return reportErr(err)
+	}
+
+	result := doctor.ApplyFixes(ctx, plan, deps, false)
+	if globals.JSON {
+		jsonOut(struct {
+			DryRun  bool                   `json:"dryRun"`
+			Applied []doctor.FixOutcome    `json:"applied"`
+			Manual  []doctor.ManualFinding `json:"manual"`
+		}{DryRun: false, Applied: result.Applied, Manual: plan.Manual})
+		return int(anyerr.Success)
+	}
+
+	for _, outcome := range result.Applied {
+		prefix := "fixed"
+		if !outcome.OK {
+			prefix = "refused"
+		}
+		fmt.Printf("  [%s] %s\n", prefix, outcome.Message)
+	}
+	for _, manual := range plan.Manual {
+		fmt.Printf("  [manual] %s: %s\n", manual.Check, manual.Detail)
+		for _, suggestion := range manual.Suggestions {
+			fmt.Printf("           %s\n", suggestion)
+		}
+	}
+	if len(result.Applied) == 0 {
+		fmt.Println("anypick doctor --fix: nothing to repair")
+	}
 	return int(anyerr.Success)
+}
+
+// doctorFixDeps assembles the mutation collaborators from the composed app. The
+// recovery callback is activation.RecoverIncompleteOperations, which is the one
+// implementation of exact journal rollback (invariant #3).
+func doctorFixDeps(ctx context.Context, a *appView) doctor.FixDeps {
+	deps := doctor.FixDeps{
+		Root:      a.Root,
+		Providers: a.Providers.IDs(),
+		Binding:   a.BindingSvc,
+		Proxy:     a.Proxy,
+		Journal:   a.Journal,
+		Recovery: func(c context.Context) (*activation.RecoveryResult, error) {
+			return activation.RecoverIncompleteOperations(c, a.Deps)
+		},
+	}
+	if a.DB != nil {
+		deps.Store = &modelcache.Store{DB: a.DB}
+	}
+	if a.Proxy != nil {
+		deps.Leases = a.Proxy.ListLeasesByAccountContext
+	}
+	return deps
 }
 
 func currentDoctorEnvironment() doctor.EnvironmentReport {

@@ -206,3 +206,67 @@ func TestExplicitAndOmittedModel(t *testing.T) {
 		t.Fatalf("OmittedModel=%#v", m)
 	}
 }
+
+// TestListGlobalsAndProjectsContext pins the accessors the doctor's
+// orphan-proxy guard needs. They return every row so a caller can prove that
+// no binding anywhere still references a provider/account; the single-client
+// GetGlobalContext/GetProjectContext cannot answer that.
+func TestListGlobalsAndProjectsContext(t *testing.T) {
+	database, root := testDB(t)
+	s := &Store{Root: root, DB: database.DB}
+	ctx := context.Background()
+
+	// Empty tables must list as empty, not nil-with-error: the doctor treats a
+	// read error as "a binding may exist" (fail closed), so a spurious error
+	// would turn every proxy into a non-orphan.
+	globals, err := s.ListGlobalsContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(globals) != 0 {
+		t.Fatalf("empty globals = %#v", globals)
+	}
+	projects, err := s.ListProjectsContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("empty projects = %#v", projects)
+	}
+
+	for _, clientID := range []string{"claude", "codex"} {
+		g := Global{Client: clientID, Spec: spec(), Provenance: Provenance{Kind: "direct"}}
+		g.Spec.Client = clientID
+		if _, err := s.UpsertGlobalContext(ctx, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	globals, err = s.ListGlobalsContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(globals) != 2 {
+		t.Fatalf("globals = %d rows, want 2", len(globals))
+	}
+	// Ordered by client id, so a repair that reports the set is deterministic.
+	if globals[0].Client != "claude" || globals[1].Client != "codex" {
+		t.Fatalf("globals are not ordered by client: %q, %q", globals[0].Client, globals[1].Client)
+	}
+
+	for _, root := range []string{"/proj/a", "/proj/b"} {
+		p := Project{ProjectRoot: root, Client: "claude", Spec: spec(), Provenance: Provenance{Kind: "direct"}}
+		if _, err := s.UpsertProjectContext(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projects, err = s.ListProjectsContext(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("projects = %d rows, want 2", len(projects))
+	}
+	if projects[0].ProjectRoot != "/proj/a" || projects[1].ProjectRoot != "/proj/b" {
+		t.Fatalf("projects are not ordered by root: %q, %q", projects[0].ProjectRoot, projects[1].ProjectRoot)
+	}
+}

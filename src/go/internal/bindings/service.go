@@ -25,6 +25,18 @@ func (s *Service) GetGlobalContext(ctx context.Context, clientID string) (*Globa
 	return s.Store.GetGlobalContext(ctx, clientID)
 }
 
+// ListGlobalsContext returns every global binding, ordered by client id.
+// Orphan-proxy repair needs the whole set: a single-client lookup cannot prove
+// that no binding anywhere still references a provider/account.
+func (s *Service) ListGlobalsContext(ctx context.Context) ([]Global, error) {
+	return s.Store.ListGlobalsContext(ctx)
+}
+
+// ListProjectsContext returns every project binding across every project root.
+func (s *Service) ListProjectsContext(ctx context.Context) ([]Project, error) {
+	return s.Store.ListProjectsContext(ctx)
+}
+
 // GetProviderModelRoles returns the stored model defaults for one provider
 // bucket, empty when none were saved.
 func (s *Service) GetProviderModelRoles(ctx context.Context, providerID string) (map[string]string, error) {

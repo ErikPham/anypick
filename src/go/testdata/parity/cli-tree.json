@@ -222,7 +222,7 @@
     {
       "path": "doctor",
       "description": "Diagnose setup; auto-fix only safe AnyPick-owned state",
-      "flags": ["--fix"],
+      "flags": ["--fix", "--dry-run", "-y", "--yes"],
       "subcommands": [],
       "hidden": false
     },
