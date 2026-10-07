@@ -125,7 +125,7 @@ func (p *gemini) antigravityLiveStatus() LiveAuthStatus {
 			Source:   antigravityOAuthSource,
 		}
 	}
-	if antigravityKeyringExists() {
+	if AntigravityKeyringProbe() {
 		return LiveAuthStatus{
 			Present: true,
 			Details: "antigravity oauth",
@@ -248,7 +248,7 @@ func (p *gemini) restoreAntigravity(snapshotPath string) error {
 	if err := writeAntigravityStateOAuthPayload(p.home, hydrated, paths); err != nil {
 		// The read happens only on the failure path: it can raise a keychain
 		// prompt, and the user is already looking at an error.
-		if previous := antigravityKeyringCredential(); previous != nil {
+		if previous := AntigravityKeyringRead(); previous != nil {
 			if rbErr := restoreAntigravityKeyring(previous); rbErr != nil {
 				err = fmt.Errorf("%w (keychain rollback also failed: %v)", err, rbErr)
 			}

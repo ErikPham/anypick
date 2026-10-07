@@ -106,6 +106,20 @@ type GeminiAntigravityFile = geminiAntigravityFile
 // Keychain. This package's TestMain still pins the same no-op for clarity.
 var AntigravityKeyringPut = discardAntigravityKeyring
 
+// AntigravityKeyringRead is the read twin of AntigravityKeyringPut. The read
+// side is what the restore path calls when a write has already failed, and the
+// first read for a binary raises the macOS Keychain prompt — so a test binary
+// that leaves this at the safe default never touches the developer's
+// Keychain, in this package or any other that reaches the restore path
+// (internal/accounts does). EnableAntigravityKeyringWrites installs the
+// production reader alongside the writer.
+var AntigravityKeyringRead = func() *geminiAntigravityFile { return nil }
+
+// AntigravityKeyringProbe reports whether the credential-store item exists,
+// without reading its secret. A test binary keeps the safe default (never
+// present); only EnableAntigravityKeyringWrites installs the real probe.
+var AntigravityKeyringProbe = func() bool { return false }
+
 // discardAntigravityKeyring is the safe default for AntigravityKeyringPut.
 func discardAntigravityKeyring(*geminiAntigravityFile) error { return nil }
 
@@ -114,6 +128,8 @@ func discardAntigravityKeyring(*geminiAntigravityFile) error { return nil }
 // leave the no-op default (or install their own recording fake).
 func EnableAntigravityKeyringWrites() {
 	AntigravityKeyringPut = writeAntigravityKeyring
+	AntigravityKeyringRead = antigravityKeyringCredential
+	AntigravityKeyringProbe = antigravityKeyringExists
 }
 
 func writeAntigravityKeyring(payload *geminiAntigravityFile) error {
