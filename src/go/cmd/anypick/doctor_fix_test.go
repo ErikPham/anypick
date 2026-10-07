@@ -172,26 +172,72 @@ func TestDoctorFixYesDeletesStaleOverlay(t *testing.T) {
 }
 
 // TestDoctorPlainReportUnchanged guards against --fix changing the read-only
-// report: `doctor` and `doctor --json` must be exactly what they were.
+// report: `doctor` and `doctor --json` must be exactly what they were, and
+// `--fix` must not add, drop or reorder a finding.
+//
+// It pins the finding SET rather than asserting a non-empty status, which is
+// what it used to do: `report.Status != ""` passes for any report, so it could
+// not have caught a finding appearing or disappearing. The permission check is
+// in the expected set because the diagnosis gained it deliberately; a new
+// finding that nobody meant to add fails here.
 func TestDoctorPlainReportUnchanged(t *testing.T) {
 	isolateEnv(t)
 	clearGlobalsForParity()
 	defer resetGlobals()()
 
+	findingsOf := func(args ...string) []string {
+		t.Helper()
+		globals.JSON = true
+		exit := -1
+		out, errOut := captureBoth(t, func() { exit = run(args) })
+		if exit != int(anyerr.Success) {
+			t.Fatalf("%v exited %d (stderr=%q)", args, exit, errOut)
+		}
+		var report doctor.InstallationReport
+		if err := json.Unmarshal([]byte(out), &report); err != nil {
+			t.Fatalf("%v is not one JSON value: %v (%.200q)", args, err, out)
+		}
+		if report.Status == "" {
+			t.Fatalf("%v carries no status: %.200q", args, out)
+		}
+		got := make([]string, 0, len(report.Findings))
+		for _, f := range report.Findings {
+			got = append(got, f.Check)
+		}
+		return got
+	}
+
+	want := "proxy-environment,database,permissions"
+	if got := strings.Join(findingsOf("doctor"), ","); got != want {
+		t.Fatalf("doctor findings = %q, want %q: the read-only report changed", got, want)
+	}
+
+	// A dry run prints the PLAN, not the report, so its JSON is the dry-run
+	// envelope. Pin that shape: `--json` must stay one machine-readable value
+	// on this path too (AGENTS.md invariant 7), and the plan must name actions
+	// without claiming any were applied.
 	globals.JSON = true
 	exit := -1
-	out, errOut := captureBoth(t, func() {
-		exit = run([]string{"doctor"})
-	})
+	out, errOut := captureBoth(t, func() { exit = run([]string{"doctor", "--fix", "--dry-run"}) })
 	if exit != int(anyerr.Success) {
-		t.Fatalf("doctor --json exited %d (stderr=%q)", exit, errOut)
+		t.Fatalf("doctor --fix --dry-run exited %d (stderr=%q)", exit, errOut)
 	}
-	var report doctor.InstallationReport
-	if err := json.Unmarshal([]byte(out), &report); err != nil {
-		t.Fatalf("doctor --json is not one JSON value: %v (%.200q)", err, out)
+	var dry struct {
+		DryRun  bool `json:"dryRun"`
+		Planned []struct {
+			Kind string `json:"kind"`
+		} `json:"planned"`
 	}
-	if report.Status == "" {
-		t.Fatalf("report carries no status: %.200q", out)
+	if err := json.Unmarshal([]byte(out), &dry); err != nil {
+		t.Fatalf("doctor --fix --dry-run is not one JSON value: %v (%.200q)", err, out)
+	}
+	if !dry.DryRun {
+		t.Fatalf("dry run did not report dryRun=true: %.200q", out)
+	}
+	for _, p := range dry.Planned {
+		if p.Kind == "" {
+			t.Fatalf("a planned action carries no kind: %.200q", out)
+		}
 	}
 }
 

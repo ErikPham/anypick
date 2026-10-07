@@ -138,8 +138,12 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 		*flags.Yes || *flags.ShortY || globals.Yes)
 }
 
-// renderDoctorReport prints the read-only diagnosis exactly as before --fix
-// existed, so `doctor` and `doctor --json` stay unchanged (lane 9 of PR-4).
+// renderDoctorReport prints the read-only diagnosis. It renders whatever
+// DiagnoseInstallation returned and adds nothing of its own, so --fix cannot
+// change the report shape. The report did gain a "permissions" finding in the
+// same change, because the docs promise `doctor` inspects file permissions and
+// the repair needs that diagnosis to plan from; that finding is part of the
+// diagnosis, not a side effect of --fix.
 func renderDoctorReport(report doctor.InstallationReport) {
 	if globals.JSON {
 		jsonOut(report)
