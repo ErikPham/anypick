@@ -141,7 +141,7 @@ decided per pair by `TransportFor` in `src/go/internal/transport`.
 | **Client** | The coding tool being configured, such as Claude Code or Codex CLI |
 | **Source** | A saved account, API gateway, proxy pool, Proxy Hub, or preset |
 | **Binding** | A concrete client → source selection, including model roles |
-| **Preset** | A named binding template saved explicitly with `--save` |
+| **Preset** | A stored binding template (`@name`); the CLI can resolve and inspect one, but no command creates one yet |
 
 ```text
 use   = set the default binding

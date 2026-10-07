@@ -168,8 +168,17 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		strategy := fs.String("strategy", "failover", "failover | round-robin")
 		mode := fs.String("mode", "multi", "single | multi")
 		port := fs.Int("port", 0, "fixed port (default: auto)")
+		// -p is the documented short form of --port; the stdlib parser has no
+		// alias concept, so the same target is registered twice.
+		portShort := fs.Int("p", 0, "alias of --port")
 		if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() < 1 {
 			return usage()
+		}
+		if *portShort != 0 {
+			if *port != 0 && *port != *portShort {
+				return usageError("pass one port (--port or -p)")
+			}
+			*port = *portShort
 		}
 		switch *strategy {
 		case "failover", "round-robin":
