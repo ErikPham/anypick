@@ -21,6 +21,27 @@ func TestMutatingMethodsTakeTheCoordinatorLock(t *testing.T) {
 	testgate.CheckUncoordinatedMutations(t, ".", []string{"Store"}, unguardedMutations)
 }
 
+// TestGateCatchesAnUnlockedDisable covers the verb the merge into the shared
+// list dropped. The private copy this package carried listed "Disable", the
+// shared list did not, and DisableContext at pools.go writes the pools row. A
+// de-locked DisableContext therefore passed this gate while the same shape
+// failed at the commit before the merge — a gate weakened by a refactor, which
+// CODE_REVIEW.md §5 treats as a P0.
+func TestGateCatchesAnUnlockedDisable(t *testing.T) {
+	dir := t.TempDir()
+	source := "package pools\n\ntype Store struct{}\n\nfunc (s *Store) DisableThing() error { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "store.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := testgate.UncoordinatedMutations(dir, []string{"Store"}, nil)
+	if err != nil {
+		t.Fatalf("coordinator gate could not run: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Method != "Store.DisableThing" {
+		t.Fatalf("findings = %v, want the unlocked Store.DisableThing mutator", findings)
+	}
+}
+
 // TestGateCatchesANewlySharedVerb pins the reason the private copy was deleted.
 // "Release" is in testgate.MutationVerbs because ReleaseProxyRuntimeContext is a
 // persisted mutation that self-locks today; the copy this package carried never
