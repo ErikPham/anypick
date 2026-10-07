@@ -1307,33 +1307,66 @@ func shortNameOf(s *Server, pv interface{ Name() string }) string {
 	return pv.Name()
 }
 
-// designAppName mirrors designAppName in ProductionModel.swift.
+// designAppName returns the display name for a client row, and mirrors
+// designAppName in ProductionModel.swift.
+//
+// This is NOT client.Adapter.ShortName(): that is the compact form ("Claude"),
+// while a row title is the product name ("Claude Code"). The two are different
+// values, which is why this table cannot simply defer to the adapter.
+//
+// The default branch used to capitalise the id, which is how workbuddy shipped
+// as "Workbuddy" while macOS and the Tauri map both said "WorkBuddy": a client
+// added without a case here got a plausible-looking wrong name instead of no
+// name, and nothing failed. TestEveryRegisteredClientHasADisplayName now fails
+// when a registered client has no explicit case, so the next one cannot ship
+// silently. An empty id returns "" rather than panicking on client[:1].
 func designAppName(client string) string {
+	if name, ok := designAppNameExplicit(client); ok {
+		return name
+	}
+	if strings.TrimSpace(client) == "" {
+		return ""
+	}
+	return strings.ToUpper(client[:1]) + client[1:]
+}
+
+// designAppNameExplicit reports the name from the explicit table, and whether
+// the id had a case at all. The default branch of designAppName fabricates a
+// plausible name from any id, which is how workbuddy shipped as "Workbuddy"
+// while macOS and the Tauri map both said "WorkBuddy": nothing failed, and the
+// wrong name looked intentional. Splitting the lookup out lets a test assert
+// that every registered client has a real case instead of a fabricated one.
+func designAppNameExplicit(client string) (string, bool) {
 	switch strings.ToLower(client) {
 	case "claude":
-		return "Claude Code"
+		return "Claude Code", true
 	case "codex":
-		return "Codex"
+		return "Codex", true
 	case "gemini":
-		return "Gemini"
+		return "Gemini", true
 	case "kiro":
-		return "Kiro"
+		return "Kiro", true
 	case "grok":
-		return "Grok"
+		return "Grok", true
 	case "opencode":
-		return "OpenCode"
+		return "OpenCode", true
 	case "zcode":
-		return "ZCode"
+		return "ZCode", true
 	case "dsh":
-		return "DeepSeek Harness"
+		return "DeepSeek Harness", true
 	case "commandcode":
-		return "Command Code"
+		return "Command Code", true
+	case "workbuddy", "codebuddy":
+		// The same product ships as WorkBuddy outside mainland China and
+		// CodeBuddy inside it; AnyPick keys everything on "workbuddy" and
+		// treats the other as an alias, as macOS anypickDisplayName does.
+		return "WorkBuddy", true
 	case "pi":
-		return "Pi"
+		return "Pi", true
 	case "omp":
-		return "Omp"
+		return "Omp", true
 	default:
-		return strings.ToUpper(client[:1]) + client[1:]
+		return "", false
 	}
 }
 
