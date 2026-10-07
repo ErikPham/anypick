@@ -428,7 +428,7 @@ func (p *cline) ValidateSnapshot(snapshotDir string) error {
 				"The saved Cline login was rejected. Sign in again to repair it.",
 				"AUTH_REQUIRED",
 				anyerr.WithExitCode(anyerr.AuthRequired),
-				anyerr.WithSuggestions("anypick login cline"))
+				anyerr.WithSuggestions("anypick add account cline --new --name <name>"))
 		}
 		return nil
 	}
@@ -462,7 +462,7 @@ func (p *cline) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
 		return nil, anyerr.Newf(
 			"The saved Cline login has no usable endpoint. Sign in again to repair it.",
 			"PROXY_START_FAILED",
-			anyerr.WithSuggestions("anypick login cline"),
+			anyerr.WithSuggestions("anypick add account cline --new --name <name>"),
 		)
 	}
 	cur := &clineCredentials{

@@ -358,7 +358,7 @@ func (p *workbuddy) ValidateSnapshot(snapshotDir string) error {
 			"The saved WorkBuddy login has expired. Sign in again to repair it.",
 			"AUTH_REQUIRED",
 			anyerr.WithExitCode(anyerr.AuthRequired),
-			anyerr.WithSuggestions("anypick login workbuddy"))
+			anyerr.WithSuggestions("anypick add account workbuddy --new --name <name>"))
 	}
 	return nil
 }
@@ -409,7 +409,7 @@ func (p *workbuddy) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error)
 		return nil, anyerr.Newf(
 			"The saved WorkBuddy login has no usable endpoint. Sign in again to repair it.",
 			"PROXY_START_FAILED",
-			anyerr.WithSuggestions("anypick login workbuddy"),
+			anyerr.WithSuggestions("anypick add account workbuddy --new --name <name>"),
 		)
 	}
 	domain := strings.TrimSpace(doc.Domain)

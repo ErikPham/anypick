@@ -272,8 +272,11 @@ func ExpandPreset(ctx context.Context, name, clientID string, deps *Deps) (*pres
 		return nil, err
 	}
 	if preset == nil {
+		// The suggestion must name a command that exists: `list presets` is
+		// not a form of list, and following the old suggestion exited 2 with
+		// a usage error, stacking one failure on another.
 		return nil, anyerr.Newf("Preset `@"+name+"` was not found.", "PRESET_NOT_FOUND",
-			anyerr.WithExitCode(anyerr.NotFound), anyerr.WithSuggestions("anypick list presets"))
+			anyerr.WithExitCode(anyerr.NotFound), anyerr.WithSuggestions("anypick preset list"))
 	}
 	if preset.Spec.Client != clientID {
 		presetClientName := preset.Spec.Client
