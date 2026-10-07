@@ -156,13 +156,6 @@ func (s *Service) StoreLive(ctx context.Context, providerID, endpoint string, mo
 	})
 }
 
-// ClearCache drops cached lists so the next List asks the vendor.
-func (s *Service) ClearCache(ctx context.Context, providerID string) error {
-	return lock.WithMutationLock(ctx, s.Root, "model-cache", func(c context.Context) error {
-		return s.Cache.Clear(c, providerID)
-	})
-}
-
 func (s *Service) now() time.Time {
 	if s.Now != nil {
 		return s.Now()

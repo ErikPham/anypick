@@ -27,10 +27,9 @@ func TestDepsViewsGet(t *testing.T) {
 		t.Fatalf("loadForRef gateway should be nil got %+v", got)
 	}
 
-	// PresetsView missing -> nil
-	if got, err := pv.GetByName("nope"); err != nil || got != nil {
-		t.Fatalf("GetByName missing = %v %v", got, err)
-	}
+	// PresetsView missing -> nil. GetContext is the only read here: GetByName
+	// was a ctx-less twin with no caller, and it was deleted rather than kept
+	// as a convenience, because a ctx-less read fabricates its own context.
 	if got, err := pv.GetContext(ctx, "nope"); err != nil || got != nil {
 		t.Fatalf("GetContext missing = %v %v", got, err)
 	}
@@ -39,17 +38,15 @@ func TestDepsViewsGet(t *testing.T) {
 	if _, err := pv.Svc.UpsertContext(context.Background(), "p1", spec); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := pv.GetByName("p1"); err != nil || got == nil || got.Name != "p1" {
-		t.Fatalf("GetByName p1 = %v %v", got, err)
+	if got, err := pv.GetContext(ctx, "p1"); err != nil || got == nil || got.Name != "p1" {
+		t.Fatalf("GetContext p1 = %v %v", got, err)
 	}
 	if got, err := pv.GetContext(ctx, "p1"); err != nil || got == nil {
 		t.Fatalf("GetContext p1 = %v %v", got, err)
 	}
 
-	// PoolsView missing -> nil
-	if got, err := plv.Get("codex"); err != nil || got != nil {
-		t.Fatalf("PoolsView Get missing = %v %v", got, err)
-	}
+	// PoolsView missing -> nil. Same reasoning as PresetsView: the ctx-less
+	// twin had no caller and fabricated a context.Background().
 	if got, err := plv.GetContext(ctx, "codex"); err != nil || got != nil {
 		t.Fatalf("PoolsView GetContext missing = %v %v", got, err)
 	}

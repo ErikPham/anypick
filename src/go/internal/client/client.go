@@ -250,67 +250,6 @@ func (r *Registry) Register(a Adapter) error {
 
 func (r *Registry) Seal() { r.mu.Lock(); r.sealed = true; r.mu.Unlock() }
 
-// RecoverSwap mirrors provider.Registry.RecoverSwap for the client registry:
-// post-seal, CAS-guarded replacement of one plugin-owned adapter during
-// plugin-host recovery (GO-PARITY-M7).
-func (r *Registry) RecoverSwap(previous, next Adapter) error {
-	if next == nil {
-		return fmt.Errorf("recovery swap requires a next adapter")
-	}
-	id := next.ID()
-	if previous != nil && previous.ID() != id {
-		return fmt.Errorf("recovery id mismatch: %s vs %s", previous.ID(), id)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	current, exists := r.items[id]
-	switch {
-	case exists && previous != nil && current == previous:
-	case !exists:
-		r.order = append(r.order, id)
-	default:
-		return fmt.Errorf("client %q changed since recovery started", id)
-	}
-	r.items[id] = next
-	return nil
-}
-
-// RecoverRemove CAS-deletes `previous` when it is still the stored value.
-func (r *Registry) RecoverRemove(previous Adapter) error {
-	return r.RecoverUndo(previous, nil)
-}
-
-// RecoverUndo reverses a RecoverSwap of `current`. restore=nil deletes an
-// id this runtime inserted.
-func (r *Registry) RecoverUndo(current, restore Adapter) error {
-	if current == nil {
-		return fmt.Errorf("recovery undo requires the current adapter")
-	}
-	id := current.ID()
-	if restore != nil && restore.ID() != id {
-		return fmt.Errorf("recovery id mismatch: %s vs %s", restore.ID(), id)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	existing, exists := r.items[id]
-	if !exists || existing != current {
-		return fmt.Errorf("client %q changed since recovery started", id)
-	}
-	if restore == nil {
-		delete(r.items, id)
-		filtered := make([]string, 0, len(r.order))
-		for _, item := range r.order {
-			if item != id {
-				filtered = append(filtered, item)
-			}
-		}
-		r.order = filtered
-		return nil
-	}
-	r.items[id] = restore
-	return nil
-}
-
 func (r *Registry) Get(id string) (Adapter, error) {
 	r.gate.RLock()
 	defer r.gate.RUnlock()

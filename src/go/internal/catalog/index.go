@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"fmt"
 	"slices"
 	"sort"
 	"sync"
@@ -77,19 +76,6 @@ func (i *Index) Set(entry Provider) bool {
 	return existed
 }
 
-// SetIfAbsent inserts the entry only when its id is free, reporting whether
-// it was stored. This preserves the richer built-in catalog shape against a
-// compatible-provider duplicate (OpenRouter is the canonical case).
-func (i *Index) SetIfAbsent(entry Provider) bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if _, exists := i.items[entry.ID]; exists {
-		return false
-	}
-	i.items[entry.ID] = entry
-	return true
-}
-
 // Delete removes one id if present, reporting whether it was.
 func (i *Index) Delete(id string) bool {
 	i.mu.Lock()
@@ -99,55 +85,6 @@ func (i *Index) Delete(id string) bool {
 	}
 	delete(i.items, id)
 	return true
-}
-
-// RecoverSwap CAS-replaces the previously committed catalog value, or inserts
-// when previous is nil. Callers already hold the publication write lock.
-func (i *Index) RecoverSwap(previous *Provider, next Provider) error {
-	if next.ID == "" {
-		return fmt.Errorf("recovery swap requires a catalog id")
-	}
-	if previous != nil && previous.ID != next.ID {
-		return fmt.Errorf("recovery id mismatch: %s vs %s", previous.ID, next.ID)
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	current, exists := i.items[next.ID]
-	switch {
-	case exists && previous != nil && equalProvider(current, *previous):
-	case !exists && previous == nil:
-	default:
-		return fmt.Errorf("catalog %q changed since recovery started", next.ID)
-	}
-	i.items[next.ID] = next
-	return nil
-}
-
-// RecoverRemove CAS-deletes previous when it is still the stored value.
-func (i *Index) RecoverRemove(previous Provider) error {
-	return i.RecoverUndo(previous, nil)
-}
-
-// RecoverUndo reverses a RecoverSwap of current. restore=nil deletes the id.
-func (i *Index) RecoverUndo(current Provider, restore *Provider) error {
-	if current.ID == "" {
-		return fmt.Errorf("recovery undo requires a catalog id")
-	}
-	if restore != nil && restore.ID != current.ID {
-		return fmt.Errorf("recovery id mismatch: %s vs %s", restore.ID, current.ID)
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	existing, exists := i.items[current.ID]
-	if !exists || !equalProvider(existing, current) {
-		return fmt.Errorf("catalog %q changed since recovery started", current.ID)
-	}
-	if restore == nil {
-		delete(i.items, current.ID)
-		return nil
-	}
-	i.items[current.ID] = *restore
-	return nil
 }
 
 func equalProvider(a, b Provider) bool {

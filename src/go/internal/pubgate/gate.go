@@ -3,9 +3,22 @@
 //
 // Provider/client registries and catalog indexes each have their own mutex, so
 // holding the supervisor lock does not make Get/Lookup/IDs atomic with identity
-// publish. Every registry reader takes Gate.RLock; a replacement commit holds
-// Gate.Lock across identity + every swap + rollback so observers never see a
-// mixed generation, and never see a B value that is later rolled back.
+// publish. Every registry reader takes Gate.RLock; a replacement commit was to
+// hold Gate.Lock across identity + every swap + rollback so observers never see
+// a mixed generation, and never see a B value that is later rolled back.
+//
+// THE WRITER HALF HAS NO CALLER TODAY. ADR 0021 removed the executable plugin
+// host, and the generation-commit path went with it: nothing in the tree takes
+// Gate.Lock outside this package's own test. The read half is live (ten RLock
+// sites across the four registries), so the gate still serializes nothing while
+// costing one uncontended RWMutex read per lookup.
+//
+// It is kept, not deleted, for the reason ADR 0021 decision 3 keeps
+// proxy.PluginLifecycle: a future Go-native declarative executor would commit
+// registrations the same way, and it would need exactly this lock to publish
+// them without a mixed generation. Deleting it would mean rediscovering the
+// requirement. If that executor is abandoned, delete this package and the ten
+// RLock sites together.
 package pubgate
 
 import "sync"
