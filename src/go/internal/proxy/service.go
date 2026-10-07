@@ -464,6 +464,17 @@ func (s *Service) ListPoolLeasesContext(ctx context.Context, providerID string) 
 	return s.Jobs.ListPoolLeasesContext(ctx, providerID)
 }
 
+// ListLeasesByAccountContext answers "does any live lease still reference this
+// provider/account?" for the doctor's orphan-proxy guard. It exists so a caller
+// outside this package never needs the lease store handle itself (the facade
+// gate forbids reaching through to it).
+func (s *Service) ListLeasesByAccountContext(ctx context.Context, providerID, accountName string) ([]*Lease, error) {
+	if s.Jobs == nil {
+		return nil, nil
+	}
+	return s.Jobs.ListByAccountContext(ctx, providerID, accountName)
+}
+
 // ReapStaleContext drops leases whose owning process is no longer live. Lives on
 // the service so startup maintenance never holds the raw lease store.
 func (s *Service) ReapStaleContext(ctx context.Context) (int, error) {

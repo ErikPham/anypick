@@ -242,6 +242,17 @@ func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) Installati
 		add("database", StatusOK, "")
 	}
 
+	// Permission drift is diagnosed here and repaired by internal/doctor's
+	// fixes.go. The scan is read-only; the docs promise `doctor` inspects file
+	// permissions, and a check that never runs is a check nobody can trust.
+	if permissive, scanned := countPermissivePaths(deps.Root); !scanned {
+		add("permissions", "warn", "data root not readable; permission check skipped")
+	} else if permissive > 0 {
+		add("permissions", "warn", fmt.Sprintf("%d AnyPick-owned path(s) have overly permissive mode", permissive))
+	} else {
+		add("permissions", StatusOK, "")
+	}
+
 	if deps.Providers != nil && deps.Accounts != nil {
 		// Active pointers must reference existing accounts.
 		for _, providerID := range deps.Providers.IDs() {
@@ -352,6 +363,38 @@ func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) Installati
 		}
 	}
 	return report
+}
+
+// countPermissivePaths counts AnyPick-owned paths whose mode is looser than
+// 0700 for directories or 0600 for files. scanned is false when the root cannot
+// be read at all, so the caller can say the check was skipped instead of
+// reporting a clean bill of health it did not verify.
+func countPermissivePaths(root string) (permissive int, scanned bool) {
+	if root == "" {
+		return 0, false
+	}
+	if _, err := os.Stat(root); err != nil {
+		return 0, false
+	}
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || path == root {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.IsDir() {
+			if info.Mode().Perm()&0o022 != 0 {
+				permissive++
+			}
+			return nil
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			permissive++
+		}
+		return nil
+	})
+	return permissive, true
 }
 
 func proxyEnvironmentDetail(report EnvironmentReport) string {

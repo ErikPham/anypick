@@ -1,0 +1,821 @@
+package doctor
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/outof0/anypick/go/internal/activation"
+	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/journal"
+	"github.com/outof0/anypick/go/internal/modelcache"
+	"github.com/outof0/anypick/go/internal/ownership"
+	"github.com/outof0/anypick/go/internal/paths"
+	"github.com/outof0/anypick/go/internal/proxy"
+	"github.com/outof0/anypick/go/internal/refs"
+)
+
+// This file is the mutation half of the doctor. doctor.go stays read-only by
+// contract; everything that writes lives here so "diagnose" and "repair" can be
+// reviewed against different bars.
+//
+// The allowlist is six kinds, not the seven the deleted src/core/doctor-fixes.ts
+// shipped. delete_stale_lock cannot exist: the TypeScript isLockStale was a stub
+// that always returned false, so that fix could never fire even before the
+// cutover, and Go locks are flock(2) descriptors opened O_CREAT|O_RDWR at
+// internal/lock/platform_unix.go — never written to, and released by the kernel
+// when the holder dies. There is no stale lock to find, so advertising one only
+// invited a repair that could delete a lock a live process holds. The decision
+// to drop it is recorded in docs/src/content/docs/reference/troubleshooting.mdx
+// as well as here.
+
+// FixKind names one allowlisted repair. The string values are the contract the
+// docs and the CLI plan output use.
+type FixKind string
+
+const (
+	FixDeleteTempOverlay       FixKind = "delete_temp_overlay"
+	FixRepairPermissions       FixKind = "repair_permissions"
+	FixRebuildCaches           FixKind = "rebuild_caches"
+	FixDeleteStalePID          FixKind = "delete_stale_pid"
+	FixStopOrphanProxy         FixKind = "stop_orphan_proxy"
+	FixCompleteJournalRollback FixKind = "complete_journal_rollback"
+)
+
+// FixAllowlist is the hard allowlist from the CLI-DX spec §18.4, minus the
+// stale-lock entry that cannot exist (see the file comment). A kind not in this
+// list is refused at plan time and again at apply time; the second check is not
+// redundant, because ApplyFixes accepts a plan from any caller.
+var FixAllowlist = []FixKind{
+	FixDeleteTempOverlay,
+	FixRepairPermissions,
+	FixRebuildCaches,
+	FixDeleteStalePID,
+	FixStopOrphanProxy,
+	FixCompleteJournalRollback,
+}
+
+// Allowlisted reports whether a kind may be applied.
+func Allowlisted(kind FixKind) bool {
+	for _, k := range FixAllowlist {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// String renders a kind for human output.
+func (k FixKind) String() string { return string(k) }
+
+// FixAction is one planned repair. Target is an absolute path or a resource
+// reference, never a value the caller may widen at apply time.
+type FixAction struct {
+	ID          string  `json:"id"`
+	Kind        FixKind `json:"kind"`
+	Description string  `json:"description"`
+	Target      string  `json:"target"`
+	// Provider/Account carry the identity stop_orphan_proxy needs. They are
+	// separate fields rather than a params map so a typo cannot silently drop
+	// them and turn the guard into a no-op.
+	Provider string `json:"provider,omitempty"`
+	Account  string `json:"account,omitempty"`
+	// JournalID is the incomplete entry complete_journal_rollback will recover.
+	JournalID string `json:"journalId,omitempty"`
+	// Reason is set when the scan found the target but refuses to touch it.
+	// A refused action is still reported: omitting it would make --fix look
+	// like it had nothing to say.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ManualFinding is a diagnosis that --fix must not touch. The split is real:
+// the CLI prints these with their manual command and never plans them.
+type ManualFinding struct {
+	Check       string   `json:"check"`
+	Detail      string   `json:"detail"`
+	Suggestions []string `json:"suggestions,omitempty"`
+}
+
+// FixPlan is what PlanFixes returns: applicable actions and the findings that
+// stay manual.
+type FixPlan struct {
+	Actions []FixAction     `json:"actions"`
+	Manual  []ManualFinding `json:"manual"`
+}
+
+// FixOutcome is one applied (or refused) action.
+type FixOutcome struct {
+	ID      string  `json:"id"`
+	Kind    FixKind `json:"kind"`
+	OK      bool    `json:"ok"`
+	Message string  `json:"message"`
+}
+
+// FixResult is the whole apply.
+type FixResult struct {
+	Applied []FixOutcome `json:"applied"`
+	DryRun  bool         `json:"dryRun"`
+	// JournalID names the doctor:fix row that recorded the mutation. Empty on
+	// a dry run, which writes nothing (invariant #3).
+	JournalID string `json:"journalId,omitempty"`
+}
+
+// FixDeps is the service slice the repairs need. Every collaborator is
+// optional: a nil one degrades to a reported refusal instead of a panic, which
+// is how a partially composed app (tests, the desktop protocol) stays safe.
+type FixDeps struct {
+	Root      string
+	TempDir   string
+	Providers []string
+	Store     *modelcache.Store
+	// Ownership is injectable so a test can plant a record without a process.
+	Ownership func(string) *ownership.Record
+	Binding   *bindings.Service
+	// Leases answers "does any live lease reference this pair?" through the
+	// proxy service, so this package never holds the lease store directly.
+	Leases func(context.Context, string, string) ([]*proxy.Lease, error)
+	Proxy  *proxy.Service
+	// Journal is read for planning; Recovery is what actually rolls an
+	// incomplete entry back. They are separate so planning stays read-only.
+	Journal  *journal.OperationJournal
+	Recovery func(context.Context) (*activation.RecoveryResult, error)
+	// Now and MinOverlayAge make the one-hour overlay rule testable without
+	// touching the filesystem clock.
+	Now           func() time.Time
+	MinOverlayAge time.Duration
+}
+
+func (d FixDeps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
+}
+
+func (d FixDeps) minOverlayAge() time.Duration {
+	if d.MinOverlayAge > 0 {
+		return d.MinOverlayAge
+	}
+	return time.Hour
+}
+
+func (d FixDeps) tempDir() string {
+	if d.TempDir != "" {
+		return d.TempDir
+	}
+	return os.TempDir()
+}
+
+// PlanFixes turns a read-only scan of the filesystem and the database into the
+// actions that may be applied. It performs no mutation, so `--fix --dry-run`
+// and the confirmation prompt can share it.
+func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
+	plan := FixPlan{Actions: []FixAction{}, Manual: []ManualFinding{}}
+	seen := map[string]bool{}
+	add := func(a FixAction) {
+		if !Allowlisted(a.Kind) || seen[a.ID] {
+			return
+		}
+		seen[a.ID] = true
+		plan.Actions = append(plan.Actions, a)
+	}
+
+	// Overlays live under the system temp directory, not the data root, so
+	// this is the one kind whose guard is "under the system temp dir".
+	for _, overlay := range scanTempOverlays(deps) {
+		add(FixAction{
+			ID:          "delete_temp_overlay:" + overlay.Name,
+			Kind:        FixDeleteTempOverlay,
+			Description: "Leftover temporary client overlay: " + overlay.Name,
+			Target:      overlay.Path,
+			Reason:      overlay.Refusal,
+		})
+	}
+
+	// Permissions: the scan reports only how many paths are too permissive, so
+	// the plan is one root-scoped action and the walk happens at apply time.
+	if permissive, _ := countPermissivePaths(deps.Root); permissive > 0 {
+		add(FixAction{
+			ID:          "repair_permissions:" + deps.Root,
+			Kind:        FixRepairPermissions,
+			Description: fmt.Sprintf("Repair permissions on %d AnyPick-owned path(s)", permissive),
+			Target:      deps.Root,
+		})
+	}
+
+	// Rebuilding derived caches is safe and unconditional when the store is
+	// present: the cache is advisory (internal/modelcache), and the spec's
+	// "rebuild derived local caches" is a supported action whether or not a row
+	// looks wrong.
+	if deps.Store != nil && len(deps.Providers) > 0 {
+		add(FixAction{
+			ID:          "rebuild_caches:root",
+			Kind:        FixRebuildCaches,
+			Description: "Rebuild derived model caches",
+			Target:      deps.Root,
+		})
+	}
+
+	planPIDActions(deps, add, &plan)
+	planOrphanActions(ctx, deps, add)
+
+	// Incomplete journal entries. One action per entry, so a partial recovery
+	// reports per entry rather than as one opaque count.
+	for _, entryID := range incompleteJournalIDs(ctx, deps) {
+		add(FixAction{
+			ID:          "complete_journal_rollback:" + entryID,
+			Kind:        FixCompleteJournalRollback,
+			Description: "Complete or roll back interrupted operation " + entryID,
+			Target:      "journal:" + entryID,
+			JournalID:   entryID,
+		})
+	}
+
+	return plan
+}
+
+// planPIDActions plans a delete per dead PID record and reports each live one
+// as manual, so the split the docs promise stays visible.
+func planPIDActions(deps FixDeps, add func(FixAction), plan *FixPlan) {
+	for _, rec := range scanPIDRecords(deps) {
+		if rec.Alive {
+			plan.Manual = append(plan.Manual, ManualFinding{
+				Check:  "pid:" + rec.Provider + "/" + rec.Account,
+				Detail: fmt.Sprintf("proxy PID record for %s/%s names live process %d", rec.Provider, rec.Account, rec.PID),
+				Suggestions: []string{
+					fmt.Sprintf("stop the proxy first: anypick proxy stop %s %s", rec.Provider, rec.Account),
+				},
+			})
+			continue
+		}
+		add(FixAction{
+			ID:          "delete_stale_pid:" + rec.Provider + "/" + rec.Account,
+			Kind:        FixDeleteStalePID,
+			Description: fmt.Sprintf("Stale proxy PID record for %s/%s", rec.Provider, rec.Account),
+			Target:      rec.Path,
+			Provider:    rec.Provider,
+			Account:     rec.Account,
+		})
+	}
+}
+
+// planOrphanActions plans a stop per running proxy with no lease and no
+// binding.
+func planOrphanActions(ctx context.Context, deps FixDeps, add func(FixAction)) {
+	for _, orphan := range scanOrphanProxies(ctx, deps) {
+		add(FixAction{
+			ID:          "stop_orphan_proxy:" + orphan.Provider + "/" + orphan.Account,
+			Kind:        FixStopOrphanProxy,
+			Description: fmt.Sprintf("Orphan proxy running for %s/%s", orphan.Provider, orphan.Account),
+			Target:      orphan.Endpoint,
+			Provider:    orphan.Provider,
+			Account:     orphan.Account,
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// scanning (read-only)
+// ---------------------------------------------------------------------------
+
+type overlayCandidate struct {
+	Name    string
+	Path    string
+	Refusal string // non-empty when the overlay is too recent to touch
+}
+
+// scanTempOverlays finds the directories os.MkdirTemp creates for AnyPick-owned
+// scratch space: "anypick-<client>-" in internal/runtime/ephemeral.go and
+// internal/client/commandcode.go, and "anypick-live-checkpoint-" in
+// internal/accounts/service.go. Nothing sweeps the checkpoint directories
+// today, which is how they accumulate.
+func scanTempOverlays(deps FixDeps) []overlayCandidate {
+	entries, err := os.ReadDir(deps.tempDir())
+	if err != nil {
+		return nil
+	}
+	cutoff := deps.now().Add(-deps.minOverlayAge())
+	var out []overlayCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "anypick-") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidate := overlayCandidate{
+			Name: entry.Name(),
+			Path: filepath.Join(deps.tempDir(), entry.Name()),
+		}
+		if info.ModTime().After(cutoff) {
+			candidate.Refusal = fmt.Sprintf(
+				"modified %s ago; refusing to delete an overlay younger than %s",
+				deps.now().Sub(info.ModTime()).Round(time.Second), deps.minOverlayAge())
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+// scanPermissions lived here and duplicated doctor.go's countPermissivePaths.
+// The scan belongs with the read-only diagnosis, so this file calls it rather
+// than keeping a second copy that could drift from the one the report uses.
+
+type pidCandidate struct {
+	Provider string
+	Account  string
+	Path     string
+	PID      int
+	Alive    bool
+}
+
+// scanPIDRecords reads every account proxy PID path under the data root. It
+// reads through the injected ownership.Load so a test can plant a record
+// without a live process.
+func scanPIDRecords(deps FixDeps) []pidCandidate {
+	if deps.Root == "" {
+		return nil
+	}
+	providers, err := os.ReadDir(filepath.Join(deps.Root, "providers"))
+	if err != nil {
+		return nil
+	}
+	load := deps.Ownership
+	if load == nil {
+		load = ownership.Load
+	}
+	var out []pidCandidate
+	for _, provider := range providers {
+		if !provider.IsDir() {
+			continue
+		}
+		accounts, err := os.ReadDir(filepath.Join(deps.Root, "providers", provider.Name(), "accounts"))
+		if err != nil {
+			continue
+		}
+		for _, account := range accounts {
+			if !account.IsDir() {
+				continue
+			}
+			pidPath := paths.ProxyPidPath(deps.Root, provider.Name(), account.Name())
+			if _, err := os.Stat(pidPath); err != nil {
+				continue
+			}
+			rec := load(pidPath)
+			if rec == nil {
+				continue
+			}
+			out = append(out, pidCandidate{
+				Provider: provider.Name(), Account: account.Name(),
+				Path: pidPath, PID: rec.PID, Alive: rec.Alive(),
+			})
+		}
+	}
+	return out
+}
+
+type orphanCandidate struct {
+	Provider string
+	Account  string
+	Endpoint string
+}
+
+// scanOrphanProxies finds running account proxies with neither a live lease nor
+// a binding that references them. A proxy whose pair is still referenced is
+// skipped, and so is one whose status cannot be read.
+func scanOrphanProxies(ctx context.Context, deps FixDeps) []orphanCandidate {
+	if deps.Proxy == nil || deps.Root == "" {
+		return nil
+	}
+	providers, err := os.ReadDir(filepath.Join(deps.Root, "providers"))
+	if err != nil {
+		return nil
+	}
+	var out []orphanCandidate
+	for _, provider := range providers {
+		if !provider.IsDir() {
+			continue
+		}
+		accounts, err := os.ReadDir(filepath.Join(deps.Root, "providers", provider.Name(), "accounts"))
+		if err != nil {
+			continue
+		}
+		for _, account := range accounts {
+			if !account.IsDir() {
+				continue
+			}
+			st, err := deps.Proxy.StatusContext(ctx, provider.Name(), account.Name())
+			if err != nil || st == nil || !st.Running {
+				continue
+			}
+			if referencesPair(ctx, deps, provider.Name(), account.Name()) {
+				continue
+			}
+			out = append(out, orphanCandidate{
+				Provider: provider.Name(), Account: account.Name(), Endpoint: st.Endpoint,
+			})
+		}
+	}
+	return out
+}
+
+// referencesPair reports whether any live lease or any binding still names the
+// provider/account. Fail closed: an unreadable store counts as a reference, so
+// a database error never turns into "nothing references this, stop it".
+func referencesPair(ctx context.Context, deps FixDeps, providerID, accountName string) bool {
+	if deps.Leases != nil {
+		leases, err := deps.Leases(ctx, providerID, accountName)
+		if err != nil || len(leases) > 0 {
+			return true
+		}
+	}
+	if deps.Binding != nil {
+		globals, err := deps.Binding.ListGlobalsContext(ctx)
+		if err != nil {
+			return true
+		}
+		for _, b := range globals {
+			if namesPair(b.Spec.Source, providerID, accountName) {
+				return true
+			}
+		}
+		projects, err := deps.Binding.ListProjectsContext(ctx)
+		if err != nil {
+			return true
+		}
+		for _, p := range projects {
+			if namesPair(p.Spec.Source, providerID, accountName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func namesPair(source refs.Ref, providerID, accountName string) bool {
+	if source.Kind != refs.KindAccount && source.Kind != refs.KindAccountPool {
+		return false
+	}
+	return source.Provider == providerID && source.Name == accountName
+}
+
+// incompleteJournalIDs lists the entries recovery would act on, without acting.
+// The read goes through the journal store directly: calling
+// activation.RecoverIncompleteOperations here would roll entries back during a
+// dry run, which is exactly what --dry-run promises not to do.
+func incompleteJournalIDs(ctx context.Context, deps FixDeps) []string {
+	if deps.Journal == nil {
+		return nil
+	}
+	entries, err := deps.Journal.ListIncompleteContext(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.ID)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
+// apply
+// ---------------------------------------------------------------------------
+
+// ApplyFixes executes a plan. A dry run reports what would happen and touches
+// nothing; a real run journals the whole mutation first (spec §18.6) so a crash
+// mid-repair is recoverable by the same recovery path that handles activation.
+func ApplyFixes(ctx context.Context, plan FixPlan, deps FixDeps, dryRun bool) FixResult {
+	result := FixResult{Applied: []FixOutcome{}, DryRun: dryRun}
+	if dryRun {
+		for _, action := range plan.Actions {
+			result.Applied = append(result.Applied, FixOutcome{
+				ID: action.ID, Kind: action.Kind, OK: action.Reason == "",
+				Message: "[dry-run] " + dryRunMessage(action),
+			})
+		}
+		return result
+	}
+
+	var journalID string
+	if deps.Journal != nil && len(plan.Actions) > 0 {
+		entry, err := deps.Journal.CreateContext(ctx, "doctor:fix", journal.CreateOptions{
+			AffectedResources: actionTargets(plan.Actions),
+			State:             journal.StateExecuting,
+		})
+		if err != nil {
+			// A journal that cannot record the mutation is a reason not to
+			// mutate: the whole point of the row is that a crash is visible.
+			for _, action := range plan.Actions {
+				result.Applied = append(result.Applied, FixOutcome{
+					ID: action.ID, Kind: action.Kind, OK: false,
+					Message: "refused: could not journal the fix: " + err.Error(),
+				})
+			}
+			return result
+		}
+		journalID = entry.ID
+		result.JournalID = journalID
+	}
+
+	allOK := true
+	for _, action := range plan.Actions {
+		if action.Reason != "" {
+			allOK = false
+			result.Applied = append(result.Applied, FixOutcome{
+				ID: action.ID, Kind: action.Kind, OK: false, Message: "refused: " + action.Reason,
+			})
+			continue
+		}
+		message, err := applyFix(ctx, action, deps)
+		if err != nil {
+			allOK = false
+			result.Applied = append(result.Applied, FixOutcome{
+				ID: action.ID, Kind: action.Kind, OK: false, Message: err.Error(),
+			})
+			continue
+		}
+		result.Applied = append(result.Applied, FixOutcome{
+			ID: action.ID, Kind: action.Kind, OK: true, Message: message,
+		})
+	}
+
+	if journalID != "" {
+		state := journal.StateCommitted
+		if !allOK {
+			state = journal.StateFailed
+		}
+		_, _ = deps.Journal.UpdateContext(ctx, journalID, journal.Entry{State: state})
+	}
+	return result
+}
+
+func actionTargets(actions []FixAction) []string {
+	out := make([]string, 0, len(actions))
+	for _, action := range actions {
+		out = append(out, action.Target)
+	}
+	return out
+}
+
+func dryRunMessage(action FixAction) string {
+	if action.Reason != "" {
+		return "would refuse " + action.Kind.String() + ": " + action.Reason
+	}
+	message := "would " + action.Kind.String() + ": " + action.Description
+	if action.Target != "" && !strings.Contains(action.Description, action.Target) {
+		message += " (" + action.Target + ")"
+	}
+	return message
+}
+
+// DryRunMessage is dryRunMessage for callers that render the plan themselves
+// (the CLI's printDryRunFields path). It carries no "[dry-run]" prefix: the
+// renderer adds that.
+func DryRunMessage(action FixAction) string { return dryRunMessage(action) }
+
+func applyFix(ctx context.Context, action FixAction, deps FixDeps) (string, error) {
+	if !Allowlisted(action.Kind) {
+		return "", anyerr.Newf("refused non-allowlisted fix kind: "+action.Kind.String(), "FIX_NOT_ALLOWED",
+			anyerr.WithSuggestions("Run `anypick doctor --fix --dry-run` to see the allowlisted plan."))
+	}
+	switch action.Kind {
+	case FixDeleteTempOverlay:
+		return fixDeleteTempOverlay(action, deps)
+	case FixRepairPermissions:
+		return fixRepairPermissions(action, deps)
+	case FixRebuildCaches:
+		return fixRebuildCaches(ctx, deps)
+	case FixDeleteStalePID:
+		return fixDeleteStalePID(action, deps)
+	case FixStopOrphanProxy:
+		return fixStopOrphanProxy(ctx, action, deps)
+	case FixCompleteJournalRollback:
+		return fixCompleteJournalRollback(ctx, action, deps)
+	default:
+		return "", anyerr.Newf("unknown fix kind: "+action.Kind.String(), "FIX_NOT_ALLOWED")
+	}
+}
+
+func fixDeleteTempOverlay(action FixAction, deps FixDeps) (string, error) {
+	if !isUnder(deps.tempDir(), action.Target) {
+		return "", anyerr.Newf("refusing to delete overlay outside the system temp directory: "+action.Target,
+			"FIX_OUTSIDE_ROOT",
+			anyerr.WithSuggestions("This is a doctor bug; report it rather than deleting by hand."))
+	}
+	if !strings.HasPrefix(filepath.Base(action.Target), "anypick-") {
+		return "", anyerr.Newf("not an AnyPick-owned temp overlay: "+action.Target, "FIX_OUTSIDE_ROOT")
+	}
+	info, err := os.Lstat(action.Target)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "overlay already gone: " + action.Target, nil
+		}
+		return "", anyerr.Wrapf(err, "stat overlay "+action.Target, "FS_PATH")
+	}
+	if !info.IsDir() {
+		return "", anyerr.Newf("not a directory: "+action.Target, "FIX_OUTSIDE_ROOT")
+	}
+	if age := deps.now().Sub(info.ModTime()); age < deps.minOverlayAge() {
+		return "", anyerr.Newf(
+			fmt.Sprintf("overlay %s was modified %s ago; refusing to delete anything younger than %s",
+				action.Target, age.Round(time.Second), deps.minOverlayAge()),
+			"FIX_OVERLAY_RECENT",
+			anyerr.WithSuggestions("A live `anypick run` may own this directory. Retry once it is idle."))
+	}
+	if err := os.RemoveAll(action.Target); err != nil {
+		return "", anyerr.Wrapf(err, "delete overlay "+action.Target, "FS_PATH")
+	}
+	return "deleted temp overlay: " + action.Target, nil
+}
+
+// fixRepairPermissions walks only the data root and only ever tightens modes.
+// The root itself is the guard: a target outside it is refused, not skipped, so
+// a caller that hands in the wrong path cannot chmod the user's home. Symlinks
+// are skipped rather than followed, because following one is how a walk inside
+// the root reaches a file outside it.
+func fixRepairPermissions(action FixAction, deps FixDeps) (string, error) {
+	if deps.Root == "" {
+		return "", anyerr.Newf("no data root to repair", "FIX_OUTSIDE_ROOT")
+	}
+	if !isUnder(deps.Root, action.Target) {
+		return "", anyerr.Newf("refusing to repair permissions outside the data root: "+action.Target,
+			"FIX_OUTSIDE_ROOT",
+			anyerr.WithSuggestions("Only paths under "+deps.Root+" are AnyPick-owned."))
+	}
+	fixed := 0
+	walkErr := filepath.Walk(deps.Root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // unreadable entry: skip it, never fail the whole repair
+		}
+		if path == deps.Root || info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		// filepath.Walk does not descend through symlinks, so every path it
+		// hands us is already under the root; this is the belt to that brace.
+		if !isUnder(deps.Root, path) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			if info.Mode().Perm() != 0o700 {
+				if cerr := os.Chmod(path, 0o700); cerr == nil {
+					fixed++
+				}
+			}
+			return nil
+		}
+		if info.Mode().Perm() != 0o600 {
+			if cerr := os.Chmod(path, 0o600); cerr == nil {
+				fixed++
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return "", anyerr.Wrapf(walkErr, "walk data root "+deps.Root, "FS_PATH")
+	}
+	return fmt.Sprintf("repaired permissions on %d AnyPick-owned path(s) under %s", fixed, deps.Root), nil
+}
+
+// fixRebuildCaches drops the SQLite model cache per provider. The deleted
+// TypeScript wrote a marker file into <root>/cache; that would be a lie in Go,
+// where the cache is rows in anypick.db (internal/modelcache) and there is no
+// cache directory to rebuild.
+func fixRebuildCaches(ctx context.Context, deps FixDeps) (string, error) {
+	if deps.Store == nil {
+		return "", anyerr.Newf("model cache store unavailable", "FIX_UNAVAILABLE",
+			anyerr.WithSuggestions("Run this from the CLI, where the database is open."))
+	}
+	cleared := 0
+	for _, providerID := range deps.Providers {
+		if err := deps.Store.Clear(ctx, providerID); err != nil {
+			return "", anyerr.Wrapf(err, "clear model cache for "+providerID, "DB_WRITE")
+		}
+		cleared++
+	}
+	return fmt.Sprintf("rebuilt derived caches for %d provider(s)", cleared), nil
+}
+
+func fixDeleteStalePID(action FixAction, deps FixDeps) (string, error) {
+	if !isUnder(deps.Root, action.Target) {
+		return "", anyerr.Newf("refusing to delete a PID record outside the data root: "+action.Target,
+			"FIX_OUTSIDE_ROOT",
+			anyerr.WithSuggestions("Only paths under "+deps.Root+" are AnyPick-owned."))
+	}
+	load := deps.Ownership
+	if load == nil {
+		load = ownership.Load
+	}
+	rec := load(action.Target)
+	if rec == nil {
+		// Load removes an unreadable record itself and returns nil. If the file
+		// is gone there is nothing left to do; if it is still there it is not
+		// an ownership record this repair understands.
+		if _, err := os.Stat(action.Target); errors.Is(err, os.ErrNotExist) {
+			return "PID record already gone: " + action.Target, nil
+		}
+		return "", anyerr.Newf("not a live AnyPick ownership record: "+action.Target,
+			"STATE_CONFLICT",
+			anyerr.WithSuggestions("Delete it by hand only if no proxy is running for this account."))
+	}
+	if rec.Alive() {
+		return "", anyerr.Newf(
+			fmt.Sprintf("process %d is still running; refusing to delete %s", rec.PID, action.Target),
+			"STATE_CONFLICT",
+			anyerr.WithSuggestions(fmt.Sprintf("Stop the proxy first: anypick proxy stop %s %s", action.Provider, action.Account)))
+	}
+	if err := os.Remove(action.Target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", anyerr.Wrapf(err, "delete PID record "+action.Target, "FS_PATH")
+	}
+	return "deleted stale PID record: " + action.Target, nil
+}
+
+func fixStopOrphanProxy(ctx context.Context, action FixAction, deps FixDeps) (string, error) {
+	if action.Provider == "" || action.Account == "" {
+		return "", anyerr.Newf("orphan proxy fix requires a provider and account", "FIX_NOT_ALLOWED")
+	}
+	// Re-check the guard before anything else. The plan may be stale — a
+	// binding can appear between planning and applying — and stopping a proxy
+	// a live binding references would break a working login.
+	if referencesPair(ctx, deps, action.Provider, action.Account) {
+		return "", anyerr.Newf(
+			fmt.Sprintf("a live lease or binding still references %s/%s; refusing to stop it",
+				action.Provider, action.Account),
+			"STATE_CONFLICT",
+			anyerr.WithSuggestions(fmt.Sprintf("Run `anypick reset %s` or `anypick proxy stop %s %s` first.",
+				action.Provider, action.Provider, action.Account)))
+	}
+	if deps.Proxy == nil {
+		return "", anyerr.Newf("proxy service unavailable", "FIX_UNAVAILABLE")
+	}
+	if err := deps.Proxy.Stop(ctx, action.Provider, action.Account); err != nil {
+		return "", anyerr.Wrapf(err, "stop orphan proxy "+action.Provider+"/"+action.Account, "PROXY_STOP_FAILED")
+	}
+	return fmt.Sprintf("stopped orphan proxy %s/%s", action.Provider, action.Account), nil
+}
+
+func fixCompleteJournalRollback(ctx context.Context, action FixAction, deps FixDeps) (string, error) {
+	if deps.Recovery == nil {
+		return "", anyerr.Newf("journal recovery unavailable", "FIX_UNAVAILABLE")
+	}
+	if action.JournalID == "" {
+		return "", anyerr.Newf("journal fix requires an entry id", "FIX_NOT_ALLOWED")
+	}
+	result, err := deps.Recovery(ctx)
+	if err != nil {
+		return "", anyerr.Wrapf(err, "recover incomplete operations", "DB_WRITE")
+	}
+	if result == nil {
+		return "", anyerr.Newf("journal recovery returned no result", "STATE_CONFLICT")
+	}
+	message := fmt.Sprintf("journal recovery: recovered=%d failed=%d refused=%d",
+		result.Recovered, len(result.Failed), len(result.Refused))
+	if !containsString(result.Failed, action.JournalID) && !containsString(result.Refused, action.JournalID) {
+		message += "; entry " + action.JournalID + " was not reported"
+	}
+	return message, nil
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnder reports whether path is root or a descendant of it. It compares
+// cleaned absolute paths, so ".." cannot escape. An empty root or path is never
+// under anything, which makes a missing target a refusal rather than a
+// root-wide match.
+func isUnder(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}

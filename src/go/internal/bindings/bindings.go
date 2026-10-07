@@ -110,6 +110,31 @@ func (s *Store) GetGlobalContext(ctx context.Context, clientID string) (*Global,
 	return g, err
 }
 
+// ListGlobalsContext returns every global binding, ordered by client id so a
+// caller that reports or repairs over the set sees a stable sequence.
+//
+// This is a read with no ctx-less twin, like every other method here: doctor's
+// orphan-proxy repair has to prove that no global binding still references a
+// provider/account before it stops anything, and a single-client lookup cannot
+// answer that question.
+func (s *Store) ListGlobalsContext(ctx context.Context) ([]Global, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+globalColumns+` FROM global_bindings ORDER BY client_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Global{}
+	for rows.Next() {
+		g, err := scanGlobal(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *g)
+	}
+	return out, rows.Err()
+}
+
 // UpsertGlobal inserts or replaces the global binding for a client.
 //
 // There is deliberately no ctx-less form — and neither does any other method
@@ -199,6 +224,28 @@ func (s *Store) GetProjectContext(ctx context.Context, root, clientID string) (*
 		return nil, nil
 	}
 	return p, err
+}
+
+// ListProjectsContext returns every project binding across every project root,
+// ordered by root then client. The orphan-proxy repair needs the whole set for
+// the same reason ListGlobalsContext does: a live project binding anywhere is
+// enough to make a running proxy not an orphan.
+func (s *Store) ListProjectsContext(ctx context.Context) ([]Project, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+projectColumns+` FROM project_bindings ORDER BY project_root, client_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Project{}
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
 }
 
 // UpsertProject inserts or replaces one project binding. No ctx-less form —

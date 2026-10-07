@@ -13,14 +13,13 @@ anypick doctor --fix -y
 ```
 
 `doctor` inspects the AnyPick data directory, the SQLite database, saved
-accounts and gateways, file permissions, lock and PID files, running proxies, and
+accounts and gateways, file permissions, PID records, running proxies, and
 any operation journal entry that did not finish.
 
 ## What `--fix` may touch
 
-`--fix` works from a hard allowlist. It can:
+`--fix` works from a hard allowlist of six actions. It can:
 
-- delete a stale lock file
 - delete a stale PID file
 - stop an orphaned proxy
 - delete a temporary client overlay left behind by `run`
@@ -31,6 +30,13 @@ any operation journal entry that did not finish.
 It will not switch accounts, install packages, touch native auth files, or change
 your bindings. Anything outside the allowlist is reported as **manual only**,
 with the suggestion printed next to it — the terminal UI shows the same split.
+
+A stale lock file is deliberately **not** on the list. AnyPick's locks are
+`flock(2)` descriptors that the kernel releases when the holding process exits,
+so a crash leaves nothing stale to delete — and a "repair" that removed a lock
+file a live process still holds would defeat the coordinator that keeps
+concurrent account changes from corrupting each other (ADR 0009). An earlier
+draft of this page promised the action; it cannot exist.
 
 <Aside type="tip" title="Preview first">
 `anypick doctor --fix --dry-run` prints exactly which allowlisted actions would
