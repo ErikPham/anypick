@@ -198,10 +198,21 @@ export function createService(options: {
     },
     cancel(requestId) {
       if (!requestId) return;
-      void options.bridge.invoke('send_command', { command: cancelCommand(requestId) });
+      // A refused cancel has no request id to settle and no frame coming back,
+      // so without this the rejection is unhandled and the row the user just
+      // cancelled spins on a command the engine never heard.
+      void options.bridge.invoke('send_command', { command: cancelCommand(requestId) }).catch((error: unknown) => {
+        options.onError?.(error instanceof Error ? error.message : String(error));
+      });
     },
     refresh() {
-      void options.bridge.invoke('send_command', { command: 'refresh' });
+      // Try Again and the toolbar refresh both go through here. The sidecar
+      // stopped is exactly when a user reaches for them, so an unhandled
+      // rejection leaves the window on "Connecting to the service" with no way
+      // out. The error banner is the way out.
+      void options.bridge.invoke('send_command', { command: 'refresh' }).catch((error: unknown) => {
+        options.onError?.(error instanceof Error ? error.message : String(error));
+      });
     },
     async copy(text) {
       if (!text) return;

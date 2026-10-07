@@ -33,6 +33,18 @@
   --color-red: #ff3b30;
   --color-switch-off: #e9e9eb;
   --color-control-border: rgb(0 0 0 / 0.14);
+  /* The small pill behind the "AnyPick proxy" and "Existing" labels, and the
+     fill a control takes while it is pressed. Both are system grays: without a
+     token the utilities resolved to nothing, so the pills rendered with no fill
+     and the Settings button had no pressed state at all. */
+  --color-badge: #e9e9eb;
+  --color-active: #e5e5ea;
+  /* The `Set Up…` attention dot. macOS draws it with `Color.orange`
+     (`AppsView.swift:85`), so this token is the same system colour as
+     `--color-orange`; it exists because the class that consumes it carries
+     Tailwind's palette-shaped name, and an undefined name silently falls back
+     to the default palette, which ignores the dark-mode overrides below. */
+  --color-amber-500: #ff9500;
 
   /* SharedUI DesignStatusLabel: a 7pt dot. */
   --size-status-dot: 7px;
@@ -68,6 +80,11 @@
       --color-red: #ff453a;
       --color-switch-off: #39393d;
       --color-control-border: rgb(255 255 255 / 0.14);
+      --color-badge: #3a3a3c;
+      --color-active: #48484a;
+      /* macOS keeps `Color.orange` in both appearances (`SharedUI.swift:70`),
+         so the amber token follows it rather than the light value. */
+      --color-amber-500: #ff9f0a;
     }
   }
 }
