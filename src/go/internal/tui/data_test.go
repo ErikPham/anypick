@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -11,6 +13,8 @@ import (
 	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/proxy"
+	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/store"
 )
 
 func TestDeriveLiveRelation(t *testing.T) {
@@ -278,6 +282,197 @@ func TestEveryRegisteredClientIsReachableInTheTUI(t *testing.T) {
 			"and no provider named %q exists to switch its login under Accounts — "+
 			"either add it to routingAppAllowlist or give it a provider", id, id)
 	}
+}
+
+// TestClientNativeProviderResolvesRegisteredApps is the regression probe for
+// the catalog-id/provider-id confusion. clientNativeProvider used to look up a
+// hand-kept map of catalog ids ("anthropic", "openai") in the provider
+// registry, which registers provider ids, so the guard was false for every
+// client and the Apps board never showed "own login".
+func TestClientNativeProviderResolvesRegisteredApps(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+
+	for clientID, want := range map[string]string{
+		"claude": "claude",
+		"codex":  "codex",
+	} {
+		if got := clientNativeProvider(a, clientID); got != want {
+			t.Errorf("clientNativeProvider(%q) = %q, want %q", clientID, got, want)
+		}
+	}
+}
+
+// TestClientNativeProviderIsDerivedFromTheRegistry iterates the live client
+// registry instead of restating a client list, so a newly registered client is
+// covered without anyone remembering to add it here. The expectation is itself
+// derived from the provider registry, which is what pins the non-identity case:
+// zai owns the zcode login, so "the client id is a provider id" is not the rule.
+func TestClientNativeProviderIsDerivedFromTheRegistry(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+
+	want := map[string]string{}
+	for _, providerID := range a.Providers.IDs() {
+		pv, err := a.Providers.Get(providerID)
+		if err != nil {
+			t.Fatalf("Providers.Get(%q): %v", providerID, err)
+		}
+		native := providerID
+		if ncp, ok := pv.(provider.NativeClientProvider); ok && strings.TrimSpace(ncp.NativeClientID()) != "" {
+			native = strings.TrimSpace(ncp.NativeClientID())
+		}
+		if a.Clients.Has(native) {
+			if prev, dup := want[native]; dup {
+				t.Fatalf("client %q is claimed as the native login by both %q and %q; "+
+					"the lookup can only answer one", native, prev, providerID)
+			}
+			want[native] = providerID
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("no registered client has a provider; this check would pass vacuously")
+	}
+
+	ids := a.Clients.IDs()
+	if len(ids) == 0 {
+		t.Fatal("the client registry registered nothing; this check would pass vacuously")
+	}
+	for _, clientID := range ids {
+		if got := clientNativeProvider(a, clientID); got != want[clientID] {
+			t.Errorf("clientNativeProvider(%q) = %q, want %q", clientID, got, want[clientID])
+		}
+	}
+	if got := clientNativeProvider(a, "zcode"); got != "zai" {
+		t.Errorf("clientNativeProvider(%q) = %q, want zai: the relationship is not the identity", "zcode", got)
+	}
+}
+
+// TestLoadAppsReachesAppNative covers the status the defect made unreachable.
+// Before the fix every routing app fell through to "not connected", so no test
+// could reach AppNative at all.
+func TestLoadAppsReachesAppNative(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+	seedLiveClaude(t)
+
+	rows := LoadApps(context.Background(), a)
+	i := indexOfApp(rows, "claude")
+	if i < 0 {
+		t.Fatal("claude is not on the Apps board")
+	}
+	if rows[i].Status != AppNative {
+		t.Fatalf("claude status = %q, want %q (source %q)", rows[i].Status, AppNative, rows[i].SourceText)
+	}
+	if rows[i].SourceText != "own login" {
+		t.Errorf("claude source = %q, want %q", rows[i].SourceText, "own login")
+	}
+}
+
+// TestLoadSourceOptionsGroupsNativeAccounts asserts the wizard's first step
+// offers an app's own saved logins under "Native accounts". The group was
+// always empty for the apps the docs promise it for, because the native
+// provider resolved to "" and the branch was skipped.
+func TestLoadSourceOptionsGroupsNativeAccounts(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+
+	// Both apps the defect broke: their own login is the common case, and each
+	// is the only routing app whose native provider is itself.
+	for _, clientID := range []string{"claude", "codex"} {
+		t.Run(clientID, func(t *testing.T) {
+			seedSavedAccount(t, a, clientID, "work", "probe@example.com")
+
+			opts := LoadSourceOptions(context.Background(), a, clientID)
+			native := 0
+			for _, o := range opts {
+				if o.Group != "Native accounts" {
+					continue
+				}
+				native++
+				if o.Ref.Provider != clientID || o.Ref.Name != "work" {
+					t.Errorf("Native accounts option = %s/%s, want %s/work",
+						o.Ref.Provider, o.Ref.Name, clientID)
+				}
+			}
+			if native == 0 {
+				t.Fatalf("%s got no Native accounts group; groups offered: %v", clientID, sourceGroups(opts))
+			}
+		})
+	}
+
+	// A client no provider claims must not grow an empty group just because
+	// the native lookup is now registry-derived.
+	for _, o := range LoadSourceOptions(context.Background(), a, "no-such-client") {
+		if o.Group == "Native accounts" {
+			t.Errorf("unclaimed client got a Native accounts option: %s", refs.DisplayRef(o.Ref))
+		}
+	}
+}
+
+func sourceGroups(opts []SourceOption) []string {
+	var groups []string
+	for _, o := range opts {
+		groups = append(groups, o.Group)
+	}
+	return groups
+}
+
+// newTUIApp builds the real composed graph against a throwaway home, so the
+// builtin registries are the ones production uses and no live read can reach
+// the developer's credentials.
+func newTUIApp(t *testing.T) (*app.App, func()) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("ANYPICK_HOME", home)
+	t.Setenv("HOME", home)
+	t.Setenv("ANYPICK_CLAUDE_NO_KEYCHAIN", "1")
+	t.Setenv("ANYPICK_CLAUDE_CREDENTIALS_PATH", filepath.Join(home, ".claude", ".credentials.json"))
+	t.Setenv("CODEX_AUTH_PATH", filepath.Join(home, ".codex", "auth.json"))
+
+	a, cleanup, err := app.Ready(context.Background(), app.Options{SkipMigrate: true})
+	if err != nil {
+		t.Fatalf("app.Ready: %v", err)
+	}
+	return a, cleanup
+}
+
+// seedLiveClaude writes a valid Claude credential to the path the isolated
+// home gave the provider, making its DetectLive report a live login.
+func seedLiveClaude(t *testing.T) {
+	t.Helper()
+	path := os.Getenv("ANYPICK_CLAUDE_CREDENTIALS_PATH")
+	if path == "" {
+		t.Fatal("newTUIApp did not pin ANYPICK_CLAUDE_CREDENTIALS_PATH")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"claudeAiOauth":{"email":"probe@example.com","accessToken":"at","refreshToken":"rt"}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedSavedAccount saves one account through the store's prepare/write path,
+// which is what a real save does.
+func seedSavedAccount(t *testing.T, a *app.App, providerID, name, identity string) {
+	t.Helper()
+	snap, _, err := a.Store.PrepareSnapshot(providerID, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap, "credentials.json"), []byte(`{"claudeAiOauth":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := store.Meta{
+		Name: name, Provider: providerID, Identity: identity,
+		CreatedAt: "2026-01-01T00:00:00.000Z", UpdatedAt: "2026-01-01T00:00:00.000Z",
+	}
+	if err := a.Store.WriteMetaContext(context.Background(), meta, snap); err != nil {
+		t.Fatal(err)
+	}
+	_ = a.Store.DiscardPreparedSnapshot(snap)
 }
 
 func TestViewProxiesOmitsApiKey(t *testing.T) {

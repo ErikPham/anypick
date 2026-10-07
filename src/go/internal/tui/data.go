@@ -426,34 +426,49 @@ type AppRow struct {
 	Status      AppStatus
 }
 
-// nativeProviderByClient maps a routing app to its own credential provider.
-// Only claude/codex route, and claude's native provider is anthropic while
-// codex's is openai. There is no protocol method on the provider interface to
-// derive this, so the known routing apps are listed explicitly; the fallback
-// returns "" (unknown native provider) rather than guessing.
-var nativeProviderByClient = map[string]string{
-	"claude": "anthropic",
-	"codex":  "openai",
-}
-
+// clientNativeProvider reports which registered provider serves clientID as its
+// own login, or "" when no provider claims it.
+//
+// The answer is not the identity: zai answers for zcode. It is also not a
+// hand-kept table of client→provider pairs, which is how catalog ids
+// ("anthropic", "openai") came to be checked against a registry keyed by
+// provider ids and silently resolved nothing. NativeClientProvider is the
+// capability that knows, so the answer is derived from the registry — the
+// inverse of the desktop snapshot's nativeClientIDOf, under the same rule:
+// a provider that borrows another client's login publishes it, and every other
+// provider owns its login under its own id.
 func clientNativeProvider(a *app.App, clientID string) string {
-	if p, ok := nativeProviderByClient[clientID]; ok && a.Providers.Has(p) {
-		return p
+	if a == nil || a.Providers == nil || clientID == "" {
+		return ""
+	}
+	for _, providerID := range a.Providers.IDs() {
+		pv, err := a.Providers.Get(providerID)
+		if err != nil {
+			continue
+		}
+		native := providerID
+		if ncp, ok := pv.(provider.NativeClientProvider); ok {
+			if id := strings.TrimSpace(ncp.NativeClientID()); id != "" {
+				native = id
+			}
+		}
+		if native == clientID {
+			return providerID
+		}
 	}
 	return ""
 }
 
 // routingAppAllowlist is the explicit set of clients the Apps board routes.
 // Login-only clients (gemini, kiro, opencode, workbuddy) are excluded by
-// design — they switch their own provider login under Accounts. zcode, dsh
-// and commandcode are the opposite case: none is a direct native switch
-// target, so this board is the only surface that reaches them. dsh is a
+// design — they switch their own provider login under Accounts. dsh,
+// commandcode, pi and omp are the opposite case: no provider claims them as its
+// native client, so this board is the only surface that reaches them. dsh is a
 // Cordis-based harness whose OpenAI-compatible endpoint is pointed at the
-// AnyPick managed proxy; zcode and commandcode follow their configured AnyPick
-// entries. zcode still belongs here even though the Z.ai subscription login is
-// managed under Accounts: that login is a source, not a native switch target.
-// pi and omp are the same case: harness clients with no native switch
-// target, reachable only by pointing them at an AnyPick-managed source.
+// AnyPick managed proxy; the others follow their configured AnyPick entries.
+// zcode belongs here as the native client of the zai provider, exactly as the
+// desktop snapshot publishes it: the Z.ai subscription login is both the
+// account managed under Accounts and this app's own login.
 // The list is explicit rather than a "client that is not also a provider"
 // heuristic because claude and codex *are* providers (AnyPick manages their
 // native logins) and still have to route.
