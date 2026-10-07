@@ -145,13 +145,16 @@ Build on the target desktop OS after installing the Tauri platform
 prerequisites (on Linux: `libwebkit2gtk-4.1-dev`,
 `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`).
 
-## The desktop protocol version is declared three times
+## The desktop protocol version is declared four times
 
-Go (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`) and Swift
-(`src/macos/AppServiceClient.swift`) each declare it independently, and nothing
-links them. `make check-protocol` asserts all three agree — run it whenever you
-bump the protocol, because bumping it on one platform only produces a failure
-that is otherwise very hard to trace.
+Go (`internal/buildinfo`), Rust (`src/tauri/app/src/protocol.rs`), Swift
+(`src/macos/AppServiceClient.swift`) and the webview
+(`src/tauri/ui/lib/wire.ts`) each declare it independently, and nothing links
+them. `make check-protocol` asserts all four agree — run it whenever you bump
+the protocol, because bumping it on three and missing the fourth produces a
+failure that is otherwise very hard to trace: the webview drops every frame
+that declares `protocolVersion`, so the window stays empty while the other
+front ends look healthy.
 
 ## CI
 

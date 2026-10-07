@@ -28,6 +28,128 @@ function uiSources(dir: string): string[] {
 }
 
 /**
+ * Colour-utility prefixes that name a `--color-*` token in Tailwind v4.
+ *
+ * `bg-badge` compiles to `background-color: var(--color-badge)`; with no such
+ * token Tailwind emits nothing, so the element silently loses its fill. That
+ * shipped three times (`bg-badge`, `bg-active`, `bg-amber-500`) and jsdom
+ * cannot see it, because it never loads the stylesheet. These two functions are
+ * what make the missing token a failing test instead of a blank pixel.
+ */
+const COLOUR_PREFIXES = [
+  'bg',
+  'text',
+  'border',
+  'ring',
+  'divide',
+  'outline',
+  'fill',
+  'stroke',
+  'accent',
+  'caret',
+  'decoration',
+  'placeholder',
+  'from',
+  'via',
+  'to',
+] as const;
+
+/**
+ * Names that carry a colour-shaped prefix but resolve without a `--color-*`.
+ *
+ * Two groups: Tailwind's built-in palette words, and the structural keywords
+ * that share a prefix (`text-center`, `border-0`, `divide-y`). Each entry is a
+ * deliberate exemption, so adding one is a decision rather than a way to quiet
+ * the check.
+ */
+const NOT_A_TOKEN = new Set([
+  // Built-in palette words. Tailwind resolves these itself.
+  'transparent',
+  'current',
+  'inherit',
+  'black',
+  'white',
+  // Text alignment, wrapping, and decoration keywords.
+  'center',
+  'left',
+  'right',
+  'justify',
+  'start',
+  'end',
+  'ellipsis',
+  'clip',
+  'nowrap',
+  'wrap',
+  'balance',
+  'pretty',
+  'underline',
+  'overline',
+  'line-through',
+  'none',
+  // Border, ring, divide, and outline sides and styles.
+  'solid',
+  'dashed',
+  'dotted',
+  'double',
+  'hidden',
+  'x',
+  'y',
+  't',
+  'r',
+  'b',
+  'l',
+  's',
+  'e',
+]);
+
+/**
+ * Every colour-token name a colour utility in the TSX sources asks for.
+ *
+ * Only literal and template-literal class lists count, and only the `.tsx`
+ * files: a colour class is emitted by JSX, and a bare `{className}` prop is
+ * forwarded rather than naming anything. Variant prefixes (`hover:`, `dark:`,
+ * `after:`) and the `/50` opacity suffix are stripped, because neither changes
+ * which token the utility names.
+ */
+export function colourUtilities(): string[] {
+  const used = new Set<string>();
+  for (const path of uiSources(uiDir)) {
+    if (!path.endsWith('.tsx')) continue;
+    const source = readFileSync(path, 'utf8');
+    for (const literal of source.matchAll(/["'`]([^"'`\n]*)["'`]/g)) {
+      for (const raw of literal[1].split(/\s+/)) {
+        const token = raw.replace(/^(?:[a-z-]+:)+/, '');
+        const match = /^([a-z]+)-(.+)$/.exec(token);
+        if (!match) continue;
+        if (!(COLOUR_PREFIXES as readonly string[]).includes(match[1])) continue;
+        let name = match[2].replace(/\/\d+$/, '');
+        // An arbitrary value (`bg-[#323234]`) names no token, and a numeric
+        // suffix (`border-0`, `ring-2`) is a width, not a colour.
+        if (name.includes('[') || /^[0-9]/.test(name)) continue;
+        // `border-t-secondary` is the top border in the `secondary` colour;
+        // `border-t` alone is only the side.
+        if (match[1] === 'border') {
+          const side = /^[xytrblse]-(.+)$/.exec(name);
+          if (side) name = side[1];
+        }
+        if (!/^[a-z][a-z0-9-]*$/.test(name)) continue;
+        if (NOT_A_TOKEN.has(name)) continue;
+        used.add(name);
+      }
+    }
+  }
+  return [...used].sort();
+}
+
+/** Every `--color-*` name the `@theme` block in `styles.css` declares. */
+export function colourTokens(): string[] {
+  const source = readFileSync(join(uiDir, 'styles.css'), 'utf8');
+  const names = new Set<string>();
+  for (const match of source.matchAll(/--color-([a-z0-9-]+)\s*:/g)) names.add(match[1]);
+  return [...names].sort();
+}
+
+/**
  * Every accessibility identifier the macOS app publishes.
  *
  * Three shapes reach `.accessibilityIdentifier`, and a scan that reads only the

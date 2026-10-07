@@ -20,11 +20,17 @@ export class FakeBridge implements TrayBridge {
   lastLine: string | null = null;
   /** What the ZCode shell reports. A test sets it to say the app is present. */
   zcode: { appInstalled: boolean; planWarning?: string } | null = null;
+  /**
+   * When set, `send_command` rejects with this message the way the Tauri host
+   * does once the sidecar has stopped (`main.rs:28` returns the same string).
+   */
+  sendCommandError: string | null = null;
 
   async invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
     this.invokes.push({ cmd, args });
     if (cmd === 'send_command' && typeof args?.command === 'string') {
       this.sent.push(args.command);
+      if (this.sendCommandError) throw new Error(this.sendCommandError);
       return undefined;
     }
     if (cmd === 'last_service_line') return this.lastLine;

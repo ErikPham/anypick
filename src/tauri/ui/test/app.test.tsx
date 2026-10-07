@@ -550,4 +550,25 @@ describe('App shell', () => {
     await user.click(screen.getByTestId('toolbar-refresh'));
     expect(bridge.commandKinds()).toEqual(['refresh']);
   });
+
+  it('leaves Connecting when Try Again cannot reach the service', async () => {
+    // The sidecar stopped is exactly when a user reaches for Try Again, and
+    // Rust answers `send_command` with an error. Without a handler the refresh
+    // rejection was unhandled, the state stayed `starting`, and the window sat
+    // on "Connecting to the service" with no way out.
+    const { bridge, user } = mount();
+    bridge.pushServiceState('stopped');
+    await screen.findByTestId('state.error');
+
+    bridge.sendCommandError = 'AnyPick core is stopped. Restart the app to try again.';
+    await user.click(screen.getByRole('button', { name: 'Try Again' }));
+
+    expect(await screen.findByTestId('notice')).toHaveTextContent(
+      'AnyPick core is stopped. Restart the app to try again.',
+    );
+    // The retry's own error state, not the spinner: a second Try Again is
+    // offered rather than a "Connecting" that never resolves.
+    expect(await screen.findByTestId('state.error')).toBeInTheDocument();
+    expect(screen.queryByTestId('state.loading')).toBeNull();
+  });
 });

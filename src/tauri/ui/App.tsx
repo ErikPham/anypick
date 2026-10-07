@@ -92,7 +92,15 @@ export function App({
         // mutation runs, because the engine accepts one at a time. The busy set
         // is what a pane reads to hold its own buttons.
         onBusyChange: (pending) => setBusy(pending),
-        onError: (message) => setNotice({ kind: 'error', text: message }),
+        onError: (message) => {
+          setNotice({ kind: 'error', text: message });
+          // An error while the window is still connecting means the service
+          // never answered, which is what Try Again and the toolbar refresh
+          // hit when the sidecar is stopped. Holding `starting` leaves the
+          // spinner and its "Connecting to the service" label over the error,
+          // with no way out but a window reload.
+          setState((current) => (current === 'starting' ? 'error' : current));
+        },
       }),
     [bridge],
   );

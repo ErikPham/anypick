@@ -171,49 +171,38 @@ export function RestoreBackupSheet({
   const [overwrite, setOverwrite] = useState(false);
   const [selectedEntries, setSelectedEntries] = useState<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [pickError, setPickError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const processFile = async (file: File) => {
-    // If native file path is available (Tauri Webview / Node environment)
+  /**
+   * Turn a chosen or dropped file into a review path.
+   *
+   * The engine inspects a path on disk, and a webview `File` exposes one only
+   * when the host attaches it. The old code read the file and POSTed it to
+   * `/_api/stage-file`, a route that exists only in the Vite dev plugin: in the
+   * packaged app the fetch 404s, and the fallback then handed the engine
+   * `file.name` — a bare filename that is not a path, so the review failed
+   * against the wrong file. A path the user typed is the honest answer; a
+   * fabricated one is not.
+   */
+  const processFile = (file: File) => {
     const nativePath = (file as unknown as { path?: string }).path;
     if (nativePath) {
+      setPickError('');
       setPath(nativePath);
       onReview(nativePath);
       return;
     }
-
-    try {
-      const content = await file.text();
-      let targetPath = '';
-      try {
-        const res = await fetch('/_api/stage-file', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: file.name, content }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.path) {
-            targetPath = data.path;
-          }
-        }
-      } catch {}
-
-      if (!targetPath) {
-        targetPath = file.name;
-      }
-      setPath(targetPath);
-      onReview(targetPath);
-    } catch (err) {
-      console.error('Failed to read chosen file:', err);
-    }
+    setPickError(
+      'This app can’t read the location of a file chosen from the picker. Type the backup file’s full path in the field instead.',
+    );
   };
 
   const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    void processFile(file);
+    processFile(file);
   };
 
   const isReady = preview?.status === 'ready';
@@ -292,7 +281,7 @@ export function RestoreBackupSheet({
               e.preventDefault();
               setIsDragging(false);
               const file = e.dataTransfer.files?.[0];
-              if (file) void processFile(file);
+              if (file) processFile(file);
             }}
           >
             <span className="shrink-0 text-[13px] text-text">File</span>
@@ -324,6 +313,12 @@ export function RestoreBackupSheet({
             </Button>
           </RowActions>
         </Row>
+        {pickError ? (
+          <Row warning testId="backup-pick-error">
+            <WarningGlyph />
+            <RowText title="Can’t use that file" detail={pickError} />
+          </Row>
+        ) : null}
       </Group>
 
       {preview?.status === 'error' ? (

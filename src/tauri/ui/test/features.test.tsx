@@ -828,6 +828,28 @@ describe('backups', () => {
       }),
     );
   });
+
+  it('never reviews a bare filename when the picker cannot report a path', async () => {
+    // On Windows and Linux a webview `File` has no `.path`, and the packaged
+    // app has no `/_api/stage-file` route to turn its bytes into one. The old
+    // fallback handed the engine `file.name`, which is not a path, so the
+    // review silently inspected the wrong file. The honest answer is an error.
+    const { bridge, user } = mount(({ service, snapshot }) => (
+      <BackupsPane service={service} snapshot={snapshot} />
+    ));
+    await user.click(screen.getByRole('button', { name: 'Review Backup…' }));
+
+    const fileInput = screen.getByTestId('backup-file-picker');
+    const fakeFile = new File(['{"version":1}'], 'accounts.anypick-backup', { type: 'application/json' });
+    expect((fakeFile as unknown as { path?: string }).path).toBeUndefined();
+
+    await user.upload(fileInput, fakeFile);
+
+    expect(await screen.findByTestId('backup-pick-error')).toBeInTheDocument();
+    expect(screen.queryByText('accounts.anypick-backup')).toBeNull();
+    const inspect = bridge.commands().find((entry) => entry.kind === 'backup-inspect');
+    expect(inspect).toBeUndefined();
+  });
 });
 
 describe('activity', () => {

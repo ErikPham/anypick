@@ -28,12 +28,19 @@ declare global {
   }
 }
 
-import { createBrowserDevBridge } from './browser-bridge';
-
+/**
+ * The real Tauri shell, or a thrown error.
+ *
+ * A fabricated snapshot here would ship fixture accounts to a user whose
+ * window is not hosted by Tauri at all, which is worse than an empty window:
+ * the app would look like it works while every frame it shows is invented.
+ */
 export function resolveBridge(): TrayBridge {
   const tauri = globalThis.window?.__TAURI__;
   if (!tauri) {
-    return createBrowserDevBridge();
+    throw new Error(
+      'AnyPick must run inside the desktop shell: window.__TAURI__ is missing, so the service bridge cannot be resolved.',
+    );
   }
   return {
     invoke: tauri.core.invoke,
