@@ -26,6 +26,15 @@ import (
 // than from the original: bindings carried its own drifted copy of this check
 // (missing Attach, Detach, Migrate and Restore), and merging the two had to
 // keep both sides' coverage rather than the shared list's.
+//
+// "Disable" was lost the same way and in the opposite direction. Merging the
+// three package copies into this list dropped a verb the copies had:
+// pools.Store.DisableContext writes the pools row, and with "Disable" absent
+// from here a de-locked DisableContext passed all three gates while the same
+// shape failed at the commit before the merge. TestVerbsCoverEveryRetiredCopy
+// now pins the union, because a merge that keeps one side's coverage is
+// exactly how a gate goes quiet while looking green.
+//
 // MutationVerbs is the detection's entire signal, so it is exported rather than
 // mirrored: a second copy in a package that gates the coordinator went quiet
 // while looking green. Every gate that decides "is this a mutation" must read
@@ -34,7 +43,8 @@ func MutationVerbs(name string) bool {
 	for _, verb := range []string{
 		"Write", "Set", "Clear", "Delete", "Patch", "Update", "Create", "Remove",
 		"Save", "Upsert", "Insert", "Discard", "Prepare", "Ingest", "Reset",
-		"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Attach", "Detach",
+		"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Disable",
+		"Attach", "Detach",
 		"Migrate", "Restore", "Record",
 		// ReleaseProxyRuntimeContext and CopySnapshotFiles are persisted
 		// mutations that self-lock today, but the gate never looked at a name

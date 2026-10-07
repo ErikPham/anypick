@@ -159,7 +159,8 @@ func TestMutationVerbsKeepsItsCoverage(t *testing.T) {
 		"UpdateThing", "CreateThing", "RemoveThing", "SaveThing", "UpsertThing",
 		"InsertThing", "DiscardThing", "PrepareThing", "IngestThing", "ResetThing",
 		"RotateThing", "RevokeThing", "MarkThing", "MoveThing", "ReplaceThing",
-		"ApplyThing", "AttachThing", "DetachThing", "MigrateThing", "RestoreThing",
+		"ApplyThing", "DisableThing", "AttachThing", "DetachThing", "MigrateThing",
+		"RestoreThing",
 		// ReleaseProxyRuntimeContext and CopySnapshotFiles are persisted
 		// mutations; a gate blind to these names cannot see them lose a lock.
 		"ReleaseThing", "CopyThing", "HeartbeatThing", "ReapThing",
@@ -171,6 +172,34 @@ func TestMutationVerbsKeepsItsCoverage(t *testing.T) {
 	for _, read := range []string{"GetThing", "ListThings", "CountThings", "DescribeThing"} {
 		if MutationVerbs(read) {
 			t.Errorf("mutationVerbs(%q) = true: reads take no lock and must not be reported", read)
+		}
+	}
+}
+
+// retiredCopyVerbs is the union of the three private lists internal/pools,
+// internal/presets and internal/profile each carried before they were merged
+// into MutationVerbs. They were deleted so a verb could not reach one gate and
+// miss another, and the merge dropped "Disable" — which the copies had, and
+// which pools.Store.DisableContext needs. A de-locked DisableContext then
+// passed all three package gates while the same shape failed at the commit
+// before the merge.
+//
+// This pins the union rather than the shared list's own contents, so a future
+// merge that keeps only one side's coverage fails here instead of going quiet.
+var retiredCopyVerbs = []string{
+	"Write", "Set", "Clear", "Delete", "Patch", "Update", "Create", "Remove",
+	"Save", "Upsert", "Insert", "Discard", "Prepare", "Ingest", "Reset",
+	"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Disable",
+}
+
+func TestVerbsCoverEveryRetiredCopy(t *testing.T) {
+	if len(retiredCopyVerbs) == 0 {
+		t.Fatal("no retired verbs listed: this check proved nothing")
+	}
+	for _, verb := range retiredCopyVerbs {
+		if !MutationVerbs(verb + "Thing") {
+			t.Errorf("MutationVerbs(%qThing) = false: %q was in a deleted private copy and is missing from the shared list",
+				verb, verb)
 		}
 	}
 }
