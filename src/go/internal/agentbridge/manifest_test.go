@@ -3,6 +3,8 @@ package agentbridge
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -74,11 +76,25 @@ func TestBuildManifestUsesSortedSafeClientMetadata(t *testing.T) {
 
 func TestBuildManifestResolvesBindingThroughActivation(t *testing.T) {
 	root := t.TempDir()
-	a, err := app.New(root)
+	// A temp Home, because app.New with an empty Home binds every provider and
+	// client adapter to os.UserHomeDir() and Build then Inspects each client,
+	// which reads <home>/.claude/settings.json. That made this test depend on
+	// the developer's live machine and read a real credential file.
+	home := t.TempDir()
+	sentinel := filepath.Join(home, ".claude", "settings.json")
+	if werr := os.MkdirAll(filepath.Dir(sentinel), 0o700); werr != nil {
+		t.Fatal(werr)
+	}
+	if werr := os.WriteFile(sentinel, []byte(`{"anypick":"isolated-home-sentinel"}`), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	a, cleanup, err := app.Ready(context.Background(), app.Options{
+		Root: root, Home: home, SkipMigrate: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
+	defer cleanup()
 
 	ctx := context.Background()
 	if _, err := a.Runtime.ProfileSvc.UpsertContext(ctx, profile.Runtime{

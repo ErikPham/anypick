@@ -65,7 +65,7 @@ func mutationPayload(requestID, operation, name string) map[string]interface{} {
 func TestDesktopAccountMutationsDoNotSilentlySucceed(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 
 	detect := mutationPayload("detect-missing", "account-detect", "detect")
 	detect["providerId"] = "codex"
@@ -152,7 +152,7 @@ func TestSnapshotPublishesSavedAccountIdentity(t *testing.T) {
 	env := newTrayEnv(t)
 	env.writeCodexLive("identity@example.com")
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 
 	save := mutationPayload("save-identity", "account-save", "work")
 	save["providerId"] = "codex"
@@ -179,7 +179,7 @@ func TestSnapshotPublishesSavedAccountIdentity(t *testing.T) {
 func TestDesktopAccountSaveUsesExplicitCredentialAndOverwrite(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload := mutationPayload("credential-save", "account-save", "router")
 	payload["providerId"] = "openrouter"
 	payload["apiKey"] = "sk-desktop-test"
@@ -228,7 +228,7 @@ func TestDesktopGatewayRefreshUsesStoredSecretWithoutEchoingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload := mutationPayload("gateway-refresh", "gateway-refresh", "live-gateway")
 	res := runCorrectnessMutation(t, srv, &out, payload)
 	if res.Status != "success" || !strings.Contains(res.Message, "2 models") {
@@ -242,7 +242,7 @@ func TestDesktopGatewayRefreshUsesStoredSecretWithoutEchoingIt(t *testing.T) {
 func TestSnapshotPublishesProviderLoginMethods(t *testing.T) {
 	env := newTrayEnv(t)
 	env.writeCodexLive("login-method@example.com")
-	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	srv := newWaitedServerOut(t, env.Deps, &bytes.Buffer{})
 	snapshot, err := srv.buildSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestSnapshotMapsZAIToZCodeAndPublishesZCodeRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	srv := newWaitedServerOut(t, env.Deps, &bytes.Buffer{})
 	snapshot, err := srv.buildSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -380,7 +380,7 @@ func TestProxySnapshotStateHandlesNilAndStatusErrors(t *testing.T) {
 func TestInvokePublishesExactlyOneTerminalResult(t *testing.T) {
 	env := newTrayEnv(t)
 	var out lockedOutput
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	srv.revision = 1
 	var calls atomic.Int32
 	srv.actions = map[string]actionHandler{

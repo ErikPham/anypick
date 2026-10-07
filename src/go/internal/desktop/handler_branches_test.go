@@ -22,7 +22,7 @@ func (namedOnly) Name() string { return "BareName" }
 
 func TestShortNameOfBothBranches(t *testing.T) {
 	env := newTrayEnv(t)
-	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	srv := newWaitedServerOut(t, env.Deps, &bytes.Buffer{})
 
 	pv, err := env.Deps.Providers.Get("codex")
 	if err != nil {
@@ -60,7 +60,7 @@ func fakeHealthyProxy(t *testing.T, env *trayEnv, providerID, name, instanceID s
 func TestHandleLogsRunningTailAndEmpty(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 
 	fakeHealthyProxy(t, env, "codex", "logged", "inst-log")
 	// Running but never written to → exercises the empty branch.
@@ -118,7 +118,7 @@ func TestHandleLogsRunningTailAndEmpty(t *testing.T) {
 func TestHandleMutateRemainingOperations(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 
 	run := func(m Mutate) Result {
@@ -172,7 +172,7 @@ func TestHandleMutateRemainingOperations(t *testing.T) {
 func TestHandleMutateErrorBranches(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 
 	run := func(m Mutate) Result {
@@ -254,7 +254,7 @@ func TestHandleMutateErrorBranches(t *testing.T) {
 func TestProxyStartAllStartsStoppedProxiesAndLeavesRunningOnes(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 
 	env.writeCodexLive("start-all-idle@example.com")

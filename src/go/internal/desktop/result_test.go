@@ -238,7 +238,7 @@ func TestFrameProtocolErrorSanitizesItsMessage(t *testing.T) {
 func TestActionPanicStillPublishesATerminalResult(t *testing.T) {
 	env := newTrayEnv(t)
 	out := &syncBuffer{}
-	srv := New(env.Deps, strings.NewReader(""), out)
+	srv := newWaitedServerOut(t, env.Deps, out)
 
 	srv.actionsMu.Lock()
 	srv.actions = map[string]actionHandler{

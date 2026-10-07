@@ -34,7 +34,7 @@ func firstFrameLine(s string) string {
 
 func TestProviderNameOf(t *testing.T) {
 	env := newTrayEnv(t)
-	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	srv := newWaitedServerOut(t, env.Deps, &bytes.Buffer{})
 	if got := providerNameOf(srv, "codex"); got == "" {
 		t.Fatalf("providerNameOf codex = %q", got)
 	}
@@ -46,7 +46,7 @@ func TestProviderNameOf(t *testing.T) {
 func TestLogErrAndCurrentRevision(t *testing.T) {
 	env := newTrayEnv(t)
 	var buf bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &buf)
+	srv := newWaitedServerOut(t, env.Deps, &buf)
 	srv.logErr(os.ErrInvalid)
 	if v := srv.currentRevision(); v != 0 {
 		t.Fatalf("currentRevision initial = %d want 0", v)
@@ -59,7 +59,7 @@ func TestLogErrAndCurrentRevision(t *testing.T) {
 
 func TestHandleSimpleKinds(t *testing.T) {
 	env := newTrayEnv(t)
-	srv := New(env.Deps, strings.NewReader(""), &bytes.Buffer{})
+	srv := newWaitedServerOut(t, env.Deps, &bytes.Buffer{})
 	ctx := context.Background()
 	for _, kind := range []string{"open", "navigate", "restart", "refresh", "cancel"} {
 		cmd := &Command{Kind: kind}
@@ -81,7 +81,7 @@ func TestHandleSimpleKinds(t *testing.T) {
 func TestHandleInvokeBranches(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 
 	raw, _ := json.Marshal(invokePayload{Version: 1, RequestID: "r-unknown", Revision: 1, ActionID: "nope"})
@@ -159,7 +159,7 @@ func TestHandleInvokeBranches(t *testing.T) {
 func TestHandleLogs(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 
 	raw, _ := json.Marshal(logsPayload{Version: 1, RequestID: "rl1", ProviderID: "codex", Name: "nope", Lines: 5})
 	if err := srv.handleLogs(context.Background(), raw); err != nil {
@@ -178,7 +178,7 @@ func TestHandleLogs(t *testing.T) {
 func TestHandleMutateOperations(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 	env.writeCodexLive("mut@example.com")
 

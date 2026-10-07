@@ -1,11 +1,35 @@
 package desktop
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/refs"
 )
+
+// newWaitedServer builds a server for a test that dispatches through handle,
+// handleSafely or another handler method, and registers the Wait that
+// server.go's Wait doc comment requires before the test's database closes. A
+// handler runs its trailing catalog warm and snapshot refresh in a goroutine
+// after the terminal frame, so a test that never waits lets that goroutine
+// outlive t.TempDir() cleanup and the temp root fails to delete with
+// "directory not empty".
+func newWaitedServer(t *testing.T, deps Deps, in io.Reader, out io.Writer) *Server {
+	t.Helper()
+	srv := New(deps, in, out)
+	t.Cleanup(srv.Wait)
+	return srv
+}
+
+// newWaitedServerOut is newWaitedServer for the common case of a writer-only
+// sink, so a call site reads as a drop-in for New(deps, strings.NewReader(""),
+// out).
+func newWaitedServerOut(t *testing.T, deps Deps, out io.Writer) *Server {
+	t.Helper()
+	return newWaitedServer(t, deps, strings.NewReader(""), out)
+}
 
 func TestLabelOr(t *testing.T) {
 	if got := labelOr("My Label", "fallback"); got != "My Label" {

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/config"
@@ -18,7 +17,7 @@ func TestDesktopSettingMutationsPersistAndEcho(t *testing.T) {
 	env := newTrayEnv(t)
 	env.Deps.HostState = staticHostState{enabled: true}
 	var out syncedBuffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 
 	send := func(op string, enabled bool) Result {
 		t.Helper()
@@ -71,7 +70,7 @@ func TestSettingLaunchAtLoginIsTypedHostEffect(t *testing.T) {
 
 	env.Deps.HostState = staticHostState{enabled: true}
 	var out syncedBuffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload, _ := json.Marshal(Mutate{
 		Version: 1, RequestID: "lal-on", Operation: "setting-launch-at-login",
 		Enabled: true,

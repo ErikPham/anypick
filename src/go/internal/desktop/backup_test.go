@@ -41,7 +41,7 @@ func TestBackupExportHonoursSelectedAccounts(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "pkg.anypick-backup")
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload, _ := json.Marshal(Mutate{
 		Version: 1, RequestID: "exp1", Operation: "account-backup-export",
 		Path: dest,
@@ -75,7 +75,7 @@ func TestBackupAllReportsTheWrittenPath(t *testing.T) {
 	writeTestAccount(t, env, "codex", "alpha")
 	dest := filepath.Join(t.TempDir(), "all.anypick-backup")
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload, _ := json.Marshal(Mutate{
 		Version: 1, RequestID: "all1", Operation: "account-backup-all", Path: dest,
 	})
@@ -119,7 +119,7 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 
 	inspectPayload, _ := json.Marshal(backupInspectPayload{
@@ -180,7 +180,7 @@ func TestBackupImportViaInspectionFlow(t *testing.T) {
 func TestBulkProxyOpsReportPerProxyFailures(t *testing.T) {
 	env := newTrayEnv(t)
 	var out bytes.Buffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	ctx := context.Background()
 	env.writeCodexLive("bulk@example.com")
 	if _, err := env.Svc.Save(ctx, "codex", "bulk-acc", true); err != nil {

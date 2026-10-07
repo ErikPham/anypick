@@ -119,7 +119,7 @@ func TestDesktopAccountLoginEndToEnd(t *testing.T) {
 	t.Setenv("GROK_BINARY", launcher)
 
 	var out syncedBuffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	payload, _ := json.Marshal(Mutate{
 		Version: 1, RequestID: "login-1", Operation: "account-login",
 		ProviderID: "grok", MethodID: "grok-subscription", Name: "from-tray",
@@ -139,6 +139,18 @@ func TestDesktopAccountLoginEndToEnd(t *testing.T) {
 	active, aerr := env.Deps.Store.GetActive(context.Background(), "grok")
 	if aerr != nil || active != "from-tray" {
 		t.Fatalf("active = %q (%v)", active, aerr)
+	}
+	// The terminal frame is written before the best-effort warm and the
+	// snapshot refresh, so the account is only durable for the host once the
+	// in-flight goroutines have drained. Without this wait the refresh outlives
+	// t.TempDir() and cleanup fails with "directory not empty".
+	if !srv.waitForInFlight(30 * time.Second) {
+		t.Fatal("login handler still had in-flight work after the terminal frame")
+	}
+	// The temp root must be readable after the wait: an open store handle or a
+	// late refresh would have already removed or recreated entries under it.
+	if _, rerr := os.ReadDir(env.Root); rerr != nil {
+		t.Fatalf("temp root unreadable after the in-flight wait: %v", rerr)
 	}
 }
 

@@ -138,7 +138,7 @@ func TestToggleStartStopRoundTrip(t *testing.T) {
 	}
 
 	var out syncBuffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	snap, err := srv.buildSnapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestStartReappliesBoundClaudeToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+	srv := newWaitedServerOut(t, env.Deps, &strings.Builder{})
 	if _, err := env.Deps.Proxy.StartProxy(ctx, "workbuddy", "main"); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestToggleReusesFreshLivenessNotSnapshotTime(t *testing.T) {
 	seedTrayProxy(t, ctx, env)
 
 	var out syncBuffer
-	srv := New(env.Deps, strings.NewReader(""), &out)
+	srv := newWaitedServerOut(t, env.Deps, &out)
 	snap, err := srv.buildSnapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
