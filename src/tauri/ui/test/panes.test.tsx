@@ -137,6 +137,45 @@ describe('Overview pane', () => {
     expect(screen.getByTestId('overview.apps.see-all')).toHaveTextContent('All Apps (6)…');
   });
 
+  it('renders all four Get Started steps macOS shows', () => {
+    // macOS renders four steps (`OverviewView.swift:112-157`): Save a Login,
+    // Use an App, Point an App, Set Up Proxy Hub. The pane emitted three, and
+    // the parity map hid the missing one by pointing both `use-app` and
+    // `choose-route` at `onboarding-choose-route`.
+    mount(({ snapshot }) => <OverviewPane snapshot={snapshot} />);
+    expect(screen.getByTestId('onboarding-save-login')).toHaveTextContent('Save a Login');
+    expect(screen.getByTestId('onboarding-use-app')).toHaveTextContent('Use an App');
+    expect(screen.getByTestId('onboarding-choose-route')).toHaveTextContent('Point an App');
+    expect(screen.getByTestId('onboarding-hub')).toHaveTextContent('Set Up Proxy Hub (Optional)');
+  });
+
+  it('marks Use an App done from the install probe, not the route list', () => {
+    // `hasInstalledApp` (`Models.swift:484`, from the install probe) reads
+    // whether an app is on the machine. Reading routes instead would call the
+    // step incomplete on the one machine that needs it.
+    const noInstall = snapshotFixture({
+      actions: [],
+      accountProviders: snapshotFixture().accountProviders.map((provider) => ({
+        ...provider,
+        installed: false,
+      })),
+    });
+    const onRefresh = vi.fn();
+    const { user, unmount } = mount(
+      ({ snapshot }) => <OverviewPane snapshot={snapshot} onRefresh={onRefresh} />,
+      noInstall,
+    );
+    expect(screen.getByTestId('onboarding-use-app')).toHaveTextContent(
+      'Install Claude Code or Codex, then refresh.',
+    );
+    return user.click(screen.getByRole('button', { name: 'Refresh' })).then(() => {
+      expect(onRefresh).toHaveBeenCalled();
+      unmount();
+      mount(({ snapshot }) => <OverviewPane snapshot={snapshot} />, snapshotFixture());
+      expect(screen.getByTestId('onboarding-use-app')).toHaveTextContent('Done');
+    });
+  });
+
   it('points the attention row at the pane that can fix it', async () => {
     const snapshot = snapshotFixture({
       proxies: [

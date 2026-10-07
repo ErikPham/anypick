@@ -37,14 +37,23 @@ const ONBOARDING_KEY = 'anypick.onboardingDismissed';
 export function OverviewPane({
   snapshot,
   onNavigate,
+  onRefresh,
 }: {
   snapshot: Snapshot;
   onNavigate?: (destination: Destination) => void;
+  /** Ask the engine for a fresh snapshot. */
+  onRefresh?: () => void;
 }) {
   const [onboardingDismissed, setOnboardingDismissed] = useState(
     () => globalThis.localStorage?.getItem(ONBOARDING_KEY) === '1',
   );
   const apps = overviewApps(snapshot.actions);
+  // `hasInstalledApp` (`Models.swift:484` -> `TrayStore+Snapshots.swift:89`)
+  // reads the install probe on the provider rows, not the route actions: a
+  // fresh install has no routes to look at yet, which is exactly when this
+  // step matters. macOS also requires `clientId != nil`, which the engine
+  // always satisfies — `nativeClientIDOf` falls back to the provider id.
+  const installedApp = snapshot.accountProviders.some((provider) => provider.installed);
   const hub = snapshot.proxies.find((proxy) => proxy.providerId === 'proxy-hub');
   const accountProxies = snapshot.proxies.filter((proxy) => proxy.providerId !== 'proxy-hub');
   const target = overviewAttentionTarget({
@@ -136,6 +145,23 @@ export function OverviewPane({
               <span className="text-[12px] whitespace-nowrap text-secondary">Done</span>
             ) : (
               <Button onClick={() => onNavigate?.('accounts')}>Save…</Button>
+            )}
+          </RowActions>
+        </Row>
+        <Row testId="onboarding-use-app">
+          <RowText
+            title="Use an App"
+            detail={
+              installedApp
+                ? 'Claude Code, Codex, or another supported app is available.'
+                : 'Install Claude Code or Codex, then refresh.'
+            }
+          />
+          <RowActions>
+            {installedApp ? (
+              <span className="text-[12px] whitespace-nowrap text-secondary">Done</span>
+            ) : (
+              <Button onClick={() => onRefresh?.()}>Refresh</Button>
             )}
           </RowActions>
         </Row>

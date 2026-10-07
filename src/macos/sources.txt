@@ -5,6 +5,7 @@ HubRouting.swift
 SnapshotTypes.swift
 AppServiceClient.swift
 GoServiceProcess.swift
+FrameChunkBuffer.swift
 Models.swift
 MacOSDesignModel+Accounts.swift
 MacOSDesignModel+Apps.swift
