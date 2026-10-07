@@ -80,14 +80,10 @@ func TestBuildManifestResolvesBindingThroughActivation(t *testing.T) {
 	// client adapter to os.UserHomeDir() and Build then Inspects each client,
 	// which reads <home>/.claude/settings.json. That made this test depend on
 	// the developer's live machine and read a real credential file.
+	// TestBuildManifestReadsOnlyTheInjectedHome is what proves the isolation,
+	// because a resolved route hides Inspect's result from this test's
+	// assertions.
 	home := t.TempDir()
-	sentinel := filepath.Join(home, ".claude", "settings.json")
-	if werr := os.MkdirAll(filepath.Dir(sentinel), 0o700); werr != nil {
-		t.Fatal(werr)
-	}
-	if werr := os.WriteFile(sentinel, []byte(`{"anypick":"isolated-home-sentinel"}`), 0o600); werr != nil {
-		t.Fatal(werr)
-	}
 	a, cleanup, err := app.Ready(context.Background(), app.Options{
 		Root: root, Home: home, SkipMigrate: true,
 	})
@@ -95,7 +91,6 @@ func TestBuildManifestResolvesBindingThroughActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-
 	ctx := context.Background()
 	if _, err := a.Runtime.ProfileSvc.UpsertContext(ctx, profile.Runtime{
 		Meta: profile.Meta{
@@ -148,4 +143,69 @@ func TestBuildManifestResolvesBindingThroughActivation(t *testing.T) {
 		return
 	}
 	t.Fatal("claude agent missing from manifest")
+}
+
+// TestBuildManifestReadsOnlyTheInjectedHome is the isolation gate for the test
+// above. That test composes through app.Ready with a temp Home so Build's
+// adapter.Inspect() cannot reach the developer's real ~/.claude/settings.json,
+// but its own assertions cannot show that: a resolved route sets Status to
+// "ready" regardless of what Inspect saw, so an ambient home would leave it
+// green. This test has no binding, which is what makes Inspect's result visible
+// in the status.
+//
+// The proof is a sentinel in a home the app is NOT given. Build reads the
+// injected home, which has no .claude/settings.json, so claude stays
+// "unavailable". If a change made app.Ready fall back to the ambient home, the
+// planted file would be read and the status would become "unconfigured",
+// failing here with the ambient path named.
+func TestBuildManifestReadsOnlyTheInjectedHome(t *testing.T) {
+	root := t.TempDir()
+	injected := t.TempDir()
+	// The ambient home is what os.UserHomeDir() resolves, so the sentinel has
+	// to live there for the fallback to be observable. Pointing HOME at a temp
+	// dir keeps this test off the developer's real machine.
+	ambient := t.TempDir()
+	t.Setenv("HOME", ambient)
+	planted := filepath.Join(ambient, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(planted), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planted, []byte(`{"anypick":"ambient-sentinel"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ask the adapter directly rather than reading a status off the manifest.
+	// A resolved route overwrites Agent.Status with "ready", so the manifest
+	// cannot show which home Inspect read; the adapter's own issue text can.
+	// An injected home with no settings.json reports "settings.json not found",
+	// while the ambient home that HAS the sentinel reports a different issue
+	// ("no anypick-managed env block"), which is the tell.
+	a, cleanup, err := app.Ready(context.Background(), app.Options{
+		Root: root, Home: injected, SkipMigrate: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	cad, cerr := a.Clients.Get("claude")
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	inspection, ierr := cad.Inspect()
+	if ierr != nil {
+		t.Fatal(ierr)
+	}
+	if inspection == nil {
+		t.Fatal("claude Inspect returned nothing")
+	}
+	if inspection.Present {
+		t.Fatalf("claude reports a present config in an empty injected home: it read %s", ambient)
+	}
+	for _, issue := range inspection.Issues {
+		if !strings.Contains(issue, "settings.json not found") {
+			t.Fatalf("claude Inspect issue = %q, want \"settings.json not found\": the injected home is empty, so this issue came from %s",
+				issue, ambient)
+		}
+	}
 }
