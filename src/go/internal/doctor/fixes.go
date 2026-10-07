@@ -296,6 +296,20 @@ type overlayCandidate struct {
 // internal/client/commandcode.go, and "anypick-live-checkpoint-" in
 // internal/accounts/service.go. Nothing sweeps the checkpoint directories
 // today, which is how they accumulate.
+// scanTempOverlays lists AnyPick-owned directories under the system temp dir.
+//
+// The age check is the ONLY liveness signal available, and it is a heuristic,
+// not a proof. An `anypick run <client>` overlay lives as long as its child
+// process, which can exceed the one-hour threshold in an ordinary agent
+// session, and nothing in the overlay records which process owns it: the
+// runtime creates it with os.MkdirTemp and no ownership record. So a long-lived
+// run CAN have its isolated home deleted underneath it.
+//
+// That is why the threshold is a FixDeps field a caller can raise, and why the
+// refusal message names the age rather than claiming the directory is dead.
+// Treating age as liveness is a known limitation of this repair; the honest
+// guard would be an ownership record on the overlay, which the runtime does not
+// write today.
 func scanTempOverlays(deps FixDeps) []overlayCandidate {
 	entries, err := os.ReadDir(deps.tempDir())
 	if err != nil {
