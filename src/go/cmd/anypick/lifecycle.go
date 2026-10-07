@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/cli"
@@ -182,6 +183,28 @@ func cmdTray(ctx context.Context, a *app.App, args []string) int {
 			// the supervisor status path instead of the app-run protocol.
 			return cmdStatus(a, args[1:])
 		}
+	}
+	if cli.WantsHelp(args) {
+		fmt.Print(`Usage:
+  anypick tray                open the menu-bar tray app
+  anypick tray start|stop|status
+  anypick desktop-service --stdio   (used by the native app; not for humans)
+
+The bare form attaches this process to the tray app over the desktop
+protocol and does not return while the app runs. It is not a snapshot
+command; use anypick status --json or anypick current <provider> for that.
+`)
+		return int(anyerr.Success)
+	}
+	// A non-TTY stdout can never host the desktop protocol: the frames are
+	// length-prefixed lines a script cannot read, and a cron job or pipe that
+	// ran the documented `anypick tray` used to receive 29KB of base64 on
+	// stdout from a process that never returned. Refuse instead of streaming;
+	// a human on a terminal still gets the app, which is what the command means.
+	if !isatty.IsTerminal(os.Stdout.Fd()) {
+		return reportErr(anyerr.Newf(
+			"anypick tray opens the tray app and needs a terminal; for a status snapshot use `anypick status --json`",
+			"NO_TTY", anyerr.WithExitCode(anyerr.InvalidUsage)))
 	}
 	return cmdAppRun(ctx, a, args)
 }
