@@ -13,6 +13,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/journal"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/modelcache"
 	"github.com/outof0/anypick/go/internal/ownership"
 	"github.com/outof0/anypick/go/internal/paths"
@@ -134,7 +135,8 @@ type FixDeps struct {
 	Providers []string
 	Store     *modelcache.Store
 	// Ownership is injectable so a test can plant a record without a process.
-	Ownership func(string) *ownership.Record
+	// It is the read-only Inspect, never Load: planning must not mutate.
+	Ownership func(string) (*ownership.Record, error)
 	Binding   *bindings.Service
 	// Leases answers "does any live lease reference this pair?" through the
 	// proxy service, so this package never holds the lease store directly.
@@ -333,11 +335,23 @@ type pidCandidate struct {
 	Path     string
 	PID      int
 	Alive    bool
+	// Stale marks a record Inspect refused: unreadable, wrong version, or a
+	// legacy bare-PID file. It is planned for deletion, never deleted during
+	// planning.
+	Stale  bool
+	Reason string
 }
 
-// scanPIDRecords reads every account proxy PID path under the data root. It
-// reads through the injected ownership.Load so a test can plant a record
-// without a live process.
+// scanPIDRecords reads every account proxy PID path under the data root.
+//
+// It reads through ownership.Inspect, never ownership.Load: Load DELETES a
+// record it cannot trust, and PlanFixes promises to perform no mutation so
+// that `--fix --dry-run`, the confirmation prompt and a non-TTY refusal can
+// all share it. Planning through Load made `doctor --fix --dry-run` delete
+// proxy.pid files while printing nothing about them, and made the non-TTY
+// refusal mutate before refusing. A record Inspect refuses becomes a
+// delete_stale_pid action, so the deletion happens at apply time, under the
+// plan and the journal.
 func scanPIDRecords(deps FixDeps) []pidCandidate {
 	if deps.Root == "" {
 		return nil
@@ -346,9 +360,9 @@ func scanPIDRecords(deps FixDeps) []pidCandidate {
 	if err != nil {
 		return nil
 	}
-	load := deps.Ownership
-	if load == nil {
-		load = ownership.Load
+	inspect := deps.Ownership
+	if inspect == nil {
+		inspect = ownership.Inspect
 	}
 	var out []pidCandidate
 	for _, provider := range providers {
@@ -367,7 +381,17 @@ func scanPIDRecords(deps FixDeps) []pidCandidate {
 			if _, err := os.Stat(pidPath); err != nil {
 				continue
 			}
-			rec := load(pidPath)
+			rec, ierr := inspect(pidPath)
+			if ierr != nil {
+				// Unreadable, wrong version, or a legacy bare-PID file. The
+				// record is untrustworthy, so it is planned for deletion
+				// rather than deleted here.
+				out = append(out, pidCandidate{
+					Provider: provider.Name(), Account: account.Name(),
+					Path: pidPath, Stale: true, Reason: ierr.Error(),
+				})
+				continue
+			}
 			if rec == nil {
 				continue
 			}
@@ -695,12 +719,23 @@ func fixRebuildCaches(ctx context.Context, deps FixDeps) (string, error) {
 		return "", anyerr.Newf("model cache store unavailable", "FIX_UNAVAILABLE",
 			anyerr.WithSuggestions("Run this from the CLI, where the database is open."))
 	}
+	// modelcache.Store.Clear executes the DELETE itself and takes no lock, so
+	// the coordinator scope lives on the caller: internal/discovery uses
+	// "model-cache" for both its Write and its Clear. Taking it here is what
+	// keeps this repair from interleaving with a concurrent discovery refresh
+	// (ADR 0009 invariant 5). deps.Root is the root discovery locks.
 	cleared := 0
-	for _, providerID := range deps.Providers {
-		if err := deps.Store.Clear(ctx, providerID); err != nil {
-			return "", anyerr.Wrapf(err, "clear model cache for "+providerID, "DB_WRITE")
+	err := lock.WithMutationLock(ctx, deps.Root, "model-cache", func(c context.Context) error {
+		for _, providerID := range deps.Providers {
+			if cerr := deps.Store.Clear(c, providerID); cerr != nil {
+				return anyerr.Wrapf(cerr, "clear model cache for "+providerID, "DB_WRITE")
+			}
+			cleared++
 		}
-		cleared++
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("rebuilt derived caches for %d provider(s)", cleared), nil
 }
@@ -711,15 +746,21 @@ func fixDeleteStalePID(action FixAction, deps FixDeps) (string, error) {
 			"FIX_OUTSIDE_ROOT",
 			anyerr.WithSuggestions("Only paths under "+deps.Root+" are AnyPick-owned."))
 	}
-	load := deps.Ownership
-	if load == nil {
-		load = ownership.Load
+	inspect := deps.Ownership
+	if inspect == nil {
+		inspect = ownership.Inspect
 	}
-	rec := load(action.Target)
+	rec, ierr := inspect(action.Target)
+	if ierr != nil {
+		// The record is unreadable, wrong-version, or a legacy bare-PID file.
+		// That is what this repair is for, and planning already refused to
+		// touch it, so the deletion happens here under the plan and journal.
+		if derr := ownership.Discard(action.Target); derr != nil {
+			return "", anyerr.Wrapf(derr, "delete PID record "+action.Target, "FS_PATH")
+		}
+		return "deleted unreadable PID record: " + action.Target, nil
+	}
 	if rec == nil {
-		// Load removes an unreadable record itself and returns nil. If the file
-		// is gone there is nothing left to do; if it is still there it is not
-		// an ownership record this repair understands.
 		if _, err := os.Stat(action.Target); errors.Is(err, os.ErrNotExist) {
 			return "PID record already gone: " + action.Target, nil
 		}

@@ -13,6 +13,7 @@ package ownership
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -136,20 +137,56 @@ func writeAtomic(path string, rec *Record) error {
 // file is absent, corrupt, wrong-version, or a legacy bare-PID file. Legacy
 // numeric files are removed — they are never trusted, and the next start
 // re-creates the record (ADR 0003 §2/§Consequences).
+//
+// Load MUTATES: it deletes a record it cannot trust. That is right for a
+// caller about to use or replace the record, and wrong for one that is only
+// reporting. A read-only caller must use Inspect instead; `doctor --fix
+// --dry-run` was deleting proxy.pid files through this function while
+// promising to change nothing.
 func Load(pidPath string) *Record {
+	rec, err := Inspect(pidPath)
+	if err != nil {
+		// Keep the documented cleanup for the callers that rely on it: an
+		// untrustworthy record is removed here so the next start rewrites it.
+		_ = Discard(pidPath)
+		return nil
+	}
+	return rec
+}
+
+// Inspect is Load without the deletion: it reports the same verdict and never
+// touches the filesystem. It returns the record when it is usable, and the
+// reason when it is not, so a read-only caller can explain why a record was
+// refused instead of only reporting its absence.
+func Inspect(pidPath string) (*Record, error) {
 	raw, err := os.ReadFile(pidPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var rec Record
-	if jerr := json.Unmarshal(raw, &rec); jerr != nil ||
-		rec.RecordVersion != RecordVersion ||
-		rec.PID <= 0 || len(rec.Command) == 0 ||
-		len(rec.InstanceID) != 36 {
-		_ = os.Remove(pidPath)
-		return nil
+	switch {
+	case json.Unmarshal(raw, &rec) != nil:
+		return nil, fmt.Errorf("%s is not a valid ownership record", pidPath)
+	case rec.RecordVersion != RecordVersion:
+		return nil, fmt.Errorf("%s has record version %d, want %d", pidPath, rec.RecordVersion, RecordVersion)
+	case rec.PID <= 0:
+		return nil, fmt.Errorf("%s records no usable pid", pidPath)
+	case len(rec.Command) == 0:
+		return nil, fmt.Errorf("%s records no command", pidPath)
+	case len(rec.InstanceID) != 36:
+		return nil, fmt.Errorf("%s records no usable instance id", pidPath)
 	}
-	return &rec
+	return &rec, nil
+}
+
+// Discard removes a record Inspect refused, so a caller that has decided to
+// replace it does not have to re-read the file to clear it.
+func Discard(pidPath string) error {
+	err := os.Remove(pidPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Alive reports whether the recorded pid currently exists (liveness only —

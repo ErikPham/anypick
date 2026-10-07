@@ -7,6 +7,7 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,16 @@ func newFixture(t *testing.T) *fixture {
 	f.deps = FixDeps{
 		Root:    f.root,
 		TempDir: f.tmp,
-		Ownership: func(path string) *ownership.Record {
-			return f.records[path]
+		Ownership: func(path string) (*ownership.Record, error) {
+			rec, ok := f.records[path]
+			if !ok {
+				// Absent from the map means "no usable record", which is what
+				// the real Inspect reports for a file it refuses. Returning an
+				// error keeps the fixture honest: planning must treat a refused
+				// record as a planned deletion, never as a silent skip.
+				return nil, os.ErrNotExist
+			}
+			return rec, nil
 		},
 	}
 	return f
@@ -478,6 +487,64 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	}
 	if result.JournalID != "" {
 		t.Fatalf("dry run journalled a mutation: %q", result.JournalID)
+	}
+}
+
+// TestPlanFixesDoesNotMutateThroughTheRealLoader is the regression for a P0:
+// planning used to read PID records through ownership.Load, which DELETES a
+// record it cannot trust. `doctor --fix --dry-run` therefore deleted
+// proxy.pid files while printing nothing about them, and the non-TTY refusal
+// deleted them before refusing.
+//
+// The fixture above cannot see this: it injects an Ownership func that only
+// consults a map, so the real loader's removal never runs. This test builds
+// deps with NO injected loader, so scanPIDRecords reaches the real
+// ownership.Inspect path against a real file on disk. That is the difference
+// between testing the plan and testing the shipping path.
+func TestPlanFixesDoesNotMutateThroughTheRealLoader(t *testing.T) {
+	root := t.TempDir()
+	tmp := t.TempDir()
+	pidPath := filepath.Join(root, "providers", "grok", "accounts", "work", "runtime", "proxy.pid")
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A corrupt record: the shape ownership.Load removes on read.
+	if err := os.WriteFile(pidPath, []byte("not an ownership record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := FixDeps{Root: root, TempDir: tmp}
+	if deps.Ownership != nil {
+		t.Fatal("this test must exercise the default loader, not an injected one")
+	}
+
+	plan := PlanFixes(context.Background(), deps)
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("PlanFixes deleted %s: planning must not mutate (err=%v)", pidPath, err)
+	}
+
+	// The refused record is planned for deletion, so the deletion happens at
+	// apply time under the plan rather than silently during the scan.
+	var planned bool
+	for _, action := range plan.Actions {
+		if action.Kind == FixDeleteStalePID && action.Target == pidPath {
+			planned = true
+		}
+	}
+	if !planned {
+		t.Fatalf("an unreadable PID record produced no delete_stale_pid action: %+v", plan.Actions)
+	}
+
+	// A dry run still must not touch it.
+	ApplyFixes(context.Background(), plan, deps, true)
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("dry run deleted %s: %v", pidPath, err)
+	}
+
+	// A real apply is what removes it.
+	result := ApplyFixes(context.Background(), plan, deps, false)
+	if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("apply did not delete the unreadable record: %v (result=%+v)", err, result.Applied)
 	}
 }
 
