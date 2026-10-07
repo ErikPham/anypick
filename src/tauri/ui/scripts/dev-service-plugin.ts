@@ -1,8 +1,7 @@
 import type { Plugin } from 'vite';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export function devServicePlugin(repoRoot: string): Plugin {
@@ -185,35 +184,6 @@ export function devServicePlugin(repoRoot: string): Plugin {
           return;
         }
 
-        if (url === '/_api/stage-file' && req.method === 'POST') {
-          let body = '';
-          req.on('data', (c) => (body += c));
-          req.on('end', () => {
-            try {
-              const { filename, content, encoding } = JSON.parse(body);
-              if (typeof content === 'string') {
-                const safeName = (filename || 'backup.json').replace(/[^a-zA-Z0-9._-]/g, '_');
-                const tmpPath = resolve(tmpdir(), `anypick-backup-${Date.now()}-${safeName}`);
-                if (encoding === 'base64') {
-                  writeFileSync(tmpPath, Buffer.from(content, 'base64'));
-                } else {
-                  writeFileSync(tmpPath, content, 'utf8');
-                }
-                res.writeHead(200, {
-                  'Content-Type': 'application/json',
-                  'Access-Control-Allow-Origin': '*',
-                });
-                res.end(JSON.stringify({ path: tmpPath }));
-                return;
-              }
-            } catch (err) {
-              console.error('[dev-service] Failed to stage file:', err);
-            }
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'invalid payload' }));
-          });
-          return;
-        }
 
         next();
       });

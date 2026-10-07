@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/db"
 	"github.com/outof0/anypick/go/internal/journal"
@@ -430,8 +431,8 @@ func TestIncompleteJournalEntriesArePlanned(t *testing.T) {
 	if planned == nil {
 		t.Fatalf("incomplete journal entry was not planned: %+v", plan.Actions)
 	}
-	if planned.JournalID != entry.ID {
-		t.Fatalf("planned journal id = %q, want %q", planned.JournalID, entry.ID)
+	if len(planned.JournalIDs) != 1 || planned.JournalIDs[0] != entry.ID {
+		t.Fatalf("planned journal ids = %v, want [%q]", planned.JournalIDs, entry.ID)
 	}
 
 	// Planning must not have rolled anything back.
@@ -441,11 +442,60 @@ func TestIncompleteJournalEntriesArePlanned(t *testing.T) {
 	}
 }
 
+// TestJournalRecoveryRunsOnceForEveryPendingEntry pins the shape of the fix.
+// Recovery is a whole-journal replay, so one action must cover every incomplete
+// entry. Planning one action per entry ran the replay N times, and each of the
+// N lines claimed the full set, so the count a user read depended on how many
+// entries happened to be pending.
+func TestJournalRecoveryRunsOnceForEveryPendingEntry(t *testing.T) {
+	f := newFixture(t)
+	database, err := db.Open(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	j := &journal.OperationJournal{DB: database.DB}
+	ctx := context.Background()
+	for _, kind := range []string{"activate", "switch"} {
+		if _, cerr := j.CreateContext(ctx, kind, journal.CreateOptions{
+			State: journal.StateExecuting, AffectedResources: []string{"client/claude"},
+		}); cerr != nil {
+			t.Fatal(cerr)
+		}
+	}
+	f.deps.Journal = j
+
+	calls := 0
+	f.deps.Recovery = func(context.Context) (*activation.RecoveryResult, error) {
+		calls++
+		return &activation.RecoveryResult{}, nil
+	}
+
+	plan := PlanFixes(ctx, f.deps)
+	journalActions := 0
+	for _, a := range plan.Actions {
+		if a.Kind == FixCompleteJournalRollback {
+			journalActions++
+			if len(a.JournalIDs) != 2 {
+				t.Fatalf("action covers %d ids, want 2: %v", len(a.JournalIDs), a.JournalIDs)
+			}
+		}
+	}
+	if journalActions != 1 {
+		t.Fatalf("planned %d journal actions for 2 pending entries, want 1", journalActions)
+	}
+
+	ApplyFixes(ctx, plan, f.deps, false)
+	if calls != 1 {
+		t.Fatalf("recovery ran %d times for 2 pending entries, want 1", calls)
+	}
+}
+
 func TestCompleteJournalRollbackRefusesWithoutRecovery(t *testing.T) {
 	f := newFixture(t)
 	plan := FixPlan{Actions: []FixAction{{
 		ID: "complete_journal_rollback:x", Kind: FixCompleteJournalRollback,
-		Description: "rollback", Target: "journal:x", JournalID: "x",
+		Description: "rollback", Target: "journal", JournalIDs: []string{"x"},
 	}}}
 	result := ApplyFixes(context.Background(), plan, f.deps, false)
 	if len(result.Applied) != 1 || result.Applied[0].OK {

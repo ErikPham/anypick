@@ -133,7 +133,7 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 	// --dry-run and --yes are also global flags, and normalizeGlobalFlags
 	// strips them before dispatch; reading both keeps the handler correct
 	// whichever layer consumed them.
-	return runDoctorFix(ctx, a, report,
+	return runDoctorFix(ctx, a,
 		*flags.DryRun || globals.DryRun,
 		*flags.Yes || *flags.ShortY || globals.Yes)
 }
@@ -164,7 +164,7 @@ func renderDoctorReport(report doctor.InstallationReport) {
 // mutates nothing and must work in CI. A real run goes through confirmDelete,
 // which owns the no-TTY rule and the CONFIRMATION_REQUIRED/exit-2 contract
 // (AGENTS.md invariant 7).
-func runDoctorFix(ctx context.Context, a *appView, report doctor.InstallationReport, dryRun, yes bool) int {
+func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 	deps := doctorFixDeps(ctx, a)
 	plan := doctor.PlanFixes(ctx, deps)
 

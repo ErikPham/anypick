@@ -86,8 +86,10 @@ type FixAction struct {
 	// them and turn the guard into a no-op.
 	Provider string `json:"provider,omitempty"`
 	Account  string `json:"account,omitempty"`
-	// JournalID is the incomplete entry complete_journal_rollback will recover.
-	JournalID string `json:"journalId,omitempty"`
+	// JournalIDs are the incomplete entries complete_journal_rollback covers.
+	// Recovery is a whole-journal replay, so one action carries every pending
+	// id rather than one action per id.
+	JournalIDs []string `json:"journalIds,omitempty"`
 	// Reason is set when the scan found the target but refuses to touch it.
 	// A refused action is still reported: omitting it would make --fix look
 	// like it had nothing to say.
@@ -226,15 +228,21 @@ func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
 	planPIDActions(deps, add, &plan)
 	planOrphanActions(ctx, deps, add)
 
-	// Incomplete journal entries. One action per entry, so a partial recovery
-	// reports per entry rather than as one opaque count.
-	for _, entryID := range incompleteJournalIDs(ctx, deps) {
+	// Incomplete journal entries. ONE action covers all of them, because
+	// deps.Recovery is a whole-journal replay: it recovers every incomplete
+	// entry in a single pass and reports the ids it could not finish. Planning
+	// one action per entry ran that replay once per entry, so N pending entries
+	// produced N identical recoveries and N lines each claiming the whole set.
+	// The count a user read then depended on how many entries happened to be
+	// pending rather than on what recovery did. EntryIDs keeps the per-entry
+	// detail available for the message.
+	if ids := incompleteJournalIDs(ctx, deps); len(ids) > 0 {
 		add(FixAction{
-			ID:          "complete_journal_rollback:" + entryID,
+			ID:          "complete_journal_rollback",
 			Kind:        FixCompleteJournalRollback,
-			Description: "Complete or roll back interrupted operation " + entryID,
-			Target:      "journal:" + entryID,
-			JournalID:   entryID,
+			Description: fmt.Sprintf("Complete or roll back %d interrupted operation(s)", len(ids)),
+			Target:      "journal",
+			JournalIDs:  ids,
 		})
 	}
 
@@ -822,9 +830,13 @@ func fixCompleteJournalRollback(ctx context.Context, action FixAction, deps FixD
 	if deps.Recovery == nil {
 		return "", anyerr.Newf("journal recovery unavailable", "FIX_UNAVAILABLE")
 	}
-	if action.JournalID == "" {
-		return "", anyerr.Newf("journal fix requires an entry id", "FIX_NOT_ALLOWED")
+	if len(action.JournalIDs) == 0 {
+		return "", anyerr.Newf("journal fix requires at least one entry id", "FIX_NOT_ALLOWED")
 	}
+	// One replay covers every pending entry. The action carries the ids it was
+	// planned for so the message can say which of them recovery did not report,
+	// which is the per-entry detail the old one-action-per-entry shape was
+	// reaching for without running the replay N times.
 	result, err := deps.Recovery(ctx)
 	if err != nil {
 		return "", anyerr.Wrapf(err, "recover incomplete operations", "DB_WRITE")
@@ -834,8 +846,14 @@ func fixCompleteJournalRollback(ctx context.Context, action FixAction, deps FixD
 	}
 	message := fmt.Sprintf("journal recovery: recovered=%d failed=%d refused=%d",
 		result.Recovered, len(result.Failed), len(result.Refused))
-	if !containsString(result.Failed, action.JournalID) && !containsString(result.Refused, action.JournalID) {
-		message += "; entry " + action.JournalID + " was not reported"
+	var unreported []string
+	for _, id := range action.JournalIDs {
+		if !containsString(result.Failed, id) && !containsString(result.Refused, id) {
+			unreported = append(unreported, id)
+		}
+	}
+	if len(unreported) > 0 {
+		message += "; not reported by recovery: " + strings.Join(unreported, ", ")
 	}
 	return message, nil
 }
