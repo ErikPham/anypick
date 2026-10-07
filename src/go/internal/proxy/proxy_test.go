@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/db"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
@@ -1116,4 +1117,248 @@ func TestRotateToken(t *testing.T) {
 		t.Fatal("expected proxy to be restarted and running after rotate")
 	}
 	_ = ts.Service.Stop(ctx, "codex", "rotateme")
+}
+
+// probeBearerStatus sends one authenticated request to endpoint and returns the
+// status, so a test can ask which secret the live listener actually accepts.
+func probeBearerStatus(endpoint, token string) int {
+	req, err := http.NewRequest(http.MethodGet,
+		strings.TrimSuffix(endpoint, "/")+"/v1/models", nil)
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// parkedHealthServer answers /health only after release is closed, and always
+// echoes an instance id that is not the one recorded in proxy_state. It parks
+// RotateToken inside its liveness probe — the unlocked window between its
+// "was it running?" sample and its write of the rotated row — so a concurrent
+// StartProxy can run to completion while the rotation holds nothing.
+type parkedHealthServer struct {
+	srv     *httptest.Server
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newParkedHealthServer(t *testing.T) *parkedHealthServer {
+	t.Helper()
+	p := &parkedHealthServer{entered: make(chan struct{}), release: make(chan struct{})}
+	p.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		p.once.Do(func() { close(p.entered) })
+		<-p.release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"instanceId":"not-ours","pid":1}`))
+	}))
+	t.Cleanup(p.srv.Close)
+	return p
+}
+
+// RotateToken's read-modify-write of proxy_state must be atomic against a
+// concurrent StartProxy. proxy_state is the only copy of the bearer, so a
+// rotation that samples "not running" while a start is in flight lets that
+// start serve the pre-rotation token while the caller is handed a bearer the
+// listener rejects (invariant 2, ADR 0009).
+func TestRotateTokenConcurrentStartAgreesOnOneToken(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "rotate-race", true)
+	t.Cleanup(ts.Service.Close)
+
+	first, err := ts.Service.StartProxy(ctx, "codex", "rotate-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Service.Stop(ctx, "codex", "rotate-race"); err != nil {
+		t.Fatal(err)
+	}
+	// A stale endpoint whose liveness probe never confirms ownership: the
+	// rotation samples "not running" (so it will not stop/restart) while the
+	// start still has a row to overwrite.
+	parked := newParkedHealthServer(t)
+	if err := ts.Service.Store.WriteProxyStateContext(ctx, "codex", "rotate-race",
+		store.ProxyRuntimeState{AccountName: "rotate-race", Endpoint: parked.srv.URL, Token: first.Token}); err != nil {
+		t.Fatal(err)
+	}
+
+	type startOutcome struct {
+		res *StartResult
+		err error
+	}
+	startDone := make(chan startOutcome, 1)
+	rotateDone := make(chan string, 1)
+	rotateErr := make(chan error, 1)
+	go func() {
+		token, err := ts.Service.RotateToken(ctx, "codex", "rotate-race")
+		rotateDone <- token
+		rotateErr <- err
+	}()
+	select {
+	case <-parked.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RotateToken never probed the recorded endpoint")
+	}
+
+	go func() {
+		res, err := ts.Service.StartProxy(ctx, "codex", "rotate-race")
+		startDone <- startOutcome{res, err}
+	}()
+	// Let the start land its row before the rotation resumes when the rotation
+	// is genuinely racing it. A fixed rotation holds the scope, so the start
+	// cannot land first and this wait simply expires. The window stays well
+	// inside the 750ms health-probe budget that would otherwise time the
+	// rotation out of its park.
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if st, rerr := ts.Service.Store.ReadProxyState(ctx, "codex", "rotate-race"); rerr == nil &&
+			st != nil && st.InstanceID != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(parked.release)
+
+	out := <-startDone
+	if out.err != nil {
+		t.Fatalf("concurrent StartProxy: %v", out.err)
+	}
+	rotated := <-rotateDone
+	if err := <-rotateErr; err != nil {
+		t.Fatalf("RotateToken: %v", err)
+	}
+
+	status, err := ts.Service.StatusContext(ctx, "codex", "rotate-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || !status.Running || status.Endpoint == "" {
+		t.Fatalf("expected a live listener after the race: %+v", status)
+	}
+	final, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotate-race")
+	if err != nil || final == nil {
+		t.Fatalf("read final proxy_state: %+v, %v", final, err)
+	}
+
+	if final.Token != rotated {
+		t.Fatalf("proxy_state token = %q, caller token = %q", final.Token, rotated)
+	}
+	if got := probeBearerStatus(status.Endpoint, rotated); got != http.StatusOK {
+		t.Fatalf("listener at %s rejected the rotated token (proxy_state=%q, caller=%q, status=%d)",
+			status.Endpoint, final.Token, rotated, got)
+	}
+	if got := probeBearerStatus(status.Endpoint, first.Token); got != http.StatusUnauthorized {
+		t.Fatalf("listener still accepts the pre-rotation token (status=%d)", got)
+	}
+}
+
+// Rotating a stopped proxy persists the new secret so the next start serves it,
+// and rotating a running proxy keeps its endpoint so bound clients are not
+// rewritten (invariant 2).
+func TestRotateTokenStoppedAndRunningBehaviour(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "rotate-paths", true)
+	t.Cleanup(ts.Service.Close)
+
+	stoppedToken, err := ts.Service.RotateToken(ctx, "codex", "rotate-paths")
+	if err != nil {
+		t.Fatalf("rotate while stopped: %v", err)
+	}
+	started, err := ts.Service.StartProxy(ctx, "codex", "rotate-paths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.Token != stoppedToken {
+		t.Fatalf("start after rotate served %q, want the rotated %q", started.Token, stoppedToken)
+	}
+	if got := probeBearerStatus(started.Endpoint, stoppedToken); got != http.StatusOK {
+		t.Fatalf("listener rejected the rotated token: %d", got)
+	}
+
+	before := started.Endpoint
+	rotated, err := ts.Service.RotateToken(ctx, "codex", "rotate-paths")
+	if err != nil {
+		t.Fatalf("rotate while running: %v", err)
+	}
+	if rotated == stoppedToken {
+		t.Fatal("rotation reused the previous token")
+	}
+	after, err := ts.Service.StatusContext(ctx, "codex", "rotate-paths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == nil || !after.Running || after.Endpoint != before {
+		t.Fatalf("rotation moved the endpoint %q → %+v", before, after)
+	}
+	if got := probeBearerStatus(after.Endpoint, rotated); got != http.StatusOK {
+		t.Fatalf("listener rejected the rotated token after restart: %d", got)
+	}
+	if got := probeBearerStatus(after.Endpoint, stoppedToken); got != http.StatusUnauthorized {
+		t.Fatalf("listener still accepts the previous token: %d", got)
+	}
+	state, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotate-paths")
+	if err != nil || state == nil || state.Token != rotated {
+		t.Fatalf("proxy_state = %+v, want token %q", state, rotated)
+	}
+}
+
+// A rotation that cannot acquire the scope must fail cleanly instead of
+// writing a token nobody holds (ADR 0009).
+func TestRotateTokenFailsWithoutWritingWhenScopeIsHeld(t *testing.T) {
+	ts := newTestServices(t)
+	ctx := context.Background()
+	seedAccount(t, ts.Service, "rotate-blocked", true)
+
+	if _, err := ts.Service.RotateToken(ctx, "codex", "rotate-blocked"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotate-blocked")
+	if err != nil || before == nil || before.Token == "" {
+		t.Fatalf("precondition proxy_state = %+v, %v", before, err)
+	}
+
+	restore := rotateLockTimeout
+	rotateLockTimeout = 150 * time.Millisecond
+	defer func() { rotateLockTimeout = restore }()
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		// Hold only the per-account slot. Store.Get takes the provider scope, so
+		// this leaves RotateToken's own new lock as the thing that must time out.
+		holderDone <- lock.WithMutationLocks(ctx, ts.Service.Store.Root, []string{
+			proxyScope("codex", "rotate-blocked"),
+		}, func(context.Context) error {
+			close(locked)
+			<-release
+			return nil
+		}, 0)
+	}()
+	<-locked
+
+	_, err = ts.Service.RotateToken(ctx, "codex", "rotate-blocked")
+	close(release)
+	if holderErr := <-holderDone; holderErr != nil {
+		t.Fatal(holderErr)
+	}
+	if err == nil {
+		t.Fatal("RotateToken succeeded while the mutation scopes were held")
+	}
+	var aerr *anyerr.Error
+	if !errors.As(err, &aerr) || aerr.Code != "MUTATION_LOCK_TIMEOUT" {
+		t.Fatalf("RotateToken error = %v, want MUTATION_LOCK_TIMEOUT", err)
+	}
+	after, err := ts.Service.Store.ReadProxyState(ctx, "codex", "rotate-blocked")
+	if err != nil || after == nil || after.Token != before.Token {
+		t.Fatalf("blocked rotation wrote a token: %+v, %v (want %q)", after, err, before.Token)
+	}
 }
