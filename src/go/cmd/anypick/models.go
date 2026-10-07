@@ -121,6 +121,20 @@ func modelsForSource(ctx context.Context, a *app.App, source refs.Ref) (string, 
 		}
 		return "", mergeModelIDs(models), nil
 	case refs.KindAccount:
+		// Resolve the account before serving a catalog. The gateway branch
+		// refuses an unknown gateway with GATEWAY_NOT_FOUND; this branch used
+		// to print the provider's static catalog for a typo'd account and exit
+		// 0, so a user pinned a model against a source that does not exist.
+		// CachedAccount, not Get: this is a display read of metadata only.
+		acct, aerr := a.Accounts.CachedAccount(ctx, source.Provider, source.Name)
+		if aerr != nil {
+			return "", nil, aerr
+		}
+		if acct == nil {
+			return "", nil, anyerr.Newf(
+				"Account not found: "+source.Provider+"/"+source.Name,
+				"ACCOUNT_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound))
+		}
 		catalogID := catalog.CatalogIdentityFor(source.Provider)
 		// Account providers own their live catalog and credentials. Ask the
 		// proxy resolver first so subscription accounts (for example WorkBuddy)

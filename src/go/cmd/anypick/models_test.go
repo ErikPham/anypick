@@ -366,3 +366,26 @@ func TestModelsAndUseBootstrapsProxyHubModels(t *testing.T) {
 		t.Fatalf("dry run did not bootstrap expected model for hub: %q", lastStdout)
 	}
 }
+
+// TestModelsUnknownAccountFailsLikeUnknownGateway pins the account branch's
+// validation. The gateway branch refused an unknown gateway; the account
+// branch printed the provider's static catalog and exited 0, so a typo'd
+// account produced a confident wrong answer instead of an error, on the very
+// command the MODEL_NOT_PINNED warning sends users to.
+func TestModelsUnknownAccountFailsLikeUnknownGateway(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+
+	exit := 0
+	_, stderr := captureBoth(t, func() {
+		exit = run([]string{"models", "claude", "--with", "claude/DOES-NOT-EXIST"})
+	})
+	if exit != int(anyerr.NotFound) {
+		t.Fatalf("models with a nonexistent account exited %d, want %d (not found); stderr=%q",
+			exit, int(anyerr.NotFound), stderr)
+	}
+	if !strings.Contains(stderr, "ACCOUNT_NOT_FOUND") && !strings.Contains(stderr, "DOES-NOT-EXIST") {
+		t.Fatalf("error did not name the missing account: %q", stderr)
+	}
+}
