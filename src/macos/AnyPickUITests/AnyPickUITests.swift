@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import XCTest
 
 /// Drives the three ship-acceptance flows through the real UI on fixture data.
@@ -44,7 +45,24 @@ final class AnyPickUITests: XCTestCase {
     // which swallows clicks and defers the Welcome sheet; bring it forward.
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: timeout), "AnyPick never came to the foreground")
+    // TCC / Automation alerts sit in UserNotificationCenter outside the app
+    // process. XCTest still synthesizes clicks on sheet.primary through them,
+    // but AppKit never fires — looking like Welcome "did not dismiss".
+    assertNoSystemPermissionDialog()
     return app
+  }
+
+  /// Fail fast when a system permission sheet covers the display. Those
+  /// windows are invisible to XCTest's interruption monitor.
+  private func assertNoSystemPermissionDialog() {
+    let options = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+    let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
+    let blocking = windows.contains {
+      ($0[kCGWindowOwnerName as String] as? String) == "UserNotificationCenter"
+    }
+    XCTAssertFalse(
+      blocking,
+      "System permission dialog (UserNotificationCenter) is covering the display; dismiss it and re-run. XCTest synthesizes sheet clicks through it without firing AppKit actions.")
   }
 
   private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
