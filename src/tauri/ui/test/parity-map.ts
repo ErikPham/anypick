@@ -292,6 +292,7 @@ export const PARITY: ParityRow[] = [
   { macos: 'settings.run-doctor', tauri: 'settings-doctor', status: 'done' },
   { macos: 'settings.quota-guard', tauri: 'setting-{x}', status: 'done' },
   { macos: 'settings.create-codex-profiles', tauri: 'settings.create-codex-profiles', status: 'done' },
+  { macos: 'settings.version', tauri: 'settings-version', status: 'done' },
 
   // ── Menu bar ───────────────────────────────────────────────────────────────
   {

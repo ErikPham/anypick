@@ -29,8 +29,10 @@ struct SettingsGeneralPane: View {
 
       Section {
         LabeledContent {
-          Text("Pick any. Code on.")
+          Text(AppVersion.label)
             .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .accessibilityIdentifier("settings.version")
         } label: {
           Label {
             Text("AnyPick")
@@ -40,6 +42,8 @@ struct SettingsGeneralPane: View {
         }
       } header: {
         Text("About")
+      } footer: {
+        Text("Pick any. Code on.")
       }
     }
     .formStyle(.grouped)
@@ -313,4 +317,17 @@ struct SettingsDiagnosticsPane: View {
     default: .red
     }
   }
+}
+
+/// The one version string every About surface shows: General → About and
+/// AnyPick → About AnyPick both read `CFBundleShortVersionString`, which
+/// `set-version` writes as MARKETING_VERSION. The build number stays out so
+/// the two never disagree.
+enum AppVersion {
+  static var marketing: String {
+    let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    return value.flatMap { $0.isEmpty ? nil : $0 } ?? "(devel)"
+  }
+
+  static var label: String { "Version \(marketing)" }
 }
