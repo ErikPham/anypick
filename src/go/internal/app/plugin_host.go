@@ -76,9 +76,6 @@ func (s *pluginSupervisor) Identity() proxy.PluginRuntimeIdentity {
 	return proxy.PluginRuntimeIdentity{}
 }
 
-// StartCount is always zero. It names host spawns, and nothing spawns.
-func (s *pluginSupervisor) StartCount() uint64 { return 0 }
-
 // TerminateGeneration has no generation to kill. A zero expectation is a
 // no-op; anything else names a generation this build can never have produced,
 // so it is refused rather than silently accepted.

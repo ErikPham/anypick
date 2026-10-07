@@ -1,7 +1,6 @@
 package activation
 
 import (
-	"fmt"
 	"slices"
 	"sort"
 	"sync"
@@ -75,19 +74,6 @@ func (i *CatalogIndex) Set(providerID string, entry CatalogEntry) bool {
 	return existed
 }
 
-// SetIfAbsent inserts the entry only when its id is free, reporting whether it
-// was stored (compatible providers intentionally preserve a richer built-in
-// classification).
-func (i *CatalogIndex) SetIfAbsent(providerID string, entry CatalogEntry) bool {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if _, exists := i.items[providerID]; exists {
-		return false
-	}
-	i.items[providerID] = entry
-	return true
-}
-
 func (i *CatalogIndex) Delete(providerID string) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -96,49 +82,6 @@ func (i *CatalogIndex) Delete(providerID string) bool {
 	}
 	delete(i.items, providerID)
 	return true
-}
-
-// RecoverSwap CAS-replaces the previously committed classification, or inserts
-// when previous is nil. Callers already hold the publication write lock.
-func (i *CatalogIndex) RecoverSwap(id string, previous *CatalogEntry, next CatalogEntry) error {
-	if id == "" {
-		return fmt.Errorf("recovery swap requires a catalog id")
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	current, exists := i.items[id]
-	switch {
-	case exists && previous != nil && equalCatalogEntry(current, *previous):
-	case !exists && previous == nil:
-	default:
-		return fmt.Errorf("catalog %q changed since recovery started", id)
-	}
-	i.items[id] = next
-	return nil
-}
-
-// RecoverRemove CAS-deletes previous when it is still the stored value.
-func (i *CatalogIndex) RecoverRemove(id string, previous CatalogEntry) error {
-	return i.RecoverUndo(id, previous, nil)
-}
-
-// RecoverUndo reverses a RecoverSwap of current. restore=nil deletes the id.
-func (i *CatalogIndex) RecoverUndo(id string, current CatalogEntry, restore *CatalogEntry) error {
-	if id == "" {
-		return fmt.Errorf("recovery undo requires a catalog id")
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	existing, exists := i.items[id]
-	if !exists || !equalCatalogEntry(existing, current) {
-		return fmt.Errorf("catalog %q changed since recovery started", id)
-	}
-	if restore == nil {
-		delete(i.items, id)
-		return nil
-	}
-	i.items[id] = *restore
-	return nil
 }
 
 func equalCatalogEntry(a, b CatalogEntry) bool {

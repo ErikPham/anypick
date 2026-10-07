@@ -342,8 +342,6 @@ func restoreSelectedLocked(ctx context.Context, st *store.AccountStore, reg *pro
 	return metas, nil
 }
 
-var _ = context.Background
-
 func validateRefs(entries []BackupEntry) (map[string]bool, error) {
 	keys := map[string]bool{}
 	for _, e := range entries {

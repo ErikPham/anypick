@@ -68,10 +68,6 @@ type presetExpansion struct {
 	bindingSpec    bindings.Spec
 }
 
-func (v *presetsView) GetByName(name string) (*presets.Saved, error) {
-	return v.Svc.GetByNameContext(context.Background(), name)
-}
-
 func (v *presetsView) GetContext(ctx context.Context, name string) (*presets.Saved, error) {
 	return v.Svc.GetByNameContext(ctx, name)
 }

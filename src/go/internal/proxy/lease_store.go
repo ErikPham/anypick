@@ -165,14 +165,6 @@ func (s *LeaseStore) ListByAccount(providerID, accountName string) ([]*Lease, er
 	return s.ListByAccountContext(context.Background(), providerID, accountName)
 }
 
-// ListPoolLeases returns live pool leases — keyed (provider, ""), persisted
-// with a NULL account column, so the per-account query cannot see them.
-//
-// Deprecated: prefer ListPoolLeasesContext when the caller has a context.
-func (s *LeaseStore) ListPoolLeases(providerID string) ([]*Lease, error) {
-	return s.ListPoolLeasesContext(context.Background(), providerID)
-}
-
 func (s *LeaseStore) ListPoolLeasesContext(ctx context.Context, providerID string) ([]*Lease, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT `+leaseColumns+` FROM proxy_leases
