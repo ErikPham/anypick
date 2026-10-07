@@ -49,8 +49,15 @@ func run(args []string) int {
 	// Root identity/help paths never need the service graph. Keeping them before
 	// app.Ready is both a latency contract and a safety property: asking how to
 	// use AnyPick must not create or migrate the user's data directory.
+	// -V, not -v: the reference documents `-v, --verbose` (cli.mdx) and the
+	// golden root advertises both spellings, so -v is the verbose alias and
+	// only -V prints the version. The scan stops at "--" because everything
+	// after it is a child's argv (`run … -- tool -V`) and must stay verbatim.
 	for _, arg := range args {
-		if arg == "--version" || arg == "-v" {
+		if arg == "--" {
+			break
+		}
+		if arg == "--version" || arg == "-V" {
 			fmt.Printf("anypick-go %s\n", packageVersion())
 			return int(anyerr.Success)
 		}

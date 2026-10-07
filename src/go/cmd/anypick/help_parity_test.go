@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -482,11 +483,13 @@ func TestDoctorDetailRequiresVerbose(t *testing.T) {
 	}
 }
 
-// TestCLIReferenceCommandsExist ties docs/src/content/docs/reference/cli.mdx
-// to the command tree: every `anypick …` invocation in a bash code block must
-// resolve to a known command path. The page had drifted into documenting
-// commands and flags the binary never had, and nothing caught it because the
-// structural golden only probes the fixture, not the prose.
+// TestCLIReferenceCommandsExist ties the prose surfaces to the command tree:
+// every `anypick …` invocation in a bash code block must resolve to a known
+// command path, and every flag it passes must resolve to a global flag or to
+// one the owning command's handler registers. The page had drifted into
+// documenting commands and flags the binary never had, and nothing caught it
+// because the structural golden only probes the fixture, not the prose, and
+// the old loop stopped at the first token starting with a dash.
 func TestCLIReferenceCommandsExist(t *testing.T) {
 	fixture := loadCliTree(t)
 	known := map[string]bool{}
@@ -498,36 +501,405 @@ func TestCLIReferenceCommandsExist(t *testing.T) {
 	for _, o := range fixture.Omitted {
 		known[o.Path] = true
 	}
-	docPath := filepath.Join("..", "..", "..", "..", "docs", "src", "content", "docs", "reference", "cli.mdx")
-	doc, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", docPath, err)
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	probe := newCommandFlagProbe(t)
+
+	var lines []string
+	for _, file := range docGateFiles(t) {
+		doc, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		lines = append(lines, cliDocCommandLines(string(doc))...)
+	}
+	if len(lines) == 0 {
+		// A parser that matches nothing reads exactly like a passing gate.
+		t.Fatal("no `anypick` invocations found in any documentation fence; the doc scan has drifted")
+	}
+	for _, f := range checkDocumentedFlags(lines, known, probe) {
+		t.Errorf("docs document %q, which the tree does not have:\n  %s", f.Flag, f.Line)
+	}
+}
+
+// TestCliTreeFlagsResolveInHandlers checks the golden's own `flags` arrays.
+// The fixture advertised `flags` for every command from the start and nothing
+// compared them to a FlagSet, which is how nine documented flags shipped with
+// no handler behind them. A flag the golden promises and the handler does not
+// register is the same defect in a second place.
+func TestCliTreeFlagsResolveInHandlers(t *testing.T) {
+	fixture := loadCliTree(t)
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	probe := newCommandFlagProbe(t)
+
+	for _, cmd := range fixture.Commands {
+		for _, advertised := range cmd.Flags {
+			name := strings.TrimLeft(advertised, "-")
+			if knownGlobalFlags[name] {
+				continue
+			}
+			if cmd.Path == "" {
+				// The root's non-global flags are handled before dispatch
+				// (--version/-V) or by the switch (--tui).
+				if rootOnlyFlags[name] {
+					continue
+				}
+				t.Errorf("cli-tree.json advertises %q at the root but no global flag handles it", advertised)
+				continue
+			}
+			flags, ok := probe.flagsForTokens(strings.Split(cmd.Path, " "))
+			if !ok {
+				t.Errorf("cli-tree.json command %q does not resolve in the binary", cmd.Path)
+				continue
+			}
+			if !flags[name] {
+				t.Errorf("cli-tree.json advertises %q for %q but the handler registers no such flag",
+					advertised, cmd.Path)
+			}
+		}
+	}
+}
+
+// TestDocumentedFlagGateRejectsUnknownFlag proves the gate can fail. It drives
+// the checker with synthetic invocations carrying a flag no handler registers,
+// so the failure is demonstrated without editing the real docs (which would
+// leave a broken tree behind if the restore were ever skipped).
+func TestDocumentedFlagGateRejectsUnknownFlag(t *testing.T) {
+	known := map[string]bool{"": true, "list": true, "gateway": true}
+	resolver := stubFlagResolver{
+		"gateway edit": {"endpoint": true, "model": true, "m": true},
+		"list":         {"json": true},
 	}
 
-	var unknown []string
-	for _, block := range cliDocCommandLines(string(doc)) {
-		path := ""
-		for _, token := range strings.Fields(block)[1:] {
-			if strings.HasPrefix(token, "-") {
-				break
+	bad := checkDocumentedFlags(
+		[]string{"anypick gateway edit gw --definitely-not-a-flag"}, known, resolver)
+	if len(bad) != 1 || bad[0].Flag != "definitely-not-a-flag" {
+		t.Fatalf("gate accepted an unknown flag: findings=%+v", bad)
+	}
+
+	good := checkDocumentedFlags(
+		[]string{
+			"anypick gateway edit gw --model x -m y",
+			"anypick list --json",
+			"anypick -V",
+		}, known, resolver)
+	if len(good) != 0 {
+		t.Fatalf("gate rejected documented flags: findings=%+v", good)
+	}
+
+	unknownCommand := checkDocumentedFlags(
+		[]string{"anypick not-a-command --json"}, known, resolver)
+	if len(unknownCommand) != 1 || unknownCommand[0].Flag != "(command)" {
+		t.Fatalf("gate accepted an unknown command: findings=%+v", unknownCommand)
+	}
+}
+
+// stubFlagResolver answers from a literal path→flags map for the failure proof.
+// It matches the longest registered prefix, the way the real probe resolves an
+// alias the fixture spells differently.
+type stubFlagResolver map[string]map[string]bool
+
+func (s stubFlagResolver) flagsForTokens(tokens []string) (map[string]bool, bool) {
+	flags := map[string]bool{}
+	found := false
+	// Longest registered prefix wins, matching the real probe's resolution of
+	// an alias the fixture spells differently.
+	for k := len(tokens); k >= 1; k-- {
+		if f, ok := s[strings.Join(tokens[:k], " ")]; ok {
+			found = true
+			for name := range f {
+				flags[name] = true
 			}
-			candidate := token
-			if path != "" {
-				candidate = path + " " + token
-			}
-			if !known[candidate] {
-				break
-			}
-			path = candidate
-		}
-		if path == "" {
-			unknown = append(unknown, block)
+			break
 		}
 	}
-	if len(unknown) > 0 {
-		t.Fatalf("CLI reference documents commands the tree does not have:\n  %s",
-			strings.Join(unknown, "\n  "))
+	return flags, found
+}
+
+// flagGateFinding is one documented flag (or command path) with no handler.
+type flagGateFinding struct {
+	Line string
+	Flag string
+}
+
+// checkDocumentedFlags is the gate itself, kept free of the real probe so the
+// failure proof can drive it with a stub. Path existence is checked against the
+// fixture (`known`); flags are checked against the handler that actually runs,
+// resolved through `probe` so a Go-only alias like `gateway add` is judged by
+// its real FlagSet rather than by whether the fixture happens to list it.
+func checkDocumentedFlags(lines []string, known map[string]bool, probe flagResolver) []flagGateFinding {
+	var out []flagGateFinding
+	for _, line := range lines {
+		tokens := documentedPathTokens(line)
+		if !documentedPathExists(tokens, known) {
+			out = append(out, flagGateFinding{Line: line, Flag: "(command)"})
+			continue
+		}
+		rootInvocation := len(tokens) == 0
+		var names []string
+		for _, name := range documentedFlagNames(line) {
+			if knownGlobalFlags[name] || (rootInvocation && rootOnlyFlags[name]) {
+				continue
+			}
+			names = append(names, name)
+		}
+		if len(names) == 0 {
+			continue
+		}
+		flags, _ := probe.flagsForTokens(tokens)
+		for _, name := range names {
+			if !flags[name] {
+				out = append(out, flagGateFinding{Line: line, Flag: name})
+			}
+		}
 	}
+	return out
+}
+
+// flagResolver answers "which flags does the handler for this command path
+// register?" for the gate and its stub.
+type flagResolver interface {
+	flagsForTokens(tokens []string) (map[string]bool, bool)
+}
+
+// documentedPathExists reports whether the invocation's leading tokens name a
+// command. Matching the longest known prefix keeps the old leniency for a
+// documented alias the fixture spells differently (`gateway add` vs the
+// fixture's `add gateway`); the flag check then uses the real handler.
+func documentedPathExists(tokens []string, known map[string]bool) bool {
+	if len(tokens) == 0 {
+		return known[""]
+	}
+	for _, alt := range expandPathAlternatives(tokens) {
+		prefix := ""
+		for _, tok := range alt {
+			cand := tok
+			if prefix != "" {
+				cand = prefix + " " + tok
+			}
+			if !known[cand] {
+				break
+			}
+			prefix = cand
+		}
+		if prefix != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// rootOnlyFlags are accepted at the root but are not in knownGlobalFlags:
+// --version/-V are handled before dispatch, and --tui is a switch case.
+var rootOnlyFlags = map[string]bool{"version": true, "V": true, "tui": true}
+
+// probeRefusedPaths are root commands that must never be run for a probe even
+// if a doc line carried a flag: they spawn supervisors or open surfaces. No
+// current fence does, so this is a guard against a future one.
+var probeRefusedPaths = map[string]bool{
+	"start": true, "stop": true, "tray": true, "app": true, "tui": true,
+	"serve": true, "desktop-service": true,
+}
+
+// commandFlagProbe answers "which flags does this command's handler register?"
+// by running the real handler with an unknown flag and reading the FlagSet's
+// own usage dump. That dump is the handler's registrations, so the gate cannot
+// drift from the code the way a hand-kept path→flags copy would — that copy is
+// exactly what let the reference advertise flags nothing implemented.
+//
+// The probe is safe because a flag-parsing handler returns at the parse error,
+// before any service call or mutation; only paths that actually carry a
+// non-global flag are ever probed.
+type commandFlagProbe struct {
+	t     *testing.T
+	cache map[string]map[string]bool
+}
+
+func newCommandFlagProbe(t *testing.T) *commandFlagProbe {
+	return &commandFlagProbe{t: t, cache: map[string]map[string]bool{}}
+}
+
+const parityUnknownFlag = "--parity-unknown-flag"
+
+// flagsForTokens merges the flags of every concrete spelling of a path. A path
+// that yields no usage dump parses no flags at all (or does not exist), which
+// the caller sees as an empty set and reports as an unresolvable flag.
+func (p *commandFlagProbe) flagsForTokens(tokens []string) (map[string]bool, bool) {
+	if len(tokens) == 0 {
+		return nil, false
+	}
+	flags := map[string]bool{}
+	found := false
+	for _, path := range expandPathAlternatives(tokens) {
+		key := strings.Join(path, " ")
+		if probeRefusedPaths[path[0]] {
+			p.t.Errorf("refusing to probe %q: it starts a surface or supervisor", key)
+			continue
+		}
+		if _, ok := p.cache[key]; !ok {
+			p.cache[key] = p.probe(key)
+		}
+		if p.cache[key] == nil {
+			continue
+		}
+		found = true
+		for name := range p.cache[key] {
+			flags[name] = true
+		}
+	}
+	return flags, found
+}
+
+func (p *commandFlagProbe) probe(path string) map[string]bool {
+	args := append(strings.Split(path, " "), parityUnknownFlag)
+	restore := resetGlobals()
+	_, errOut := captureBoth(p.t, func() { run(args) })
+	restore()
+	if !strings.Contains(errOut, "flag provided but not defined") {
+		return nil
+	}
+	return parseFlagDump(errOut)
+}
+
+// parseFlagDump reads the flag names out of the stdlib's usage output. Flag
+// lines start with two spaces and a dash; the tab-indented lines under them are
+// descriptions, which this skips.
+func parseFlagDump(out string) map[string]bool {
+	flags := map[string]bool{}
+	inUsage := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "Usage:" {
+			inUsage = true
+			continue
+		}
+		if !inUsage || !strings.HasPrefix(line, "  -") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if name := strings.TrimLeft(fields[0], "-"); name != "" {
+			flags[name] = true
+		}
+	}
+	return flags
+}
+
+// documentedPathTokens returns the leading tokens of an invocation that name a
+// command path: leading global flags are skipped (they may precede the
+// command), and the first non-global flag, `--`, or positional placeholder
+// (`<client>`, `[providers|accounts]`) ends the path. An inline `#` comment is
+// prose, not argv.
+func documentedPathTokens(line string) []string {
+	var out []string
+	for _, tok := range strings.Fields(stripDocComment(line))[1:] {
+		if tok == "--" {
+			break
+		}
+		if strings.HasPrefix(tok, "-") {
+			if knownGlobalFlags[flagName(tok)] {
+				continue
+			}
+			break
+		}
+		if strings.HasPrefix(tok, "<") || strings.HasPrefix(tok, "[") || strings.HasPrefix(tok, "(") {
+			break
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
+// stripDocComment removes an inline shell comment from a documented line.
+func stripDocComment(line string) string {
+	for i, tok := range strings.Fields(line) {
+		if strings.HasPrefix(tok, "#") {
+			return strings.Join(strings.Fields(line)[:i], " ")
+		}
+	}
+	return line
+}
+
+// expandPathAlternatives expands `use|run` style alternatives into concrete
+// token sequences, so both spellings are probed.
+func expandPathAlternatives(tokens []string) [][]string {
+	paths := [][]string{{}}
+	for _, tok := range tokens {
+		var next [][]string
+		for _, prefix := range paths {
+			for _, alt := range strings.Split(strings.Trim(tok, "[](),"), "|") {
+				alt = strings.TrimSpace(alt)
+				if alt == "" {
+					continue
+				}
+				next = append(next, append(append([]string{}, prefix...), alt))
+			}
+		}
+		if len(next) == 0 {
+			return nil
+		}
+		paths = next
+	}
+	return paths
+}
+
+// documentedFlagNames extracts every flag spelling a line passes, expanding
+// `[--current|--new]` style alternatives. Everything after `--` is a child's
+// argv and is not the CLI's own flag surface, and an inline `#` comment is
+// prose (its `|` would otherwise be read as an alternative).
+func documentedFlagNames(line string) []string {
+	var out []string
+	for _, tok := range strings.Fields(stripDocComment(line)) {
+		if tok == "--" {
+			break
+		}
+		for _, alt := range strings.Split(tok, "|") {
+			alt = strings.Trim(alt, "[](),")
+			if !strings.HasPrefix(alt, "-") || strings.HasPrefix(alt, "--<") {
+				continue
+			}
+			if name := flagName(alt); name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+func flagName(tok string) string {
+	name := strings.TrimLeft(tok, "-")
+	if eq := strings.Index(name, "="); eq >= 0 {
+		name = name[:eq]
+	}
+	return strings.Trim(name, "[](),")
+}
+
+// docGateFiles lists the prose surfaces whose bash fences are user-facing
+// instructions. The reference page is canonical, but a flag that only appears
+// in a guide is just as broken for the reader who follows it.
+func docGateFiles(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join("..", "..", "..", "..")
+	files := []string{filepath.Join(root, "README.md")}
+	docs := filepath.Join(root, "docs", "src", "content", "docs")
+	err := filepath.Walk(docs, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && (strings.HasSuffix(path, ".mdx") || strings.HasSuffix(path, ".md")) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", docs, err)
+	}
+	sort.Strings(files)
+	return files
 }
 
 // cliDocCommandLines returns every `anypick …` line inside a ```bash fence.

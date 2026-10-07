@@ -150,29 +150,53 @@ func isTTY(f *os.File) bool {
 	return isatty.IsTerminal(f.Fd())
 }
 
+// accountRefreshResult is one row of `account refresh` output.
+type accountRefreshResult struct {
+	Provider    string   `json:"provider"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Suggestions []string `json:"suggestions,omitempty"`
+}
+
+// refreshProviderAccounts refreshes every saved account of one provider.
+func refreshProviderAccounts(ctx context.Context, a *appView, providerID string,
+	refreshOne func(provider, name string) accountRefreshResult) ([]accountRefreshResult, error) {
+	list, lerr := a.Accounts.List(ctx, providerID)
+	if lerr != nil {
+		return nil, lerr
+	}
+	var out []accountRefreshResult
+	for _, acct := range list {
+		out = append(out, refreshOne(providerID, acct.Meta.Name))
+	}
+	return out, nil
+}
+
 func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
+	// --all is the documented spelling of "refresh every saved account". That
+	// is already what a provider with no account name does (and what no
+	// arguments does across providers), so the flag only has to be accepted
+	// and to refuse the contradictory `--all <provider> <name>` form.
+	all := fs.Bool("all", false, "refresh every saved account of the named provider")
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() > 2 {
-		return usageError("usage: anypick account refresh [<provider> [<name>]]")
+		return usageError("usage: anypick account refresh [<provider> [<name>]] [--all]")
 	}
-	type result struct {
-		Provider    string   `json:"provider"`
-		Name        string   `json:"name"`
-		Status      string   `json:"status"`
-		Suggestions []string `json:"suggestions,omitempty"`
+	if *all && fs.NArg() == 2 {
+		return usageError("usage: anypick account refresh [<provider>] --all (not both --all and an account name)")
 	}
-	var results []result
-	refreshOne := func(providerID, name string) result {
+	var results []accountRefreshResult
+	refreshOne := func(providerID, name string) accountRefreshResult {
 		meta, err := a.Accounts.RefreshSnapshot(ctx, providerID, name)
 		if err != nil {
-			row := result{Provider: providerID, Name: name, Status: "error: " + err.Error()}
+			row := accountRefreshResult{Provider: providerID, Name: name, Status: "error: " + err.Error()}
 			var ae *anyerr.Error
 			if errors.As(err, &ae) {
 				row.Suggestions = append([]string(nil), ae.Suggestions...)
 			}
 			return row
 		}
-		return result{Provider: providerID, Name: meta.Name, Status: "refreshed"}
+		return accountRefreshResult{Provider: providerID, Name: meta.Name, Status: "refreshed"}
 	}
 	switch fs.NArg() {
 	case 2:
@@ -182,21 +206,18 @@ func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 		// `[<provider> [<name>]]`, and silently refreshing every provider when
 		// one was named is the kind of surprise this CLI refuses elsewhere.
 		providerID := fs.Arg(0)
-		list, lerr := a.Accounts.List(ctx, providerID)
+		rows, lerr := refreshProviderAccounts(ctx, a, providerID, refreshOne)
 		if lerr != nil {
 			return reportErr(anyerr.Wrapf(lerr, "list "+providerID, "ACCOUNT_LIST_FAILED"))
 		}
-		for _, acct := range list {
-			results = append(results, refreshOne(providerID, acct.Meta.Name))
-		}
+		results = rows
 	default:
 		for _, providerID := range a.Providers.IDs() {
-			list, lerr := a.Accounts.List(ctx, providerID)
-			if lerr != nil {
-				continue
-			}
-			for _, acct := range list {
-				results = append(results, refreshOne(providerID, acct.Meta.Name))
+			// A provider whose list fails is skipped, not fatal: a bulk
+			// inventory should still refresh the ones it can read.
+			rows, lerr := refreshProviderAccounts(ctx, a, providerID, refreshOne)
+			if lerr == nil {
+				results = append(results, rows...)
 			}
 		}
 	}
@@ -229,7 +250,19 @@ func cmdAccountRefresh(ctx context.Context, a *appView, args []string) int {
 func cmdAccountExport(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	out := fs.String("out", "", "output file")
-	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 2 || *out == "" {
+	// -o is the documented short form of --out; the stdlib parser has no alias
+	// concept, so the same target is registered twice.
+	outShort := fs.String("o", "", "alias of --out")
+	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 2 {
+		return usageError("usage: anypick account export <provider> <name> --out <file>")
+	}
+	if *outShort != "" {
+		if *out != "" && *out != *outShort {
+			return usageError("pass one output path (--out or -o)")
+		}
+		*out = *outShort
+	}
+	if *out == "" {
 		return usageError("usage: anypick account export <provider> <name> --out <file>")
 	}
 	if globals.DryRun {
@@ -252,17 +285,32 @@ func cmdAccountExport(ctx context.Context, a *appView, args []string) int {
 func cmdAccountImport(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	force := fs.Bool("force", false, "overwrite existing account / identity conflict")
-	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 3 {
+	// The guides write `account import <provider> <name> -i ./work.json`; -i is
+	// the documented short form of the input file, which the reference also
+	// accepts positionally.
+	input := fs.String("i", "", "input file (or pass it positionally)")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return usageError("usage: anypick account import <provider> <name> <file> [--force]")
+	}
+	// The file is positional in the reference form and a flag value in the
+	// guide form; accept either, but exactly one.
+	var providerID, name, file string
+	switch {
+	case fs.NArg() == 3 && *input == "":
+		providerID, name, file = fs.Arg(0), fs.Arg(1), fs.Arg(2)
+	case fs.NArg() == 2 && *input != "":
+		providerID, name, file = fs.Arg(0), fs.Arg(1), *input
+	default:
 		return usageError("usage: anypick account import <provider> <name> <file> [--force]")
 	}
 	if globals.DryRun {
 		printDryRunFields("account.import",
-			fmt.Sprintf("Would import %s/%s from %s", fs.Arg(0), fs.Arg(1), fs.Arg(2)),
-			kv{Key: "provider", Value: fs.Arg(0)}, kv{Key: "name", Value: fs.Arg(1)},
-			kv{Key: "input", Value: fs.Arg(2)}, kv{Key: "force", Value: *force})
+			fmt.Sprintf("Would import %s/%s from %s", providerID, name, file),
+			kv{Key: "provider", Value: providerID}, kv{Key: "name", Value: name},
+			kv{Key: "input", Value: file}, kv{Key: "force", Value: *force})
 		return int(anyerr.Success)
 	}
-	meta, err := a.Accounts.ImportEnvelope(ctx, fs.Arg(0), fs.Arg(1), fs.Arg(2), *force)
+	meta, err := a.Accounts.ImportEnvelope(ctx, providerID, name, file, *force)
 	if err != nil {
 		return reportErr(err)
 	}
@@ -330,17 +378,40 @@ func cmdGatewayEdit(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	endpoint := fs.String("endpoint", "", "new base URL")
 	model := fs.String("model", "", "default model")
+	// The docs write `gateway edit <name> -m <id>`; -m is the short form of
+	// --model. Registered as a separate variable rather than an alias so the
+	// stdlib parser (which has no alias concept) accepts either spelling.
+	modelShort := fs.String("m", "", "alias of --model")
+	// Editing the stored key is what the docs promise, and the desktop
+	// mutateGatewayEdit already writes Meta/Secrets this way; only the CLI
+	// lacked the flag. Bare `--api-key` means "prompt on the TTY", like
+	// `add gateway`.
+	args, _, promptAPIKey := splitBareSecretFlags(args)
+	apiKey := fs.String("api-key", "", "new API key value; bare flag prompts on the TTY")
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
-		return usageError("usage: anypick gateway edit <name> [--endpoint url] [--model id]")
+		return usageError("usage: anypick gateway edit <name> [--endpoint url] [--model id] [--api-key key]")
 	}
 	name := fs.Arg(0)
+	if *modelShort != "" {
+		if *model != "" && *model != *modelShort {
+			return usageError("pass one model id (--model or -m)")
+		}
+		*model = *modelShort
+	}
+	if *apiKey == "" && promptAPIKey {
+		var perr error
+		*apiKey, perr = promptSecret("API key")
+		if perr != nil {
+			return reportErr(perr)
+		}
+	}
 	if globals.DryRun {
 		printDryRunFields("gateway.edit", "Would update gateway "+name,
 			kv{Key: "name", Value: name},
 			kv{Key: "endpoint", Value: strOrNil(*endpoint)},
 			kv{Key: "model", Value: strOrNil(*model)},
 			kv{Key: "models", Value: nil}, // Go edit has no --models flag yet
-			kv{Key: "hasApiKey", Value: false})
+			kv{Key: "hasApiKey", Value: *apiKey != ""})
 		return int(anyerr.Success)
 	}
 	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.GatewayRef(name)), func(c context.Context) error {
@@ -357,6 +428,9 @@ func cmdGatewayEdit(ctx context.Context, a *appView, args []string) int {
 		}
 		if *model != "" {
 			existing.Meta.DefaultModel = *model
+		}
+		if *apiKey != "" {
+			existing.Secrets.APIKey = *apiKey
 		}
 		_, uerr := a.Runtime.ProfileSvc.UpsertContext(c, *existing)
 		return uerr
@@ -401,7 +475,19 @@ func cmdGatewayRemove(ctx context.Context, a *appView, args []string) int {
 func cmdGatewayReset(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	clientID := fs.String("client", "", "client to reset from the gateway profile")
-	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 || *clientID == "" {
+	// -c is the short form the golden tree advertises; the stdlib parser has no
+	// alias concept, so the same target is registered twice.
+	clientShort := fs.String("c", "", "alias of --client")
+	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {
+		return usageError("usage: anypick gateway reset <gateway> --client <clientId> [--yes]")
+	}
+	if *clientShort != "" {
+		if *clientID != "" && *clientID != *clientShort {
+			return usageError("pass one client (--client or -c)")
+		}
+		*clientID = *clientShort
+	}
+	if *clientID == "" {
 		return usageError("usage: anypick gateway reset <gateway> --client <clientId> [--yes]")
 	}
 	gateway := fs.Arg(0)

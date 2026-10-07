@@ -211,13 +211,56 @@ func cmdHubToken(ctx context.Context, a *appView, usage func() int, fs *flag.Fla
 	return int(anyerr.Success)
 }
 
+// enableHub applies the enable overrides under the hub's mutation lock and
+// returns the saved config. Split out of cmdHubEnable to keep that handler
+// within the long-function budget (internal/app/debtgate_test.go).
+func enableHub(ctx context.Context, a *appView, name, host, strategy string, port int) (*hub.Config, error) {
+	var saved *hub.Config
+	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
+		existing, gerr := a.ProxyHub.GetConfig(c, name)
+		if gerr != nil {
+			return gerr
+		}
+		if existing == nil {
+			existing = &hub.Config{Name: name, Sources: []hub.Source{}}
+		}
+		existing.Enabled = true
+		if port != 0 {
+			existing.Port = port
+		}
+		if host != "" {
+			existing.Host = host
+		}
+		if strategy != "" {
+			existing.Strategy = strategy
+		}
+		upserted, uerr := a.ProxyHub.UpsertConfig(c, *existing)
+		saved = &upserted
+		return uerr
+	})
+	return saved, err
+}
+
 // cmdHubEnable flips a hub on, keeping host/port/strategy unless overridden.
 func cmdHubEnable(ctx context.Context, a *appView, usage func() int, fs *flag.FlagSet, rest []string) int {
 	host := fs.String("host", "127.0.0.1", "loopback host")
 	port := fs.Int("port", 0, "fixed port (default: auto)")
+	// -p is the documented short form of --port; the stdlib parser has no
+	// alias concept, so the same target is registered twice.
+	portShort := fs.Int("p", 0, "alias of --port")
+	// --start is the documented "enable and start" form. It is not a second
+	// behaviour: `proxy hub start` already spawns the child, so this only
+	// chains that call after a successful enable.
+	start := fs.Bool("start", false, "start the hub after enabling it")
 	strategy := fs.String("strategy", "", "failover | round-robin (default: keep the current mode)")
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 		return usage()
+	}
+	if *portShort != 0 {
+		if *port != 0 && *port != *portShort {
+			return usageError("pass one port (--port or -p)")
+		}
+		*port = *portShort
 	}
 	switch *strategy {
 	case "", hub.StrategyFailover, hub.StrategyRoundRobin:
@@ -238,34 +281,18 @@ func cmdHubEnable(ctx context.Context, a *appView, usage func() int, fs *flag.Fl
 		printDryRunFields("proxy.hub.enable", "Would enable the unified Proxy Hub",
 			kv{Key: "host", Value: *host},
 			kv{Key: "port", Value: portVal}, // Go never invents a default port (ADR 0020; retired PARITY.md)
-			kv{Key: "start", Value: false})  // Go hub enable has no --start flag yet
+			kv{Key: "start", Value: *start})
 		return int(anyerr.Success)
 	}
-	var saved *hub.Config
-	err := lock.WithMutationLock(ctx, a.Root, refs.MutationScopeForRef(refs.ProxyHubRef(name)), func(c context.Context) error {
-		existing, gerr := a.ProxyHub.GetConfig(c, name)
-		if gerr != nil {
-			return gerr
-		}
-		if existing == nil {
-			existing = &hub.Config{Name: name, Sources: []hub.Source{}}
-		}
-		existing.Enabled = true
-		if *port != 0 {
-			existing.Port = *port
-		}
-		if *host != "" {
-			existing.Host = *host
-		}
-		if *strategy != "" {
-			existing.Strategy = *strategy
-		}
-		upserted, uerr := a.ProxyHub.UpsertConfig(c, *existing)
-		saved = &upserted
-		return uerr
-	})
+	saved, err := enableHub(ctx, a, name, *host, *strategy, *port)
 	if err != nil {
 		return reportErr(err)
+	}
+	// --start chains the existing start path rather than reimplementing it.
+	// Delegating also keeps --json to one result stream: the start emit is the
+	// single value, instead of an enable value followed by a start value.
+	if *start {
+		return cmdHubStart(ctx, a, usage, fsFor(nil), []string{name})
 	}
 	emitOK(fmt.Sprintf("enabled hub %s (port %d)", name, saved.Port),
 		kv{Key: "ok", Value: true},

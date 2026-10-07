@@ -93,7 +93,7 @@ Three groups, in plain language:
 | --- | --- |
 | **Native accounts** | You want Claude, Codex, or Z.ai on its *own* provider login. AnyPick switches the saved credential; the app keeps its own model picker. ZCode accounts can be detected from the encrypted local login or added through Z.ai's browser flow. |
 | **Gateways & proxies** | You want another provider, an API key endpoint, a multi-account pool, or the Proxy Hub. AnyPick will set models next. |
-| **Saved setups** | You already saved a full recipe with `--save` / a preset (`@name`). |
+| **Saved setups** | A preset (`@name`) already in the `presets` table. No command creates one yet, so this group is empty on a fresh install. |
 
 Only **safe pairings** appear. You will not see "Claude → random incompatible
 thing" — empty list means save an account (<kbd>a</kbd>) or add a gateway

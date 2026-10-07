@@ -14,11 +14,15 @@ import (
 )
 
 // knownGlobalFlags are accepted before or after the subcommand (invariant #7:
-// machine output stays machine-readable regardless of position).
+// machine output stays machine-readable regardless of position). The short
+// names are aliases of the long ones: the reference documents `-y`, `-q` and
+// `-v`, and isGlobalFlag strips leading dashes, so a bare "y" key is what
+// `-y` looks up.
 var knownGlobalFlags = map[string]bool{
 	"json": true, "dry-run": true, "no-input": true, "yes": true,
 	"quiet": true, "verbose": true, "trace": true, "reveal": true,
 	"tray": true,
+	"y":    true, "q": true, "v": true,
 }
 
 func isGlobalFlag(arg string) bool {
@@ -54,11 +58,11 @@ func recordGlobalFlag(name string) bool {
 		globals.DryRun = true
 	case "no-input":
 		globals.NoInput = true
-	case "yes":
+	case "yes", "y":
 		globals.Yes = true
-	case "quiet":
+	case "quiet", "q":
 		globals.Quiet = true
-	case "verbose":
+	case "verbose", "v":
 		globals.Verbose = true
 	case "trace":
 		globals.Trace = true

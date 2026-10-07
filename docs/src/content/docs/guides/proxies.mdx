@@ -191,9 +191,9 @@ that can expose several saved accounts behind one local endpoint and route by
 model. Enable it without rewriting existing bindings, add sources, then bind:
 
 ```bash
-anypick proxy hub enable -p 4140 --start
-anypick proxy hub source grok work on
-anypick proxy hub status
+anypick proxy hub enable default -p 4140 --start
+anypick proxy hub source default grok work
+anypick proxy hub status default
 anypick use claude --with hub:default
 ```
 

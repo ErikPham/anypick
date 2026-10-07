@@ -18,6 +18,7 @@ Valid on every command.
 
 | Flag | Effect |
 | --- | --- |
+| `-V, --version` | Print the version and exit |
 | `--json` | Machine-readable output |
 | `-v, --verbose` | Verbose logging |
 | `-q, --quiet` | Minimal output |
@@ -169,10 +170,10 @@ pass it through `ANYPICK_SECRET`.
 
 ```bash
 anypick account list [provider]
-anypick account refresh [provider [name]]
+anypick account refresh [provider [name]] [--all]
 anypick account remove <provider> <name> [--yes]
-anypick account export <provider> <name> --out <file>
-anypick account import <provider> <name> <file> [--force]
+anypick account export <provider> <name> --out <file>   # -o <file>
+anypick account import <provider> <name> <file> [--force]   # or -i <file>
 ```
 
 `refresh` adopts the provider's current live login into a saved account. With no
@@ -190,11 +191,12 @@ anypick gateway add <name> --provider <id> [--endpoint url]
     [--model <id>] [--models <role=id>]
 anypick gateway list
 anypick gateway show <name>
-anypick gateway edit <name> [--endpoint url] [--model id]
+anypick gateway edit <name> [--endpoint url] [--model id] [-m id] [--api-key key]
 anypick gateway remove <name>
 ```
 
-`show` masks the API key unless you pass the global `--reveal`.
+`show` masks the API key unless you pass the global `--reveal`. `edit` accepts
+`--api-key` to replace the stored key, and `-m` as the short form of `--model`.
 
 ## Presets
 
@@ -226,7 +228,7 @@ for the proxy. `logs` prints the last 50 lines by default.
 ```bash
 anypick proxy pool status <provider>
 anypick proxy pool enable <provider> [--strategy failover|round-robin]
-    [--mode single|multi] [--port N] [+account|-account ...]
+    [--mode single|multi] [--port N] [-p N] [+account|-account ...]
 anypick proxy pool member <provider> <account> <on|off>
 anypick proxy pool start <provider>
 anypick proxy pool stop <provider>
@@ -243,8 +245,8 @@ quota-class failure moves the request on to the next member.
 
 ```bash
 anypick proxy hub status <name>
-anypick proxy hub enable <name> [--host <host>] [--port N]
-    [--strategy failover|round-robin]
+anypick proxy hub enable <name> [--host <host>] [--port N] [-p N]
+    [--strategy failover|round-robin] [--start]
 anypick proxy hub source <name> <provider> <account>
 anypick proxy hub owner <name> <model> <provider>/<account>
 anypick proxy hub preview <name>

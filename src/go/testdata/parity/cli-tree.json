@@ -283,7 +283,7 @@
     {
       "path": "proxy hub enable",
       "description": "Enable the unified Hub without changing existing bindings",
-      "flags": ["--host", "--port"],
+      "flags": ["--host", "--port", "-p", "--start"],
       "subcommands": [],
       "hidden": false
     },
@@ -339,7 +339,7 @@
     {
       "path": "proxy pool enable",
       "description": "Opt-in multi-account pool for a provider",
-      "flags": ["--strategy", "--mode", "--port"],
+      "flags": ["--strategy", "--mode", "--port", "-p"],
       "subcommands": [],
       "hidden": false
     },
@@ -430,21 +430,21 @@
     {
       "path": "account refresh",
       "description": "Refresh a live login (all saved accounts when no provider is given)",
-      "flags": [],
+      "flags": ["--all"],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "account export",
       "description": "Export a saved account snapshot",
-      "flags": ["--out"],
+      "flags": ["--out", "-o"],
       "subcommands": [],
       "hidden": false
     },
     {
       "path": "account import",
       "description": "Import an account snapshot",
-      "flags": ["--force"],
+      "flags": ["--force", "-i"],
       "subcommands": [],
       "hidden": false
     },
@@ -472,7 +472,7 @@
     {
       "path": "gateway edit",
       "description": "Edit gateway fields",
-      "flags": ["--endpoint", "--model"],
+      "flags": ["--endpoint", "--model", "-m", "--api-key"],
       "subcommands": [],
       "hidden": false
     },

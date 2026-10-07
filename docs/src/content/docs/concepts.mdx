@@ -11,7 +11,7 @@ same way.
 | **Client** | The CLI you run: `claude`, `codex`, `commandcode`, `gemini`, `kiro`, `opencode`, `zcode`, `dsh`, `pi`, `omp` |
 | **Source** | What powers it: an account (`grok/work`), a gateway (`openrouter-work`), a pool (`pool:gemini`), the opt-in hub (`hub:default`), or a preset (`@work`) |
 | **Binding** | A concrete snapshot: this client → this source, plus model roles |
-| **Preset** | An editable template (`@name`), created only when you pass `--save` |
+| **Preset** | A stored template (`@name`) that resolves like a source; no command creates one yet |
 
 The grammar never changes:
 
@@ -137,18 +137,22 @@ client.
 
 ## Presets
 
-A preset is the one editable thing. It is a named template you can reuse and
-revise:
+A preset is a named template you can reuse and revise. It is a stored source
+type, and the CLI can inspect and resolve one:
 
 ```bash
-anypick use claude --with grok/work --save work-stack
 anypick use claude --with @work-stack
+anypick preset list
 anypick preset show work-stack
+anypick preset remove work-stack
 ```
 
-There is no in-place preset editor: create a new snapshot with `use … --save`,
-or remove the old one with `preset remove`. Editing a preset would not rewrite
-bindings that were created from it anyway, because those are snapshots.
+There is currently no command that **creates** a preset. `use … --save <name>`
+was documented here but never implemented, so nothing writes the `presets`
+table and `preset list` is empty on a fresh install. Bindings are already
+snapshots, so a preset is a convenience for reusing one spec across clients
+rather than a requirement; until a creation path ships, bind the source
+directly with `use <client> --with <source>`.
 
 <Aside type="note" title="Why snapshots">
 The alternative — bindings that follow their source live — means a change in one
