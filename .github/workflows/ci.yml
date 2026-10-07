@@ -93,6 +93,24 @@ jobs:
         working-directory: src/go
         run: go test -race ./... -count=1
 
+
+  linux-cli-headless:
+    name: Go / Linux CLI headless smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: src/go/go.sum
+      - name: Build static linux amd64 CLI
+        working-directory: src/go
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/anypick-linux-amd64 ./cmd/anypick
+      - name: Headless smoke (QA A–C)
+        run: packaging/smoke/linux-cli-headless.sh src/go/bin/anypick-linux-amd64
+
   go-windows:
     name: Go / Windows x64
     runs-on: windows-latest
@@ -305,6 +323,6 @@ jobs:
 
       - name: Check the release payload smoke scripts
         run: |
-          bash -n packaging/smoke/linux-payload.sh
+          bash -n packaging/smoke/linux-payload.sh packaging/smoke/linux-cli-headless.sh
           # shellcheck disable=SC2016 # $null is PowerShell, not shell; the quotes are deliberate.
           pwsh -NoProfile -Command '[void][System.Management.Automation.Language.Parser]::ParseFile("packaging/smoke/windows-payload.ps1", [ref]$null, [ref]$null)'

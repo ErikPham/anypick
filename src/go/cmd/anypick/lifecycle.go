@@ -10,6 +10,7 @@ import (
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
+	"github.com/outof0/anypick/go/internal/cli"
 )
 
 // knownGlobalFlags are accepted before or after the subcommand (invariant #7:
@@ -185,6 +186,16 @@ func cmdTray(ctx context.Context, a *app.App, args []string) int {
 // alive. Readiness is the `ready` marker the child touches after it finished
 // its startup work — a bare pid is not proof the supervisor can do its job.
 func cmdStart(ctx context.Context, a *appView, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print(`Usage:
+  anypick start
+  anypick status [--json]
+  anypick stop
+
+Start, inspect, or stop the headless supervisor that keeps enabled proxies alive.
+`)
+		return int(anyerr.Success)
+	}
 	if globals.DryRun {
 		printDryRun("tray.start", "Would start the AnyPick tray supervisor", nil)
 		return int(anyerr.Success)
@@ -225,6 +236,12 @@ func cmdStart(ctx context.Context, a *appView, args []string) int {
 }
 
 func cmdStatus(a *appView, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print(`Usage:
+  anypick status [--json]
+`)
+		return int(anyerr.Success)
+	}
 	pid := readPID(filepath.Join(supervisorRuntimeDir(a.Root), "service.pid"))
 	running := pid != 0
 	if wantJSON(args) {
@@ -245,6 +262,12 @@ func cmdStatus(a *appView, args []string) int {
 }
 
 func cmdStop(a *appView, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print(`Usage:
+  anypick stop [--json]
+`)
+		return int(anyerr.Success)
+	}
 	if globals.DryRun {
 		printDryRun("tray.stop", "Would stop the AnyPick tray supervisor and proxies", nil)
 		return int(anyerr.Success)
