@@ -40,6 +40,7 @@ struct SettingsView: View {
       }
       .listStyle(.sidebar)
       .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
+      .accessibilityIdentifier("settings.tabs")
     } detail: {
       Group {
         switch pane {
@@ -54,6 +55,5 @@ struct SettingsView: View {
     }
     .frame(minWidth: 700, minHeight: 460)
     .followingDesignAppearance(model.appearance)
-    .accessibilityIdentifier("settings.tabs")
   }
 }
