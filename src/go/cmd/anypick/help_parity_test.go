@@ -523,6 +523,41 @@ func TestCLIReferenceCommandsExist(t *testing.T) {
 	}
 }
 
+// TestUsageTextFlagsResolveInHandlers closes the gap the --project defect came
+// through. The shipped usage() string is itself a documentation surface: it
+// advertised `link|unlink … [--project]` while cmdLink registered no such
+// flag, and the doc gate could not see it because it only scans files under
+// docs/ and the golden fixture. The usage text is collected at runtime from
+// the same function the binary prints, so a future help line cannot name a
+// flag no handler registers without failing here.
+func TestUsageTextFlagsResolveInHandlers(t *testing.T) {
+	fixture := loadCliTree(t)
+	known := map[string]bool{}
+	for _, c := range fixture.Commands {
+		known[c.Path] = true
+	}
+	for _, o := range fixture.Omitted {
+		known[o.Path] = true
+	}
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	probe := newCommandFlagProbe(t)
+
+	var lines []string
+	for _, l := range strings.Split(usageText, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "anypick ") {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	if len(lines) == 0 {
+		t.Fatal("usage() produced no anypick invocation lines; the usage scan has drifted")
+	}
+	for _, f := range checkDocumentedFlags(lines, known, probe) {
+		t.Errorf("usage() documents %q, which the tree does not have:\n  %s", f.Flag, f.Line)
+	}
+}
+
 // TestCliTreeFlagsResolveInHandlers checks the golden's own `flags` arrays.
 // The fixture advertised `flags` for every command from the start and nothing
 // compared them to a FlagSet, which is how nine documented flags shipped with
@@ -649,6 +684,13 @@ func checkDocumentedFlags(lines []string, known map[string]bool, probe flagResol
 		if len(names) == 0 {
 			continue
 		}
+		// Refused paths (supervisors and surfaces) cannot be probed by running
+		// their handler, so their flags cannot be verified here; the path
+		// itself was already checked above. Flagging their real flags would
+		// make this gate cry wolf and get ignored.
+		if refusedByProbe(tokens) {
+			continue
+		}
 		flags, _ := probe.flagsForTokens(tokens)
 		for _, name := range names {
 			if !flags[name] {
@@ -702,6 +744,12 @@ var rootOnlyFlags = map[string]bool{"version": true, "V": true, "tui": true}
 var probeRefusedPaths = map[string]bool{
 	"start": true, "stop": true, "tray": true, "app": true, "tui": true,
 	"serve": true, "desktop-service": true,
+}
+
+// refusedByProbe reports whether the first path token is one the probe must
+// never run.
+func refusedByProbe(tokens []string) bool {
+	return len(tokens) > 0 && probeRefusedPaths[tokens[0]]
 }
 
 // commandFlagProbe answers "which flags does this command's handler register?"
@@ -809,15 +857,29 @@ func documentedPathTokens(line string) []string {
 		if strings.HasPrefix(tok, "<") || strings.HasPrefix(tok, "[") || strings.HasPrefix(tok, "(") {
 			break
 		}
+		// An alternation bar ends the path: "doctor | update | completion"
+		// offers three separate commands, not a subcommand "|". Without this
+		// the bar itself joined the path and the line read as an unknown
+		// command.
+		if tok == "|" {
+			break
+		}
 		out = append(out, tok)
 	}
 	return out
 }
 
 // stripDocComment removes an inline shell comment from a documented line.
+// Parenthesised trailing prose is treated the same way: the usage text annotates
+// lines with "(deprecated alias for add account --current)", and reading the
+// --current inside that prose as a flag of the line's own command made the gate
+// flag a real invocation.
 func stripDocComment(line string) string {
 	for i, tok := range strings.Fields(line) {
 		if strings.HasPrefix(tok, "#") {
+			return strings.Join(strings.Fields(line)[:i], " ")
+		}
+		if strings.HasPrefix(tok, "(") {
 			return strings.Join(strings.Fields(line)[:i], " ")
 		}
 	}

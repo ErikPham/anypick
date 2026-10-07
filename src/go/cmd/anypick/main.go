@@ -268,8 +268,11 @@ func bareInvocation(ctx context.Context, a *app.App) int {
 	}
 }
 
-func usage() {
-	fmt.Print(`anypick-go — point AI coding clients at accounts you already have
+// usageText is the help the binary prints. It is a variable's literal in a
+// function so the flag gate can scan it at test time: it advertised
+// `link|unlink … [--project]` while no handler registered that flag, and the
+// docs gate never looked here.
+const usageText = `anypick-go — point AI coding clients at accounts you already have
 
 Usage:
   anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
@@ -281,7 +284,7 @@ Usage:
   anypick current <provider>
   anypick models <client> [--with <source>]   ids this connection can serve
   anypick list providers | accounts [<provider>]
-  anypick link|unlink <client> --with <source> [--project]
+  anypick link|unlink <client> [--with <source>] [--dir <path>]   link re-applies the global spec without --with
   anypick reset <client>
   anypick account list|remove|refresh|export|import …
   anypick gateway add|list|show|edit|remove|reset …
@@ -294,7 +297,10 @@ Usage:
   anypick doctor | update | completion <bash|zsh|fish>
 
 Sources:  provider/account · gateway-name · @preset · pool:<provider>
-`)
+`
+
+func usage() {
+	fmt.Print(usageText)
 }
 
 func fsFor(_ []string) *flag.FlagSet { return cli.FsFor() }

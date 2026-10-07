@@ -310,7 +310,16 @@ func cmdUpdate(_ context.Context, a *appView, args []string) int {
 		jsonOut(map[string]string{"current": current, "latest": latest})
 		return int(anyerr.Success)
 	}
-	if latest == strings.TrimPrefix(current, "v") {
+	running := strings.TrimPrefix(current, "v")
+	switch compareVersions(latest, running) {
+	case -1:
+		// The newest published release is OLDER than this build: a source
+		// checkout ahead of the last tag, or a local build. Advertising an
+		// upgrade to it would walk the user backwards, over a data directory
+		// this newer build may have already migrated.
+		fmt.Printf("anypick %s is newer than the latest published release (%s); nothing to update\n", current, latest)
+		return int(anyerr.Success)
+	case 0:
 		fmt.Printf("anypick %s is up to date\n", current)
 		return int(anyerr.Success)
 	}
@@ -323,6 +332,54 @@ func cmdUpdate(_ context.Context, a *appView, args []string) int {
 	fmt.Println("upgrade: npm install --global anypick (when published), download " + releasesPage +
 		", or update a source checkout with: git pull && make build")
 	return int(anyerr.Success)
+}
+
+// compareVersions orders dotted numeric versions: -1 when a < b, 0 when
+// equal, 1 when a > b. String equality was not enough: with current 1.0.1 and
+// latest 1.0.0 the old check offered an "upgrade" to the older release, and a
+// user who obeyed downgraded the CLI below the schema that already migrated
+// the data directory. Segments compare numerically. A non-numeric segment is
+// a pre-release suffix ("1.1.0-beta"): a version WITH a suffix sorts before
+// the same version without one, and two suffixed segments compare as strings.
+// Both versions come from our own release tooling, so dotted numeric is the
+// contract; anything else is a tag we do not publish.
+func compareVersions(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var as_, bs_ string
+		if i < len(as) {
+			as_ = as[i]
+		}
+		if i < len(bs) {
+			bs_ = bs[i]
+		}
+		an, aok := atoi(as_)
+		bn, bok := atoi(bs_)
+		if aok && bok {
+			switch {
+			case an < bn:
+				return -1
+			case an > bn:
+				return 1
+			}
+			continue
+		}
+		if !aok && bok {
+			return -1 // "beta" vs missing segment: pre-release sorts first
+		}
+		if aok && !bok {
+			return 1
+		}
+		if c := strings.Compare(as_, bs_); c != 0 {
+			return c
+		}
+	}
+	return 0
+}
+
+func atoi(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 // packageVersion reports the linked release version; "(devel)" for source
