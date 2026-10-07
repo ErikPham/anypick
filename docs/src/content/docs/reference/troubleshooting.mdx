@@ -7,12 +7,12 @@ description: What anypick doctor checks, what it will and will not repair, and h
 
 ```bash
 anypick doctor
-anypick doctor claude          # narrow to one client or provider
 anypick doctor --fix --dry-run
 anypick doctor --fix -y
 ```
 
-`doctor` inspects the AnyPick data directory, the SQLite database, saved
+`doctor` inspects the whole installation — it does not narrow to one client
+or provider. It checks the AnyPick data directory, the SQLite database, saved
 accounts and gateways, file permissions, PID records, running proxies, and
 any operation journal entry that did not finish.
 

@@ -113,9 +113,20 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 	if err := fs.Parse(reorder(args)); err != nil {
 		return usageError("usage: anypick doctor [target] [--fix [--dry-run] [-y]]")
 	}
-	// The documented `anypick doctor <target>` form is accepted for
-	// compatibility; the Go diagnosis is installation-wide, so a target is
-	// ignored rather than silently narrowing (or widening) the report.
+	// The Go diagnosis is installation-wide: no check narrows by client or
+	// provider yet. Accepting an unknown target made a typo indistinguishable
+	// from a valid one, and the troubleshooting page sent people here to
+	// "narrow to one client" — a narrowing that never happened. A target that
+	// names neither a registered client nor a provider is refused up front;
+	// a valid one is accepted for compatibility and reported as unfiltered.
+	if target := fs.Arg(0); target != "" {
+		if _, cerr := a.Clients.Get(target); cerr != nil {
+			return reportErr(anyerr.Newf(
+				"unknown doctor target "+strconv.Quote(target)+
+					": the Go diagnosis is installation-wide and does not narrow yet",
+				"DOCTOR_TARGET_UNKNOWN", anyerr.WithExitCode(anyerr.InvalidUsage)))
+		}
+	}
 	if fs.NArg() > 1 {
 		return usageError("usage: anypick doctor [target] [--fix [--dry-run] [-y]]")
 	}

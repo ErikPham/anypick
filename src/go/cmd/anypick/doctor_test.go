@@ -178,3 +178,31 @@ func TestDoctorKeepsBoundDuplicateAccounts(t *testing.T) {
 	}
 	t.Fatalf("no duplicate-snapshot finding in %s", out)
 }
+
+// TestDoctorUnknownTargetIsRefused pins the target check. `doctor <target>`
+// used to accept anything, so `doctor nosuchtarget` was byte-identical to a
+// real run and a typo was indistinguishable from a valid client. An unknown
+// target now exits 2; a target naming a registered client or provider is
+// still accepted because the diagnosis is installation-wide.
+func TestDoctorUnknownTargetIsRefused(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+
+	exit := 0
+	_, stderr := captureBoth(t, func() {
+		exit = run([]string{"doctor", "nosuchtarget"})
+	})
+	if exit != int(anyerr.InvalidUsage) {
+		t.Fatalf("doctor nosuchtarget exited %d, want %d; stderr=%q", exit, int(anyerr.InvalidUsage), stderr)
+	}
+	if !strings.Contains(stderr, "does not narrow") {
+		t.Fatalf("refusal did not explain the narrowing limitation: %q", stderr)
+	}
+
+	code := 0
+	captureBoth(t, func() { code = run([]string{"doctor", "claude"}) })
+	if code != int(anyerr.Success) {
+		t.Fatalf("doctor claude exited %d, want 0", code)
+	}
+}
