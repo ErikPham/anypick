@@ -40,8 +40,14 @@ var forbiddenExtensions = []string{".mjs", ".cjs"}
 // The Homebrew prefix matches the shell gate as a prefix: node, node@22, and
 // node@22.14.0 all fail that script. Requiring a slash or an integer-only
 // version let those paths through this scanner.
+//
+// The boundary class is written [[:space:]], not \s, because the Xcode-side
+// twin (check-node-free-app.sh) can only express POSIX classes and the two
+// disagree on the vertical tab: RE2's \s excludes it while [[:space:]] matches
+// it. Two implementations of one gate must reject the same shapes
+// (CODE_REVIEW.md §5), and this byte is what proved the divergence.
 var devPathPattern = regexp.MustCompile(
-	`(?:^|[\s"'=])(?:/Users/|/home/|/opt/homebrew/opt/node|GOROOT=|GOPATH=)`,
+	`(?:^|[[:space:]"'=])(?:/Users/|/home/|/opt/homebrew/opt/node|GOROOT=|GOPATH=)`,
 )
 
 // nodeShebangPattern matches an interpreter line that invokes Node.

@@ -80,8 +80,14 @@ while IFS= read -r -d '' path; do
     continue
   fi
 
-  header="$(dd if="${path}" bs=256 count=1 2>/dev/null || true)"
-  first_line="${header%%$'\n'*}"
+  # The whole first line, not a 256-byte prefix. dd stopped at byte 256, so an
+  # interpreter past that offset was invisible to this scanner while
+  # hasNodeShebang in nodefree.go saw it — the same artifact passed Xcode and
+  # failed CI (CODE_REVIEW.md §5). read consumes one line regardless of length,
+  # which is the same bound the Go scanner's IndexByte uses. read reports EOF
+  # for a last line with no newline; that is not a violation of its own.
+  first_line=""
+  IFS= read -r first_line <"${path}" || true
   if [[ "${first_line}" == '#!'* ]] &&
     printf '%s' "${first_line}" | grep -qiE '(^|[^[:alnum:]_])node(exe)?([^[:alnum:]_]|$)'; then
     record "Node shebang ${rel}"
@@ -93,6 +99,11 @@ while IFS= read -r -d '' path; do
   if has_nul "${path}"; then
     continue
   fi
+  # [[:space:]] is the boundary class shared with devPathPattern in
+  # nodefree.go. It matches the vertical tab, which RE2's \s does not, so the
+  # two scanners disagreed on the byte after the path prefix; the Go side was
+  # changed to this class rather than the reverse because POSIX is the only
+  # spelling both engines share.
   if grep -E -q '(^|[[:space:]"'\''=])(/Users/|/home/|/opt/homebrew/opt/node)' "${path}" ||
     grep -E -q '(^|[[:space:]"'\''=])(GOROOT=|GOPATH=)' "${path}"; then
     record "developer path leaked in ${rel}"

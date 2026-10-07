@@ -1,120 +1,46 @@
 package presets
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
+
+	"github.com/outof0/anypick/go/internal/testgate"
 )
 
 // TestMutatingMethodsTakeTheCoordinatorLock enforces ADR 0009 (CONC-01) and
 // AGENTS.md invariant #5: every persisted mutation runs under the coordinator.
+//
+// The check lives in internal/testgate. This package used to carry a private
+// mutatesByVerbs list, and it had drifted: Attach, Detach, Migrate, Restore,
+// Record, Release, Copy, Heartbeat and Reap were all missing, so a Store method
+// named with one of those verbs could lose its lock while this gate stayed
+// green. MutationVerbs is the detection's entire signal; a second copy is a
+// second answer to the same question (CODE_REVIEW.md §5).
 func TestMutatingMethodsTakeTheCoordinatorLock(t *testing.T) {
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
+	testgate.CheckUncoordinatedMutations(t, ".", []string{"Store"}, unguardedMutations)
+}
+
+// TestGateCatchesANewlySharedVerb pins the reason the private copy was deleted.
+// "Attach" is in testgate.MutationVerbs; the copy this package carried never
+// gained it, so an AttachThing that lost its lock would have passed a green
+// gate. The other two coordinator gates cover Release and Heartbeat, so the
+// three cases together pin three of the nine verbs the copies were missing.
+func TestGateCatchesANewlySharedVerb(t *testing.T) {
+	dir := t.TempDir()
+	source := "package presets\n\ntype Store struct{}\n\nfunc (s *Store) AttachThing() error { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "store.go"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := testgate.UncoordinatedMutations(dir, []string{"Store"}, nil)
 	if err != nil {
-		t.Fatalf("read the presets package: %v", err)
+		t.Fatalf("coordinator gate could not run: %v", err)
 	}
-	var files []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		f, perr := parser.ParseFile(fset, name, nil, 0)
-		if perr != nil {
-			t.Fatalf("parse %s: %v", name, perr)
-		}
-		files = append(files, f)
-	}
-
-	var missing []string
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv == nil || fn.Body == nil {
-				continue
-			}
-			// Only the table-owning Store self-locks. Service methods forward
-			// into Store and would false-positive every time.
-			if !recvIsStore(fn) {
-				continue
-			}
-			name := fn.Name.Name
-			if !ast.IsExported(name) || !mutatesByVerbs(name) {
-				continue
-			}
-			if reason, allowed := unguardedMutations[name]; allowed {
-				if strings.TrimSpace(reason) == "" {
-					t.Errorf("%s is allowlisted with no reason; say why it is safe", name)
-				}
-				continue
-			}
-			if !takesCoordinatorLock(fn.Body) {
-				missing = append(missing, name+" ("+fset.Position(fn.Pos()).String()+")")
-			}
-		}
-	}
-
-	if len(missing) > 0 {
-		t.Errorf("mutating methods bypass the coordinator (ADR 0009 invariant #5): %s\n"+
-			"Wrap the body in s.mutate(...) / lock.WithMutationLocks(...), or add it to\n"+
-			"unguardedMutations with a written reason.",
-			strings.Join(missing, "; "))
+	if len(findings) != 1 || findings[0].Method != "Store.AttachThing" {
+		t.Fatalf("findings = %v, want the unlocked Store.AttachThing mutator", findings)
 	}
 }
 
-func recvIsStore(fn *ast.FuncDecl) bool {
-	if fn.Recv == nil || len(fn.Recv.List) != 1 {
-		return false
-	}
-	switch t := fn.Recv.List[0].Type.(type) {
-	case *ast.StarExpr:
-		ident, ok := t.X.(*ast.Ident)
-		return ok && ident.Name == "Store"
-	case *ast.Ident:
-		return t.Name == "Store"
-	}
-	return false
-}
-
-func mutatesByVerbs(name string) bool {
-	for _, verb := range []string{
-		"Write", "Set", "Clear", "Delete", "Patch", "Update", "Create", "Remove",
-		"Save", "Upsert", "Insert", "Discard", "Prepare", "Ingest", "Reset",
-		"Rotate", "Revoke", "Mark", "Move", "Replace", "Apply", "Disable",
-	} {
-		if strings.HasPrefix(name, verb) {
-			return true
-		}
-	}
-	return false
-}
-
+// unguardedMutations is the escape hatch, and every entry must justify itself.
+// Adding to this map is a decision, not a workaround — that is the point.
 var unguardedMutations = map[string]string{}
-
-func takesCoordinatorLock(body *ast.BlockStmt) bool {
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		switch fn := call.Fun.(type) {
-		case *ast.SelectorExpr:
-			switch fn.Sel.Name {
-			case "mutate", "WithMutationLock", "WithMutationLocks":
-				found = true
-			}
-		case *ast.Ident:
-			switch fn.Name {
-			case "WithMutationLock", "WithMutationLocks":
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
-}
