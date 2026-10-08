@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
@@ -413,5 +414,46 @@ func TestTakeoverConsentAppliesToAStoredBindingReapply(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "sk-ant-user-own-key") {
 		t.Fatalf("the user's own key survived a confirmed takeover: %s", raw)
+	}
+}
+
+// The desktop service boots with SkipMaintenance, so startup maintenance never
+// runs there. Its own rehydrate step is the only place that can sweep a Codex
+// profile whose account is gone — otherwise the leftover is replayed as a
+// restore failure on every launch and its credential home is never removed.
+func TestRehydrateSweepsOrphanedCodexProfiles(t *testing.T) {
+	env := newTrayEnv(t)
+	wireActivation(t, env)
+	ctx := context.Background()
+
+	store := env.Deps.Activation.ClientProfiles
+	if _, err := store.UpsertContext(ctx, "codex", "orphan", bindings.Spec{
+		Client: "codex", Source: refs.AccountRef("codex", "deleted"),
+		Model: bindings.OmittedModel(), TransportPolicy: "auto",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	home := client.CodexProfileHomePath(env.Root, "orphan")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	authPath := client.CodexProfileAuthPath(env.Root, "orphan")
+	if err := os.WriteFile(authPath, []byte(`{"OPENAI_API_KEY":"sk-orphan"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
+	if err := srv.rehydrateManagedBindings(ctx); err != nil {
+		t.Fatalf("an orphaned profile must not fail startup: %v", err)
+	}
+	row, err := store.GetContext(ctx, "codex", "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row != nil {
+		t.Fatalf("orphaned profile survived desktop startup: %#v", row)
+	}
+	if _, err := os.Stat(authPath); !os.IsNotExist(err) {
+		t.Fatalf("orphaned profile kept the deleted account's credential: %v", err)
 	}
 }

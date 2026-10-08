@@ -196,6 +196,15 @@ type ProfileResetter interface {
 	ResetProfile(name string) error
 }
 
+// ProfilePurger removes one named native profile AND the credential material
+// stored inside it. An adapter implements this only when its profile owns a
+// private credential home; ResetProfile keeps that home on purpose (a later
+// activation of the same name reuses it), which is unsafe once the account the
+// profile pointed at has been deleted.
+type ProfilePurger interface {
+	RemoveProfileFiles(name string) error
+}
+
 // ExecutableAdapter overrides the client id when launching an ephemeral run.
 // Most clients use the same name for their binary; clients whose published
 // product name differs (Command Code ships the `cmd` binary) opt in here.

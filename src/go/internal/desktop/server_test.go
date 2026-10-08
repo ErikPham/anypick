@@ -62,7 +62,11 @@ func newTrayEnv(t *testing.T) *trayEnv {
 		t.Fatal(err)
 	}
 	clientReg := client.NewRegistry()
-	if err := client.RegisterBuiltin(clientReg, home); err != nil {
+	// Production passes the data root too (app.compose), which is what gives
+	// the Codex adapter its named-profile root. Without it the adapter falls
+	// back to the ambient ANYPICK_HOME and a test would write outside its
+	// temp root.
+	if err := client.RegisterBuiltin(clientReg, home, root); err != nil {
 		t.Fatal(err)
 	}
 	svc := accounts.New(st, provReg)

@@ -218,6 +218,25 @@ anypick account remove codex old -y
 that point at it keep working; nothing needs re-binding. It exits non-zero if any
 target failed, and prints which one.
 
+`remove` also removes every named Codex profile whose route was that account
+(see [Named Codex profiles](/docs/reference/cli#named-codex-profiles)). A
+profile owns a private `CODEX_HOME` holding the account's `auth.json`, so
+leaving it behind would strand a credential nothing in AnyPick could reach
+again. The cleanup is reported, not silent:
+
+```bash
+anypick account remove codex work -y
+# removed codex/work Removed named profile(s): codex/work.
+```
+
+Profiles that point somewhere else — a gateway, a Hub, a pool, or another
+saved account — are left alone. Deleting one account never takes down a profile
+that uses a different source. If the account row is already gone but a profile
+still points at it (a delete from an older AnyPick, a crash between the two
+writes, or a database restored without its account rows), AnyPick removes the
+profile the next time it starts and says so on stderr; `anypick doctor` reports
+it before that.
+
 ## Export and import
 
 Move an account to another machine:

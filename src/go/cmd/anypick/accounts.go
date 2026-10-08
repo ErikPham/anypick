@@ -97,7 +97,8 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 	case err != nil:
 		return reportErr(err)
 	}
-	if err := a.Accounts.Delete(ctx, providerID, name); err != nil {
+	deleted, err := a.Accounts.Delete(ctx, providerID, name)
+	if err != nil {
 		return reportErr(err)
 	}
 	// Hub sources and route pins name accounts by value; without a prune the
@@ -112,10 +113,18 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 		}
 		refreshUnsyncedHubs(ctx, a, providerID, name)
 	}
-	emitOK(fmt.Sprintf("removed %s/%s%s", providerID, name, prunedMsg),
+	// Named profiles are removed with the account inside Delete, so the
+	// cleanup is reported rather than left invisible: the user asked to
+	// remove one account and lost a native Codex profile too.
+	profileMsg := ""
+	if len(deleted.Profiles) > 0 {
+		profileMsg = fmt.Sprintf(" Removed named profile(s): %s.", strings.Join(deleted.Profiles, ", "))
+	}
+	emitOK(fmt.Sprintf("removed %s/%s%s%s", providerID, name, profileMsg, prunedMsg),
 		kv{Key: "ok", Value: true},
 		kv{Key: "provider", Value: providerID},
-		kv{Key: "name", Value: name})
+		kv{Key: "name", Value: name},
+		kv{Key: "profiles", Value: deleted.Profiles})
 	return int(anyerr.Success)
 }
 

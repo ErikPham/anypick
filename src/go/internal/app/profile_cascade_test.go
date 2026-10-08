@@ -1,0 +1,198 @@
+package app
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/outof0/anypick/go/internal/bindings"
+	"github.com/outof0/anypick/go/internal/client"
+	"github.com/outof0/anypick/go/internal/refs"
+)
+
+// composeForProfiles builds a real app graph (the composition root is what
+// wires the cascade) over an isolated root and home.
+func composeForProfiles(t *testing.T) (*App, func()) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "anypick")
+	a, closeFn, err := Ready(context.Background(), Options{Root: root, Home: testHome(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, closeFn
+}
+
+// seedCodexProfile writes the native files an activation would have written
+// for one named profile and stores its route.
+func seedCodexProfile(t *testing.T, a *App, name string, source refs.Ref) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := a.CodexProfileSvc.UpsertContext(ctx, "codex", name, bindings.Spec{
+		Client: "codex", Source: source, Model: bindings.ExplicitModel("gpt-5.6"),
+		TransportPolicy: "auto",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	home := client.CodexProfileHomePath(a.Root, name)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(client.CodexProfileAuthPath(a.Root, name),
+		[]byte(`{"OPENAI_API_KEY":"sk-`+name+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(client.CodexProfileConfigPathForRoot(a.Root, name),
+		[]byte("# BEGIN anypick-managed\n# END anypick-managed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func codexProfileFiles(a *App, name string) []string {
+	return []string{
+		client.CodexProfileHomePath(a.Root, name),
+		client.CodexProfileAuthPath(a.Root, name),
+		client.CodexProfileConfigPathForRoot(a.Root, name),
+		client.CodexProfileEnvPath(a.Root, name),
+	}
+}
+
+// The behaviour this whole change exists for: deleting a Codex account also
+// removes the named profiles bound to it, credential home included, and
+// reports what it removed.
+func TestDeletingAccountRemovesItsNamedProfiles(t *testing.T) {
+	a, closeFn := composeForProfiles(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	a.writeCodexAuth(t, "gone@example.com", "token-gone")
+	if _, err := a.Accounts.Save(ctx, "codex", "gone", true); err != nil {
+		t.Fatal(err)
+	}
+	seedCodexProfile(t, a, "gone", refs.AccountRef("codex", "gone"))
+
+	deleted, err := a.Accounts.Delete(ctx, "codex", "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted.Profiles) != 1 || deleted.Profiles[0] != "codex/gone" {
+		t.Fatalf("Delete reported profiles %#v, want [codex/gone]", deleted.Profiles)
+	}
+	for _, path := range codexProfileFiles(a, "gone") {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("account deletion left %s behind (stat err = %v)", path, err)
+		}
+	}
+	row, err := a.CodexProfileSvc.GetContext(ctx, "codex", "gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row != nil {
+		t.Fatalf("named profile row survived the cascade: %#v", row)
+	}
+}
+
+// Deleting one account must not touch a profile bound to another, or a
+// gateway-backed profile.
+func TestDeletingAccountLeavesOtherProfilesAlone(t *testing.T) {
+	a, closeFn := composeForProfiles(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	for _, name := range []string{"gone", "kept"} {
+		a.writeCodexAuth(t, name+"@example.com", "token-"+name)
+		if _, err := a.Accounts.Save(ctx, "codex", name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedCodexProfile(t, a, "gone", refs.AccountRef("codex", "gone"))
+	seedCodexProfile(t, a, "kept", refs.AccountRef("codex", "kept"))
+	seedCodexProfile(t, a, "gateway", refs.GatewayRef("openrouter"))
+
+	if _, err := a.Accounts.Delete(ctx, "codex", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"kept", "gateway"} {
+		row, err := a.CodexProfileSvc.GetContext(ctx, "codex", name)
+		if err != nil || row == nil {
+			t.Fatalf("profile %s did not survive: %#v, %v", name, row, err)
+		}
+		for _, path := range codexProfileFiles(a, name) {
+			if path == client.CodexProfileEnvPath(a.Root, name) {
+				continue // never seeded; the cascade is not what would create it
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("deleting codex/gone removed profile %s file %s: %v", name, path, err)
+			}
+		}
+	}
+}
+
+// A profile left over from a delete that predates the cascade (or from a
+// database restored without its account rows) is swept at startup. The test
+// drives the real startup entry point, so it fails if the sweep is unwired
+// from maintenance rather than merely broken in isolation.
+func TestStartupSweepsOrphanedProfilesAndKeepsLiveOnes(t *testing.T) {
+	a, closeFn := composeForProfiles(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	a.writeCodexAuth(t, "alive@example.com", "token-alive")
+	if _, err := a.Accounts.Save(ctx, "codex", "alive", true); err != nil {
+		t.Fatal(err)
+	}
+	seedCodexProfile(t, a, "alive", refs.AccountRef("codex", "alive"))
+	seedCodexProfile(t, a, "orphan", refs.AccountRef("codex", "deleted-account"))
+
+	runStartupMaintenance(ctx, a, a.Root)
+
+	row, err := a.CodexProfileSvc.GetContext(ctx, "codex", "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row != nil {
+		t.Fatalf("startup maintenance left the orphaned profile: %#v", row)
+	}
+	for _, path := range codexProfileFiles(a, "orphan") {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("orphan file %s survived the sweep: %v", path, err)
+		}
+	}
+	for _, path := range codexProfileFiles(a, "alive") {
+		if path == client.CodexProfileEnvPath(a.Root, "alive") {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("sweep removed a live profile's file %s: %v", path, err)
+		}
+	}
+}
+
+// The composition root is what makes the cascade real: a service built by hand
+// has no BeforeDelete hook, so this pins the wiring rather than the helper.
+func TestCompositionRootWiresTheDeletionCascade(t *testing.T) {
+	a, closeFn := composeForProfiles(t)
+	defer closeFn()
+	if a.Accounts.BeforeDelete == nil {
+		t.Fatal("composed accounts service has no deletion cascade; profiles would orphan on delete")
+	}
+	if a.Deps == nil || a.Deps.ClientProfiles == nil {
+		t.Fatal("composed activation deps have no client profile store")
+	}
+}
+
+// writeCodexAuth fabricates a signed-in Codex login at the path the composed
+// providers read. Home is a temp dir (testHome), so this never reaches the
+// developer's real ~/.codex.
+func (a *App) writeCodexAuth(t *testing.T, email, token string) {
+	t.Helper()
+	path := filepath.Join(a.Home, ".codex", "auth.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"auth_mode":"chatgpt","tokens":{"access_token":"` + token +
+		`","account_id":"acct-` + email + `"}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

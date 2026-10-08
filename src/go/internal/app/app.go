@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,6 +332,13 @@ func (a *App) compose() error {
 	a.BindingSvc = bindingSvc
 	a.CodexProfileSvc = client.NewProfileService(clientProfileStore)
 	svc.SetAfterSwitch(a.BindingSvc.RealignNativeClientBinding)
+	// Deleting an account must take its named native profiles with it: a Codex
+	// profile whose route is codex/<name> owns a private CODEX_HOME holding
+	// that account's credential, and nothing else can reach it once the row is
+	// gone (activation.AccountProfileRemovals).
+	svc.SetBeforeDelete(func(ctx context.Context, providerID, accountName string) ([]string, error) {
+		return a.removeAccountProfiles(ctx, providerID, accountName)
+	})
 	a.Runtime = &runtimeView{
 		Root: a.Root, Home: a.Home, Clients: clientReg,
 		ProfileSvc: profileSvc, Catalog: catalogRegistry,
@@ -443,12 +451,54 @@ func runStartupMaintenance(ctx context.Context, a *App, root string) {
 				len(recovered.Failed), recovered.Failed)
 		}
 	}
+	// Named profiles whose account is gone are swept before anything else
+	// reads them: a Codex profile still pointing at a deleted account keeps
+	// that account's credential in a private CODEX_HOME, and every later
+	// activation of the profile would fail on the missing source anyway.
+	cleanOrphanedProfilesAtStartup(ctx, a)
 	// Detached proxy children are reaped only when no live supervisor owns them.
 	if RunningTrayPid(root) != nil {
 		return
 	}
 	if _, err := a.Proxy.ReapStaleContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[anypick] stale lease reaping failed: %v\n", err)
+	}
+}
+
+// removeAccountProfiles is the accounts.Service.BeforeDelete cascade. It runs
+// inside the deletion's own mutation lock and scope (provider/<id>), so a
+// failure here means the account survives and the caller can retry.
+func (a *App) removeAccountProfiles(ctx context.Context, providerID, accountName string) ([]string, error) {
+	if a.Deps == nil {
+		return nil, nil
+	}
+	removals, err := activation.AccountProfileRemovals(ctx, a.Deps, providerID, accountName)
+	if err != nil {
+		return nil, err
+	}
+	if err := activation.RemoveNamedProfiles(ctx, removals, a.Deps, nil); err != nil {
+		return nil, err
+	}
+	return activation.ProfileRemovalLabels(removals), nil
+}
+
+// cleanOrphanedProfilesAtStartup sweeps named profiles left behind by an
+// account deletion that predates the cascade, by a crash between the two
+// writes, or by a database restored without its account rows. Best-effort like
+// the rest of startup maintenance, but never silent: what could not be removed
+// is named on stderr so `anypick doctor` is not the only way to find out.
+func cleanOrphanedProfilesAtStartup(ctx context.Context, a *App) {
+	if a.Deps == nil {
+		return
+	}
+	removed, err := activation.CleanOrphanedProfiles(ctx, a.Deps)
+	if len(removed) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"[anypick] removed %d named profile(s) whose account no longer exists: %s\n",
+			len(removed), strings.Join(activation.ProfileRemovalLabels(removed), ", "))
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[anypick] orphaned profile cleanup incomplete: %v\n", err)
 	}
 }
 

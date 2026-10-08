@@ -843,6 +843,12 @@ func (a *codexAdapter) RestoreNative() error {
 // existed in a pre-existing native profile file. The profile-owned auth.json
 // is removed with the route; the desktop app's CODEX_HOME/auth.json is never
 // touched.
+//
+// The credential home directory itself is left in place: an explicit
+// `profile remove` is often followed by a fresh login under the same name, and
+// removing the home would also drop anything the user put beside it. Removing
+// the home is RemoveProfileFiles' job, because an account deletion must not
+// leave the deleted account's token in a directory nothing references.
 func (a *codexAdapter) ResetProfile(name string) error {
 	if err := ValidateCodexProfileName(name); err != nil {
 		return err
@@ -903,6 +909,28 @@ func resetCodexProfileConfig(path, restorePath string) error {
 		return nil
 	}
 	return atomicfile.Write(path, []byte(stripped), 0o600)
+}
+
+// RemoveProfileFiles deletes every file AnyPick created for one named profile,
+// including the private CODEX_HOME holding its auth.json.
+//
+// ResetProfile deliberately keeps auth.json (a later activation of the same
+// name reuses it), which is the right choice for an explicit profile removal
+// where the account survives. It is the wrong one when the account the profile
+// points at is gone: the leftover home still holds that account's OAuth
+// credential, and nothing in AnyPick can reach it any more. The cascade path
+// (planProfileRemoval) calls this instead.
+//
+// Only the profile's own directories are removed. The client's global config
+// and the desktop app's CODEX_HOME are never touched.
+func (a *codexAdapter) RemoveProfileFiles(name string) error {
+	if err := ValidateCodexProfileName(name); err != nil {
+		return err
+	}
+	if err := a.ResetProfile(name); err != nil {
+		return err
+	}
+	return os.RemoveAll(CodexProfileHomePath(a.profileRoot(), name))
 }
 
 // InspectProfile verifies the file selected by Codex's --profile flag rather

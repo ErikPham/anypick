@@ -240,7 +240,7 @@ func TestDeleteStopsProxyAndClearsActiveAccount(t *testing.T) {
 	stopper := &recordingProxyStopper{}
 	svc.Proxy = stopper
 
-	if err := svc.Delete(ctx, "deepseek", "Work Account"); err != nil {
+	if _, err := svc.Delete(ctx, "deepseek", "Work Account"); err != nil {
 		t.Fatal(err)
 	}
 	if len(stopper.calls) != 1 || stopper.calls[0] != "deepseek/work-account" {
@@ -264,10 +264,67 @@ func TestDeleteAbortsWhenProxyCannotStop(t *testing.T) {
 	}
 	svc.Proxy = &recordingProxyStopper{err: errors.New("stop failed")}
 
-	if err := svc.Delete(ctx, "deepseek", "work"); err == nil {
+	if _, err := svc.Delete(ctx, "deepseek", "work"); err == nil {
 		t.Fatal("want proxy stop failure")
 	}
 	if account, err := st.Get(context.Background(), "deepseek", "work"); err != nil || account == nil {
 		t.Fatalf("account was deleted after stop failure: %+v, err = %v", account, err)
+	}
+}
+
+// The cascade hook runs before the row is deleted, inside the deletion's own
+// lock, and its result is reported back to the caller. Ordering is the whole
+// point: a profile removed after its account is already an orphan.
+func TestDeleteRunsTheCascadeBeforeRemovingTheRow(t *testing.T) {
+	svc, st := testService(t)
+	ctx := context.Background()
+	if _, err := svc.SaveInput(ctx, "deepseek", "work", CredentialInput{
+		Kind: "api-key", Secret: "sk-test", Profile: "global",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	var sawAccountDuringCascade bool
+	svc.BeforeDelete = func(c context.Context, providerID, accountName string) ([]string, error) {
+		acct, err := st.Get(c, providerID, accountName)
+		sawAccountDuringCascade = err == nil && acct != nil
+		return []string{providerID + "/" + accountName}, nil
+	}
+
+	result, err := svc.Delete(ctx, "deepseek", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawAccountDuringCascade {
+		t.Fatal("cascade ran after the account row was already gone")
+	}
+	if len(result.Profiles) != 1 || result.Profiles[0] != "deepseek/work" {
+		t.Fatalf("Delete reported %#v, want the cascade result", result.Profiles)
+	}
+	if account, err := st.Get(context.Background(), "deepseek", "work"); err != nil || account != nil {
+		t.Fatalf("account survived: %+v, %v", account, err)
+	}
+}
+
+// A cascade that cannot finish must abort the deletion: the account surviving
+// with its profile is recoverable, the account gone with an orphaned profile
+// is the state the cascade exists to prevent.
+func TestDeleteAbortsWhenTheCascadeFails(t *testing.T) {
+	svc, st := testService(t)
+	ctx := context.Background()
+	if _, err := svc.SaveInput(ctx, "deepseek", "work", CredentialInput{
+		Kind: "api-key", Secret: "sk-test", Profile: "global",
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	cascadeErr := errors.New("profile removal failed")
+	svc.BeforeDelete = func(context.Context, string, string) ([]string, error) {
+		return nil, cascadeErr
+	}
+
+	if _, err := svc.Delete(ctx, "deepseek", "work"); !errors.Is(err, cascadeErr) {
+		t.Fatalf("Delete = %v, want the cascade error", err)
+	}
+	if account, err := st.Get(context.Background(), "deepseek", "work"); err != nil || account == nil {
+		t.Fatalf("account was deleted after a failed cascade: %+v, %v", account, err)
 	}
 }

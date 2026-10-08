@@ -127,6 +127,16 @@ does not invalidate the default route or another profile. These commands
 configure Codex CLI; Codex Desktop keeps its own signed-in account and does
 not follow the CLI's `CODEX_HOME`.
 
+`anypick codex profile remove <name>` deletes the route and the files AnyPick
+generated for it (the profile config, its model catalog, and its env file). The
+profile's private `CODEX_HOME` stays in place, so signing in again under the
+same name reuses it. Removing the *account* a profile points at is different:
+`anypick account remove codex work` also removes the named profiles bound to
+that account, credential home included, and names them in the result. Profiles
+that point at a gateway, a Hub, a pool, or a different account are not touched.
+AnyPick sweeps profiles left over from an earlier delete at the next startup,
+and `anypick doctor` reports them until then.
+
 <Aside type="caution" title="Non-interactive use">
 `use <client>` requires `--with`. Without it there is nothing to derive the
 source from, so the command exits `2` instead of guessing.

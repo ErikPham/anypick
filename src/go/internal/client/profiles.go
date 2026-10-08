@@ -91,6 +91,27 @@ func (s *ProfileStore) ListContext(ctx context.Context, clientID string) ([]Name
 	return out, rows.Err()
 }
 
+// ListAllContext returns every named route for every client in stable order.
+// The account-deletion cascade and the startup orphan sweep both need to find
+// profiles without already knowing which client owns them.
+func (s *ProfileStore) ListAllContext(ctx context.Context) ([]NamedProfile, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT `+namedProfileColumns+` FROM client_profiles ORDER BY client_id, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NamedProfile
+	for rows.Next() {
+		p, scanErr := scanNamedProfile(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
 // UpsertContext creates or updates a named route. The source spec is the
 // binding snapshot; native config and proxy lifecycle are handled by the
 // activation plan before this commit step.
@@ -143,6 +164,11 @@ func (s *ProfileService) GetContext(ctx context.Context, clientID, name string) 
 
 func (s *ProfileService) ListContext(ctx context.Context, clientID string) ([]NamedProfile, error) {
 	return s.Store.ListContext(ctx, clientID)
+}
+
+// ListAllContext lists every named route, every client.
+func (s *ProfileService) ListAllContext(ctx context.Context) ([]NamedProfile, error) {
+	return s.Store.ListAllContext(ctx)
 }
 
 func (s *ProfileService) UpsertContext(ctx context.Context, clientID, name string, spec bindings.Spec) (NamedProfile, error) {

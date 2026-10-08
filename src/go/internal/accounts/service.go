@@ -61,6 +61,30 @@ type Service struct {
 	Providers   *provider.Registry
 	Proxy       ProxyStopper
 	AfterSwitch func(ctx context.Context, providerID, accountName string) error
+	// BeforeDelete runs inside the deletion's own mutation lock, after the
+	// proxy for this account has stopped and before the account row is
+	// removed. It is the cascade hook: a named native profile whose route is
+	// this account is a derived resource, and deleting the account without it
+	// leaves a native profile holding the deleted account's credential in a
+	// private home nothing can reach any more.
+	//
+	// It returns the labels of what it removed ("codex/work") so callers can
+	// report the cleanup instead of letting it happen invisibly, and an error
+	// aborts the deletion: "the account is gone but its profile still points
+	// at it" is the state this exists to prevent.
+	//
+	// It is deliberately injected (app wires activation) so accounts stays
+	// independent of the activation and client packages, exactly like
+	// AfterSwitch.
+	BeforeDelete func(ctx context.Context, providerID, accountName string) ([]string, error)
+}
+
+// DeleteResult names the derived resources that went away with an account.
+// The account row itself is not listed: the caller already knows its name.
+type DeleteResult struct {
+	// Profiles are named native client profiles that pointed at this account
+	// and were removed with it.
+	Profiles []string
 }
 
 // ProxyStopper is the narrow proxy lifecycle surface account deletion needs.
@@ -93,6 +117,12 @@ func New(st *store.AccountStore, reg *provider.Registry) *Service {
 // bindings package.
 func (s *Service) SetAfterSwitch(fn func(context.Context, string, string) error) {
 	s.AfterSwitch = fn
+}
+
+// SetBeforeDelete installs the optional cascade that removes named native
+// profiles bound to the account being deleted. See Service.BeforeDelete.
+func (s *Service) SetBeforeDelete(fn func(context.Context, string, string) ([]string, error)) {
+	s.BeforeDelete = fn
 }
 
 // CredentialInput mirrors CredentialInput from src/types/account.ts.
@@ -318,20 +348,22 @@ func (s *Service) RefreshSnapshot(ctx context.Context, providerID, name string) 
 	return result, err
 }
 
-// Delete stops the exact account proxy, then removes the account and active
-// pointer under the provider's single mutation scope (ADR 0011).
-func (s *Service) Delete(ctx context.Context, providerID, name string) error {
+// Delete stops the exact account proxy, removes the named native profiles that
+// pointed at the account, then removes the account and active pointer under the
+// provider's single mutation scope (ADR 0011).
+func (s *Service) Delete(ctx context.Context, providerID, name string) (DeleteResult, error) {
+	var result DeleteResult
 	pv, err := s.Providers.Get(providerID)
 	if err != nil {
-		return anyerr.Newf("Unknown provider "+providerID+".", "PROVIDER_NOT_FOUND",
+		return result, anyerr.Newf("Unknown provider "+providerID+".", "PROVIDER_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound))
 	}
 	accountName, err := slug.AccountName(name)
 	if err != nil {
-		return anyerr.Newf(err.Error(), "INVALID_USAGE",
+		return result, anyerr.Newf(err.Error(), "INVALID_USAGE",
 			anyerr.WithExitCode(anyerr.InvalidUsage))
 	}
-	return lock.WithMutationLock(ctx, s.Store.Root, refs.ProviderScope(providerID), func(c context.Context) error {
+	err = lock.WithMutationLock(ctx, s.Store.Root, refs.ProviderScope(providerID), func(c context.Context) error {
 		existing, err := s.Store.Get(c, providerID, accountName)
 		if err != nil {
 			return err
@@ -348,10 +380,24 @@ func (s *Service) Delete(ctx context.Context, providerID, name string) error {
 				return err
 			}
 		}
+		// Derived resources go before the row they derive from. A named
+		// profile is removed with its account, not after it: once the row is
+		// gone the profile is an orphan holding a credential nothing owns.
+		if s.BeforeDelete != nil {
+			removed, err := s.BeforeDelete(c, providerID, accountName)
+			if err != nil {
+				return err
+			}
+			result.Profiles = removed
+		}
 		// `c` carries the coordinator lock this closure runs under; `ctx` does
 		// not, and re-entering with it would block on our own lock (ADR 0009).
 		return s.Store.DeleteContext(c, providerID, accountName)
 	})
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	return result, nil
 }
 
 func (s *Service) saveLocked(ctx context.Context, pv provider.Provider, accountName string, existing *store.Account) (store.Meta, error) {

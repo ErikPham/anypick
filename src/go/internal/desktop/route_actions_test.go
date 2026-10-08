@@ -12,6 +12,7 @@ import (
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/bindings"
 	"github.com/outof0/anypick/go/internal/catalog"
+	"github.com/outof0/anypick/go/internal/client"
 	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/journal"
@@ -55,20 +56,22 @@ func wireActivation(t *testing.T, env *trayEnv) {
 	poolsStore := &pools.Store{Root: env.Root, DB: database}
 	hubStore := &hub.Store{DB: database, Root: env.Root}
 	env.Deps.Hub = hub.NewService(hubStore)
+	clientProfiles := &client.ProfileStore{Root: env.Root, DB: database}
 	env.Deps.Activation = &activation.Deps{
-		Root:      env.Root,
-		Accounts:  activation.NewAccountsView(env.Svc),
-		Providers: env.Deps.Providers,
-		Clients:   env.Deps.Clients,
-		Bindings:  env.Deps.Bindings,
-		Presets:   activation.NewPresetsView(presets.NewService(presetsStore)),
-		Profiles:  env.Deps.Profiles,
-		Pools:     activation.NewPoolsView(pools.NewService(poolsStore)),
-		Journal:   &journal.OperationJournal{DB: database},
-		Runtime:   rt,
-		Proxy:     env.Deps.Proxy,
-		Catalog:   activation.NewCatalogIndex(catalogEntries),
-		Hub:       env.Deps.Hub,
+		Root:           env.Root,
+		Accounts:       activation.NewAccountsView(env.Svc),
+		Providers:      env.Deps.Providers,
+		Clients:        env.Deps.Clients,
+		ClientProfiles: clientProfiles,
+		Bindings:       env.Deps.Bindings,
+		Presets:        activation.NewPresetsView(presets.NewService(presetsStore)),
+		Profiles:       env.Deps.Profiles,
+		Pools:          activation.NewPoolsView(pools.NewService(poolsStore)),
+		Journal:        &journal.OperationJournal{DB: database},
+		Runtime:        rt,
+		Proxy:          env.Deps.Proxy,
+		Catalog:        activation.NewCatalogIndex(catalogEntries),
+		Hub:            env.Deps.Hub,
 	}
 }
 

@@ -216,6 +216,21 @@ type InstallationDeps struct {
 	Proxy             *proxy.Service
 	Environment       EnvironmentReport
 	PluginDiagnostics func(context.Context) plugins.Diagnostics
+	// NamedProfiles lists every named native client profile. Optional: a
+	// composition without the profile store (legacy tests) reports no
+	// profile findings instead of a false "all clean".
+	NamedProfiles func(context.Context) ([]NamedProfileRef, error)
+}
+
+// NamedProfileRef is the part of a named profile the doctor needs: which
+// account its route points at, if any. It is a plain struct so internal/doctor
+// stays a leaf package and never imports internal/client.
+type NamedProfileRef struct {
+	Client      string
+	Name        string
+	SourceKind  string
+	Provider    string
+	AccountName string
 }
 
 // DiagnoseInstallation checks persistent references and local service state.
@@ -334,6 +349,42 @@ func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) Installati
 			}
 			if err != nil {
 				add("duplicate-snapshot", "warn", "snapshot audit incomplete: "+err.Error())
+			}
+		}
+	}
+
+	// A named profile whose account is gone is a credential with no owner: its
+	// private home still holds that account's auth.json. Startup cleans these
+	// automatically, so a finding here means the cleanup could not run (a
+	// read-only data root, a busy lock) rather than routine debris.
+	//
+	// An audit that cannot run says so. Skipping it when a dependency is
+	// missing would make "no findings" mean both "clean" and "never checked",
+	// which is how a check quietly stops checking anything.
+	if deps.NamedProfiles != nil {
+		profiles, err := deps.NamedProfiles(ctx)
+		switch {
+		case err != nil:
+			add("named-profile", "warn", "profile audit incomplete: "+err.Error())
+		case deps.Accounts == nil:
+			add("named-profile", "warn", "profile audit skipped: account service unavailable")
+		default:
+			for _, p := range profiles {
+				if p.SourceKind != "account" {
+					continue
+				}
+				acct, aerr := deps.Accounts.Get(ctx, p.Provider, p.AccountName)
+				if aerr != nil {
+					add("named-profile", "warn",
+						fmt.Sprintf("%s/%s: account lookup failed: %v", p.Client, p.Name, aerr))
+					continue
+				}
+				if acct == nil {
+					add("named-profile", "warn", fmt.Sprintf(
+						"%s/%s points at missing account %s/%s — removed automatically at startup; "+
+							"run anypick codex profile remove %s to do it now",
+						p.Client, p.Name, p.Provider, p.AccountName, p.Name))
+				}
 			}
 		}
 	}

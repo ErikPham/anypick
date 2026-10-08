@@ -379,10 +379,15 @@ func saveLiveCmd(ctx context.Context, a *app.App, providerID string) tea.Cmd {
 
 func deleteCmd(ctx context.Context, a *app.App, providerID, name string) tea.Cmd {
 	return func() tea.Msg {
-		if err := a.Accounts.Delete(ctx, providerID, name); err != nil {
+		deleted, err := a.Accounts.Delete(ctx, providerID, name)
+		if err != nil {
 			return actionMsg{err: err}
 		}
 		text := fmt.Sprintf("deleted %s/%s", providerID, name)
+		if len(deleted.Profiles) > 0 {
+			text += fmt.Sprintf(" (+%d named profile: %s)", len(deleted.Profiles),
+				strings.Join(deleted.Profiles, ", "))
+		}
 		if a.ProxyHub != nil {
 			pruned, perr := a.ProxyHub.PruneAccount(ctx, providerID, name)
 			if perr != nil {

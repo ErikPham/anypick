@@ -10,7 +10,6 @@ import (
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/client"
-	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -433,51 +432,27 @@ func (s *Server) mutateCodexProfileRemove(ctx context.Context, m Mutate, result 
 	if s.Deps.Activation == nil || s.Deps.Activation.ClientProfiles == nil || s.Deps.Clients == nil {
 		return result.Fail(serviceUnavailableErr("Codex profile service"))
 	}
-	if err := client.ValidateCodexProfileName(m.Name); err != nil {
-		return result.Fail(anyerr.Newf(err.Error(), "INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage)))
-	}
-	named, err := s.Deps.Activation.ClientProfiles.GetContext(ctx, "codex", m.Name)
+	// Removal is shared with the CLI and the account-deletion cascade: the
+	// same plan, the same files, the same order. A second implementation here
+	// is how one of the four removal paths starts disagreeing with the others.
+	named, removal, err := activation.PlanNamedProfileRemoval(ctx, "codex", m.Name, s.Deps.Activation)
 	if err != nil {
 		return result.Fail(err)
 	}
-	if named == nil {
-		return result.Fail(anyerr.Newf("Codex profile "+m.Name+" was not found.", "CODEX_PROFILE_NOT_FOUND"))
-	}
-	adapter, err := s.Deps.Clients.Get("codex")
-	if err != nil {
-		return result.Fail(err)
-	}
-	resetter, ok := adapter.(client.ProfileResetter)
-	if !ok {
-		return result.Fail(anyerr.Newf("Codex cannot remove named profiles in this build.", "UNSUPPORTED_PROFILE"))
-	}
-	scopes := []string{"client/codex", "client-profile/codex/" + m.Name}
-	if named.Spec.Source.Kind == refs.KindProxyHub {
-		scopes = append(scopes, refs.MutationScopeForRef(named.Spec.Source))
-	}
-	err = lock.WithMutationLocks(ctx, s.Deps.Root, scopes, func(c context.Context) error {
-		current, err := s.Deps.Activation.ClientProfiles.GetContext(c, "codex", m.Name)
-		if err != nil {
-			return err
-		}
-		if current == nil {
-			return anyerr.Newf("Codex profile "+m.Name+" was not found.", "CODEX_PROFILE_NOT_FOUND")
-		}
-		if current.UpdatedAt != named.UpdatedAt ||
-			refs.SerializeRef(current.Spec.Source) != refs.SerializeRef(named.Spec.Source) {
-			return anyerr.Newf("The Codex profile changed. Refresh and review it before removing it.", "STATE_CONFLICT")
-		}
-		if err := resetter.ResetProfile(m.Name); err != nil {
-			return err
-		}
-		if current.Spec.Source.Kind == refs.KindProxyHub && s.Deps.Hub != nil {
-			routeID := hub.ClientProfileRouteID(current.Spec.Source.Name, "codex", m.Name)
-			if err := s.Deps.Hub.DetachRouteContext(c, routeID); err != nil {
-				return err
+	err = activation.RemoveNamedProfiles(ctx, []activation.ProfileRemoval{removal}, s.Deps.Activation,
+		func(c context.Context) error {
+			current, gerr := s.Deps.Activation.ClientProfiles.GetContext(c, "codex", m.Name)
+			if gerr != nil {
+				return gerr
 			}
-		}
-		return s.Deps.Activation.ClientProfiles.DeleteContext(c, "codex", m.Name)
-	}, 0)
+			if current == nil {
+				return activation.NamedProfileNotFound(m.Name)
+			}
+			if activation.NamedProfileChanged(named, current) {
+				return anyerr.Newf("The Codex profile changed. Refresh and review it before removing it.", "STATE_CONFLICT")
+			}
+			return nil
+		})
 	if err != nil {
 		return result.Fail(err)
 	}

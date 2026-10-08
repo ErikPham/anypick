@@ -216,7 +216,7 @@ func (s *Service) loginLocked(ctx context.Context, providerID string, opts Login
 			// Put that copy back before restoring the live files.
 			rbErr = s.Store.WriteMetaContext(rbCtx, overwritten.Meta, overwrittenSnap)
 		case createdName != "":
-			rbErr = s.Delete(rbCtx, providerID, createdName)
+			_, rbErr = s.Delete(rbCtx, providerID, createdName)
 		}
 		liveErr := s.restoreCheckpointQuiet(rbCtx, checkpoint)
 		if envErr := restorePreserved(); envErr != nil && liveErr == nil {

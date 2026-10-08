@@ -634,9 +634,20 @@ func (s *Server) rehydrateManagedBindings(ctx context.Context) error {
 // rehydrateCodexProfiles restores profile-specific proxy and Hub credentials.
 // Native direct profiles need no service process and remain isolated from the
 // desktop login, so only routes that own a managed child are replayed.
+//
+// Profiles whose account is gone are swept first. The desktop service starts
+// with SkipMaintenance (a detached helper may hold the parent's mutation
+// locks), so startup maintenance never runs here and this is the only place
+// that can clean up before the sweep's leftovers are replayed as failures.
 func (s *Server) rehydrateCodexProfiles(ctx context.Context) error {
 	if s.Deps.Activation == nil || s.Deps.Activation.ClientProfiles == nil {
 		return nil
+	}
+	if removed, err := activation.CleanOrphanedProfiles(ctx, s.Deps.Activation); err != nil {
+		s.logErr(fmt.Errorf("orphaned Codex profile cleanup: %w", err))
+	} else if len(removed) > 0 {
+		s.logErr(fmt.Errorf("removed %d Codex profile(s) whose account no longer exists: %s",
+			len(removed), strings.Join(activation.ProfileRemovalLabels(removed), ", ")))
 	}
 	profiles, err := s.Deps.Activation.ClientProfiles.ListContext(ctx, "codex")
 	if err != nil {
@@ -1648,6 +1659,7 @@ func (s *Server) handleDoctor(ctx context.Context, payload json.RawMessage) erro
 		Proxy:             s.Deps.Proxy,
 		Environment:       s.Deps.Environment,
 		PluginDiagnostics: s.Deps.PluginDiagnostics,
+		NamedProfiles:     s.namedProfileRefs,
 	})
 	s.write(FrameDoctor(DoctorResult{
 		Version:   ProtocolVersion,
@@ -1656,6 +1668,27 @@ func (s *Server) handleDoctor(ctx context.Context, payload json.RawMessage) erro
 		Findings:  report.Findings,
 	}))
 	return nil
+}
+
+// namedProfileRefs adapts the client profile store to the doctor's leaf shape
+// (internal/doctor does not import internal/client).
+func (s *Server) namedProfileRefs(ctx context.Context) ([]doctor.NamedProfileRef, error) {
+	if s.Deps.Activation == nil || s.Deps.Activation.ClientProfiles == nil {
+		return nil, nil
+	}
+	profiles, err := s.Deps.Activation.ClientProfiles.ListAllContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]doctor.NamedProfileRef, 0, len(profiles))
+	for _, p := range profiles {
+		out = append(out, doctor.NamedProfileRef{
+			Client: p.Client, Name: p.Name,
+			SourceKind: string(p.Spec.Source.Kind),
+			Provider:   p.Spec.Source.Provider, AccountName: p.Spec.Source.Name,
+		})
+	}
+	return out, nil
 }
 
 func (s *Server) handleMutate(ctx context.Context, payload json.RawMessage) error {
@@ -1816,10 +1849,14 @@ func (s *Server) mutateAccountRemove(ctx context.Context, m Mutate, result Resul
 		result = result.Fail(payloadErr("account-remove", "providerId and name"))
 		return result
 	}
-	if err := s.Deps.Accounts.Delete(ctx, m.ProviderID, m.Name); err != nil {
+	deleted, err := s.Deps.Accounts.Delete(ctx, m.ProviderID, m.Name)
+	if err != nil {
 		result = result.Fail(err)
 	} else {
 		result.Message = fmt.Sprintf("Removed account %s.", m.Name)
+		if len(deleted.Profiles) > 0 {
+			result.Message += fmt.Sprintf(" Removed named profile(s): %s.", strings.Join(deleted.Profiles, ", "))
+		}
 		// An account row is the only thing Delete removes; hub sources and
 		// route pins that named it would otherwise rot into ghosts the
 		// snapshot hides and serving trips over. Prune them while the

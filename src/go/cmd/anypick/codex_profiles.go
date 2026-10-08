@@ -9,7 +9,6 @@ import (
 	"github.com/outof0/anypick/go/internal/activation"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/client"
-	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/transport"
@@ -286,12 +285,9 @@ func cmdCodexProfileRemove(ctx context.Context, a *appView, args []string) int {
 		return reportErr(anyerr.Newf("Codex profile service is unavailable.",
 			"OPERATIONAL", anyerr.WithExitCode(anyerr.Operational)))
 	}
-	p, err := a.CodexProfileSvc.GetContext(ctx, "codex", name)
+	p, removal, err := activation.PlanNamedProfileRemoval(ctx, "codex", name, a.Deps)
 	if err != nil {
 		return reportErr(err)
-	}
-	if p == nil {
-		return reportErr(codexProfileNotFound(name))
 	}
 	if globals.DryRun {
 		printDryRunFields("codex.profile.remove", "Would remove Codex profile "+name,
@@ -305,42 +301,25 @@ func cmdCodexProfileRemove(ctx context.Context, a *appView, args []string) int {
 		}
 		return reportErr(err)
 	}
-	resetter, ok := mustCodexProfileResetter(a)
-	if !ok {
-		return int(anyerr.Operational)
-	}
-	scopes := []string{"client/codex", "client-profile/codex/" + name}
-	if p.Spec.Source.Kind == refs.KindProxyHub {
-		scopes = append(scopes, refs.MutationScopeForRef(p.Spec.Source))
-	}
-	err = lock.WithMutationLocks(ctx, a.Root,
-		scopes,
+	err = activation.RemoveNamedProfiles(ctx, []activation.ProfileRemoval{removal}, a.Deps,
 		func(c context.Context) error {
-			current, err := a.CodexProfileSvc.GetContext(c, "codex", name)
-			if err != nil {
-				return err
+			// The confirmation named a specific route; if it moved in the
+			// meantime the user never agreed to this removal.
+			current, gerr := a.CodexProfileSvc.GetContext(c, "codex", name)
+			if gerr != nil {
+				return gerr
 			}
 			if current == nil {
-				return codexProfileNotFound(name)
+				return activation.NamedProfileNotFound(name)
 			}
-			if current.UpdatedAt != p.UpdatedAt ||
-				refs.SerializeRef(current.Spec.Source) != refs.SerializeRef(p.Spec.Source) {
+			if activation.NamedProfileChanged(p, current) {
 				return anyerr.Newf(
 					"Codex profile changed while removal was being confirmed; review it and retry.",
 					"STATE_CONFLICT",
 				)
 			}
-			if err := resetter.ResetProfile(name); err != nil {
-				return err
-			}
-			if current.Spec.Source.Kind == refs.KindProxyHub && a.ProxyHub != nil {
-				routeID := hub.ClientProfileRouteID(current.Spec.Source.Name, "codex", name)
-				if err := a.ProxyHub.DetachRouteContext(c, routeID); err != nil {
-					return err
-				}
-			}
-			return a.CodexProfileSvc.DeleteContext(c, "codex", name)
-		}, 0)
+			return nil
+		})
 	if err != nil {
 		return reportErr(err)
 	}
@@ -383,20 +362,5 @@ func profileOwnsCodexAccount(p *client.NamedProfile, accountName string) bool {
 }
 
 func codexProfileNotFound(name string) error {
-	return anyerr.Newf("Codex profile "+name+" does not exist.",
-		"CODEX_PROFILE_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound),
-		anyerr.WithSuggestions("anypick codex profile list"))
-}
-
-func mustCodexProfileResetter(a *appView) (client.ProfileResetter, bool) {
-	cad, err := a.Clients.Get("codex")
-	if err != nil {
-		_ = reportErr(err)
-		return nil, false
-	}
-	resetter, ok := cad.(client.ProfileResetter)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "codex adapter does not support named profile removal")
-	}
-	return resetter, ok
+	return activation.NamedProfileNotFound(name)
 }

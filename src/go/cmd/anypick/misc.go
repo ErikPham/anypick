@@ -136,6 +136,7 @@ func cmdDoctor(ctx context.Context, a *appView, args []string) int {
 		Root: a.Root, Providers: a.Providers, Clients: a.Clients, Accounts: a.Accounts,
 		Bindings: a.BindingSvc, Proxy: a.Proxy, Environment: currentDoctorEnvironment(),
 		PluginDiagnostics: a.PluginDiagnostics,
+		NamedProfiles:     namedProfileRefs(a),
 	})
 
 	if !*flags.Fix {
@@ -261,6 +262,29 @@ func doctorFixDeps(ctx context.Context, a *appView) doctor.FixDeps {
 		deps.Leases = a.Proxy.ListLeasesByAccountContext
 	}
 	return deps
+}
+
+// namedProfileRefs adapts the client profile store to the doctor's leaf
+// package shape: internal/doctor must not import internal/client.
+func namedProfileRefs(a *appView) func(context.Context) ([]doctor.NamedProfileRef, error) {
+	if a == nil || a.CodexProfileSvc == nil {
+		return nil
+	}
+	return func(ctx context.Context) ([]doctor.NamedProfileRef, error) {
+		profiles, err := a.CodexProfileSvc.ListAllContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]doctor.NamedProfileRef, 0, len(profiles))
+		for _, p := range profiles {
+			out = append(out, doctor.NamedProfileRef{
+				Client: p.Client, Name: p.Name,
+				SourceKind: string(p.Spec.Source.Kind),
+				Provider:   p.Spec.Source.Provider, AccountName: p.Spec.Source.Name,
+			})
+		}
+		return out, nil
+	}
 }
 
 func currentDoctorEnvironment() doctor.EnvironmentReport {
