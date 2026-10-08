@@ -39,22 +39,6 @@ func tsFixturePath(t *testing.T) string {
 	return filepath.Join(repoRoot(t), "go", "testdata", "parity", "multi-account-backup.json")
 }
 
-// parityAuthJSON matches scripts/gen-parity-fixtures.ts codexAuth() byte for
-// byte so either runtime can assert exact envelope contents.
-func parityAuthJSON(variant string) []byte {
-	var idToken string
-	switch variant {
-	case "work":
-		idToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6IndvcmtAZXhhbXBsZS50ZXN0Iiwic3ViIjoiYXV0aDB8cGFyaXR5LXdvcmsifQ.sig"
-	case "personal":
-		idToken = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InBlcnNvbmFsQGV4YW1wbGUudGVzdCIsInN1YiI6ImF1dGgwfHBhcml0eS1wZXJzb25hbCJ9.sig"
-	default:
-		panic("unknown parity variant: " + variant)
-	}
-	return []byte(`{"auth_mode":"chatgpt","tokens":{"id_token":"` + idToken +
-		`","access_token":"parity-access-` + variant + `","account_id":"parity-acct-` + variant + `"}}`)
-}
-
 // saveParityAccount mirrors saveFakeAccount but with the deterministic parity
 // credentials shared with the TypeScript fixture generator.
 

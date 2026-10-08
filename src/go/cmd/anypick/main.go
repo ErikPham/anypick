@@ -916,44 +916,51 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 		if fs.Arg(1) == "" {
 			providerIDs = a.Providers.IDs()
 		}
-		type row struct {
-			Provider string `json:"provider"`
-			Name     string `json:"name"`
-			Identity string `json:"identity,omitempty"`
-			Active   bool   `json:"active"`
-		}
-		rows := make([]row, 0)
-		for _, providerID := range providerIDs {
-			all, err := a.Accounts.List(ctx, providerID)
-			if err != nil {
-				return reportErr(err)
-			}
-			active, _ := a.Accounts.Active(ctx, providerID)
-			for _, acct := range all {
-				isActive := active == acct.Meta.Name
-				if globals.JSON {
-					rows = append(rows, row{
-						Provider: acct.Meta.Provider, Name: acct.Meta.Name,
-						Identity: acct.Meta.Identity, Active: isActive,
-					})
-					continue
-				}
-				marker := ""
-				if isActive {
-					marker = " *"
-				}
-				fmt.Printf("%s/%s%s\t%s\n", acct.Meta.Provider, acct.Meta.Name,
-					marker, acct.Meta.Identity)
-			}
-		}
-		if globals.JSON {
-			jsonOut(rows)
-		}
-		return int(anyerr.Success)
+		return listAccounts(ctx, a, providerIDs)
 	default:
 		fmt.Fprintln(os.Stderr, "usage: anypick list providers|accounts [<provider>]")
 		return int(anyerr.InvalidUsage)
 	}
+}
+
+// listAccounts renders the accounts half of cmdList. Extracted so cmdList
+// stays under the long-function budget: the row shapes and the marker rule
+// are one concern, the arg dispatch another.
+func listAccounts(ctx context.Context, a *app.App, providerIDs []string) int {
+	type row struct {
+		Provider string `json:"provider"`
+		Name     string `json:"name"`
+		Identity string `json:"identity,omitempty"`
+		Active   bool   `json:"active"`
+	}
+	rows := make([]row, 0)
+	for _, providerID := range providerIDs {
+		all, err := a.Accounts.List(ctx, providerID)
+		if err != nil {
+			return reportErr(err)
+		}
+		active, _ := a.Accounts.Active(ctx, providerID)
+		for _, acct := range all {
+			isActive := active == acct.Meta.Name
+			if globals.JSON {
+				rows = append(rows, row{
+					Provider: acct.Meta.Provider, Name: acct.Meta.Name,
+					Identity: acct.Meta.Identity, Active: isActive,
+				})
+				continue
+			}
+			marker := ""
+			if isActive {
+				marker = " *"
+			}
+			fmt.Printf("%s/%s%s\t%s\n", acct.Meta.Provider, acct.Meta.Name,
+				marker, acct.Meta.Identity)
+		}
+	}
+	if globals.JSON {
+		jsonOut(rows)
+	}
+	return int(anyerr.Success)
 }
 
 func cmdStopProxy(ctx context.Context, a *app.App, args []string) int {
