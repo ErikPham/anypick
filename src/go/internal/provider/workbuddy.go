@@ -457,13 +457,15 @@ func newWorkBuddyUpstream(base *url.URL, token string, headers []proxy.ExtraHead
 		// returned false, serveChain replayed the 429 to the caller, and every
 		// other account in the hub went untried even though they serve the
 		// model. Both are credential-scoped, so both must rotate the account.
-		// 14018 is matched, not the phrase: MatchesQuotaErrorPattern compiles
-		// these case-sensitively and the vendor capitalises the phrase, so a
-		// literal "credits exhausted" could never fire.
+		// Both codes are anchored to the JSON "code" field: a bare 14018 also
+		// matched "140182 tokens" in an unrelated error body, which rotated a
+		// healthy account into cooldown. 14018 is matched, not the phrase
+		// "credits exhausted": MatchesQuotaErrorPattern compiles these
+		// case-sensitively and the vendor capitalises the phrase.
 		QuotaErrorPatterns: []string{
 			"quota", "balance", "insufficient", "billing",
-			"frequency limit", "usage exceeds frequency limit", "6004",
-			"14018",
+			"frequency limit", "usage exceeds frequency limit",
+			`"code":\s*"?6004"?`, `"code":\s*"?14018"?`,
 		},
 	}
 }

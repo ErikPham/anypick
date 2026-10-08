@@ -300,22 +300,28 @@ func int64Ptr(v int64) *int64 { return &v }
 // TestWorkbuddyCreditExhaustionPattern pins the 14018 classification end to
 // end: the exact 429 body WorkBuddy's edge returns for an exhausted
 // subscription must match the provider's declared patterns, so the pool ring
-// rotates to another account instead of replaying the failure. The phrase
-// "Credits exhausted" is deliberately absent from the patterns —
-// MatchesQuotaErrorPattern compiles case-sensitively and the vendor
-// capitalises it — which is why the numeric code is what carries the match.
+// rotates to another account instead of replaying the failure. The patterns
+// are anchored to the JSON "code" field: a bare 14018 also matched
+// "140182 tokens" in an unrelated error body and rotated a healthy account
+// into cooldown (release-review Major).
 func TestWorkbuddyCreditExhaustionPattern(t *testing.T) {
 	body := `{"error":{"data":{"code":14018,"msg":"Credits exhausted, please upgrade your plan"}}}`
 	patterns := []string{
 		"quota", "balance", "insufficient", "billing",
-		"frequency limit", "usage exceeds frequency limit", "6004",
-		"14018",
+		"frequency limit", "usage exceeds frequency limit",
+		`"code":\s*"?6004"?`, `"code":\s*"?14018"?`,
 	}
 	if !MatchesQuotaErrorPattern(patterns, body) {
 		t.Fatal("the workbuddy 429 credit-exhaustion body did not classify as a quota failure; the ring would replay it instead of rotating")
 	}
-	// The phrase shape must not be relied on: with the numeric code removed,
-	// the case-sensitive matcher must miss, proving the code is what matches.
+
+	// The false positive the bare number caused: a token count containing the
+	// digits 14018 must NOT read as credit exhaustion.
+	if MatchesQuotaErrorPattern(patterns, `{"error":{"message":"140182 tokens remaining in this window"}}`) {
+		t.Fatal("an unrelated body containing 140182 classified as credit exhaustion; the pattern is not anchored")
+	}
+	// The phrase shape must not be relied on: the case-sensitive matcher
+	// misses the capitalised phrase, which is why the code carries the match.
 	if MatchesQuotaErrorPattern([]string{"credits exhausted"}, body) {
 		t.Fatal("case-sensitive match on a capitalised phrase succeeded; this test's premise is wrong")
 	}

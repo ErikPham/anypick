@@ -283,20 +283,23 @@ func (s *Server) hubCatalogList(ctx context.Context, hubName string) []string {
 	if s == nil || s.Deps.Hub == nil {
 		return nil
 	}
-	if routes, err := s.Deps.Hub.RouteModelsContext(ctx, hubName); err == nil && len(routes) > 0 {
-		var out []string
+	// Pins LEAD the union instead of replacing it: the aggregation below is
+	// the surface the hub actually serves (candidateChain resolves any model
+	// its sources publish), so a pinned hub that returned only its pins told
+	// the app "7 models" while its accounts publish 23. Pin order is kept so
+	// the head of the list stays the planning default. This mirrors
+	// cmd/anypick/models.go hubActivationModels.
+	var pinned []string
+	if routes, err := s.Deps.Hub.RouteModelsContext(ctx, hubName); err == nil {
 		for _, r := range routes {
 			if m := strings.TrimSpace(r.Model); m != "" {
-				out = append(out, m)
+				pinned = append(pinned, m)
 			}
-		}
-		if len(out) > 0 {
-			return uniqueModelIDs(out)
 		}
 	}
 	cfg, err := s.Deps.Hub.GetConfigContext(ctx, hubName)
 	if err != nil || cfg == nil {
-		return nil
+		return uniqueModelIDs(pinned)
 	}
 	var out []string
 	for _, src := range cfg.Sources {
@@ -333,5 +336,5 @@ func (s *Server) hubCatalogList(ctx context.Context, hubName string) []string {
 			}
 		}
 	}
-	return uniqueModelIDs(out)
+	return uniqueModelIDs(append(pinned, out...))
 }
