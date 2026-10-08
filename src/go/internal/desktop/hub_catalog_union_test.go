@@ -17,7 +17,6 @@ import (
 func TestHubCatalogListPinsLeadUnion(t *testing.T) {
 	env := hubTestEnv(t)
 	ctx := context.Background()
-	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
 
 	// A source row needs a real account behind it (the FK refuses ghosts), so
 	// save one and toggle it in — the same path the app itself takes.
@@ -25,7 +24,7 @@ func TestHubCatalogListPinsLeadUnion(t *testing.T) {
 	if _, err := env.Svc.Save(ctx, "codex", "a", true); err != nil {
 		t.Fatal(err)
 	}
-	srv = New(env.Deps, strings.NewReader(""), &strings.Builder{})
+	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
 	if res := toggleHub(t, srv, "hu-1", "test", "codex", "a", true); res.Status != "success" {
 		t.Fatalf("hub source enable = %+v", res)
 	}
@@ -39,7 +38,7 @@ func TestHubCatalogListPinsLeadUnion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := srv.hubCatalogList(ctx, "test")
+	got := New(env.Deps, strings.NewReader(""), &strings.Builder{}).hubCatalogList(ctx, "test")
 	if len(got) < 2 {
 		t.Fatalf("catalog = %v, want at least the two pins", got)
 	}

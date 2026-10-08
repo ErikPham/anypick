@@ -177,6 +177,23 @@ func renderDoctorReport(report doctor.InstallationReport) {
 // mutates nothing and must work in CI. A real run goes through confirmDelete,
 // which owns the no-TTY rule and the CONFIRMATION_REQUIRED/exit-2 contract
 // (AGENTS.md invariant 7).
+// printDoctorPlan renders the plan before the consent question: "Do you want
+// to delete the allowlisted doctor repairs?" asked a yes/no about something
+// the user had not been shown. Returns false when there is nothing to do.
+func printDoctorPlan(plan doctor.FixPlan) bool {
+	if len(plan.Actions) == 0 && len(plan.Manual) == 0 {
+		fmt.Println("anypick doctor --fix: nothing to repair")
+		return false
+	}
+	for _, action := range plan.Actions {
+		fmt.Printf("  [plan] %s: %s\n", action.Kind, action.Description)
+	}
+	for _, manual := range plan.Manual {
+		fmt.Printf("  [manual] %s: %s\n", manual.Check, manual.Detail)
+	}
+	return true
+}
+
 func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 	deps := doctorFixDeps(ctx, a)
 	plan := doctor.PlanFixes(ctx, deps)
@@ -205,17 +222,8 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 		return int(anyerr.Success)
 	}
 
-	// The plan goes to the terminal BEFORE the question: "Do you want to
-	// delete the allowlisted doctor repairs?" asked a yes/no about something
-	// the user had not been shown. The plan is the thing being consented to.
-	for _, action := range plan.Actions {
-		fmt.Printf("  [plan] %s: %s\n", action.Kind, action.Description)
-	}
-	for _, manual := range plan.Manual {
-		fmt.Printf("  [manual] %s: %s\n", manual.Check, manual.Detail)
-	}
+	printDoctorPlan(plan)
 	if len(plan.Actions) == 0 && len(plan.Manual) == 0 {
-		fmt.Println("anypick doctor --fix: nothing to repair")
 		return int(anyerr.Success)
 	}
 
@@ -227,12 +235,7 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 	}
 
 	result := doctor.ApplyFixes(ctx, plan, deps, false)
-	failed := 0
-	for _, outcome := range result.Applied {
-		if !outcome.OK {
-			failed++
-		}
-	}
+	failed := countFailedRepairs(result)
 
 	if globals.JSON {
 		jsonOut(struct {
@@ -241,12 +244,37 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 			Manual  []doctor.ManualFinding `json:"manual"`
 			Failed  int                    `json:"failed,omitempty"`
 		}{DryRun: false, Applied: result.Applied, Manual: plan.Manual, Failed: failed})
-		if failed > 0 {
-			return int(anyerr.HealthFailure)
-		}
-		return int(anyerr.Success)
+		return fixExitCode(failed)
 	}
 
+	printRepairOutcomes(result)
+	printManualFindings(plan.Manual)
+	if len(result.Applied) == 0 {
+		fmt.Println("anypick doctor --fix: nothing to repair")
+	}
+	// A repair that failed is not a success: a script running --fix in CI must
+	// be able to tell "all green" from "one repair was refused".
+	return fixExitCode(failed)
+}
+
+func countFailedRepairs(result doctor.FixResult) int {
+	failed := 0
+	for _, outcome := range result.Applied {
+		if !outcome.OK {
+			failed++
+		}
+	}
+	return failed
+}
+
+func fixExitCode(failed int) int {
+	if failed > 0 {
+		return int(anyerr.HealthFailure)
+	}
+	return int(anyerr.Success)
+}
+
+func printRepairOutcomes(result doctor.FixResult) {
 	for _, outcome := range result.Applied {
 		prefix := "fixed"
 		if !outcome.OK {
@@ -254,22 +282,18 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 		}
 		fmt.Printf("  [%s] %s\n", prefix, outcome.Message)
 	}
-	for _, manual := range plan.Manual {
-		fmt.Printf("  [manual] %s: %s\n", manual.Check, manual.Detail)
-		for _, suggestion := range manual.Suggestions {
+	if failed := countFailedRepairs(result); failed > 0 {
+		fmt.Printf("anypick doctor --fix: %d repair(s) failed\n", failed)
+	}
+}
+
+func printManualFindings(manual []doctor.ManualFinding) {
+	for _, finding := range manual {
+		fmt.Printf("  [manual] %s: %s\n", finding.Check, finding.Detail)
+		for _, suggestion := range finding.Suggestions {
 			fmt.Printf("           %s\n", suggestion)
 		}
 	}
-	if len(result.Applied) == 0 {
-		fmt.Println("anypick doctor --fix: nothing to repair")
-	}
-	// A repair that failed is not a success: a script running --fix in CI must
-	// be able to tell "all green" from "one repair was refused".
-	if failed > 0 {
-		fmt.Printf("anypick doctor --fix: %d repair(s) failed\n", failed)
-		return int(anyerr.HealthFailure)
-	}
-	return int(anyerr.Success)
 }
 
 // doctorFixDeps assembles the mutation collaborators from the composed app. The

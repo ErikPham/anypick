@@ -144,18 +144,32 @@ func TestStartupSweepsOrphanedProfilesAndKeepsLiveOnes(t *testing.T) {
 	seedCodexProfile(t, a, "alive", refs.AccountRef("codex", "alive"))
 	seedCodexProfile(t, a, "orphan", refs.AccountRef("codex", "deleted-account"))
 
+	// Snapshot what actually exists before the run: the sweep must not delete
+	// any of it. (env.sh is written lazily by activation, so asserting on the
+	// static list here would fail on a file that never existed.)
+	existed := map[string]bool{}
+	for _, path := range codexProfileFiles(a, "orphan") {
+		if _, err := os.Stat(path); err == nil {
+			existed[path] = true
+		}
+	}
+
+	// Startup maintenance now REPORTS orphans and removes nothing: the old
+	// shape deleted whole credential homes unattended on every CLI run,
+	// including --dry-run and current. Removal is a consented repair via
+	// doctor --fix (see TestPlanAndRemoveOrphanedProfiles).
 	runStartupMaintenance(ctx, a, a.Root)
 
 	row, err := a.CodexProfileSvc.GetContext(ctx, "codex", "orphan")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row != nil {
-		t.Fatalf("startup maintenance left the orphaned profile: %#v", row)
+	if row == nil {
+		t.Fatal("startup maintenance removed the orphaned profile row; unattended removal was the defect")
 	}
-	for _, path := range codexProfileFiles(a, "orphan") {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("orphan file %s survived the sweep: %v", path, err)
+	for path := range existed {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("orphan file %s was deleted unattended", path)
 		}
 	}
 	for _, path := range codexProfileFiles(a, "alive") {
@@ -163,7 +177,7 @@ func TestStartupSweepsOrphanedProfilesAndKeepsLiveOnes(t *testing.T) {
 			continue
 		}
 		if _, err := os.Stat(path); err != nil {
-			t.Errorf("sweep removed a live profile's file %s: %v", path, err)
+			t.Errorf("live profile file %s is missing: %v", path, err)
 		}
 	}
 }

@@ -156,12 +156,17 @@ func TestDoctorFixYesDeletesStaleOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exit := -1
 	out, errOut := captureBoth(t, func() {
-		exit = run([]string{"doctor", "--fix", "--yes"})
+		_ = run([]string{"doctor", "--fix", "--yes"})
 	})
-	if exit != int(anyerr.Success) {
-		t.Fatalf("--fix --yes exited %d (stdout=%q stderr=%q)", exit, out, errOut)
+	// The exit code is not asserted here: the plan also includes temp overlays
+	// under the SHARED system temp directory, where leftovers from other test
+	// runs are correctly refused (too young to delete), and any refusal now
+	// exits HealthFailure. This test owns the rebuild and the overlay deletion,
+	// both asserted directly below; the exit-code contract lives in
+	// doctor_exit_test.go with its own forced refusal.
+	if !strings.Contains(out, "rebuilt derived caches") {
+		t.Fatalf("--fix did not rebuild caches (stdout=%q stderr=%q)", out, errOut)
 	}
 	if _, err := os.Stat(overlay); !os.IsNotExist(err) {
 		t.Fatalf("stale overlay survived --fix --yes: %v (stdout=%q)", err, out)
@@ -264,13 +269,17 @@ func TestRebuildCachesClearsSQLiteViaCLI(t *testing.T) {
 	root := a.Root
 	closeFn()
 
-	exit := -1
-	out, errOut := captureBoth(t, func() {
-		exit = run([]string{"doctor", "--fix", "--yes"})
+	stdout, stderr := captureBoth(t, func() {
+		_ = run([]string{"doctor", "--fix", "--yes"})
 	})
-	if exit != int(anyerr.Success) {
-		t.Fatalf("--fix --yes exited %d (stdout=%q stderr=%q)", exit, out, errOut)
+	if !strings.Contains(stdout, "rebuilt derived caches") {
+		t.Fatalf("--fix did not rebuild caches (stdout=%q stderr=%q)", stdout, stderr)
 	}
+	// The exit code is deliberately not asserted: the plan also includes
+	// delete_temp_overlay actions against the SHARED system temp directory,
+	// where leftovers from other runs are correctly refused (too young), and
+	// any refusal now exits HealthFailure. This test owns the rebuild outcome,
+	// asserted below; the exit-code contract lives in doctor_exit_test.go.
 
 	reopened, closeFn2, err := appReadyForTest()
 	if err != nil {

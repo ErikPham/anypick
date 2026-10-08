@@ -197,6 +197,37 @@ func (d FixDeps) tempDir() string {
 // PlanFixes turns a read-only scan of the filesystem and the database into the
 // actions that may be applied. It performs no mutation, so `--fix --dry-run`
 // and the confirmation prompt can share it.
+// planOrphanedProfileRemovals adds one remove_orphaned_profile action per
+// named profile whose account is gone. A lookup ERROR plans nothing for that
+// profile (fail closed): a transient lock timeout must not read as an orphan.
+// PurgeCredentials=false by construction — the wired remover never deletes a
+// credential home.
+func planOrphanedProfileRemovals(ctx context.Context, deps FixDeps, add func(FixAction)) {
+	if deps.NamedProfiles == nil || deps.AccountExists == nil || deps.RemoveOrphanedProfile == nil {
+		return
+	}
+	profiles, err := deps.NamedProfiles(ctx)
+	if err != nil {
+		return
+	}
+	for _, p := range profiles {
+		if p.SourceKind != "account" {
+			continue
+		}
+		exists, xerr := deps.AccountExists(ctx, p.Provider, p.AccountName)
+		if xerr != nil || exists {
+			continue
+		}
+		client, name := p.Client, p.Name
+		add(FixAction{
+			ID:          "remove_orphaned_profile:" + client + "/" + name,
+			Kind:        FixRemoveOrphanedProfile,
+			Description: fmt.Sprintf("Remove named profile %s/%s whose account %s/%s no longer exists (credential home left on disk)", client, name, p.Provider, p.AccountName),
+			Target:      "profile:" + client + "/" + name,
+		})
+	}
+}
+
 func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
 	plan := FixPlan{Actions: []FixAction{}, Manual: []ManualFinding{}}
 	seen := map[string]bool{}
@@ -235,30 +266,7 @@ func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
 		})
 	}
 
-	// Orphaned named profiles: the startup sweep only reports them, so the
-	// consented removal lives here. PurgeCredentials=false by construction —
-	// the removal wired below never deletes a credential home.
-	if deps.NamedProfiles != nil && deps.AccountExists != nil && deps.RemoveOrphanedProfile != nil {
-		profiles, err := deps.NamedProfiles(ctx)
-		if err == nil {
-			for _, p := range profiles {
-				if p.SourceKind != "account" {
-					continue
-				}
-				exists, xerr := deps.AccountExists(ctx, p.Provider, p.AccountName)
-				if xerr != nil || exists {
-					continue // lookup failed or account alive: plan nothing
-				}
-				client, name := p.Client, p.Name
-				add(FixAction{
-					ID:          "remove_orphaned_profile:" + client + "/" + name,
-					Kind:        FixRemoveOrphanedProfile,
-					Description: fmt.Sprintf("Remove named profile %s/%s whose account %s/%s no longer exists (credential home left on disk)", client, name, p.Provider, p.AccountName),
-					Target:      "profile:" + client + "/" + name,
-				})
-			}
-		}
-	}
+	planOrphanedProfileRemovals(ctx, deps, add)
 
 	// Rebuilding derived caches is safe and unconditional when the store is
 	// present: the cache is advisory (internal/modelcache), and the spec's
