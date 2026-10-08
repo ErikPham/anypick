@@ -185,11 +185,11 @@ jobs:
       - name: macOS to Tauri feature parity
         run: make check-parity
 
-      - name: Test the UI
-        run: make test-tauri-ui
-
       - name: Build the UI bundle
         run: make build-tauri-ui
+
+      - name: Test the UI
+        run: make test-tauri-ui
 
       - name: cargo check the app and its Go sidecar
         run: cd src/tauri/app && cargo check --locked

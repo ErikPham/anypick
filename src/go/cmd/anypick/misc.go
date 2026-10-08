@@ -92,7 +92,7 @@ type doctorFlagValues struct {
 // the golden tree advertise `--fix` for a handler that parsed nothing.
 func registerDoctorFlags(fs *flag.FlagSet) doctorFlagValues {
 	return doctorFlagValues{
-		Fix:    fs.Bool("fix", false, "apply the allowlisted safe repairs"),
+		Fix:    fs.Bool("fix", false, "apply the allowlisted repairs (prints a plan and asks first; use --dry-run to preview without asking)"),
 		DryRun: fs.Bool("dry-run", false, "with --fix, print the plan and change nothing"),
 		Yes:    fs.Bool("yes", false, "with --fix, skip the confirmation prompt"),
 		// The docs show `doctor --fix -y`; `-y` is the short form of the global
@@ -205,7 +205,21 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 		return int(anyerr.Success)
 	}
 
-	if err := confirmDelete("the allowlisted doctor repairs", yes); err != nil {
+	// The plan goes to the terminal BEFORE the question: "Do you want to
+	// delete the allowlisted doctor repairs?" asked a yes/no about something
+	// the user had not been shown. The plan is the thing being consented to.
+	for _, action := range plan.Actions {
+		fmt.Printf("  [plan] %s: %s\n", action.Kind, action.Description)
+	}
+	for _, manual := range plan.Manual {
+		fmt.Printf("  [manual] %s: %s\n", manual.Check, manual.Detail)
+	}
+	if len(plan.Actions) == 0 && len(plan.Manual) == 0 {
+		fmt.Println("anypick doctor --fix: nothing to repair")
+		return int(anyerr.Success)
+	}
+
+	if err := confirmDelete("the allowlisted doctor repairs listed above", yes); err != nil {
 		if err == errDeclined {
 			return int(anyerr.Success)
 		}
@@ -213,12 +227,23 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 	}
 
 	result := doctor.ApplyFixes(ctx, plan, deps, false)
+	failed := 0
+	for _, outcome := range result.Applied {
+		if !outcome.OK {
+			failed++
+		}
+	}
+
 	if globals.JSON {
 		jsonOut(struct {
 			DryRun  bool                   `json:"dryRun"`
 			Applied []doctor.FixOutcome    `json:"applied"`
 			Manual  []doctor.ManualFinding `json:"manual"`
-		}{DryRun: false, Applied: result.Applied, Manual: plan.Manual})
+			Failed  int                    `json:"failed,omitempty"`
+		}{DryRun: false, Applied: result.Applied, Manual: plan.Manual, Failed: failed})
+		if failed > 0 {
+			return int(anyerr.HealthFailure)
+		}
 		return int(anyerr.Success)
 	}
 
@@ -237,6 +262,12 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 	}
 	if len(result.Applied) == 0 {
 		fmt.Println("anypick doctor --fix: nothing to repair")
+	}
+	// A repair that failed is not a success: a script running --fix in CI must
+	// be able to tell "all green" from "one repair was refused".
+	if failed > 0 {
+		fmt.Printf("anypick doctor --fix: %d repair(s) failed\n", failed)
+		return int(anyerr.HealthFailure)
 	}
 	return int(anyerr.Success)
 }
