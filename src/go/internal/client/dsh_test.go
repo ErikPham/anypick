@@ -234,7 +234,9 @@ func TestDshApplyWritesSourceModelCatalogAndSelectedModel(t *testing.T) {
 // DSH's own model picker persists its selection as a top-level
 // agent-default-model section. AnyPick takes that key over instead of refusing
 // — two top-level copies would break the YAML document — while unrelated
-// sections survive untouched.
+// sections survive untouched. A selection the new catalog no longer offers is
+// replaced, because the harness would otherwise boot pointing at a model the
+// source cannot serve.
 func TestDshAdoptsHarnessWrittenDefaultModelSection(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
@@ -294,6 +296,45 @@ func TestDshAdoptionLeavesNestedSectionsAlone(t *testing.T) {
 	merged := string(mustRead(t, settings))
 	if !strings.Contains(merged, "plugins:") || !strings.Contains(merged, "provider: keep") {
 		t.Fatalf("adoption deleted a nested key:\n%s", merged)
+	}
+}
+
+// Refreshing the catalog must not move the user off the model they picked in
+// dsh's own picker. The selection survives when the new catalog still offers
+// it, and the catalog itself is updated in the same write.
+func TestDshKeepsHarnessSelectionAcrossCatalogRefresh(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	settings := dshSettingsPath(home)
+	if err := os.MkdirAll(dshHome(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The harness picked gemini-3.8-flash itself; AnyPick is re-publishing with
+	// a model list that still contains it.
+	own := "agent-default-model:\n  provider: deepseek-official\n  model: gemini-3.8-flash\n"
+	if err := os.WriteFile(settings, []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDsh(home).Apply(&ApplyContext{
+		Endpoint:     "http://127.0.0.1:9000",
+		APIKey:       "sk-test",
+		DefaultModel: "deepseek-v4.1-flash",
+		ModelCatalog: []string{"deepseek-v4.1-flash", "gemini-3.8-flash"},
+		AnyPickRoot:  root,
+		Home:         home,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	merged := string(mustRead(t, settings))
+	if got := strings.Count(merged, "agent-default-model:"); got != 1 {
+		t.Fatalf("expected exactly one default-model section, got %d:\n%s", got, merged)
+	}
+	if !strings.Contains(merged, "model: 'gemini-3.8-flash'") {
+		t.Fatalf("catalog refresh discarded the harness selection:\n%s", merged)
+	}
+	// The catalog itself still refreshed: a new id is published alongside it.
+	if !strings.Contains(merged, "id: 'deepseek-v4.1-flash'") {
+		t.Fatalf("catalog did not refresh:\n%s", merged)
 	}
 }
 
