@@ -460,19 +460,19 @@ func clientNativeProvider(a *app.App, clientID string) string {
 }
 
 // routingAppAllowlist is the explicit set of clients the Apps board routes.
-// Login-only clients (gemini, kiro, opencode, workbuddy) are excluded by
-// design — they switch their own provider login under Accounts. dsh,
-// commandcode, pi and omp are the opposite case: no provider claims them as its
-// native client, so this board is the only surface that reaches them. dsh is a
+// dsh, commandcode, pi and omp have no provider that claims them as its native
+// client, so this board is the only surface that reaches them. dsh is a
 // Cordis-based harness whose OpenAI-compatible endpoint is pointed at the
 // AnyPick managed proxy; the others follow their configured AnyPick entries.
 // zcode belongs here as the native client of the zai provider, exactly as the
 // desktop snapshot publishes it: the Z.ai subscription login is both the
-// account managed under Accounts and this app's own login.
+// account managed under Accounts and this app's own login. opencode routes
+// here too: its adapter accepts a gateway source and the CLI already binds
+// one, so a TUI-only user could not point OpenCode at anything.
 // The list is explicit rather than a "client that is not also a provider"
 // heuristic because claude and codex *are* providers (AnyPick manages their
 // native logins) and still have to route.
-var routingAppAllowlist = []string{"claude", "codex", "zcode", "dsh", "commandcode", "pi", "omp"}
+var routingAppAllowlist = []string{"claude", "codex", "opencode", "zcode", "dsh", "commandcode", "pi", "omp"}
 
 // routingAppIDs returns the client ids that are routing apps, filtered against
 // the live client registry so an app absent from a particular build simply does

@@ -10,6 +10,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/catalog"
+	"github.com/outof0/anypick/go/internal/cli"
 	"github.com/outof0/anypick/go/internal/discovery"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/modelcache"
@@ -29,6 +30,13 @@ import (
 // picker lives in the tray), which is declared in
 // testdata/parity/cli-tree.json's omitted list.
 func cmdModels(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick models <client> [--with <source>] [--json]\n\n" +
+			"Lists the model ids one connection can serve. Without --with it uses\n" +
+			"the client's current binding. The source must exist: an account or\n" +
+			"gateway that does not is an error, not an empty catalog.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	with := fs.String("with", "", "source reference (defaults to the client's current binding)")
 	if err := fs.Parse(reorder(args)); err != nil {

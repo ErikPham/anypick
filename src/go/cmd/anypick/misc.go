@@ -18,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/agentbridge"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/buildinfo"
+	"github.com/outof0/anypick/go/internal/cli"
 	"github.com/outof0/anypick/go/internal/config"
 	"github.com/outof0/anypick/go/internal/doctor"
 	"github.com/outof0/anypick/go/internal/hub"
@@ -398,6 +399,11 @@ func atoi(s string) (int, bool) {
 func packageVersion() string { return buildinfo.Version }
 
 func cmdCompletion(a *appView, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick completion <bash|zsh|fish>\n\n" +
+			"Prints the shell completion script for the given shell.\n")
+		return int(anyerr.Success)
+	}
 	shell := ""
 	if len(args) > 0 {
 		shell = args[0]

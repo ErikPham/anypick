@@ -206,10 +206,14 @@ func run(args []string) int {
 			// The one error path that does write stdout, kept as it was:
 			// an unknown command never reaches a service, so there is no
 			// partial work to report and no result document to preserve.
+			// exitCode rides along like every other error envelope: a script
+			// reading the JSON rather than $? used to get null here, on the
+			// one error class it most needs to distinguish at startup.
 			fmt.Println(orderedJSON([]kv{
 				{Key: "ok", Value: false},
 				{Key: "error", Value: "unknown command " + args[0]},
 				{Key: "code", Value: "UNKNOWN_COMMAND"},
+				{Key: "exitCode", Value: int(anyerr.InvalidUsage)},
 			}))
 			fmt.Fprintf(os.Stderr, "unknown command %q\n", args[0])
 			return int(anyerr.InvalidUsage)
@@ -791,6 +795,13 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 }
 
 func cmdCurrent(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick current <provider> [--json]\n\n" +
+			"Reports what is actually in effect for one client: the active native\n" +
+			"account, or the bound source when a gateway/pool/hub binding is what\n" +
+			"the client follows.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
@@ -863,6 +874,12 @@ func cmdCurrent(ctx context.Context, a *app.App, args []string) int {
 }
 
 func cmdList(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick list providers|accounts [<provider>]\n\n" +
+			"providers lists every source provider; accounts lists the saved\n" +
+			"accounts of one provider, or of all of them. Both accept --json.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
@@ -891,6 +908,10 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 		}
 		return int(anyerr.Success)
 	case fs.Arg(0) == "accounts":
+		if fs.Arg(1) != "" && !a.Providers.Has(fs.Arg(1)) {
+			return reportErr(anyerr.Newf("Unknown provider "+fs.Arg(1)+".",
+				"PROVIDER_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound)))
+		}
 		providerIDs := []string{fs.Arg(1)}
 		if fs.Arg(1) == "" {
 			providerIDs = a.Providers.IDs()
@@ -936,6 +957,11 @@ func cmdList(ctx context.Context, a *app.App, args []string) int {
 }
 
 func cmdStopProxy(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick stop-proxy <provider> <account>\n\n" +
+			"Stops one running account proxy without disabling its configuration.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)
@@ -1355,6 +1381,13 @@ func cmdProxyStatus(ctx context.Context, a *app.App, rest []string) int {
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 2 {
 		return usage()
 	}
+	// A provider that does not exist used to answer with default-config
+	// emptiness and exit 0, because the store decodes a missing row to the
+	// default; a script could not tell "no such provider" from "not running".
+	if !a.Providers.Has(fs.Arg(0)) {
+		return reportErr(anyerr.Newf("Unknown provider "+fs.Arg(0)+".",
+			"PROVIDER_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound)))
+	}
 	st, err := a.Proxy.StatusContext(ctx, fs.Arg(0), fs.Arg(1))
 	if err != nil {
 		return reportErr(err)
@@ -1442,6 +1475,12 @@ func cmdProxyToken(ctx context.Context, a *app.App, rest []string) int {
 // `tray run` in src/tray/supervisor.ts. Set ANYPICK_APP_BIN to have this
 // process spawn and pipe the native app exactly like the TS supervisor does.
 func cmdAppRun(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick app\n\n" +
+			"Attaches the desktop protocol host. The native app spawns this itself;\n" +
+			"running it by hand on a terminal is the same as anypick tray.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil {
 		return int(anyerr.InvalidUsage)

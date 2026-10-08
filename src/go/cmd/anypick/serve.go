@@ -18,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/agentbridge"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
+	"github.com/outof0/anypick/go/internal/cli"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/proxy"
 )
@@ -27,6 +28,12 @@ import (
 // independently. The desktop stdio protocol lives in internal/desktop.
 
 func cmdServe(ctx context.Context, a *app.App, args []string) int {
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick serve [--port <n>] [--detach] [--stop]\n\n" +
+			"Runs the local status server: /health, /status, /agents on loopback.\n" +
+			"--detach runs it as a background child; --stop stops that child.\n")
+		return int(anyerr.Success)
+	}
 	fs := fsFor(args)
 	port := fs.Int("port", 0, "fixed port (default: auto)")
 	detach := fs.Bool("detach", false, "run in a detached child, print endpoint, exit")
@@ -114,7 +121,7 @@ func serveRun(ctx context.Context, a *app.App, port int) int {
 			kv{Key: "addr", Value: "http://" + addr},
 			kv{Key: "pid", Value: os.Getpid()})
 	} else {
-		fmt.Printf("anypick-go serve → http://%s  (Ctrl-C để dừng)\n", addr)
+		fmt.Printf("anypick-go serve → http://%s  (Ctrl-C to stop)\n", addr)
 		fmt.Printf("  /health   liveness\n  /status   accounts + proxies\n  /agents   redacted worker manifest\n")
 	}
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
