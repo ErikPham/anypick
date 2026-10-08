@@ -420,13 +420,19 @@ func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) Installati
 // 0700 for directories or 0600 for files. scanned is false when the root cannot
 // be read at all, so the caller can say the check was skipped instead of
 // reporting a clean bill of health it did not verify.
-func countPermissivePaths(root string) (permissive int, scanned bool) {
+// permissivePaths lists the paths the permissions finding names. A directory
+// is flagged when group or other has ANY access (the report reads 0o755 as
+// world-readable, which for a credential store it is); a file when group or
+// other has any access at all. The repair consumes this same list, so the
+// fixed scope can never exceed the reported scope.
+func permissivePaths(root string) []string {
 	if root == "" {
-		return 0, false
+		return nil
 	}
 	if _, err := os.Stat(root); err != nil {
-		return 0, false
+		return nil
 	}
+	var out []string
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || path == root {
 			return nil
@@ -435,16 +441,27 @@ func countPermissivePaths(root string) (permissive int, scanned bool) {
 			return nil
 		}
 		if info.IsDir() {
-			if info.Mode().Perm()&0o022 != 0 {
-				permissive++
+			if info.Mode().Perm()&0o077 != 0 {
+				out = append(out, path)
 			}
 			return nil
 		}
 		if info.Mode().Perm()&0o077 != 0 {
-			permissive++
+			out = append(out, path)
 		}
 		return nil
 	})
+	return out
+}
+
+func countPermissivePaths(root string) (permissive int, scanned bool) {
+	if root == "" {
+		return 0, false
+	}
+	if _, err := os.Stat(root); err != nil {
+		return 0, false
+	}
+	permissive = len(permissivePaths(root))
 	return permissive, true
 }
 

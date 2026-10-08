@@ -63,6 +63,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           fail=0
+          # *.y*ml to match the Go gate's glob; *.yaml would be shape-checked
+          # offline but silently never network-resolved. The non-empty guard
+          # is the AGENTS.md trap: a grep that matches nothing must fail, not
+          # read as a passing resolution of zero pins.
+          refs=$(grep -hoE 'uses: *[^ ./][^ ]*@[0-9a-f]{40}' .github/workflows/*.y*ml | sed -E 's/uses: *//' | sort -u)
+          if [ -z "$refs" ]; then
+            echo "::error::no pinned action found under .github/workflows — the resolver matched nothing, which proves nothing"
+            exit 1
+          fi
           while read -r ref; do
             repo=$(printf '%s' "${ref%@*}" | cut -d/ -f1-2)
             sha=${ref#*@}
@@ -70,7 +79,7 @@ jobs:
               echo "::error::$ref does not resolve to a commit in $repo"
               fail=1
             fi
-          done < <(grep -hoE 'uses: *[^ ./][^ ]*@[0-9a-f]{40}' .github/workflows/*.yml | sed -E 's/uses: *//' | sort -u)
+          done <<< "$refs"
           exit "$fail"
 
   go:

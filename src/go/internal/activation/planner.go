@@ -630,7 +630,7 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 		}
 	}
 
-	planWarningsFromUnpinnedModel(clientID, resolved, model,
+	planWarningsFromUnpinnedModel(deps, clientID, resolved, model,
 		firstNonNilMap(req.ModelRoles, opts.ModelRoles), &warnings)
 
 	return &Plan{
@@ -779,10 +779,30 @@ func planWarningsFromModel(model *bindings.ModelSelection, warnings *[]Warning) 
 // AnyPick and is never wrong on its own — it only matters when nothing pins a
 // model, because then the client sends its own ids and the upstream account
 // has to serve them.
-var clientNativeProvider = map[string]string{
-	"claude": "claude",
-	"gemini": "gemini",
-	"codex":  "codex",
+// clientNativeProviderOf derives the client a provider natively logs in for,
+// from the capability the provider itself declares — the same rule the TUI and
+// the desktop use. A hardcoded map here drifted the moment a provider gained a
+// native client it did not name (zai owns zcode); a capability cannot.
+func clientNativeProviderOf(providers *provider.Registry, clientID string) string {
+	if providers == nil {
+		return ""
+	}
+	for _, providerID := range providers.IDs() {
+		pv, err := providers.Get(providerID)
+		if err != nil {
+			continue
+		}
+		native := providerID
+		if ncp, ok := pv.(provider.NativeClientProvider); ok {
+			if id := strings.TrimSpace(ncp.NativeClientID()); id != "" {
+				native = id
+			}
+		}
+		if native == clientID {
+			return providerID
+		}
+	}
+	return ""
 }
 
 // planWarningsFromUnpinnedModel warns when a client is bound to an account
@@ -798,16 +818,19 @@ var clientNativeProvider = map[string]string{
 // (Antigravity / gemini-cli) accounts do not have. So the honest answer is to
 // say the model is missing rather than to assume every account serves every
 // published id.
-func planWarningsFromUnpinnedModel(clientID string, resolved *ResolvedSource, model bindings.ModelSelection, roles map[string]string, warnings *[]Warning) {
+func planWarningsFromUnpinnedModel(deps *Deps, clientID string, resolved *ResolvedSource, model bindings.ModelSelection, roles map[string]string, warnings *[]Warning) {
 	if resolved == nil || resolved.Kind != string(refs.KindAccount) {
 		return
+	}
+	if deps == nil || deps.Providers == nil {
+		return // no registry: native ownership is unknowable, so no warning
 	}
 	provider := resolved.Ref.Provider
 	if provider == "" || explicitModelID(model) != "" || len(roles) > 0 {
 		return
 	}
-	native, ok := clientNativeProvider[clientID]
-	if !ok || native == provider {
+	native := clientNativeProviderOf(deps.Providers, clientID)
+	if native == "" || native == provider {
 		return
 	}
 	*warnings = append(*warnings, Warning{

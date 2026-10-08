@@ -312,6 +312,10 @@ export function RestoreBackupSheet({
               Choose…
             </Button>
           </RowActions>
+          <p className="text-secondary" data-testid="backup-path-hint">
+            Choose… works only where the app can see a file’s location; if it
+            reports otherwise, type the backup file’s full path above.
+          </p>
         </Row>
         {pickError ? (
           <Row warning testId="backup-pick-error">

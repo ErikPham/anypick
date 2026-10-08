@@ -16,7 +16,7 @@ class RejectingBridge implements TrayBridge {
   readonly invoked: string[] = [];
   constructor(private readonly message = 'AnyPick core is stopped. Restart the app to try again.') {}
 
-  async invoke(cmd: string): Promise<unknown> {
+  async invoke(cmd: string, _payload?: unknown): Promise<unknown> {
     this.invoked.push(cmd);
     if (cmd === 'send_command') throw new Error(this.message);
     return undefined;
@@ -52,7 +52,7 @@ describe('a command the host refuses', () => {
       const inner = (payload as { command?: string } | undefined)?.command ?? '';
       if (inner.startsWith('cancel')) {
         cancelAttempts += 1;
-        return realInvoke(cmd, payload); // reject only the cancel
+        return realInvoke(cmd); // reject only the cancel
       }
       return { ok: true };
     };

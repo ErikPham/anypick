@@ -1325,9 +1325,9 @@ func TestRotateTokenFailsWithoutWritingWhenScopeIsHeld(t *testing.T) {
 		t.Fatalf("precondition proxy_state = %+v, %v", before, err)
 	}
 
-	restore := rotateLockTimeout
-	rotateLockTimeout = 150 * time.Millisecond
-	defer func() { rotateLockTimeout = restore }()
+	restore := ts.Service.RotateLockTimeout
+	ts.Service.RotateLockTimeout = 150 * time.Millisecond
+	defer func() { ts.Service.RotateLockTimeout = restore }()
 
 	locked := make(chan struct{})
 	release := make(chan struct{})

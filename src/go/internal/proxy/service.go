@@ -316,7 +316,14 @@ type Service struct {
 	Spawner Spawner
 	// PoolSpawner enables detached `_serve-pool` children; nil keeps pools
 	// in-process (tests/library).
-	PoolSpawner PoolSpawner
+	// RotateLockTimeout is RotateToken's acquisition budget for its mutation
+	// scopes. The 5s default is sized for a single write; a rotation that has
+	// to stop and restart a proxy legitimately takes longer, and timing out
+	// would leave the caller holding a token the listener does not serve. A
+	// field so a test can shorten it without a mutable package var becoming a
+	// data race the day this package grows a t.Parallel().
+	RotateLockTimeout time.Duration
+	PoolSpawner       PoolSpawner
 	// QuotaGuardPolicy reads the validated quota-guard settings; nil → the
 	// TS defaults (disabled, 60-minute cooldown, keep serving when every
 	// member is cooling).
@@ -433,7 +440,7 @@ func (s *Service) RotateToken(ctx context.Context, providerID, accountName strin
 			}
 		}
 		return nil
-	}, rotateLockTimeout)
+	}, s.rotateTimeout())
 	if err != nil {
 		return "", err
 	}
@@ -508,12 +515,15 @@ func (s *Service) Close() {
 
 const healthTimeout = 5 * time.Second
 
-// rotateLockTimeout is the budget for RotateToken's mutation scopes. The 5s
-// default is sized for a single write; a rotation that has to stop and restart
-// a proxy legitimately takes longer, and timing out would leave the caller
-// holding a token the listener does not serve. A variable so the blocked-path
-// test can prove the failure without waiting out the default.
-var rotateLockTimeout = 30 * time.Second
+// rotateTimeout returns RotateToken's acquisition budget, defaulting when the
+// composition left the field unset (tests and library callers construct
+// Service literals directly).
+func (s *Service) rotateTimeout() time.Duration {
+	if s.RotateLockTimeout == 0 {
+		return 30 * time.Second
+	}
+	return s.RotateLockTimeout
+}
 
 // Configure updates one account's proxy preference under the same scopes used
 // by start/stop. A zero port asks the kernel for a free loopback port when

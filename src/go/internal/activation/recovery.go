@@ -29,6 +29,16 @@ func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResu
 	}
 	result := &RecoveryResult{}
 	for _, listed := range incomplete {
+		// doctor:fix rows are NOT activations: their affected resources are
+		// raw filesystem paths, which no branch below recognises, so an
+		// executing row fell through to markFailed and made every startup
+		// print "incomplete operations could not be rolled back" for a
+		// self-referential non-operation. complete_journal_rollback consumes
+		// these rows deliberately (it knows what a doctor repair means);
+		// activation recovery must leave them alone.
+		if listed.Type == "doctor:fix" {
+			continue
+		}
 		// recoverOne takes the context explicitly because it runs either bare
 		// or inside the lock below. Passing the outer ctx into the locked call
 		// would re-enter with a context that does not carry the held scopes and

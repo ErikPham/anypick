@@ -83,8 +83,10 @@ func TestModelNotPinnedWarningMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			defer func() { _ = env }()
 			var warnings []Warning
-			planWarningsFromUnpinnedModel(tc.client, &ResolvedSource{
+			planWarningsFromUnpinnedModel(env.Deps, tc.client, &ResolvedSource{
 				Kind: tc.kind,
 				Ref:  refs.Ref{Provider: tc.provider},
 			}, tc.model, tc.roles, &warnings)

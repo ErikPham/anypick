@@ -97,6 +97,14 @@ func run(args []string) int {
 	}
 	bareWithoutTTY := len(args) == 0 && !isatty.IsTerminal(os.Stdin.Fd())
 
+	// A doctor --fix --dry-run (and any dry run at all) must not run startup
+	// maintenance first: recovery rewrites real credential files and reaps
+	// leases, so a dry run that printed a plan over a half-recovered tree
+	// would break its own "mutates nothing" contract at the command boundary
+	// before it ever reached the doctor.
+	if globals.DryRun {
+		maintenance = false
+	}
 	a, closeFn, err := app.Ready(ctx, app.Options{SkipMaintenance: !maintenance || bareWithoutTTY})
 	if err != nil {
 		// ExitCodeOf, not Operational: a refused startup (an unusable data

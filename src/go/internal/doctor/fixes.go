@@ -94,6 +94,10 @@ type FixAction struct {
 	// A refused action is still reported: omitting it would make --fix look
 	// like it had nothing to say.
 	Reason string `json:"reason,omitempty"`
+	// Paths carries the exact paths the diagnosis flagged, for repairs that
+	// must touch only what the report names (repair_permissions). Empty for
+	// repairs whose target is the whole root.
+	Paths []string `json:"paths,omitempty"`
 }
 
 // ManualFinding is a diagnosis that --fix must not touch. The split is real:
@@ -201,14 +205,18 @@ func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
 		})
 	}
 
-	// Permissions: the scan reports only how many paths are too permissive, so
-	// the plan is one root-scoped action and the walk happens at apply time.
-	if permissive, _ := countPermissivePaths(deps.Root); permissive > 0 {
+	// Permissions: the plan carries the exact paths the diagnosis flagged, so
+	// the repair can never touch a path the report did not name. The earlier
+	// shape walked the whole root and chmod'ed anything not 0700/0600, which
+	// silently widened the reported scope: one 0644 file made every 0755
+	// directory under the root get rewritten too.
+	if paths := permissivePaths(deps.Root); len(paths) > 0 {
 		add(FixAction{
 			ID:          "repair_permissions:" + deps.Root,
 			Kind:        FixRepairPermissions,
-			Description: fmt.Sprintf("Repair permissions on %d AnyPick-owned path(s)", permissive),
+			Description: fmt.Sprintf("Repair permissions on %d AnyPick-owned path(s)", len(paths)),
 			Target:      deps.Root,
+			Paths:       paths,
 		})
 	}
 
@@ -705,39 +713,29 @@ func fixRepairPermissions(action FixAction, deps FixDeps) (string, error) {
 			"FIX_OUTSIDE_ROOT",
 			anyerr.WithSuggestions("Only paths under "+deps.Root+" are AnyPick-owned."))
 	}
+	if len(action.Paths) == 0 {
+		return "", anyerr.Newf("repair_permissions carried no path list; re-run anypick doctor to plan it",
+			"STATE_CONFLICT")
+	}
 	fixed := 0
-	walkErr := filepath.Walk(deps.Root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // unreadable entry: skip it, never fail the whole repair
-		}
-		if path == deps.Root || info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-		// filepath.Walk does not descend through symlinks, so every path it
-		// hands us is already under the root; this is the belt to that brace.
+	for _, path := range action.Paths {
 		if !isUnder(deps.Root, path) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+			continue // the plan is stale or hand-edited; never widen it
 		}
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue // vanished or a symlink: not ours to touch
+		}
+		want := os.FileMode(0o600)
 		if info.IsDir() {
-			if info.Mode().Perm() != 0o700 {
-				if cerr := os.Chmod(path, 0o700); cerr == nil {
-					fixed++
-				}
-			}
-			return nil
+			want = 0o700
 		}
-		if info.Mode().Perm() != 0o600 {
-			if cerr := os.Chmod(path, 0o600); cerr == nil {
-				fixed++
-			}
+		if info.Mode().Perm() == want {
+			continue // already tight; the plan may be older than the fix
 		}
-		return nil
-	})
-	if walkErr != nil {
-		return "", anyerr.Wrapf(walkErr, "walk data root "+deps.Root, "FS_PATH")
+		if cerr := os.Chmod(path, want); cerr == nil {
+			fixed++
+		}
 	}
 	return fmt.Sprintf("repaired permissions on %d AnyPick-owned path(s) under %s", fixed, deps.Root), nil
 }
