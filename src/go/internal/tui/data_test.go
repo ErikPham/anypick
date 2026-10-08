@@ -520,3 +520,34 @@ func TestViewProxiesOmitsApiKey(t *testing.T) {
 		t.Errorf("account row dropped the endpoint: %q", rendered[1])
 	}
 }
+
+// TestLoadSourceOptionsNeverDuplicatesAnAccountRef pins the wizard's
+// de-duplication. The native block and the CanProxy provider loop can both
+// reach the same AccountRef (for the coding assistant, zcode via zai, and
+// opencode at HEAD), which showed one account twice with different subs —
+// functionally identical entries, since wizardChooseSource skips the native
+// provider either way. The desktop refuses this same shape; the wizard now
+// does too.
+func TestLoadSourceOptionsNeverDuplicatesAnAccountRef(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+
+	// zcode is the case the finding named: its native provider is zai (via
+	// NativeClientID), zai CanProxy, so both loops reach zai's AccountRefs.
+	// Seed a zai saved login so the native block actually emits.
+	seedSavedAccount(t, a, "zai", "work", "probe@example.com")
+
+	for _, clientID := range []string{"the coding assistant", "zcode", "opencode", "claude"} {
+		seen := map[string]bool{}
+		for _, opt := range LoadSourceOptions(context.Background(), a, clientID) {
+			if opt.Ref.Kind != refs.KindAccount {
+				continue
+			}
+			key := opt.Ref.Provider + "/" + opt.Ref.Name
+			if seen[key] {
+				t.Errorf("client %q sees account %q twice (groups %q and %q)", clientID, key, "earlier group", opt.Group)
+			}
+			seen[key] = true
+		}
+	}
+}

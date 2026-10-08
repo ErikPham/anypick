@@ -630,9 +630,22 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 		}
 	}
 
+	seenAccountRefs := map[string]bool{}
+	for _, opt := range opts {
+		if r := opt.Ref; r.Kind == refs.KindAccount {
+			seenAccountRefs[r.Provider+"/"+r.Name] = true
+		}
+	}
 	for _, pid := range a.Providers.IDs() {
 		p, perr := a.Providers.Get(pid)
 		if perr != nil || !p.CanProxy() {
+			continue
+		}
+		// A provider owned by a native client already emitted its accounts
+		// above under "Native accounts"; emitting them again here shows one
+		// account twice with different subs. The desktop refuses this same
+		// shape (snapshot.go's "own accounts already emitted above").
+		if clientNativeProvider(a, pid) == pid && clientID == pid {
 			continue
 		}
 		accounts, aerr := a.Store.ListAccounts(ctx, pid)
@@ -640,6 +653,11 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 			continue
 		}
 		for _, acct := range accounts {
+			key := pid + "/" + acct.Meta.Name
+			if seenAccountRefs[key] {
+				continue
+			}
+			seenAccountRefs[key] = true
 			opts = append(opts, SourceOption{
 				Ref:   refs.AccountRef(pid, acct.Meta.Name),
 				Group: "Gateways & proxies",
