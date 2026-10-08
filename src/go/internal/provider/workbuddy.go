@@ -448,9 +448,19 @@ func newWorkBuddyUpstream(base *url.URL, token string, headers []proxy.ExtraHead
 		// is left untouched: the caller must send a slug the vendor
 		// actually serves.
 		SanitizeOpenAIBody: workbuddySanitizeOpenAIBody,
+		// 6004 is WorkBuddy's per-model frequency limit. 14018 is the
+		// account-level credit exhaustion the same edge reports as
+		// `{"error":{"data":{"code":14018,"msg":"Credits exhausted..."}}}`
+		// — a nested `data` object, so neither IsCredentialQuotaFailure (it
+		// wants `resource exhausted` or a key/balance attribution) nor any
+		// balance regex below matches it. Unclassified, isQuotaRefusal
+		// returned false, serveChain replayed the 429 to the caller, and every
+		// other account in the hub went untried even though they serve the
+		// model. Both are credential-scoped, so both must rotate the account.
 		QuotaErrorPatterns: []string{
 			"quota", "balance", "insufficient", "billing",
 			"frequency limit", "usage exceeds frequency limit", "6004",
+			"credits exhausted", "14018",
 		},
 	}
 }
