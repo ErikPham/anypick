@@ -202,6 +202,11 @@ export function createService(options: {
       // so without this the rejection is unhandled and the row the user just
       // cancelled spins on a command the engine never heard.
       void options.bridge.invoke('send_command', { command: cancelCommand(requestId) }).catch((error: unknown) => {
+        // The id was seeded by mutate and lives in inFlight; a rejected cancel
+        // means no result frame will ever arrive for it, so settle here — the
+        // same contract send's catch already honours. Skipping this left
+        // busy.size pinned above zero and the shell effect permanently blocked.
+        settle(requestId);
         options.onError?.(error instanceof Error ? error.message : String(error));
       });
     },

@@ -505,10 +505,20 @@ func referencesPair(ctx context.Context, deps FixDeps, providerID, accountName s
 }
 
 func namesPair(source refs.Ref, providerID, accountName string) bool {
-	if source.Kind != refs.KindAccount && source.Kind != refs.KindAccountPool {
+	switch source.Kind {
+	case refs.KindAccount:
+		return source.Provider == providerID && source.Name == accountName
+	case refs.KindAccountPool:
+		// A pool binding stores {Kind: account-pool, Provider: gemini, Name:
+		// ""} — no account name. Its runtime state and lease live under the
+		// pool's PRIMARY account slot, so provider match alone is the signal:
+		// without this case the guard reported "nothing references this" for a
+		// working pool route and stop_orphan_proxy killed a live pool proxy as
+		// a "repair".
+		return source.Provider == providerID
+	default:
 		return false
 	}
-	return source.Provider == providerID && source.Name == accountName
 }
 
 // incompleteJournalIDs lists the entries recovery would act on, without acting.

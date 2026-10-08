@@ -16,9 +16,16 @@ import (
 // release rehearsal (commit f60c96f). Whether each SHA exists upstream needs
 // the network, so CI resolves them; this check keeps the shape honest offline.
 var (
-	usesLine    = regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*([^\s#]+)\s*(#.*)?$`)
-	pinnedRef   = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?@[0-9a-f]{40}$`)
-	versionNote = regexp.MustCompile(`^#\s*v\d`)
+	usesLine = regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*([^\s#]+)\s*(#.*)?$`)
+	// usesBlockStart matches the value-on-next-line YAML form ("- uses:" with
+	// nothing but a comment after the colon). Line-regex scanning cannot see
+	// the ref on the following line, so this form is refused outright rather
+	// than silently skipped: a floating pin hidden behind a line break is
+	// exactly the f60c96f incident class this gate exists for, and the CI
+	// resolver greps with the same one-line shape.
+	usesBlockStart = regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*(#.*)?$`)
+	pinnedRef      = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[^@\s]+)?@[0-9a-f]{40}$`)
+	versionNote    = regexp.MustCompile(`^#\s*v\d`)
 )
 
 // CheckActions reports every workflow `uses:` that is not pinned to a full SHA
@@ -36,6 +43,13 @@ func CheckActions(root string) []Section {
 		rel, _ := filepath.Rel(root, file)
 		rel = filepath.ToSlash(rel)
 		for i, line := range strings.Split(string(raw), "\n") {
+			if usesBlockStart.MatchString(line) {
+				section.Findings = append(section.Findings, Finding{
+					Detail: fmt.Sprintf("%s:%d writes uses: with the ref on the next line, which this gate cannot pin-check", rel, i+1),
+					Advice: []string{"put the ref on the same line: uses: owner/repo@<full sha> # vX.Y.Z"},
+				})
+				continue
+			}
 			m := usesLine.FindStringSubmatch(line)
 			if m == nil {
 				continue
