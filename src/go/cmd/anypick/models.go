@@ -168,10 +168,26 @@ func modelsForSource(ctx context.Context, a *app.App, source refs.Ref) (string, 
 	}
 }
 
-// hubActivationModels returns the models a proxy hub exposes. If the hub has
-// explicit route pins, those pinned models are returned in order. Otherwise,
-// it aggregates models from every enabled source (pools, accounts) in the hub.
+// hubActivationModels returns the models a proxy hub exposes: its explicit route
+// pins first, in pin order, then every model its enabled sources can serve.
+//
+// Pins used to replace the rest of the surface rather than lead it. That made a
+// hub publish only what an operator had pinned, while candidateChain still
+// serves every same-provider source for an unpinned model (see
+// hub.Server.candidateChain) — so a client was told a hub cannot select a model
+// the hub accepts, and a hub with one pin reported nothing about its other
+// sources at all. Pins stay first because they are the operator's chosen order
+// and the head of the list is the planning default.
 func hubActivationModels(ctx context.Context, a *app.App, hubName string) ([]string, error) {
+	pinned, err := hubPinnedModels(ctx, a, hubName)
+	if err != nil {
+		return nil, err
+	}
+	return mergeModelIDsOrdered(pinned, hubSourceModels(ctx, a, hubName, !globals.DryRun)), nil
+}
+
+// hubPinnedModels returns the hub's explicit route pins in pin order.
+func hubPinnedModels(ctx context.Context, a *app.App, hubName string) ([]string, error) {
 	if a == nil || a.ProxyHub == nil {
 		return nil, nil
 	}
@@ -185,27 +201,36 @@ func hubActivationModels(ctx context.Context, a *app.App, hubName string) ([]str
 			out = append(out, m)
 		}
 	}
-	if len(out) > 0 {
-		return mergeModelIDsOrdered(out), nil
+	return out, nil
+}
+
+// hubSourceModels aggregates the models every enabled hub source can serve
+// (pools and accounts). It is the part of the hub surface that is not pinned, so
+// it can legitimately be empty — a hub whose sources publish no catalog is a
+// real state, not an error.
+//
+// live selects discovery over the cached catalog. Callers that only render a
+// view (preview) pass false: a preview must not spend saved credentials on
+// vendor egress, exactly like a dry run.
+func hubSourceModels(ctx context.Context, a *app.App, hubName string, live bool) []string {
+	if a == nil || a.ProxyHub == nil {
+		return nil
 	}
 	cfg, err := a.ProxyHub.GetConfig(ctx, hubName)
-	if err != nil {
-		return nil, err
+	if err != nil || cfg == nil {
+		return nil
 	}
-	if cfg == nil {
-		return nil, nil
-	}
+	var out []string
 	for _, src := range cfg.Sources {
 		if !src.IsEnabled() {
 			continue
 		}
 		if poolProvider, ok := hub.PoolSourceProvider(src); ok {
-			poolModels := activationPoolModelCatalog(ctx, a, poolProvider, !globals.DryRun)
-			out = append(out, poolModels...)
+			out = append(out, activationPoolModelCatalog(ctx, a, poolProvider, live)...)
 			continue
 		}
 		if src.ProviderID != "" && src.Account != "" {
-			if a.Proxy != nil && !globals.DryRun {
+			if a.Proxy != nil && live {
 				if models, derr := a.Proxy.DiscoverModels(ctx, src.ProviderID, src.Account); derr == nil && len(models) > 0 {
 					ordered := mergeModelIDsOrdered(models)
 					rememberAccountModelCatalog(ctx, a, src.ProviderID, src.Account, ordered)
@@ -237,7 +262,7 @@ func hubActivationModels(ctx context.Context, a *app.App, hubName string) ([]str
 			}
 		}
 	}
-	return mergeModelIDsOrdered(out), nil
+	return mergeModelIDsOrdered(out)
 }
 
 // activationModelCatalog returns only models proven by the selected source.

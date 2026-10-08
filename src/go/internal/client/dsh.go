@@ -404,9 +404,20 @@ func dshSettingsWithConfig(
 		// agent-default-model section. AnyPick must carry that key inside its
 		// managed block: two top-level copies would make the YAML document
 		// ambiguous and break the next harness boot, so the existing section
-		// is taken over — the activation is about to set the same selection
-		// anyway. An llm-deepseek section stays refused: that is deliberate
-		// endpoint configuration, not harness-owned state.
+		// is taken over. An llm-deepseek section stays refused: that is
+		// deliberate endpoint configuration, not harness-owned state.
+		//
+		// Taking the key over does not mean overwriting the selection. The
+		// harness's choice survives whenever it is still in the catalog being
+		// published, so refreshing that catalog — a hub gained a source, a
+		// vendor added an id — never silently returns the user to the model
+		// they moved off. A selection the catalog no longer offers is not
+		// preservable: the harness would boot pointing at a model it cannot
+		// reach, so the activation's model wins.
+		if current := dshHarnessSelectedModel(lines); current != "" &&
+			dshCatalogContains(modelCatalog, current) {
+			model = current
+		}
 		lines = takeDshDefaultModelSection(lines)
 	}
 	var out []string
@@ -446,6 +457,66 @@ func dshTopLevelKeyLine(line, key string) bool {
 		}
 	}
 	return false
+}
+
+// dshCatalogContains reports whether the published catalog still offers id.
+// Checked against the caller's raw catalog, never against the rendered list:
+// dshModelCatalog appends the selected model, so a selection would always look
+// present and preservation would never fall back.
+func dshCatalogContains(models []string, id string) bool {
+	for _, m := range models {
+		if strings.TrimSpace(m) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// dshHarnessSelectedModel reads the model id out of a top-level
+// agent-default-model section, accepting the bare, single-quoted and
+// double-quoted forms. Blank lines inside the section are skipped, matching
+// takeDshDefaultModelSection so the two agree on where the section ends.
+func dshHarnessSelectedModel(lines []string) string {
+	inSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		indented := len(line) != len(strings.TrimLeft(line, " \t"))
+		if inSection {
+			if trimmed == "" || indented {
+				if indented {
+					if value := dshYAMLValue(trimmed, "model"); value != "" {
+						return value
+					}
+				}
+				continue
+			}
+			inSection = false
+		}
+		if dshTopLevelKeyLine(line, "agent-default-model") {
+			inSection = true
+		}
+	}
+	return ""
+}
+
+// dshYAMLValue reads `key: value` out of one indented line and unwraps the
+// quoting dshYAMLScalar applies (or does not) to a model id.
+func dshYAMLValue(trimmed, key string) string {
+	for _, quote := range []string{"", `"`, `'`} {
+		prefix := quote + key + quote + ":"
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if len(value) >= 2 && strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'") {
+			return strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+		}
+		if len(value) >= 2 && strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+			return value[1 : len(value)-1]
+		}
+		return value
+	}
+	return ""
 }
 
 // takeDshDefaultModelSection removes a top-level agent-default-model mapping —
