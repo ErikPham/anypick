@@ -46,6 +46,7 @@ const (
 	FixDeleteStalePID          FixKind = "delete_stale_pid"
 	FixStopOrphanProxy         FixKind = "stop_orphan_proxy"
 	FixCompleteJournalRollback FixKind = "complete_journal_rollback"
+	FixRemoveOrphanedProfile   FixKind = "remove_orphaned_profile"
 )
 
 // FixAllowlist is the hard allowlist from the CLI-DX spec §18.4, minus the
@@ -59,6 +60,7 @@ var FixAllowlist = []FixKind{
 	FixDeleteStalePID,
 	FixStopOrphanProxy,
 	FixCompleteJournalRollback,
+	FixRemoveOrphanedProfile,
 }
 
 // Allowlisted reports whether a kind may be applied.
@@ -156,6 +158,19 @@ type FixDeps struct {
 	// touching the filesystem clock.
 	Now           func() time.Time
 	MinOverlayAge time.Duration
+	// RemoveOrphanedProfile removes ONE orphaned named profile's row. It is
+	// wired to activation.RemoveNamedProfiles with PurgeCredentials=false by
+	// the composition: doctor --fix may remove the profile CONFIG with the
+	// user's consent, but it never deletes a credential home unattended.
+	RemoveOrphanedProfile func(ctx context.Context, client, name string) error
+	// NamedProfiles feeds the orphaned-profile plan; it is the doctor's own
+	// audit input, so the plan and the report cannot disagree.
+	NamedProfiles func(context.Context) ([]NamedProfileRef, error)
+	// AccountExists resolves whether the account a profile points at still
+	// exists. A lookup ERROR is not "gone": the plan skips it and lets the
+	// next doctor run retry, so a transient lock timeout never reads as an
+	// orphan (fail closed).
+	AccountExists func(ctx context.Context, provider, name string) (bool, error)
 }
 
 func (d FixDeps) now() time.Time {
@@ -218,6 +233,31 @@ func PlanFixes(ctx context.Context, deps FixDeps) FixPlan {
 			Target:      deps.Root,
 			Paths:       paths,
 		})
+	}
+
+	// Orphaned named profiles: the startup sweep only reports them, so the
+	// consented removal lives here. PurgeCredentials=false by construction —
+	// the removal wired below never deletes a credential home.
+	if deps.NamedProfiles != nil && deps.AccountExists != nil && deps.RemoveOrphanedProfile != nil {
+		profiles, err := deps.NamedProfiles(ctx)
+		if err == nil {
+			for _, p := range profiles {
+				if p.SourceKind != "account" {
+					continue
+				}
+				exists, xerr := deps.AccountExists(ctx, p.Provider, p.AccountName)
+				if xerr != nil || exists {
+					continue // lookup failed or account alive: plan nothing
+				}
+				client, name := p.Client, p.Name
+				add(FixAction{
+					ID:          "remove_orphaned_profile:" + client + "/" + name,
+					Kind:        FixRemoveOrphanedProfile,
+					Description: fmt.Sprintf("Remove named profile %s/%s whose account %s/%s no longer exists (credential home left on disk)", client, name, p.Provider, p.AccountName),
+					Target:      "profile:" + client + "/" + name,
+				})
+			}
+		}
 	}
 
 	// Rebuilding derived caches is safe and unconditional when the store is
@@ -662,6 +702,16 @@ func applyFix(ctx context.Context, action FixAction, deps FixDeps) (string, erro
 		return fixStopOrphanProxy(ctx, action, deps)
 	case FixCompleteJournalRollback:
 		return fixCompleteJournalRollback(ctx, action, deps)
+	case FixRemoveOrphanedProfile:
+		client, name, ok := strings.Cut(strings.TrimPrefix(action.Target, "profile:"), "/")
+		if !ok || deps.RemoveOrphanedProfile == nil {
+			return "", anyerr.Newf("orphaned profile removal is unavailable in this composition",
+				"FIX_UNAVAILABLE")
+		}
+		if err := deps.RemoveOrphanedProfile(ctx, client, name); err != nil {
+			return "", anyerr.Wrapf(err, "remove orphaned profile "+client+"/"+name, "STATE_CONFLICT")
+		}
+		return fmt.Sprintf("removed named profile %s/%s (credential home left on disk)", client, name), nil
 	default:
 		return "", anyerr.Newf("unknown fix kind: "+action.Kind.String(), "FIX_NOT_ALLOWED")
 	}
@@ -726,14 +776,15 @@ func fixRepairPermissions(action FixAction, deps FixDeps) (string, error) {
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue // vanished or a symlink: not ours to touch
 		}
-		want := os.FileMode(0o600)
-		if info.IsDir() {
-			want = 0o700
+		// Tighten group/other access only; owner bits (including +x) are the
+		// user's. An 0755 script becomes 0700, not 0600, so no repair ever
+		// strips an executable bit — and the previous mode needs no record
+		// because nothing about the owner half changes.
+		mode := info.Mode().Perm() &^ 0o077
+		if mode == info.Mode().Perm() {
+			continue // already tight
 		}
-		if info.Mode().Perm() == want {
-			continue // already tight; the plan may be older than the fix
-		}
-		if cerr := os.Chmod(path, want); cerr == nil {
+		if cerr := os.Chmod(path, mode); cerr == nil {
 			fixed++
 		}
 	}

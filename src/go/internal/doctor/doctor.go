@@ -381,9 +381,8 @@ func DiagnoseInstallation(ctx context.Context, deps InstallationDeps) Installati
 				}
 				if acct == nil {
 					add("named-profile", "warn", fmt.Sprintf(
-						"%s/%s points at missing account %s/%s — removed automatically at startup; "+
-							"run anypick codex profile remove %s to do it now",
-						p.Client, p.Name, p.Provider, p.AccountName, p.Name))
+						"%s/%s points at missing account %s/%s — `anypick doctor --fix` can remove the profile (its credential home is left on disk)",
+						p.Client, p.Name, p.Provider, p.AccountName))
 				}
 			}
 		}

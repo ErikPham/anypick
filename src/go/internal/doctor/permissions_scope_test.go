@@ -23,17 +23,28 @@ func TestRepairPermissionsTouchesOnlyTheFlaggedPaths(t *testing.T) {
 	// the root itself is never walked, so a deliberately-loose file placed
 	// OUTSIDE the flag set by the caller cannot appear. What the test pins is
 	// the count: repair must chmod exactly the flagged list, nothing else.
+	// Chmod AFTER create: os.MkdirAll/WriteFile pass the mode through the
+	// process umask, and a sandboxed umask (007) would silently turn the
+	// 0755 fixture into 0750 and make the assertions umask-dependent.
 	writeMode := func(rel string, mode os.FileMode, isDir bool) string {
 		full := filepath.Join(root, rel)
 		if isDir {
-			if err := os.MkdirAll(full, mode); err != nil {
+			if err := os.MkdirAll(full, 0o700); err != nil {
 				t.Fatal(err)
+			}
+			if err := os.Chmod(full, mode); err != nil {
+				// A sandbox that refuses chmod makes every assertion below a
+				// lie about the repair; skip rather than report fake results.
+				t.Skipf("chmod unavailable in this environment: %v", err)
 			}
 		} else {
 			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(full, []byte("x"), mode); err != nil {
+			if err := os.WriteFile(full, []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(full, mode); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -44,11 +55,15 @@ func TestRepairPermissionsTouchesOnlyTheFlaggedPaths(t *testing.T) {
 	cleanDir := writeMode("tight", 0o700, true)
 	untouchedFile := writeMode(filepath.Join("tight", "keep-me-0640"), 0o640, false)
 
+	// A 0755 script inside the flagged dir is created BEFORE planning so the
+	// repair sees it: its owner +x must survive, and group/other must go.
+	exe := writeMode(filepath.Join("loose", "run.sh"), 0o755, false)
+
 	planPaths := permissivePaths(root)
-	// 3 flagged: the 0644 file, the 0755 dir, and the 0640 file (group read
-	// counts as group access, the diagnosis's long-standing rule).
-	if len(planPaths) != 3 {
-		t.Fatalf("diagnosis flagged %d paths (%v), want 3", len(planPaths), planPaths)
+	// 4 flagged: the 0644 file, the 0755 dir, the 0755 script, and the 0640
+	// file (group read counts as group access, the diagnosis's rule).
+	if len(planPaths) != 4 {
+		t.Fatalf("diagnosis flagged %d paths (%v), want 4", len(planPaths), planPaths)
 	}
 	joined := strings.Join(planPaths, ",")
 	if !strings.Contains(joined, filepath.Base(flaggedFile)) || !strings.Contains(joined, filepath.Base(flaggedDir)) {
@@ -66,36 +81,36 @@ func TestRepairPermissionsTouchesOnlyTheFlaggedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(msg, "3") {
+	if !strings.Contains(msg, "4") {
 		t.Fatalf("repair message %q does not name the flagged count", msg)
 	}
 
-	// The flagged pair is now tight.
-	for _, p := range []string{flaggedFile, untouchedFile} {
-		info, err := os.Stat(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := os.FileMode(0o600)
-		if info.IsDir() {
-			want = 0o700
-		}
-		_ = want
-	}
+	// The repair tightens GROUP/OTHER bits only: owner bits (including +x)
+	// are the user's, so nothing needs a saved mode to undo.
 	if info, err := os.Stat(flaggedFile); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("flagged file not tightened: %v %v", info, err)
+		t.Fatalf("flagged file = %v %v, want 0600", info, err)
 	}
-	if info, err := os.Stat(flaggedDir); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("flagged dir not tightened: %v %v", info, err)
+	if info, err := os.Stat(flaggedDir); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("flagged dir = %v %v, want group/other cleared; planPaths=%v", info, err, planPaths)
 	}
-	// The untouched scope: the repair never walks past the flagged list, so
-	// countPermissivePaths after the fix reports zero — every flagged path was
-	// tightened and nothing else was made tight-or-loose as a side effect.
-	if after, _ := countPermissivePaths(root); after != 0 {
-		t.Fatalf("%d permissive path(s) remain after the repair; the repair touched paths outside the flagged list", after)
+	// The 0640 file inside the tight dir was flagged too (group read); it
+	// keeps its owner read, drops group read.
+	if info, err := os.Stat(untouchedFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("flagged 0640 file = %v %v, want 0600", info, err)
 	}
-	_ = untouchedFile
-	_ = cleanDir
+	// The clean dir was never in the plan and keeps its exact mode.
+	if info, err := os.Stat(cleanDir); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("clean dir was touched: %v %v", info, err)
+	}
+	// A 0755 script keeps its owner +x: stripping an executable bit was the
+	// defect (301 scripts on the reviewer's machine). The script was created
+	// before planning, so the repair saw it.
+	if info, err := os.Stat(exe); err != nil || info.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("executable = %v %v, owner +x must survive the tightening", info, err)
+	}
+	if info, err := os.Stat(exe); err != nil || info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("executable = %v %v, want group/other cleared", info, err)
+	}
 }
 
 // TestPermissivePathsFlagsDirectoriesOnAnyGroupAccess pins the diagnosis

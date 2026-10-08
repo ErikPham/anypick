@@ -246,11 +246,30 @@ func runDoctorFix(ctx context.Context, a *appView, dryRun, yes bool) int {
 // implementation of exact journal rollback (invariant #3).
 func doctorFixDeps(ctx context.Context, a *appView) doctor.FixDeps {
 	deps := doctor.FixDeps{
-		Root:      a.Root,
-		Providers: a.Providers.IDs(),
-		Binding:   a.BindingSvc,
-		Proxy:     a.Proxy,
-		Journal:   a.Journal,
+		Root:          a.Root,
+		Providers:     a.Providers.IDs(),
+		Binding:       a.BindingSvc,
+		Proxy:         a.Proxy,
+		Journal:       a.Journal,
+		NamedProfiles: namedProfileRefs(a),
+		AccountExists: func(c context.Context, provider, name string) (bool, error) {
+			acct, err := a.Accounts.CachedAccount(c, provider, name)
+			if err != nil {
+				return false, err
+			}
+			return acct != nil, nil
+		},
+		RemoveOrphanedProfile: func(c context.Context, client, name string) error {
+			named, gerr := a.CodexProfileSvc.GetContext(c, client, name)
+			if gerr != nil {
+				return gerr
+			}
+			if named == nil || named.Client != client {
+				return nil // already gone, or re-parented: nothing to remove
+			}
+			return activation.RemoveNamedProfiles(c,
+				[]activation.ProfileRemoval{activation.ProfileRemovalFor(named, false)}, a.Deps, nil)
+		},
 		Recovery: func(c context.Context) (*activation.RecoveryResult, error) {
 			return activation.RecoverIncompleteOperations(c, a.Deps)
 		},
@@ -304,6 +323,13 @@ func currentDoctorEnvironment() doctor.EnvironmentReport {
 func cmdUpdate(_ context.Context, a *appView, args []string) int {
 	const releasesAPI = "https://api.github.com/repos/outof0/anypick/releases/latest"
 	const releasesPage = "https://github.com/outof0/anypick/releases/latest"
+	if cli.WantsHelp(args) {
+		fmt.Print("usage: anypick update [--json]\n\n" +
+			"Checks GitHub for a newer release and says how to upgrade. Never\n" +
+			"downgrades: a published release older than this build is reported,\n" +
+			"not advertised.\n")
+		return int(anyerr.Success)
+	}
 	current := packageVersion()
 	req, err := http.NewRequest(http.MethodGet, releasesAPI, nil)
 	if err != nil {

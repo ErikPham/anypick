@@ -482,23 +482,25 @@ func (a *App) removeAccountProfiles(ctx context.Context, providerID, accountName
 	return activation.ProfileRemovalLabels(removals), nil
 }
 
-// cleanOrphanedProfilesAtStartup sweeps named profiles left behind by an
-// account deletion that predates the cascade, by a crash between the two
-// writes, or by a database restored without its account rows. Best-effort like
-// the rest of startup maintenance, but never silent: what could not be removed
-// is named on stderr so `anypick doctor` is not the only way to find out.
+// cleanOrphanedProfilesAtStartup reports named profiles whose account no
+// longer exists. It deliberately REMOVES NOTHING: the sweep runs unattended on
+// every CLI invocation, its old shape deleted whole credential homes (sessions,
+// history, plugins) the moment a DB lacked the account rows, and a repair that
+// destructive belongs behind `doctor --fix` where the user consents to a plan.
+// `anypick doctor` names every orphan and offers the removal.
 func cleanOrphanedProfilesAtStartup(ctx context.Context, a *App) {
 	if a.Deps == nil {
 		return
 	}
-	removed, err := activation.CleanOrphanedProfiles(ctx, a.Deps)
-	if len(removed) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"[anypick] removed %d named profile(s) whose account no longer exists: %s\n",
-			len(removed), strings.Join(activation.ProfileRemovalLabels(removed), ", "))
-	}
+	orphans, err := activation.OrphanedAccountProfiles(ctx, a.Deps)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[anypick] orphaned profile cleanup incomplete: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[anypick] orphaned profile check incomplete: %v\n", err)
+	}
+	if len(orphans) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"[anypick] %d named profile(s) reference accounts that no longer exist: %s\n"+
+				"[anypick] run `anypick doctor --fix` to review and remove them.\n",
+			len(orphans), strings.Join(activation.ProfileRemovalLabels(orphans), ", "))
 	}
 }
 
