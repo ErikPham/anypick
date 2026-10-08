@@ -127,6 +127,12 @@ func TestGeminiDetectLiveSeesKeyringMirrorWhenStateIsSignedOut(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
 	home := t.TempDir()
 	stubAntigravityKeyring(t, func(args ...string) (string, error) { return "", nil })
+	// DetectLive reads presence through the seam, not the exec var directly;
+	// point it at a present-but-secretless fake so the detection path is what
+	// is under test.
+	previousProbe := AntigravityKeyringProbe
+	AntigravityKeyringProbe = func() bool { return true }
+	t.Cleanup(func() { AntigravityKeyringProbe = previousProbe })
 
 	p := newGemini(home)
 	live, err := p.DetectLive()
