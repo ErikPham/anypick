@@ -296,3 +296,27 @@ func TestGuardRetryAfterClampSemantics(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// TestWorkbuddyCreditExhaustionPattern pins the 14018 classification end to
+// end: the exact 429 body WorkBuddy's edge returns for an exhausted
+// subscription must match the provider's declared patterns, so the pool ring
+// rotates to another account instead of replaying the failure. The phrase
+// "Credits exhausted" is deliberately absent from the patterns —
+// MatchesQuotaErrorPattern compiles case-sensitively and the vendor
+// capitalises it — which is why the numeric code is what carries the match.
+func TestWorkbuddyCreditExhaustionPattern(t *testing.T) {
+	body := `{"error":{"data":{"code":14018,"msg":"Credits exhausted, please upgrade your plan"}}}`
+	patterns := []string{
+		"quota", "balance", "insufficient", "billing",
+		"frequency limit", "usage exceeds frequency limit", "6004",
+		"14018",
+	}
+	if !MatchesQuotaErrorPattern(patterns, body) {
+		t.Fatal("the workbuddy 429 credit-exhaustion body did not classify as a quota failure; the ring would replay it instead of rotating")
+	}
+	// The phrase shape must not be relied on: with the numeric code removed,
+	// the case-sensitive matcher must miss, proving the code is what matches.
+	if MatchesQuotaErrorPattern([]string{"credits exhausted"}, body) {
+		t.Fatal("case-sensitive match on a capitalised phrase succeeded; this test's premise is wrong")
+	}
+}
