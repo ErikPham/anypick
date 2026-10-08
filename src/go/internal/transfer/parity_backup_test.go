@@ -1,15 +1,16 @@
 package transfer
 
-// Cross-runtime multi-account backup drift tests (native cutover Milestone 1,
-// go PARITY M0). The TypeScript-authored fixture is committed at
-// testdata/parity/multi-account-backup.json and is restored here on every run:
-// any TS-side format or envelope change must fail this test before a Go
-// release ships. The reverse-direction fixture (Go-authored, consumed by
-// tests/parity-backup.test.ts) is regenerated explicitly with
+// Cross-runtime backup drift (native cutover Milestone 1, go PARITY M0).
 //
-//	ANYPICK_GEN_PARITY_FIXTURES=1 go test ./internal/transfer -run TestParityBackupFixtureGeneration
-//
-// or via `npx tsx scripts/gen-parity-fixtures.ts`. Ordinary runs never write.
+// The TypeScript engine was removed with ADR 0020, so the TS side of this
+// exchange no longer runs. What remains, and why it is still here:
+// testdata/parity/multi-account-backup.json is the last artifact the TS
+// producer wrote, and TestParityRestoreFromTypeScriptFixture restores it on
+// every run — it pins the Go reader against the envelope shape real TS-era
+// users have on disk, which is exactly what a format change must not break.
+// The Go-authored fixture and the scripts that generated and exchanged it were
+// deleted with their consumer; a frozen fixture for a runtime that cannot run
+// proves nothing.
 
 import (
 	"context"
@@ -18,8 +19,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	"github.com/outof0/anypick/go/internal/store"
 )
 
 // repoRoot resolves the repository root from this file's location so fixture
@@ -40,12 +39,6 @@ func tsFixturePath(t *testing.T) string {
 	return filepath.Join(repoRoot(t), "go", "testdata", "parity", "multi-account-backup.json")
 }
 
-// goFixturePath is the Go-authored package consumed by tests/parity-backup.test.ts.
-func goFixturePath(t *testing.T) string {
-	t.Helper()
-	return filepath.Join(repoRoot(t), "tests", "parity", "multi-account-backup-go.json")
-}
-
 // parityAuthJSON matches scripts/gen-parity-fixtures.ts codexAuth() byte for
 // byte so either runtime can assert exact envelope contents.
 func parityAuthJSON(variant string) []byte {
@@ -64,112 +57,6 @@ func parityAuthJSON(variant string) []byte {
 
 // saveParityAccount mirrors saveFakeAccount but with the deterministic parity
 // credentials shared with the TypeScript fixture generator.
-func saveParityAccount(t *testing.T, st *store.AccountStore, name string) {
-	t.Helper()
-	snapshotDir, _, err := st.PrepareSnapshot("codex", name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(snapshotDir, "auth.json"), parityAuthJSON(name), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	meta := store.Meta{
-		Name: name, Provider: "codex",
-		CreatedAt: "2026-01-01T00:00:00.000Z", UpdatedAt: "2026-01-01T00:00:00.000Z",
-		Identity: `{"email":"` + name + `@example.test"}`, Label: name,
-	}
-	if err = st.WriteMetaContext(context.Background(), meta, snapshotDir); err != nil {
-		t.Fatal(err)
-	}
-	_ = st.DiscardPreparedSnapshot(snapshotDir)
-}
-
-func TestParityBackupFixtureGeneration(t *testing.T) {
-	if os.Getenv("ANYPICK_GEN_PARITY_FIXTURES") != "1" {
-		t.Skip("generation-only: set ANYPICK_GEN_PARITY_FIXTURES=1 (scripts/gen-parity-fixtures.ts)")
-	}
-	st, _ := newTransferEnv(t)
-	ctx := context.Background()
-	for _, v := range []string{"work", "personal"} {
-		saveParityAccount(t, st, v)
-	}
-	dest := goFixturePath(t)
-	count, err := ExportSelectedBackup(st, ctx, []BackupEntry{
-		{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "personal"},
-	}, dest, true)
-	if err != nil || count != 2 {
-		t.Fatalf("export failed: count=%d err=%v", count, err)
-	}
-	t.Logf("fixture: %s", dest)
-}
-
-// TestParityExternalExchange is the LIVE producer/consumer drift gate
-// (review P1: frozen fixtures cannot detect producer drift). It never runs
-// implicitly; scripts/parity-drift-gate.sh drives it:
-//
-//	PARITY_BACKUP_INPUT=f.json  → restore the CURRENT TypeScript export
-//	PARITY_BACKUP_OUTPUT=g.json → export with the CURRENT Go producer
-//
-// The opposite runtime then consumes each artifact, so any producer-side
-// format change fails the opposite suite even if committed fixtures are stale.
-func TestParityExternalExchange(t *testing.T) {
-	in := os.Getenv("PARITY_BACKUP_INPUT")
-	out := os.Getenv("PARITY_BACKUP_OUTPUT")
-	if in == "" && out == "" {
-		t.Skip("drift-gate only: driven by scripts/parity-drift-gate.sh")
-	}
-	st, reg := newTransferEnv(t)
-	ctx := context.Background()
-
-	if out != "" {
-		for _, v := range []string{"work", "personal"} {
-			saveParityAccount(t, st, v)
-		}
-		count, err := ExportSelectedBackup(st, ctx, []BackupEntry{
-			{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "personal"},
-		}, out, true)
-		if err != nil || count != 2 {
-			t.Fatalf("produce: count=%d err=%v", count, err)
-		}
-	}
-
-	if in != "" {
-		insp, err := InspectBackup(st, reg, in)
-		if err != nil {
-			t.Fatalf("current TS producer output rejected by Go inspector: %v", err)
-		}
-		if len(insp.Entries) != 2 {
-			t.Fatalf("entries = %d, want 2", len(insp.Entries))
-		}
-		metas, err := RestoreSelectedContext(t.Context(), st, reg, in, []BackupEntry{
-			{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "personal"},
-		}, RestoreOptions{})
-		if err != nil || len(metas) != 2 {
-			t.Fatalf("restore of current TS export failed: metas=%d err=%v", len(metas), err)
-		}
-		for _, v := range []string{"work", "personal"} {
-			acct, gerr := st.Get(ctx, "codex", v)
-			if gerr != nil || acct == nil {
-				t.Fatalf("account %s missing after restore", v)
-			}
-			authRaw, rerr := os.ReadFile(filepath.Join(acct.SnapshotDir, "auth.json"))
-			if rerr != nil {
-				t.Fatal(rerr)
-			}
-			var payload struct {
-				Tokens struct {
-					AccessToken string `json:"access_token"`
-				} `json:"tokens"`
-			}
-			if jerr := json.Unmarshal(authRaw, &payload); jerr != nil {
-				t.Fatalf("%s auth.json unreadable: %v", v, jerr)
-			}
-			if want := "parity-access-" + v; payload.Tokens.AccessToken != want {
-				t.Fatalf("PRODUCER DRIFT: %s access token %q, want %q", v, payload.Tokens.AccessToken, want)
-			}
-		}
-	}
-}
 
 func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 	path := tsFixturePath(t)
