@@ -437,6 +437,44 @@ type AppRow struct {
 // inverse of the desktop snapshot's nativeClientIDOf, under the same rule:
 // a provider that borrows another client's login publishes it, and every other
 // provider owns its login under its own id.
+// appendProxySourceOptions emits the Gateways & proxies account rows: every
+// CanProxy provider's accounts, minus the refs the native block already
+// emitted — the same account under two groups with two subs was reachable for
+// zcode (native provider zai, which CanProxy), and the desktop refuses this
+// shape explicitly.
+func appendProxySourceOptions(ctx context.Context, a *app.App, clientID string, opts []SourceOption) []SourceOption {
+	seenAccountRefs := map[string]bool{}
+	for _, opt := range opts {
+		if r := opt.Ref; r.Kind == refs.KindAccount {
+			seenAccountRefs[r.Provider+"/"+r.Name] = true
+		}
+	}
+	for _, pid := range a.Providers.IDs() {
+		p, perr := a.Providers.Get(pid)
+		if perr != nil || !p.CanProxy() {
+			continue
+		}
+		accounts, aerr := a.Store.ListAccounts(ctx, pid)
+		if aerr != nil {
+			continue
+		}
+		for _, acct := range accounts {
+			key := pid + "/" + acct.Meta.Name
+			if seenAccountRefs[key] {
+				continue
+			}
+			seenAccountRefs[key] = true
+			opts = append(opts, SourceOption{
+				Ref:   refs.AccountRef(pid, acct.Meta.Name),
+				Group: "Gateways & proxies",
+				Label: fmt.Sprintf("%s/%s", pid, acct.Meta.Name),
+				Sub:   "account proxy",
+			})
+		}
+	}
+	return opts
+}
+
 func clientNativeProvider(a *app.App, clientID string) string {
 	if a == nil || a.Providers == nil || clientID == "" {
 		return ""
@@ -630,42 +668,7 @@ func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []Sourc
 		}
 	}
 
-	seenAccountRefs := map[string]bool{}
-	for _, opt := range opts {
-		if r := opt.Ref; r.Kind == refs.KindAccount {
-			seenAccountRefs[r.Provider+"/"+r.Name] = true
-		}
-	}
-	for _, pid := range a.Providers.IDs() {
-		p, perr := a.Providers.Get(pid)
-		if perr != nil || !p.CanProxy() {
-			continue
-		}
-		// A provider owned by a native client already emitted its accounts
-		// above under "Native accounts"; emitting them again here shows one
-		// account twice with different subs. The desktop refuses this same
-		// shape (snapshot.go's "own accounts already emitted above").
-		if clientNativeProvider(a, pid) == pid && clientID == pid {
-			continue
-		}
-		accounts, aerr := a.Store.ListAccounts(ctx, pid)
-		if aerr != nil {
-			continue
-		}
-		for _, acct := range accounts {
-			key := pid + "/" + acct.Meta.Name
-			if seenAccountRefs[key] {
-				continue
-			}
-			seenAccountRefs[key] = true
-			opts = append(opts, SourceOption{
-				Ref:   refs.AccountRef(pid, acct.Meta.Name),
-				Group: "Gateways & proxies",
-				Label: fmt.Sprintf("%s/%s", pid, acct.Meta.Name),
-				Sub:   "account proxy",
-			})
-		}
-	}
+	opts = appendProxySourceOptions(ctx, a, clientID, opts)
 
 	if saved, err := a.PresetSvc.ListContext(ctx); err == nil {
 		for _, p := range saved {
