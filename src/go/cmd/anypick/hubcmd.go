@@ -306,10 +306,16 @@ func cmdHubPreview(ctx context.Context, a *appView, usage func() int, fs *flag.F
 	if err := fs.Parse(reorder(rest)); err != nil || fs.NArg() != 1 {
 		return usage()
 	}
-	manifest, perr := a.ProxyHub.PreviewManifest(ctx, fs.Arg(0))
+	hubName := fs.Arg(0)
+	manifest, perr := a.ProxyHub.PreviewManifest(ctx, hubName)
 	if perr != nil {
 		return reportErr(perr)
 	}
+	extra, xerr := unpinnedHubModelLines(ctx, a, hubName)
+	if xerr != nil {
+		return reportErr(xerr)
+	}
+	manifest.Lines = append(manifest.Lines, extra...)
 	if wantJSON(rest) {
 		jsonOut(manifest)
 		return int(anyerr.Success)
@@ -318,6 +324,36 @@ func cmdHubPreview(ctx context.Context, a *appView, usage func() int, fs *flag.F
 		fmt.Println(line)
 	}
 	return int(anyerr.Success)
+}
+
+// unpinnedHubModelLines renders the models a hub's sources can serve but that
+// no route pins. PreviewManifest only walks proxy_hub_routes, so without this
+// the command reported a hub as serving seven models when its accounts publish
+// twenty-three. Catalog-only: a preview must not spend saved credentials on
+// vendor egress, so a cold cache shows fewer models, never more.
+func unpinnedHubModelLines(ctx context.Context, a *appView, hubName string) ([]string, error) {
+	if a == nil || a.ProxyHub == nil {
+		return nil, nil
+	}
+	pinned, err := hubPinnedModels(ctx, a, hubName)
+	if err != nil {
+		return nil, err
+	}
+	if len(pinned) == 0 {
+		return nil, nil
+	}
+	pinnedSet := make(map[string]bool, len(pinned))
+	for _, id := range pinned {
+		pinnedSet[id] = true
+	}
+	var lines []string
+	for _, id := range mergeModelIDsOrdered(hubSourceModels(ctx, a, hubName, false)) {
+		if pinnedSet[id] {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("model %s → any source that serves it", id))
+	}
+	return lines, nil
 }
 
 // cmdHubStart spawns the hub child, adopting a running one only when it
