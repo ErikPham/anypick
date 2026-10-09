@@ -8,7 +8,7 @@ same way.
 
 | Word | Meaning |
 | --- | --- |
-| **Client** | The CLI you run: `claude`, `codex`, `commandcode`, `gemini`, `kiro`, `opencode`, `zcode`, `dsh`, `pi`, `omp` |
+| **Client** | The CLI you run: `claude`, `codex`, `commandcode`, `gemini`, `kiro`, `opencode`, `workbuddy`, `zcode`, `dsh`, `pi`, `omp` |
 | **Source** | What powers it: an account (`grok/work`), a gateway (`openrouter-work`), a pool (`pool:gemini`), the opt-in hub (`hub:default`), or a preset (`@work`) |
 | **Binding** | A concrete snapshot: this client → this source, plus model roles |
 | **Preset** | A stored template (`@name`) that resolves like a source; no command creates one yet |
@@ -64,7 +64,8 @@ model picker once and it stays routed until you `anypick reset zcode`.
 `claude`, `codex`, `opencode`, `zcode`, `dsh`, `commandcode`, `pi` and `omp`
 can be bound to
 a source from a different provider — that is what the proxies exist for, and
-the exact matrix is enforced by `internal/transport/adapter_test.go`. `gemini`
+the exact matrix is enforced by
+`internal/transport/adapter_matrix_test.go`. `gemini`
 and `kiro` only accept their own provider's login, so `gemini --with grok/work`
 is rejected rather than silently proxied. The `workbuddy` app uses its own
 login directly; `workbuddy` *accounts*

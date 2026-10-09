@@ -35,7 +35,8 @@ claims that had to be walked back.
 
 - **Capability pairs come from the adapters** in
   `../src/go/internal/transport/`. `claude`, `codex`, `opencode`, `zcode`,
-  `dsh` and `commandcode` may accept a source from a different provider.
+  `dsh`, `commandcode`, `pi` and `omp` may accept a source from a different
+  provider.
   `gemini` and `kiro` clients return `unsupported` for anything but their own.
   The workbuddy *client* uses its own login directly, so it is
   `unsupported` everywhere else; a workbuddy *account*

@@ -3,11 +3,58 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { readTauriVersion } from './app-version';
+import { PROTOCOL_VERSION } from '../lib/wire';
+
+function hostPlatform(nodePlatform: string): string {
+  if (nodePlatform === 'darwin') return 'macos';
+  if (nodePlatform === 'win32') return 'windows';
+  return 'linux';
+}
+
+/**
+ * No version literals in this payload. `make set-version` rewrites only
+ * `secondarySources` (`src/go/cmd/anypick-release/version.go`), so a number
+ * written here is invisible to it and drifts at the next bump.
+ */
+export function helloFrame(
+  nodePlatform: string,
+  appVersion: string,
+): string {
+  const hostHello = {
+    protocolVersion: PROTOCOL_VERSION,
+    appVersion,
+    platform: hostPlatform(nodePlatform),
+    capabilities: [
+      'command-dto-v1',
+      'snapshot-dto-v1',
+      'cancel-v1',
+      'doctor-v1',
+      'explicit-refresh',
+      'host-effects-v1',
+      'post-mutation-events',
+      'usage-events-v1',
+    ],
+    hostState: { launchAtLogin: false },
+  };
+  return `hello\t${Buffer.from(JSON.stringify(hostHello)).toString('base64')}\n`;
+}
 
 export function devServicePlugin(repoRoot: string): Plugin {
   return {
     name: 'dev-service',
     configureServer(server) {
+      // Read once. A missing tauri.conf.json must not throw inside the stdout
+      // handler below, where it would take down the dev server rather than
+      // just logging.
+      let appVersion: string;
+      try {
+        appVersion = readTauriVersion(repoRoot);
+      } catch (err) {
+        console.warn('[dev-service] Could not read the app version:', err);
+        return;
+      }
+
       const candidates = [
         resolve(repoRoot, 'src/tauri/app/binaries/anypick-core-aarch64-apple-darwin'),
         resolve(repoRoot, 'src/tauri/app/target/debug/anypick-core'),
@@ -51,29 +98,7 @@ export function devServicePlugin(repoRoot: string): Plugin {
             const kind = tab === -1 ? line : line.slice(0, tab);
 
             if (kind === 'hello') {
-              const platform =
-                process.platform === 'darwin'
-                  ? 'macos'
-                  : process.platform === 'win32'
-                    ? 'windows'
-                    : 'linux';
-              const hostHello = {
-                protocolVersion: 2,
-                appVersion: '1.0.1',
-                platform,
-                capabilities: [
-                  'command-dto-v1',
-                  'snapshot-dto-v1',
-                  'cancel-v1',
-                  'doctor-v1',
-                  'explicit-refresh',
-                  'host-effects-v1',
-                  'post-mutation-events',
-                  'usage-events-v1',
-                ],
-                hostState: { launchAtLogin: false },
-              };
-              const frame = `hello\t${Buffer.from(JSON.stringify(hostHello)).toString('base64')}\n`;
+              const frame = helloFrame(process.platform, appVersion);
               child?.stdin?.write(frame);
             } else if (kind === 'ready') {
               console.log('[dev-service] Handshake ready. Connected to real AnyPick service.');
