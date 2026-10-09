@@ -700,14 +700,11 @@ struct AddSavedAccountSheet: View {
           .labelsHidden()
           .accessibilityIdentifier("account-flow.api-key")
 
-          Button {
-            revealSecret.toggle()
-          } label: {
-            Image(systemName: revealSecret ? "eye.slash" : "eye")
-              .foregroundStyle(.secondary)
-          }
-          .buttonStyle(.borderless)
-          .accessibilityLabel(revealSecret ? "Hide API Key" : "Show API Key")
+          DesignIconButton(
+            symbol: revealSecret ? "eye.slash" : "eye",
+            help: revealSecret ? "Hide API Key" : "Show API Key",
+            action: { revealSecret.toggle() }
+          )
         }
       }
       if isZaiProvider {
@@ -727,29 +724,23 @@ struct AddSavedAccountSheet: View {
 
   private var loginAccessories: some View {
     HStack(spacing: 4) {
-      if isDetecting || isVerifying {
-        ProgressView()
-          .controlSize(.small)
-          .accessibilityLabel("Checking")
-      } else {
-        Button {
+      DesignIconButton(
+        symbol: sourceMode == .newAccount && !hasIdentity
+          ? "arrow.up.right.square"
+          : "arrow.clockwise",
+        help: checkAgainHelp,
+        phase: isDetecting || isVerifying ? .working : .idle,
+        isEnabled: !model.isBusy,
+        identifier: "account-flow.detect",
+        action: {
           if sourceMode == .newAccount, !hasIdentity { signIn() } else { detectLogin() }
-        } label: {
-          Image(
-            systemName: sourceMode == .newAccount && !hasIdentity
-              ? "arrow.up.right.square"
-              : "arrow.clockwise"
-          )
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(model.isBusy)
-        .help(checkAgainHelp)
-        .accessibilityLabel(
-          sourceMode == .newAccount && !hasIdentity ? "Start Sign In" : "Check Again"
-        )
-        .accessibilityIdentifier("account-flow.detect")
-      }
+      )
+      .accessibilityLabel(
+        isDetecting || isVerifying
+          ? "Checking"
+          : (sourceMode == .newAccount && !hasIdentity ? "Start Sign In" : "Check Again")
+      )
       if showsSignOutMenu {
         Menu {
           Button("Sign Out on This Mac", role: .destructive) { requestSignOut() }

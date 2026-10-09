@@ -133,14 +133,11 @@ struct AddGatewaySheet: View {
                   .focused($focusedField, equals: .apiKey)
                   .accessibilityIdentifier("gateway-flow.api-key")
 
-                  Button {
-                    revealKey.toggle()
-                  } label: {
-                    Image(systemName: revealKey ? "eye.slash" : "eye")
-                      .foregroundStyle(.secondary)
-                  }
-                  .buttonStyle(.borderless)
-                  .accessibilityLabel(revealKey ? "Hide API Key" : "Show API Key")
+                  DesignIconButton(
+                    symbol: revealKey ? "eye.slash" : "eye",
+                    help: revealKey ? "Hide API Key" : "Show API Key",
+                    action: { revealKey.toggle() }
+                  )
                 }
               }
             } else {

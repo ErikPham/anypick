@@ -900,20 +900,15 @@ struct PublishedModelInspectSheet: View {
           }
 
           LabeledContent("Test in Terminal") {
-            Button {
-              copyToClipboard(curlExample, label: "curl")
-            } label: {
-              HStack(spacing: 4) {
-                Image(systemName: copiedLabel == "curl" ? "checkmark" : "doc.on.doc")
-                Text(copiedLabel == "curl" ? DesignIconButton.confirmedHelp : "Copy cURL Command")
-              }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityLabel(
-              copiedLabel == "curl" ? DesignIconButton.confirmedHelp : "Copy cURL Command"
+            DesignIconButton(
+              symbol: "terminal",
+              help: "Copy cURL Command",
+              confirmedSymbol: "checkmark",
+              phase: copiedLabel == "curl" ? .confirmed : .idle,
+              identifier: "model-inspect.copy-curl",
+              action: { copyToClipboard(curlExample, label: "curl") }
             )
-            .accessibilityIdentifier("model-inspect.copy-curl")
+            .controlSize(.regular)
           }
         } header: {
           Text("Proxy Hub Endpoint")
