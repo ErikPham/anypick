@@ -17,6 +17,66 @@ final class PaneRenderTests: XCTestCase {
 
 
   @MainActor
+  func testIconCommandOwnsItsWidthHelpAndEnabledStateInEveryPhase() {
+    // The regression this control exists to prevent, measured against the real
+    // NSButton rather than a proxy. `doc.on.doc` fits 33pt and `checkmark`
+    // fits 32pt, so a confirmation drawn as a plain glyph swap moves the row by
+    // a point — the same 0.5pt tolerance the row grid is held to above.
+    func laid(_ phase: DesignIconCommandPhase) -> (width: CGFloat, help: String?, enabled: Bool) {
+      // A detached NSHostingView never realizes an NSViewRepresentable's view,
+      // so the control has to be hosted in a window before it can be found.
+      // The window is never ordered front; this draws nothing on screen.
+      let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 200, height: 60),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+      )
+      let host = NSHostingView(
+        rootView: AnyView(
+          DesignIconButton(
+            symbol: "doc.on.doc",
+            help: "Copy proxy address",
+            confirmedSymbol: "checkmark",
+            phase: phase,
+            action: {}
+          )
+        ))
+      window.contentView = host
+      window.layoutIfNeeded()
+      host.layoutSubtreeIfNeeded()
+
+      var button: DesignIconButtonBox?
+      func walk(_ view: NSView) {
+        if let found = view as? DesignIconButtonBox { button = found }
+        view.subviews.forEach(walk)
+      }
+      walk(window.contentView!)
+      guard let button else {
+        XCTFail("phase \(phase) rendered no shared control; the measurement below is meaningless")
+        return (0, nil, true)
+      }
+      return (host.fittingSize.width, button.toolTip, button.isEnabled)
+    }
+
+    let idle = laid(.idle)
+    let confirmed = laid(.confirmed)
+    let working = laid(.working)
+
+    XCTAssertGreaterThan(idle.width, 0, "the control laid out to nothing")
+    XCTAssertEqual(idle.width, confirmed.width, accuracy: 0.5, "a copy confirmation must not move the row")
+    XCTAssertEqual(idle.width, working.width, accuracy: 0.5, "an in-flight spinner must not move the row")
+
+    XCTAssertEqual(idle.help, "Copy proxy address")
+    XCTAssertEqual(confirmed.help, DesignIconButton.confirmedHelp, "the help tag must follow the phase, not just a colour")
+    XCTAssertEqual(working.help, "Copy proxy address")
+
+    XCTAssertTrue(idle.enabled, "a ready command must be clickable")
+    XCTAssertTrue(confirmed.enabled, "a landed command must be clickable again")
+    XCTAssertFalse(working.enabled, "an in-flight command must not take a second click")
+  }
+
+  @MainActor
   func testAccountRowTrailingKeepsColumnsAlignedForEveryRow() {
     // The reported bug: a row whose action column is empty (a current account,
     // or a gateway with no Connect action) drew its marker and menu further in

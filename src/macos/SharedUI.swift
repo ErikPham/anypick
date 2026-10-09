@@ -457,7 +457,10 @@ final class DesignIconButtonBox: NSButton {
 
     switch phase {
     case .working:
-      image = nil
+      // A blank canvas rather than no image: clearing it would drop the bezel
+      // padding with it and the control would shrink by its own width the
+      // moment it starts working.
+      image = blankCanvas()
       spinner.startAnimation(nil)
     case .idle, .confirmed:
       spinner.stopAnimation(nil)
@@ -469,6 +472,13 @@ final class DesignIconButtonBox: NSButton {
     // The spinner is not decoration: it is what stops a second click landing on
     // the same request while the first one is still in flight.
     isEnabled = commandEnabled && phase != .working
+  }
+
+  private func blankCanvas() -> NSImage? {
+    guard canvasWidth > 0 else { return nil }
+    return NSImage(size: NSSize(width: canvasWidth, height: 1), flipped: false) { (_: NSRect) -> Bool in
+      true
+    }
   }
 
   private func canvasImage(named symbol: String) -> NSImage? {
