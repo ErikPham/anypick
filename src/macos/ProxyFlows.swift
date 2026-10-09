@@ -498,17 +498,14 @@ struct PublishedModelsView: View {
         )
         .fixedSize()
 
-        Button {
-          inspectingModel = item
-        } label: {
-          Image(systemName: "info.circle")
-            .font(.body)
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .help("Inspect Model")
+        DesignIconButton(
+          symbol: "info.circle",
+          help: "Inspect Model",
+          identifier: "published-models.switch-inspect.\(item.modelID)",
+          action: { inspectingModel = item }
+        )
         .accessibilityLabel("Inspect \(item.modelID)")
-        .accessibilityIdentifier("published-models.switch-inspect.\(item.modelID)")
+        .controlSize(.regular)
       }
       .layoutPriority(1)
     }
@@ -587,29 +584,28 @@ struct PublishedModelsView: View {
           .fixedSize()
         }
 
-        DesignCopyButton(
-          copied: isCopied,
-          label: "Copy Model ID",
+        DesignIconButton(
+          symbol: "doc.on.doc",
+          help: "Copy Model ID",
+          confirmedSymbol: "checkmark",
+          phase: isCopied ? .confirmed : .idle,
           identifier: "published-models.copy.\(item.modelID)"
         ) {
           copyText(item.modelID)
           copiedID = item.modelID
-          DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+          DispatchQueue.main.asyncAfter(deadline: .now() + DesignIconButton.confirmationDuration) {
             if copiedID == item.modelID { copiedID = nil }
           }
         }
 
-        Button {
-          inspectingModel = item
-        } label: {
-          Image(systemName: "info.circle")
-            .font(.body)
-            .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .help("Inspect Model")
+        DesignIconButton(
+          symbol: "info.circle",
+          help: "Inspect Model",
+          identifier: "published-models.inspect.\(item.modelID)",
+          action: { inspectingModel = item }
+        )
         .accessibilityLabel("Inspect \(item.modelID)")
-        .accessibilityIdentifier("published-models.inspect.\(item.modelID)")
+        .controlSize(.regular)
       }
       .layoutPriority(1)
     }
@@ -909,11 +905,14 @@ struct PublishedModelInspectSheet: View {
             } label: {
               HStack(spacing: 4) {
                 Image(systemName: copiedLabel == "curl" ? "checkmark" : "doc.on.doc")
-                Text(copiedLabel == "curl" ? "Copied" : "Copy cURL Command")
+                Text(copiedLabel == "curl" ? DesignIconButton.confirmedHelp : "Copy cURL Command")
               }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .accessibilityLabel(
+              copiedLabel == "curl" ? DesignIconButton.confirmedHelp : "Copy cURL Command"
+            )
             .accessibilityIdentifier("model-inspect.copy-curl")
           }
         } header: {
@@ -927,16 +926,13 @@ struct PublishedModelInspectSheet: View {
 
   @ViewBuilder
   private func copyButton(for text: String, label: String) -> some View {
-    Button {
-      copyToClipboard(text, label: label)
-    } label: {
-      Image(systemName: copiedLabel == label ? "checkmark" : "doc.on.doc")
-        .font(.caption)
-        .foregroundStyle(copiedLabel == label ? .green : .secondary)
-        .frame(width: 18, height: 18)
-    }
-    .buttonStyle(.plain)
-    .help("Copy")
+    DesignIconButton(
+      symbol: "doc.on.doc",
+      help: "Copy",
+      confirmedSymbol: "checkmark",
+      phase: copiedLabel == label ? .confirmed : .idle,
+      action: { copyToClipboard(text, label: label) }
+    )
   }
 
   private func copyToClipboard(_ text: String, label: String) {
@@ -944,7 +940,7 @@ struct PublishedModelInspectSheet: View {
     NSPasteboard.general.setString(text, forType: .string)
     copiedLabel = label
     model.announceOnly("Copied to clipboard.")
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + DesignIconButton.confirmationDuration) {
       if copiedLabel == label { copiedLabel = nil }
     }
   }

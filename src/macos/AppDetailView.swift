@@ -304,21 +304,20 @@ struct AppDetailView: View {
           .lineLimit(1)
       }
       Spacer(minLength: 8)
-      Button {
-        copyCodexProfileCommand(profile)
-      } label: {
-        Image(systemName: copiedCodexProfileID == profile.id ? "checkmark" : "doc.on.doc")
-      }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
-      .disabled(model.isBusy || profile.launchCommand.isEmpty)
-      .help(copiedCodexProfileID == profile.id ? "Copied launch command" : "Copy launch command")
+      DesignIconButton(
+        symbol: "doc.on.doc",
+        help: "Copy launch command",
+        confirmedSymbol: "checkmark",
+        phase: copiedCodexProfileID == profile.id ? .confirmed : .idle,
+        isEnabled: !model.isBusy && !profile.launchCommand.isEmpty,
+        identifier: "codex-profile.copy.\(profile.name)",
+        action: { copyCodexProfileCommand(profile) }
+      )
       .accessibilityLabel(
         copiedCodexProfileID == profile.id
           ? "Launch command copied for \(profile.name)"
           : "Copy launch command for \(profile.name)"
       )
-      .accessibilityIdentifier("codex-profile.copy.\(profile.name)")
 
       Menu {
         Button("Edit Profile…", systemImage: "slider.horizontal.3") {
@@ -369,7 +368,7 @@ struct AppDetailView: View {
     copiedCodexProfileID = profile.id
     copyFeedbackTask?.cancel()
     copyFeedbackTask = Task { @MainActor in
-      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      try? await Task.sleep(nanoseconds: UInt64(DesignIconButton.confirmationDuration * 1_000_000_000))
       guard !Task.isCancelled, copiedCodexProfileID == profile.id else { return }
       copiedCodexProfileID = nil
     }

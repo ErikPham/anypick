@@ -43,9 +43,11 @@ struct ProxyHubView: View {
               .textSelection(.enabled)
               .lineLimit(1)
               .truncationMode(.middle)
-            DesignCopyButton(
-              copied: copiedAddress,
-              label: "Copy Proxy Hub address",
+            DesignIconButton(
+              symbol: "doc.on.doc",
+              help: "Copy Proxy Hub address",
+              confirmedSymbol: "checkmark",
+              phase: copiedAddress ? .confirmed : .idle,
               identifier: "hub.copy-address",
               action: copyAddress
             )
@@ -66,21 +68,20 @@ struct ProxyHubView: View {
                   .lineLimit(1)
                   .truncationMode(.middle)
               }
-              DesignCopyButton(
-                copied: copiedApiKey,
-                label: "Copy Proxy Hub API key",
+              DesignIconButton(
+                symbol: "doc.on.doc",
+                help: "Copy Proxy Hub API key",
+                confirmedSymbol: "checkmark",
+                phase: copiedApiKey ? .confirmed : .idle,
                 identifier: "hub.copy-api-key",
                 action: { model.copyProxyAPIKey(id: "hub") }
               )
-              Button {
-                requestRotate()
-              } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-              }
-              .buttonStyle(.borderless)
-              .help("Rotate Proxy Hub API Key")
-              .accessibilityLabel("Rotate Proxy Hub API Key")
-              .accessibilityIdentifier("hub.rotate-api-key")
+              DesignIconButton(
+                symbol: "arrow.triangle.2.circlepath",
+                help: "Rotate Proxy Hub API Key",
+                identifier: "hub.rotate-api-key",
+                action: requestRotate
+              )
             }
           }
         }
