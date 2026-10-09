@@ -165,6 +165,7 @@ struct MainWindow: View {
         actionTitle: "Try Again",
         action: model.refresh
       )
+      .disabled(model.isBusy)
       .navigationTitle("AnyPick")
       .accessibilityIdentifier("state.error")
     case .ready, .empty:
