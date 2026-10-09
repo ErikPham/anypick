@@ -11,6 +11,7 @@ import (
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/slug"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
@@ -95,11 +96,17 @@ func ImportEnvelope(deps ImportDeps, ctx context.Context, providerID, name, inPa
 
 func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name, inPath string, force bool) (store.Meta, error) {
 	var zero store.Meta
-	accountName := name
+	accountName, nerr := slug.AccountName(name)
+	if nerr != nil {
+		return zero, anyerr.Newf(nerr.Error(), "INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
 	if _, err := os.Stat(inPath); err != nil {
 		return zero, anyerr.Newf(fmt.Sprintf("Import file not found: %s", inPath), "IMPORT_MISSING")
 	}
-	existing, _ := deps.Store.Get(ctx, providerID, accountName)
+	existing, gerr := deps.Store.Get(ctx, providerID, accountName)
+	if gerr != nil {
+		return zero, gerr
+	}
 	if existing != nil && !force {
 		return zero, anyerr.Newf(
 			fmt.Sprintf("Account %q already exists. Use --force to overwrite.", accountName),
@@ -156,9 +163,12 @@ func importEnvelopeLocked(deps ImportDeps, ctx context.Context, providerID, name
 	if rerr != nil {
 		return zero, rerr
 	}
-	accountName = resolvedName
+	accountName, nerr = slug.AccountName(resolvedName)
+	if nerr != nil {
+		return zero, anyerr.Newf(nerr.Error(), "INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage))
+	}
 
-	existing, gerr := deps.Store.Get(ctx, providerID, accountName)
+	existing, gerr = deps.Store.Get(ctx, providerID, accountName)
 	if gerr != nil {
 		return zero, gerr
 	}

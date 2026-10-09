@@ -141,6 +141,7 @@ func (s *AccountStore) get(ctx context.Context, providerID, name string) (*Accou
 // on that lock, and the parent waits for the child. Reading the cache the
 // parent just materialized is the path that does not deadlock.
 func (s *AccountStore) CachedAccount(ctx context.Context, providerID, name string) (*Account, error) {
+	name = normalizeAccountName(name)
 	var metaJSON, proxyJSON string
 	err := s.DB.QueryRowContext(ctx, getAccountSQL, providerID, name).Scan(&name, &metaJSON, &proxyJSON)
 	if err == sql.ErrNoRows {
@@ -349,6 +350,16 @@ type BatchWrite struct {
 // in sorted order is what keeps a mixed batch from deadlocking against a
 // single-provider mutation touching the same provider.
 func (s *AccountStore) WriteAccountsBatchContext(ctx context.Context, entries []BatchWrite) error {
+	for i := range entries {
+		// The SQL key and the snapshot path are the slug. A raw name such as
+		// "Personal" would be stored verbatim and then missed by every read,
+		// which slugs before it queries.
+		name, err := slug.AccountName(entries[i].Meta.Name)
+		if err != nil {
+			return err
+		}
+		entries[i].Meta.Name = name
+	}
 	scopes := make([]string, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {

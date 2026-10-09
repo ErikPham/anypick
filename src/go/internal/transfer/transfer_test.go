@@ -83,6 +83,43 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestImportStoresTheSlug(t *testing.T) {
+	st, reg := newTransferEnv(t)
+	saveFakeAccount(t, st, "codex", "work")
+	ctx := context.Background()
+	outPath := filepath.Join(t.TempDir(), "account.json")
+	if err := ExportEnvelope(st, ctx, "codex", "work", outPath); err != nil {
+		t.Fatal(err)
+	}
+	deps := ImportDeps{Store: st, Providers: reg, ResolveIdentityTarget: func(_ context.Context, _, _, n string, _ bool) (string, error) {
+		return n, nil
+	}}
+	meta, err := ImportEnvelope(deps, ctx, "codex", "Personal", outPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "personal" {
+		t.Fatalf("imported name = %q, want personal", meta.Name)
+	}
+	got, err := st.Get(ctx, "codex", "Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Meta.Name != "personal" {
+		t.Fatalf("Get(Personal) = %+v, want the personal row", got)
+	}
+	raw, err := os.ReadFile(filepath.Join(got.SnapshotDir, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "access_token") {
+		t.Fatalf("snapshot = %s", raw)
+	}
+	if _, err := ImportEnvelope(deps, ctx, "codex", "personal", outPath, false); err == nil {
+		t.Fatal("importing the slug of an existing account without --force succeeded")
+	}
+}
+
 func TestImportRejectionLeavesStateUntouched(t *testing.T) {
 	st, reg := newTransferEnv(t)
 	saveFakeAccount(t, st, "codex", "existing")
