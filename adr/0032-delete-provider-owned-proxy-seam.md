@@ -82,7 +82,22 @@ That produced three costs the ADR did not anticipate:
    `LoadFailure` all remain. A future Go-native executor re-adds a seam; what it
    must re-derive is enumerated in Consequences below, so the knowledge this
    record deletes is written down here first.
-6. **No runtime registration hook is added.** ADR-0031 stands: providers
+6. **`client_state` leaves the schema.** The table was declared owned by
+   `internal/client` in the ownership registry while no code read or wrote it —
+   not one statement outside the DDL and the registry entry. It is out of the
+   baseline schema and out of the registry now.
+7. **No migration drops it.** A fresh database never creates it; an existing
+   `~/.anypick` keeps the empty table. `DROP TABLE` on a user's data directory
+   is irreversible and this table costs nothing, so the deletion is from the
+   code, not from anyone's disk. The consequence is asymmetric on purpose, and
+   a reader who finds an install that still has the table is looking at a
+   pre-1.1 install, not at drift.
+8. **ADR-0007 is left as written.** It names `client_state` twice while
+   describing what `link` must not do. That is a record of a 2026 decision, and
+   editing it to match today's schema would falsify it; this decision is the
+   reader's answer instead. A consequence of 0007 that depended on the table
+   surviving would need its own record — none did.
+9. **No runtime registration hook is added.** ADR-0031 stands: providers
    register in-tree. If a future executor is wanted, it is a new ADR, and it
    needs a way to reach provider code this tree does not have.
 
