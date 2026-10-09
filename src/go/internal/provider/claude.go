@@ -22,10 +22,9 @@ const (
 	claudeLoginMethodID = "claude-subscription"
 )
 
-// claude mirrors ClaudeProvider. Credentials live in the macOS Keychain
+// claude manages Claude Code credentials, which live in the macOS Keychain
 // ("Claude Code-credentials") or ~/.claude/.credentials.json on file-backed
-// platforms — mirroring createClaudeCredentialStore without ever putting the
-// secret in process argv.
+// platforms. The secret never goes in process argv.
 type claude struct {
 	home string
 }
@@ -41,7 +40,6 @@ func (p *claude) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	return transport.ClaudeAccountAdapter(p.ID(), accountName)
 }
 
-// loginCommand mirrors ClaudeProvider.loginCommand (src/providers/claude.ts).
 func (p *claude) loginCommand() browserlogin.Command {
 	names := []string{"claude"}
 	if env := os.Getenv("CLAUDE_BINARY"); env != "" {
@@ -58,7 +56,6 @@ func (p *claude) loginCommand() browserlogin.Command {
 	}
 }
 
-// LoginMethods mirrors ClaudeProvider.loginMethods.
 func (p *claude) LoginMethods() []LoginMethod {
 	return []LoginMethod{
 		browserlogin.Availability(LoginMethod{
@@ -72,8 +69,8 @@ func (p *claude) LoginMethods() []LoginMethod {
 	}
 }
 
-// Login mirrors ClaudeProvider.login: run the provider's own login-only
-// command; the credential it writes is verified and snapshotted by core.
+// Login runs the provider's own login-only command; the credential it writes
+// is verified and snapshotted by core.
 func (p *claude) Login(ctx context.Context, methodID, source string) error {
 	if methodID != claudeLoginMethodID || (source != "" && source != "claude-code") {
 		return anyerr.Newf("Unknown Claude sign-in method.", "PROVIDER_LOGIN_METHOD_UNKNOWN")

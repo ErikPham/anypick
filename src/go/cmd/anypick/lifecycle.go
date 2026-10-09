@@ -34,8 +34,7 @@ func isGlobalFlag(arg string) bool {
 }
 
 // globals records root-level global options so subcommand handlers honor them
-// even though they were consumed before the command name (mirrors GlobalOpts
-// in src/cli/commands.ts).
+// even though they were consumed before the command name.
 var globals struct {
 	JSON    bool
 	DryRun  bool
@@ -122,7 +121,7 @@ func yesNo(b bool) string {
 	return "no"
 }
 
-// printDryRun mirrors printDryRunCommand: JSON mode emits one machine-readable
+// printDryRun prints the dry-run plan: JSON mode emits one machine-readable
 // line; human mode an informational note on stdout (progress stays on stderr).
 func printDryRun(action, detail string, extra map[string]any) {
 	if globals.JSON {
@@ -170,8 +169,8 @@ func runSuperviseChild(ctx context.Context, a *appView) int {
 
 // cmdTray is the explicit `tray` entry (same core as bare `anypick app`).
 func cmdTray(ctx context.Context, a *app.App, args []string) int {
-	// `tray start|stop` manage the supervisor exactly like `start`/`stop`
-	// (mirrors the TS tray command group); any other invocation opens the app.
+	// `tray start|stop` manage the supervisor exactly like `start`/`stop`;
+	// any other invocation opens the app.
 	if len(args) > 0 {
 		switch args[0] {
 		case "start":
@@ -179,8 +178,8 @@ func cmdTray(ctx context.Context, a *app.App, args []string) int {
 		case "stop":
 			return cmdStop(a, args[1:])
 		case "status":
-			// TS exposes visible `tray status` (src/cli/commands.ts); route it to
-			// the supervisor status path instead of the app-run protocol.
+			// Route `tray status` to the supervisor status path instead of
+			// the app-run protocol.
 			return cmdStatus(a, args[1:])
 		}
 	}

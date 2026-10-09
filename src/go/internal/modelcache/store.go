@@ -11,7 +11,6 @@ import (
 	"github.com/outof0/anypick/go/internal/db"
 )
 
-// Entry mirrors CachedModelList.
 type Entry struct {
 	Provider  string
 	Endpoint  string

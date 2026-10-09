@@ -43,9 +43,9 @@ func invalid(message string, suggestions ...string) error {
 	return anyerr.Newf(message, "PLUGIN_INVALID", opts...)
 }
 
-// ParseManifest mirrors src/core/plugin-loader.ts. Unknown keys are ignored,
-// while every executable identity field is validated before it can enter the
-// registry.
+// ParseManifest parses and validates a plugin manifest. Unknown keys are
+// ignored, while every executable identity field is validated before it can
+// enter the registry.
 func ParseManifest(raw []byte, source string) (Manifest, error) {
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -55,7 +55,7 @@ func ParseManifest(raw []byte, source string) (Manifest, error) {
 	object, ok := value.(map[string]any)
 	if !ok {
 		// JSON.parse considers arrays objects, then rejects their absent name.
-		// Preserve that observable result while giving scalars the TS message.
+		// Preserve that observable result while giving scalars the not-an-object message.
 		if _, array := value.([]any); array {
 			return Manifest{}, invalidName(source)
 		}

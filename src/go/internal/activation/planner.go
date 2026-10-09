@@ -63,7 +63,6 @@ type proxyStart interface {
 	StopPoolProxy(ctx context.Context, providerID string) error
 }
 
-// Options mirrors PlanOptions.
 type Options struct {
 	DryRun          bool
 	SavePreset      string
@@ -228,7 +227,7 @@ func resolveHubSource(ctx context.Context, deps *Deps, ref refs.Ref, display str
 	}, nil
 }
 
-// gatewayAdapter ports gatewayAdapterFromProfile: direct only when the client
+// gatewayAdapter resolves gateway transport: direct only when the client
 // exists AND its accepted protocols overlap; never a core-maintained id matrix.
 func gatewayAdapter(name, providerID string, protocols []transport.Protocol, deps *Deps) transport.Adapter {
 	a := transport.Adapter{}
@@ -522,9 +521,9 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 
 	tr := buildTransport(caps, resolved, capability, account, pr)
 	if resolved.Ref.Kind == refs.KindAccountPool && tr.ManagedProxy != nil {
-		// Plan/actual port parity (proxy-service.ts startPoolProxy): the
-		// executor binds pool.port ?? provider.defaultProxyPort ?? 8080
-		// deterministically, so the plan must advertise exactly that endpoint.
+		// Plan/actual port parity: the executor binds the pool port, else the
+		// provider default, else 8080, deterministically, so the plan must
+		// advertise exactly that endpoint.
 		if port, perr := plannedPoolPort(ctx, resolved.Ref.Provider, deps); perr == nil && port > 0 {
 			tr.ManagedProxy.Port = port
 			tr.Endpoint = fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -570,10 +569,9 @@ func PlanActivation(ctx context.Context, req Request, deps *Deps, opts Options) 
 	}
 
 	// Persistent activation is the only mode allowed to change native auth.
-	// Deliberate divergence from TS (activation-planner.ts gated this on
-	// capability == direct): the step runs for every persistent account
-	// source whose adapter requires a native auth write, regardless of
-	// transport, so quota/usage and direct CLI use agree with the binding.
+	// The step runs for every persistent account source whose adapter
+	// requires a native auth write, regardless of transport, so quota/usage
+	// and direct CLI use agree with the binding.
 	// Adapters whose proxy serves purely from the snapshot (e.g. grok, whose
 	// proxy refreshes per request from saved auth) declare
 	// RequiresNativeAuthWrite=false and stay excluded here.
@@ -906,7 +904,6 @@ func plannedPoolPort(ctx context.Context, providerID string, deps *Deps) (int, e
 	return defaultProxyPort, nil
 }
 
-// protocolForClient ports activation-protocol.
 func protocolForClient(caps *client.Capabilities, sourceProtocols []transport.Protocol) transport.Protocol {
 	preferred := transport.Protocol("")
 	if caps != nil && caps.ProtocolPreference != "" {
@@ -973,7 +970,6 @@ func providerModelRoleDefaults(
 	return out, true
 }
 
-// mergeModelRolesIntoClientOptions ports activation-models.
 func mergeModelRolesIntoClientOptions(base map[string]interface{}, modelRoles map[string]string, model bindings.ModelSelection) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range base {

@@ -2,7 +2,6 @@ package provider
 
 import "context"
 
-// UsageWindow mirrors LiveUsageWindow from src/types/account.ts.
 type UsageWindow struct {
 	Label            string   `json:"label"`
 	RemainingPercent int      `json:"remainingPercent"`
@@ -13,7 +12,6 @@ type UsageWindow struct {
 	LimitWindowSeconds *int `json:"limitWindowSeconds,omitempty"`
 }
 
-// LiveUsage mirrors LiveUsage.
 type LiveUsage struct {
 	Windows []UsageWindow `json:"windows"`
 }

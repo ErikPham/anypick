@@ -1,5 +1,5 @@
-// Package tray ports the tray supervisor protocol (src/tray/protocol.ts,
-// supervisor.ts): the core speaks line-framed base64 JSON over stdio —
+// Package desktop implements the desktop-app core protocol: the core speaks
+// line-framed base64 JSON over stdio —
 //
 //	core → app : snapshot\t<b64> | result\t<b64> | logs\t<b64> | doctor\t<b64> | backup-preview\t<b64>
 //	app → core : open|refresh|restart|stop|quit | navigate\t<s>
@@ -17,10 +17,12 @@ import (
 	"github.com/outof0/anypick/go/internal/doctor"
 )
 
-// ProtocolVersion mirrors TRAY_PROTOCOL_VERSION.
+// ProtocolVersion is the command and snapshot DTO wire version, retained
+// while the negotiated service contract moves on (see ServiceProtocolVersion,
+// which is buildinfo.ProtocolVersion).
 const ProtocolVersion = 1
 
-// MaxCommandBytes mirrors MAX_TRAY_COMMAND_BYTES.
+// MaxCommandBytes bounds one inbound command line.
 const MaxCommandBytes = 16 * 1024
 
 // Command is the decoded form of one app→core line.
@@ -94,7 +96,7 @@ type cancelPayload struct {
 	RequestID string `json:"requestId"`
 }
 
-// Mutate mirrors TrayMutationCommand loosely: unknown fields are dropped, so
+// Mutate is the mutation command: unknown fields are dropped, so
 // new operations surface as unsupported instead of crashing the supervisor.
 type Mutate struct {
 	Version      int    `json:"version"`
@@ -121,14 +123,14 @@ type Mutate struct {
 	Profile         string   `json:"profile"`
 	TransportPolicy string   `json:"transportPolicy,omitempty"`
 	SourceIDs       []string `json:"sourceIds,omitempty"`
-	// Backup-package operations (TrayBackupAccountRef / import flow).
+	// Backup-package operations (account refs / import flow).
 	Accounts           []BackupAccountRef `json:"accounts,omitempty"`
 	InspectionID       string             `json:"inspectionId,omitempty"`
 	EntryIDs           []string           `json:"entryIds,omitempty"`
 	OverwriteConfirmed bool               `json:"overwriteConfirmed,omitempty"`
 }
 
-// BackupAccountRef mirrors TrayBackupAccountRef.
+// BackupAccountRef names one account in a backup-package operation.
 type BackupAccountRef struct {
 	Provider string `json:"provider"`
 	Name     string `json:"name"`
@@ -143,7 +145,7 @@ var navigateScreens = map[string]bool{
 	"add-account": true, "add-gateway": true,
 }
 
-// DecodeLine ports decodeTrayCommand. Malformed input returns an error the
+// DecodeLine decodes one app→core line. Malformed input returns an error the
 // caller ignores — a bad line must never disrupt supervision.
 func DecodeLine(line string) (*Command, error) {
 	if len(line) > MaxCommandBytes {
@@ -309,10 +311,10 @@ func RequestIDFromLine(line string) string {
 	return string(rest[:end])
 }
 
-// FrameSnapshot mirrors sendSnapshot.
+// FrameSnapshot frames a snapshot for the app.
 func FrameSnapshot(s *Snapshot) string { return frame("snapshot", s) }
 
-// Result mirrors TrayCommandResult.
+// Result is one command result.
 //
 // A failure carries more than its message: Code is the stable machine string
 // the CLI already exposes, Suggestions are the hints reportErr prints, and
@@ -330,13 +332,13 @@ type Result struct {
 	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
-// FrameResult mirrors sendResult.
+// FrameResult frames a command result for the app.
 func FrameResult(r Result) string {
 	r.Message = displaySafeMessage(r.Message)
 	return frame("result", r)
 }
 
-// ProxyLogsResult mirrors TrayProxyLogsResult.
+// ProxyLogsResult is one proxy-log answer.
 type ProxyLogsResult struct {
 	Version   int    `json:"version"`
 	RequestID string `json:"requestId"`
@@ -345,7 +347,7 @@ type ProxyLogsResult struct {
 	Text      string `json:"text"`
 }
 
-// FrameProxyLogs mirrors sendProxyLogs.
+// FrameProxyLogs frames a proxy-log answer for the app.
 func FrameProxyLogs(r ProxyLogsResult) string { return frame("logs", r) }
 
 // DoctorResult mirrors the desktop settings diagnostics response.
@@ -358,8 +360,8 @@ type DoctorResult struct {
 
 func FrameDoctor(r DoctorResult) string { return frame("doctor", r) }
 
-// BackupPreviewEntry mirrors TrayBackupPreviewEntry. ID is the base-36 index
-// TS assigns so entryIds from the native client resolve identically.
+// BackupPreviewEntry is one backup preview row. ID is the base-36 index so
+// entryIds from the native client resolve identically.
 type BackupPreviewEntry struct {
 	ID          string `json:"id"`
 	ProviderID  string `json:"providerId"`
@@ -369,7 +371,7 @@ type BackupPreviewEntry struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
-// BackupPreviewResult mirrors TrayBackupPreviewResult (ready | error).
+// BackupPreviewResult is the backup preview response (ready | error).
 type BackupPreviewResult struct {
 	Version      int                  `json:"version"`
 	RequestID    string               `json:"requestId"`
@@ -383,7 +385,7 @@ type BackupPreviewResult struct {
 	Message      string               `json:"message,omitempty"`
 }
 
-// FrameBackupPreview mirrors sendBackupPreview.
+// FrameBackupPreview frames a backup preview for the app.
 func FrameBackupPreview(r BackupPreviewResult) string { return frame("backup-preview", r) }
 
 // decodeStrictPayload base64-decodes a payload, strictly unmarshals it, and
@@ -400,7 +402,7 @@ func decodeStrictPayload(encoded, kind string, into interface{}) (json.RawMessag
 		return nil, err
 	}
 	// Validation reads the ORIGINAL payload so explicitly-sent `false`
-	// booleans count as present, matching the TS key-presence checks.
+	// booleans count as present, matching the key-presence checks.
 	if verr := validatePayload(kind, raw); verr != nil {
 		return nil, verr
 	}

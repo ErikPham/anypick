@@ -3,9 +3,9 @@ package main
 // NATIVE-M1 CLI parity part 1: structural command-tree golden gate against
 // go/testdata/parity/cli-tree.json, stdout purity under --json,
 // verbosity-flag consumers, and dynamic positional completion. The fixture
-// originated in the TypeScript commander program; it is maintained by hand
-// now, and the enforced part is the path set (descriptions and flags are
-// documentation kept in step with the Go dispatch).
+// is maintained by hand now, and the enforced part is the path set
+// (descriptions and flags are documentation kept in step with the Go
+// dispatch).
 
 import (
 	"context"
@@ -208,7 +208,11 @@ func TestCliTreePathsResolveInGoDispatch(t *testing.T) {
 	resetGlobals()
 }
 
-func TestGoDispatchTreeMatchesTypeScriptTopLevel(t *testing.T) {
+// The fixture records the command tree the TypeScript engine shipped, kept as
+// the parity baseline after 9702015 deleted that engine. A Go-only command is
+// legitimate; it must be listed as omitted so this check can tell it apart
+// from one that was never accounted for.
+func TestGoDispatchTreeMatchesRecordedTopLevel(t *testing.T) {
 	fixture := loadCliTree(t)
 	omitted := fixture.omittedSet()
 	tsTop := map[string]bool{}
@@ -225,7 +229,8 @@ func TestGoDispatchTreeMatchesTypeScriptTopLevel(t *testing.T) {
 		if tsTop[c] || omitted[c] {
 			continue
 		}
-		t.Errorf("Go dispatches top-level command %q but TypeScript neither knows it nor lists it as omitted", c)
+		t.Errorf("Go dispatches top-level command %q but the parity fixture neither "+
+			"records it nor lists it as omitted", c)
 	}
 }
 

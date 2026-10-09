@@ -1,6 +1,6 @@
-// Package browserlogin ports src/providers/browser-login.ts: run a provider's
-// own login-only command without forwarding its output, so OAuth URLs, device
-// codes, and tokens never cross the tray/JSON output boundary.
+// Package browserlogin runs a provider's own login-only command without
+// forwarding its output, so OAuth URLs, device codes, and tokens never cross
+// the tray/JSON output boundary.
 package browserlogin
 
 import (
@@ -16,7 +16,6 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// DefaultTimeout mirrors command.timeoutMs ?? 10 * 60 * 1_000 in TS.
 const DefaultTimeout = 10 * time.Minute
 
 // TerminationGrace bounds how long a SIGTERMed launcher may stay alive before
@@ -24,7 +23,6 @@ const DefaultTimeout = 10 * time.Minute
 // must not hold the provider mutation lock (or a desktop operation) forever.
 const TerminationGrace = 3 * time.Second
 
-// Command mirrors BrowserLoginCommand from src/providers/browser-login.ts.
 type Command struct {
 	Names      []string
 	ExtraPaths []string
@@ -33,8 +31,8 @@ type Command struct {
 	Timeout    time.Duration // zero selects DefaultTimeout
 }
 
-// Method carries the availability result for a declared login method
-// (mirrors loginMethodAvailability). The caller supplies every field except
+// Method carries the availability result for a declared login method.
+// The caller supplies every field except
 // Available/UnavailableReason, which only this package may decide.
 type Method struct {
 	ID          string
@@ -63,9 +61,9 @@ func Availability(base Method, command Command) Method {
 	return base
 }
 
-// ResolveBinary ports resolveBinary (src/utils/process/binary.ts): extra paths
-// first, then each bare name on PATH. Names containing a separator are used
-// verbatim. Returns "" when nothing executable is found.
+// ResolveBinary searches extra paths first, then each bare name on PATH.
+// Names containing a separator are used verbatim. Returns "" when nothing
+// executable is found.
 func ResolveBinary(names []string, extraPaths []string) string {
 	var candidates []string
 	candidates = append(candidates, extraPaths...)

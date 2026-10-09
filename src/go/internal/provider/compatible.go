@@ -1,7 +1,7 @@
-// Compatible providers port src/providers/compatible/*: declarative vendor
-// definitions turned into full Providers. A definition needs no access to
-// stores or proxy internals — core supplies the secret-boundary snapshot, the
-// dual-protocol loopback proxy wiring, and the pairing rules.
+// Compatible providers are declarative vendor definitions turned into full
+// Providers. A definition needs no access to stores or proxy internals — core
+// supplies the secret-boundary snapshot, the dual-protocol loopback proxy
+// wiring, and the pairing rules.
 package provider
 
 import (
@@ -18,7 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// AuthScheme mirrors CompatibleAuthScheme: how the upstream expects the key.
+// AuthScheme describes how the upstream expects the key.
 type AuthScheme string
 
 const (
@@ -27,8 +27,8 @@ const (
 	AuthAPIKey  AuthScheme = "api-key"
 )
 
-// EndpointProfile mirrors CompatibleEndpointProfile. Bases are Chat
-// Completions / Messages roots WITHOUT their final path segments.
+// EndpointProfile describes one vendor endpoint. Bases are Chat Completions /
+// Messages roots WITHOUT their final path segments.
 type EndpointProfile struct {
 	ID              string     `json:"id"`
 	Label           string     `json:"label,omitempty"`
@@ -50,7 +50,6 @@ type CredentialDefinition struct {
 	Profiles        []EndpointProfile `json:"profiles"`
 }
 
-// CompatibleDefinition mirrors CompatibleProviderDefinition.
 type CompatibleDefinition struct {
 	ID                 string                 `json:"id"`
 	Name               string                 `json:"name"`
@@ -64,7 +63,6 @@ type CompatibleDefinition struct {
 
 const compatibleCredentialFile = "compatible-credential.json"
 
-// storedCompatibleCredential mirrors StoredCompatibleCredential.
 type storedCompatibleCredential struct {
 	Version int    `json:"version"`
 	Kind    string `json:"kind"`
@@ -93,8 +91,7 @@ func NewCompatible(def CompatibleDefinition) (*Compatible, error) {
 }
 
 // DefaultProxyPorter optionally exposes a compatible provider's advertised
-// default proxy port (CompatibleProviderDefinition.defaultProxyPort) without
-// widening the Provider interface for everyone else.
+// default proxy port without widening the Provider interface for everyone else.
 type DefaultProxyPorter interface {
 	DefaultProxyPort() int
 }
@@ -105,12 +102,11 @@ func (p *Compatible) Description() string { return p.Def.Description }
 func (p *Compatible) CanProxy() bool      { return true }
 
 // DefaultProxyPort is the deterministic bind target when no explicit pool port
-// is persisted (TS startPoolProxy: pool.port ?? provider.defaultProxyPort ??
-// 8080).
+// is persisted (pool.port ?? provider.defaultProxyPort ?? 8080).
 func (p *Compatible) DefaultProxyPort() int { return p.Def.DefaultProxyPort }
 
-// AccountAdapter mirrors proxySource: claude, codex, pi and omp ride the builtin
-// proxy — every other client is unsupported regardless of protocols declared.
+// AccountAdapter: claude, codex, pi and omp ride the builtin proxy — every
+// other client is unsupported regardless of protocols declared.
 func (p *Compatible) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	a := transport.Adapter{}
 	a.SourceRef.Kind = "account"
@@ -268,8 +264,7 @@ func (p *Compatible) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error
 		Auth:       stored.Secret,
 		AuthHeader: header, AuthValuePrefix: prefix,
 		// Provider-declared quota patterns ride with every resolved member so
-		// the pool classifier can fail over on vendor-specific error codes
-		// (backend.ts isExhausted's definition.quotaErrorPatterns branch).
+		// the pool classifier can fail over on vendor-specific error codes.
 		QuotaErrorPatterns: p.Def.QuotaErrorPatterns,
 	}
 	// Compatible providers expose an OpenAI-shaped model endpoint even when
@@ -608,8 +603,7 @@ func BuiltinDefinitions() []CompatibleDefinition {
 		//     The name says so instead of making the user guess.
 		//   - ark is kept: same host as `doubao` but a different product
 		//     (the Volcengine Ark platform vs the Doubao model API).
-		// This duplication existed in the TypeScript build too; porting it
-		// faithfully would have preserved a bug, not a feature.
+		// Preserving those verbatim would have preserved a bug, not a feature.
 		{
 			// Ark Coding Plan keys bill against a separate endpoint from the
 			// platform API key; the two must never drift onto each other.

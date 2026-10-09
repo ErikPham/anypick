@@ -18,7 +18,6 @@ import (
 
 const anypickManagedKey = "_anypickManaged"
 
-// claudeAdapter ports createClaudeCodeClient + applyClaudeToHome.
 type claudeAdapter struct{ home string }
 
 func newClaude(home string) *claudeAdapter { return &claudeAdapter{home: home} }
@@ -502,7 +501,6 @@ func (a *claudeAdapter) Inspect() (*InspectResult, error) {
 	return &InspectResult{Present: false, Issues: []string{"no anypick-managed env block"}}, nil
 }
 
-// env.sh only in the Go port.
 func writeClientEnvFiles(root, clientID string, env map[string]string) []string {
 	dir := filepath.Join(root, "clients", clientID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

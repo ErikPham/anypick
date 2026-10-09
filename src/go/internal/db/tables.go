@@ -19,6 +19,14 @@ package db
 // Adding a table means adding it here in the same change. Adding an entry to
 // SharedWith must come with a reason: two packages writing one table is how
 // invariants start leaking.
+//
+// A table is also removed here in the same change that drops it from the
+// baseline schema. `client_state` was such a table: it shipped, was declared
+// owned by internal/client, and nothing read or wrote it. The baseline no
+// longer creates it, so a fresh database never has it, but no migration drops
+// it either — an existing ~/.anypick keeps the empty table rather than having
+// its data deleted by a release. An inert table costs nothing; an irreversible
+// migration on someone's machine costs the project's trust.
 type TableOwner struct {
 	// Package is the owning package, as an import path relative to src/go.
 	Package string
@@ -35,7 +43,6 @@ var TableOwners = map[string]TableOwner{
 	"account_snapshot_files": {Package: "internal/store"},
 	"accounts":               {Package: "internal/store"},
 	"client_profiles":        {Package: "internal/client"},
-	"client_state":           {Package: "internal/client"},
 	"config": {
 		Package: "internal/config",
 		SharedWith: map[string]string{

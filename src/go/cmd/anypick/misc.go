@@ -103,7 +103,7 @@ func registerDoctorFlags(fs *flag.FlagSet) doctorFlagValues {
 }
 
 // cmdDoctor runs read-only health checks over the local installation, and —
-// with --fix — applies the six allowlisted repairs in internal/doctor.
+// with --fix — applies the repairs allowlisted in internal/doctor.
 //
 // The flag set is real: the golden tree advertises --fix, and a substring scan
 // for "--json" used to let every other flag through unparsed, so
@@ -515,7 +515,7 @@ func cmdCompletion(a *appView, args []string) int {
 	}
 	// Static word lists reflect the dispatched tree minus hidden helpers;
 	// positional depth resolves live ids through the hidden `__complete`
-	// helper (mirrors src/cli/completion.ts).
+	// helper.
 	const topLevel = "add use run codex current list link unlink reset account gateway preset proxy plugin tray serve app start status stop stop-proxy update completion doctor providers clients"
 	switch shell {
 	case "bash":
@@ -637,8 +637,7 @@ compdef _anypick anypick
 }
 
 // cmdComplete backs shell completion: hidden `__complete <kind> [arg]` prints
-// live ids one per line from the current data root (TS parity: hidden
-// `__complete` command in src/cli/commands.ts). Never listed in help.
+// live ids one per line from the current data root. Never listed in help.
 func cmdComplete(ctx context.Context, a *appView, args []string) int {
 	if len(args) == 0 {
 		return usageError("usage: anypick __complete <providers|clients|gateways|accounts|codex-profiles> [<provider>]")

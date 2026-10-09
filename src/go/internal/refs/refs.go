@@ -1,5 +1,5 @@
-// Package refs ports src/core/refs.ts: deterministic resource reference
-// parsing (spec §15) and the two distinct scope functions.
+// Package refs provides deterministic resource reference parsing (spec §15)
+// and the two distinct scope functions.
 //
 // TRAP (AGENTS.md): mutationScopeForRef is NOT serializeRef. The former is the
 // lock scope (accounts collapse onto their provider, ADR 0011); the latter is
@@ -14,7 +14,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// Kind enumerates ResourceKind from src/types/bindings.ts.
+// Kind enumerates the resource kinds.
 type Kind string
 
 const (
@@ -33,8 +33,7 @@ type Ref struct {
 	Name     string
 }
 
-// DefaultAccountProviders mirrors DEFAULT_ACCOUNT_PROVIDERS: known
-// file-snapshot account providers.
+// DefaultAccountProviders lists the known file-snapshot account providers.
 func DefaultAccountProviders() map[string]bool {
 	return map[string]bool{
 		"codex": true, "gemini": true, "grok": true, "kiro": true, "opencode": true,
@@ -120,7 +119,7 @@ func invalidRef(msg string, suggestions ...string) error {
 	)
 }
 
-// ParseRef ports parseRef: grammar-only parsing, no existence checks.
+// ParseRef is grammar-only parsing, no existence checks.
 //
 // Grammar:
 //

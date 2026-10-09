@@ -20,7 +20,7 @@ import (
 	"github.com/outof0/anypick/go/internal/protocol/gemini"
 )
 
-// geminiUpstreamGoogle is the API-key upstream (translate-types.ts DEFAULT_UPSTREAM).
+// geminiUpstreamGoogle is the API-key upstream.
 const geminiUpstreamGoogle = "https://generativelanguage.googleapis.com"
 
 // geminiIDETypeDefault is the ClientMetadata.ideType used when a target does
@@ -29,8 +29,7 @@ const geminiUpstreamGoogle = "https://generativelanguage.googleapis.com"
 const geminiIDETypeDefault = "GEMINI_CLI"
 
 // codeAssistProjectCache caches the resolved Code Assist project per auth token
-// so each request does not re-call loadCodeAssist (mirrors the TS in-process
-// oauthState.project cache).
+// so each request does not re-call loadCodeAssist.
 type codeAssistProjectCache struct {
 	mu      sync.Mutex
 	byToken map[string]string
@@ -65,8 +64,8 @@ func (c *codeAssistProjectCache) set(token, project string) {
 // serveGemini is the single egress for every Gemini-backed route. It translates
 // the inbound OpenAI/Anthropic/Responses request to a Gemini generateContent
 // call, issues it (API-key or OAuth/Code Assist), and translates the response
-// back — synthesizing SSE for streaming requests exactly like the TypeScript
-// gemini-proxy (which always calls non-stream generateContent and fakes SSE).
+// back — synthesizing SSE for streaming requests from the single non-stream
+// generateContent response.
 
 // geminiBuildError carries the exact (status, type, message) a leaf must surface
 // when the Gemini request build fails, so the shared egress and each caller's
@@ -131,9 +130,9 @@ func serveGemini(w http.ResponseWriter, r *http.Request, up *Upstream) {
 
 // translateToGemini routes the inbound body to the right converter and returns
 // the Gemini request, the resolved model id, and whether the client asked for
-// streaming. Model resolution mirrors resolveRequestModel: it consults the live
-// account catalog (liveGeminiCatalog) and falls back to the empty-catalog
-// passthrough for unknown concrete ids.
+// streaming. Model resolution consults the live account catalog
+// (liveGeminiCatalog) and falls back to the empty-catalog passthrough for
+// unknown concrete ids.
 func translateToGemini(up *Upstream, ctx context.Context, path string, body []byte) (*gemini.GeminiGenerateRequest, string, string, bool, error) {
 	catalog := liveGeminiCatalog(ctx, up)
 	switch path {
@@ -194,8 +193,8 @@ func stringFromAnthropicEffort(req gemini.AnthropicMessageRequest) string {
 // callGemini issues one Gemini generateContent call. API-key mode posts to
 // generativelanguage.googleapis.com with x-goog-api-key; OAuth mode posts to
 // the Code Assist upstream with Authorization: Bearer + the {model, project,
-// session_id} envelope. Ports callGemini (gemini-proxy/server.ts) including its
-// 429 cooldown and gemini-cli ↔ antigravity auto-fallback on 401/403/404.
+// session_id} envelope, including its 429 cooldown and gemini-cli ↔
+// antigravity auto-fallback on 401/403/404.
 func callGemini(ctx context.Context, up *Upstream, model string, geminiReq *gemini.GeminiGenerateRequest) (*gemini.GeminiGenerateResponse, error) {
 	keyMode := up.Gemini != nil && up.Gemini.APIKeyMode
 	routeKey := geminiCooldownKey(up, model)
@@ -251,8 +250,7 @@ func callGeminiAPIKey(ctx context.Context, up *Upstream, model, routeKey string,
 		return nil, anyerr.Wrapf(err, "read gemini response", "GEMINI_UPSTREAM")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// 429 backoff (mirrors classifyUpstreamFailure → cooldowns.set, applied
-		// for every mode, not just OAuth).
+		// 429 backoff, applied for every mode, not just OAuth.
 		if resp.StatusCode == 429 {
 			if ra := retryAfterMs(resp.Header.Get("Retry-After")); ra > 0 {
 				geminiCooldowns.set(routeKey, ra)
@@ -272,8 +270,8 @@ func callGeminiAPIKey(ctx context.Context, up *Upstream, model, routeKey string,
 }
 
 // callGeminiOAuth performs one Code Assist request and, on 401/403/404, retries
-// once through up.Gemini.AltRoute (ports callGeminiWithAutoFallback). routeKey
-// tags the cooldown bucket so a 429 sets a backoff the next call observes.
+// once through up.Gemini.AltRoute. routeKey tags the cooldown bucket so a 429
+// sets a backoff the next call observes.
 func callGeminiOAuth(ctx context.Context, up *Upstream, model string, geminiReq *gemini.GeminiGenerateRequest, routeKey string, isFallback bool) (*gemini.GeminiGenerateResponse, error) {
 	if up.AuthProvider == nil {
 		return nil, anyerr.Newf("no Gemini OAuth provider available", "GEMINI_NO_OAUTH")
@@ -296,7 +294,7 @@ func callGeminiOAuth(ctx context.Context, up *Upstream, model string, geminiReq 
 		return nil, rerr
 	}
 	if status < 200 || status >= 300 {
-		// 429 backoff (mirrors classifyUpstreamFailure → cooldowns.set).
+		// 429 backoff.
 		if status == 429 {
 			if ra := retryAfterMs(header.Get("Retry-After")); ra > 0 {
 				geminiCooldowns.set(routeKey, ra)
@@ -411,8 +409,8 @@ func retryAfterMs(header string) int64 {
 	return 0
 }
 
-// geminiSessionID is the per-process Code Assist session id, mirroring the TS
-// proxySessionId (one value for the server's lifetime).
+// geminiSessionID is the per-process Code Assist session id (one value for
+// the server's lifetime).
 var geminiSessionID = gemini.RandomID()
 
 // geminiCooldownKey includes the account scope. A key of only mode and model
@@ -430,9 +428,9 @@ func geminiCooldownKey(up *Upstream, model string) string {
 	return "gemini:" + mode + ":" + scope + ":" + model
 }
 
-// geminiCooldowns ports the TS CooldownRegistry: a 429 from any route parks
-// that route's key for the Retry-After window so the next call fails fast
-// instead of hammering the upstream.
+// geminiCooldowns tracks per-route cooldowns: a 429 from any route parks that
+// route's key for the Retry-After window so the next call fails fast instead
+// of hammering the upstream.
 type geminiCooldown struct {
 	mu    sync.Mutex
 	until map[string]time.Time
@@ -491,7 +489,7 @@ func geminiErrorStatusMessage(err error) (int, string) {
 // GeminiCodeAssistMetadata builds the ClientMetadata for loadCodeAssist. The
 // two identities do not take the same shape: Antigravity's endpoint is sent
 // {ideType} alone, while gemini-cli additionally carries platform +
-// pluginType (npm anypick, providers/gemini-proxy/server.ts). Sending the
+// pluginType. Sending the gemini-cli shape to the Antigravity upstream is the
 // gemini-cli shape to the Antigravity upstream is the kind of extra field the
 // endpoint later rejects, so the shapes stay separate. Provider-owned quota
 // reads in internal/provider/usage_gemini.go call this too, so the wire shape
@@ -512,7 +510,7 @@ func GeminiCodeAssistMetadata(ideType string) map[string]interface{} {
 }
 
 // resolveCodeAssistProject calls loadCodeAssist to discover the project for the
-// OAuth account, caching by token (mirrors oauthState.project).
+// OAuth account, caching by token.
 func resolveCodeAssistProject(ctx context.Context, base, token, ideType string) (string, error) {
 	if p, ok := codeAssistProjects.get(token); ok {
 		return p, nil
@@ -602,8 +600,8 @@ func errorsAsGemini(err error, target **geminiUpstreamError) bool {
 
 // writeGeminiResponse translates the Gemini generateContent response back to
 // the inbound wire format and writes it. Streaming requests get a faked SSE
-// lifecycle built from the single non-stream response (mirrors the TS handlers,
-// which always call non-stream generateContent and synthesize SSE).
+// lifecycle built from the single non-stream response (which always calls
+// non-stream generateContent and synthesizes SSE).
 func writeGeminiResponse(w http.ResponseWriter, path string, resp *gemini.GeminiGenerateResponse, model string, stream bool) {
 	switch path {
 	case "/v1/chat/completions":

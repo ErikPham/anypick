@@ -1,6 +1,6 @@
-// Package doctor ports src/core/doctor*.ts to the Go engine: read-only health
-// checks over a single routing client (what the TUI's "d diagnose" runs for a
-// highlighted app on the Apps board). It is a leaf package — it depends only on
+// Package doctor provides read-only health checks over a single routing
+// client (what the TUI's "d diagnose" runs for a highlighted app on the
+// Apps board). It is a leaf package — it depends only on
 // the service registries, never on app or tui, so cmd/anypick can reuse it too.
 package doctor
 

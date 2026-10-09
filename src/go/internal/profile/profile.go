@@ -1,5 +1,5 @@
-// Package profile ports src/core/profile-store.ts: gateway runtime profiles
-// (endpoint + API key material) stored in the profiles table.
+// Package profile stores gateway runtime profiles
+// (endpoint + API key material) in the profiles table.
 package profile
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// Meta mirrors RuntimeProfileMeta (subset the core layer consumes).
+// Meta is the subset of runtime profile metadata the core layer consumes.
 type Meta struct {
 	Name            string                 `json:"name"`
 	Provider        string                 `json:"provider"`
@@ -31,14 +31,13 @@ type Meta struct {
 	ClientOverrides map[string]interface{} `json:"clientOverrides,omitempty"`
 }
 
-// Secrets mirrors RuntimeProfileSecrets. Never surfaced in status output.
+// Secrets holds API key material. Never surfaced in status output.
 type Secrets struct {
 	APIKey          string                 `json:"apiKey,omitempty"`
 	Headers         map[string]string      `json:"headers,omitempty"`
 	ClientOverrides map[string]interface{} `json:"clientOverrides,omitempty"`
 }
 
-// Runtime mirrors RuntimeProfile.
 type Runtime struct {
 	Meta    Meta
 	Secrets Secrets

@@ -1,5 +1,5 @@
-// Package anyerr ports src/utils/errors.ts: exit codes and the structured
-// AnyPickError carried across the core layer.
+// Package anyerr defines exit codes and the structured AnyPickError carried
+// across the core layer.
 package anyerr
 
 import (
@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// ExitCode mirrors the reserved ranges in src/utils/errors.ts (§25.2).
+// ExitCode enumerates the reserved process exit codes.
 type ExitCode int
 
 const (

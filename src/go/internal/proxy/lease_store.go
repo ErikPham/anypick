@@ -9,8 +9,8 @@ import (
 	"github.com/outof0/anypick/go/internal/lock"
 )
 
-// Lease mirrors ProxyLease (src/types/bindings.ts). Leases record which
-// activation owns a running proxy so cleanup can be scoped and reaped.
+// Lease records which activation owns a running proxy so cleanup can be
+// scoped and reaped.
 type Lease struct {
 	LeaseID     string   `json:"leaseId"`
 	Provider    string   `json:"provider"`
@@ -25,7 +25,7 @@ type Lease struct {
 	UpdatedAt   string   `json:"updatedAt"`
 }
 
-// LeaseStore owns the proxy_leases table (src/core/lease-store.ts).
+// LeaseStore owns the proxy_leases table.
 type LeaseStore struct {
 	Root string
 	DB   *sql.DB

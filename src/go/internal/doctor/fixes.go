@@ -25,10 +25,8 @@ import (
 // contract; everything that writes lives here so "diagnose" and "repair" can be
 // reviewed against different bars.
 //
-// The allowlist is six kinds, not the seven the deleted src/core/doctor-fixes.ts
-// shipped. delete_stale_lock cannot exist: the TypeScript isLockStale was a stub
-// that always returned false, so that fix could never fire even before the
-// cutover, and Go locks are flock(2) descriptors opened O_CREAT|O_RDWR at
+// The allowlist is seven kinds. There is no delete_stale_lock kind: locks
+// are flock(2) descriptors opened O_CREAT|O_RDWR at
 // internal/lock/platform_unix.go — never written to, and released by the kernel
 // when the holder dies. There is no stale lock to find, so advertising one only
 // invited a repair that could delete a lock a live process holds. The decision
@@ -799,10 +797,9 @@ func fixRepairPermissions(action FixAction, deps FixDeps) (string, error) {
 	return fmt.Sprintf("repaired permissions on %d AnyPick-owned path(s) under %s", fixed, deps.Root), nil
 }
 
-// fixRebuildCaches drops the SQLite model cache per provider. The deleted
-// TypeScript wrote a marker file into <root>/cache; that would be a lie in Go,
-// where the cache is rows in anypick.db (internal/modelcache) and there is no
-// cache directory to rebuild.
+// fixRebuildCaches drops the SQLite model cache per provider. The cache is
+// rows in anypick.db (internal/modelcache); there is no cache directory to
+// rebuild.
 func fixRebuildCaches(ctx context.Context, deps FixDeps) (string, error) {
 	if deps.Store == nil {
 		return "", anyerr.Newf("model cache store unavailable", "FIX_UNAVAILABLE",

@@ -26,7 +26,7 @@ func cmdProxyConfig(ctx context.Context, a *appView, args []string) int {
 			fmt.Sprintf("Would configure %s/%s", fs.Arg(0), fs.Arg(1)),
 			kv{Key: "provider", Value: fs.Arg(0)}, kv{Key: "name", Value: fs.Arg(1)},
 			kv{Key: "port", Value: intOrNil(*port)},
-			kv{Key: "restart", Value: true}) // TS restart !== false default
+			kv{Key: "restart", Value: true}) // restart defaults to true
 		return int(anyerr.Success)
 	}
 	cfg, err := a.Proxy.Configure(ctx, fs.Arg(0), fs.Arg(1), true, *port)
@@ -72,8 +72,7 @@ func cmdProxyLogs(ctx context.Context, a *appView, args []string) int {
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 2 {
 		return usageError("usage: anypick proxy logs <provider> <account> [--lines N] [--follow]")
 	}
-	// Plugin providers answer through readProxyLogs; built-ins fall back to
-	// the engine's own log file — both inside the Service.
+	// The engine's own log file answers through the Service, secret-screened.
 	text, err := a.Proxy.ProxyLogs(ctx, fs.Arg(0), fs.Arg(1), *lines)
 	if err != nil {
 		return reportErr(err)
@@ -197,7 +196,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 				fmt.Sprintf("Would enable the %s multi-account pool", providerID),
 				kv{Key: "provider", Value: providerID},
 				kv{Key: "port", Value: intOrNil(*port)},
-				kv{Key: "host", Value: nil}, // TS --host has no default here
+				kv{Key: "host", Value: nil}, // --host has no default here
 				kv{Key: "start", Value: true})
 			return int(anyerr.Success)
 		}
@@ -331,7 +330,7 @@ func cmdPool(ctx context.Context, a *appView, args []string) int {
 		if err != nil {
 			return reportErr(err)
 		}
-		// Match the TypeScript service's hot reload without starting a pool
+		// Hot reload without starting a pool
 		// that was stopped. A NULL-account lease identifies a pool instance;
 		// per-account proxy state alone is not sufficient evidence.
 		running, rerr := poolProxyIsRunning(ctx, a, providerID)

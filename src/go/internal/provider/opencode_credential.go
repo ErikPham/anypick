@@ -80,23 +80,20 @@ func OpenCodeCatalogSources() []OpenCodeCatalogSource {
 }
 
 // liveOpenCodePlatformKeys lists platform API keys from the live CLI install's
-// credential database (liveOpenCodeDbPath in the TypeScript port).
+// credential database.
 func liveOpenCodePlatformKeys() []openCodePlatformKey {
 	return readOpenCodeDBKeys(filepath.Join(openCodeLiveDataDir(homeDirOf()), "opencode.db"))
 }
 
-// openCodeSnapshotDBKeys ports readDbPlatformCredentials(opencodeDbPathFor()):
-// the credential database that sits BESIDE a saved auth.json. A snapshot dir
-// written by Backup never carries one, but the TypeScript proxy checked it
-// before the mirror and a caller pointing at a live data directory does have
-// one, so the port keeps the step.
+// openCodeSnapshotDBKeys reads the credential database that sits BESIDE a
+// saved auth.json. A snapshot dir written by Backup never carries one, but a
+// caller pointing at a live data directory does have one, so the step is kept.
 func openCodeSnapshotDBKeys(snapshotDir string) []openCodePlatformKey {
 	return readOpenCodeDBKeys(filepath.Join(snapshotDir, "opencode.db"))
 }
 
-// readOpenCodeDBKeys is readDbPlatformCredentials: best-effort and read-only,
-// where a missing file, an older schema or a foreign row shape all mean "no
-// credentials here", never an error.
+// readOpenCodeDBKeys is best-effort and read-only: a missing file, an older
+// schema or a foreign row shape all mean "no credentials here", never an error.
 func readOpenCodeDBKeys(path string) []openCodePlatformKey {
 	d, err := db.OpenForeign(path, true)
 	if err != nil {
@@ -135,10 +132,10 @@ func readOpenCodeDBKeys(path string) []openCodePlatformKey {
 	return out
 }
 
-// mirrorState is why a saved auth.json could not supply a gateway key. The
-// TypeScript proxy raised a different message for each — "no login at all" and
-// "logged in without a Zen/Go key" send the user to different commands — so the
-// port keeps the distinction instead of collapsing it into one error.
+// mirrorState is why a saved auth.json could not supply a gateway key. Each
+// state maps to a different message — "no login at all" and "logged in
+// without a Zen/Go key" send the user to different commands — so the
+// distinction is kept instead of collapsing it into one error.
 type mirrorState int
 
 const (
@@ -218,18 +215,17 @@ func pickOpenCodeGatewayKey(keys []openCodePlatformKey) (key, service string) {
 	return "", ""
 }
 
-// openCodeGatewayKey resolves the credential the Zen/Go gateway must use,
-// porting resolveOpenCodeCredentials (auto mode, one auth path):
+// openCodeGatewayKey resolves the credential the Zen/Go gateway must use
+// (auto mode, one auth path):
 //
 //  1. the live CLI install's credential table — the beta CLI stopped rewriting
 //     auth.json on login, so a saved mirror can hold a previous account's key;
 //  2. the credential database beside the mirror, when there is one;
 //  3. the mirror itself.
 //
-// One divergence, on purpose: the TypeScript ring pushed live rows in database
-// scan order and applied the Go preference only to the file branch. An
-// unordered scan is not a rule, so the port prefers the Go row on every branch.
-// state reports why no key was found when key is empty.
+// One rule, on purpose: live rows prefer the Go subscription key on every
+// branch — an unordered database scan is not a rule. state reports why no key
+// was found when key is empty.
 func openCodeGatewayKey(snapshotDir string) (key, service string, state mirrorState) {
 	if key, service = pickOpenCodeGatewayKey(liveOpenCodePlatformKeys()); key != "" {
 		return key, service, mirrorRead

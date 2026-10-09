@@ -1,5 +1,4 @@
-// Tray-local settings outside the SQLite global config document (port of
-// src/core/tray-settings-service.ts).
+// Tray-local settings outside the SQLite global config document.
 //
 // ADR 0020 §7: launch-at-login is a **typed host effect**. The Go engine never
 // mutates OS integration state (LaunchAgents plists, SMAppService) itself — it
@@ -8,7 +7,7 @@
 // that lives here.
 package config
 
-// LoginItemScope is the mutation scope TS owns for login-item changes
+// LoginItemScope is the mutation scope for login-item changes
 // (ADR 0009). The native host performs the platform write; the engine still
 // serializes the decision under this scope so two toggles cannot interleave.
 const LoginItemScope = "tray/login-item"

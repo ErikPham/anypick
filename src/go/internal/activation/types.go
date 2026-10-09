@@ -1,5 +1,4 @@
-// Package activation ports src/core/activation-planner.ts,
-// activation-executor.ts, and their helper modules.
+// Package activation plans and executes client activations.
 //
 // The plan is the single source of truth (invariant #3): the executor
 // interprets planned steps and never re-derives behavior from transport
@@ -44,7 +43,7 @@ const (
 	StepRestoreTemporaryState    StepKind = "RestoreTemporaryState"
 )
 
-// Mode mirrors the ActivationRequest mode union.
+// Mode is the activation mode: persistent, ephemeral, project, or profile.
 type Mode string
 
 const (
@@ -60,14 +59,13 @@ type PlanStep struct {
 	Params map[string]interface{} `json:"params,omitempty"`
 }
 
-// Warning mirrors PlanWarning.
 type Warning struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// ManagedProxyRef mirrors ResolvedTransport.managedProxy. Token is owner-only:
-// it must never reach an output boundary (invariant #2).
+// ManagedProxyRef is the managed proxy target of a resolved transport.
+// Token is owner-only: it must never reach an output boundary (invariant #2).
 type ManagedProxyRef struct {
 	Provider string `json:"provider"`
 	Account  string `json:"account,omitempty"`
@@ -91,7 +89,6 @@ type ResolvedSource struct {
 	Display string
 }
 
-// Request mirrors ActivationRequest.
 type Request struct {
 	Mode        Mode
 	Client      string
@@ -112,7 +109,6 @@ type Request struct {
 	TransportPolicy transport.Policy
 }
 
-// Plan mirrors ActivationPlan.
 type Plan struct {
 	Mode        Mode   `json:"mode"`
 	Client      string `json:"client"`

@@ -3,7 +3,7 @@ package main
 // CLI parity part 2, slice A: --dry-run breadth on mutating commands and the
 // --yes confirmation gate. Regressions pin three properties:
 //
-//  1. Every new dry-run prints the TS action string/extra fields (human
+//  1. Every new dry-run prints the action string/extra fields (human
 //     "[dry-run]" line on stdout; --json exactly one {"dryRun":true,...} value).
 //  2. Non-proliferation: DB bytes + ANYPICK_HOME tree + journal rows are
 //     byte-equal across a dry-run, and dry-run proceeds while the relevant
@@ -151,7 +151,7 @@ func TestDryRunBreadthLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// TestDryRunJSONShapes pins the TS printDryRunCommand contract per action.
+// TestDryRunJSONShapes pins the dry-run JSON contract per action.
 func TestDryRunJSONShapes(t *testing.T) {
 	isolateEnv(t)
 	clearGlobalsForParity()
@@ -344,7 +344,7 @@ func TestDryRunProceedsWithMutationLockHeld(t *testing.T) {
 	}
 }
 
-// TestNonTTYConfirmationGate ports commands.ts confirmDelete semantics:
+// TestNonTTYConfirmationGate pins the confirmDelete semantics:
 // non-TTY refuses with exit 2 before consuming stdin or mutating anything;
 // --yes proceeds. reset and gateway reset clear the client's own login file,
 // so they take the same gate as account remove and gateway remove.

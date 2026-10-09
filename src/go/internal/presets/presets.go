@@ -1,4 +1,5 @@
-// Package presets ports src/core/preset-store.ts.
+// Package presets stores reusable binding templates a user can apply to a
+// client by name.
 package presets
 
 import (

@@ -53,8 +53,7 @@ func (s *Service) UpsertGlobalContext(ctx context.Context, g Global) (Global, er
 	return s.Store.UpsertGlobalContext(ctx, g)
 }
 
-// RealignNativeClientBinding mirrors the account-service post-switch hook in
-// the TypeScript runtime. A provider account switch changes the live account
+// RealignNativeClientBinding runs after a provider account switch. A provider account switch changes the live account
 // pointer, but a homonymous native client can have a separate global binding
 // that still names the old account. Only that exact provider/client binding is
 // rewritten; explicit cross-provider routes remain pinned by design.

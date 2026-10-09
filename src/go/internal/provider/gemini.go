@@ -12,7 +12,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// gemini mirrors Gemini's local account sources: gemini-cli's ~/.gemini store
+// gemini manages Gemini's local account sources: gemini-cli's ~/.gemini store
 // plus Antigravity's IDE state/keychain login.
 type gemini struct{ home string }
 
@@ -820,8 +820,7 @@ func (p *gemini) GatewayInfo() GatewayInfo {
 
 // ResolveUpstream points the engine's shared proxy at Google Gemini: API-key
 // or OAuth/Code Assist, both translated through serveGemini
-// (OpenAI/Anthropic/Responses → generateContent → back). Ports the gemini-cli
-// auth-source half of gemini-proxy/server.ts.
+// (OpenAI/Anthropic/Responses → generateContent → back).
 func (p *gemini) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	return geminiUpstream(snapshotDir)
 }

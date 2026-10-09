@@ -68,8 +68,8 @@ func DefaultBundledRoot() string {
 	return "plugins"
 }
 
-// ResolvePluginDirectory mirrors resolvePluginDirectory from the TypeScript
-// service, including the invalid-usage boundary for bundled names.
+// ResolvePluginDirectory resolves a plugin directory reference, including
+// the invalid-usage boundary for bundled names.
 func ResolvePluginDirectory(input, bundledRoot string) (string, error) {
 	if len(input) >= len(bundledPrefix) && input[:len(bundledPrefix)] == bundledPrefix {
 		name := input[len(bundledPrefix):]

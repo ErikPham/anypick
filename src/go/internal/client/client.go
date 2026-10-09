@@ -1,4 +1,4 @@
-// Package client ports src/clients/*: adapters that point AI client apps at
+// Package client holds adapters that point AI client apps at
 // accounts/gateways by writing their native configuration.
 package client
 
@@ -12,7 +12,6 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// Capabilities mirrors ClientCapabilities.
 type Capabilities struct {
 	ID                         string
 	AcceptedProtocols          []transport.Protocol
@@ -27,9 +26,8 @@ type Capabilities struct {
 	ProtocolPreference   transport.Protocol // empty = none declared
 }
 
-// ApplyContext carries everything an adapter needs to write config. It is the
-// flattened form of TS ApplyContext.profile + flags (the Go profile store is
-// resolved by callers before Apply).
+// ApplyContext carries everything an adapter needs to write config. The
+// profile store is resolved by callers before Apply.
 type ApplyContext struct {
 	Endpoint     string
 	APIKey       string
@@ -47,7 +45,7 @@ type ApplyContext struct {
 	IsolatedHome  string // non-empty for ephemeral runtimes
 	ProxyEndpoint string
 	// Resolved source/transport fields let an optional ApplyPersistent adapter
-	// receive the same plan identity as the TS client contract. Built-ins ignore
+	// receive the same plan identity. Built-ins ignore
 	// them and continue through Apply.
 	SourceKind          string
 	SourceProvider      string
@@ -70,20 +68,19 @@ type ApplyContext struct {
 	AllowForeignConfig bool
 }
 
-// ApplyResult mirrors {managedPaths, managedEnvKeys}.
 type ApplyResult struct {
 	ManagedPaths   []string
 	ManagedEnvKeys []string
 }
 
-// PersistentAdapter is the optional applyPersistent convenience from the TS
-// ClientAdapter contract. Runtime code prefers it only for durable/project
-// writes; isolated runs always use their dedicated capability.
+// PersistentAdapter is an optional adapter interface. Runtime code prefers it
+// only for durable/project writes; isolated runs always use their dedicated
+// capability.
 type PersistentAdapter interface {
 	ApplyPersistent(ctx context.Context, input *ApplyContext) (*ApplyResult, error)
 }
 
-// IsolatablePath mirrors the explicit live-path allowlist a client may copy
+// IsolatablePath is an explicit live-path allowlist a client may copy
 // into an isolated runtime.
 type IsolatablePath struct {
 	SourcePath      string `json:"sourcePath"`
@@ -155,17 +152,16 @@ type EphemeralAdapter interface {
 	CreateEphemeralRuntime(ctx context.Context, input *EphemeralContext) (*IsolatedRuntime, error)
 }
 
-// InspectResult mirrors ClientInspectResult (subset).
 type InspectResult struct {
 	Present bool
 	Summary string
 	Issues  []string
-	// ConfigPaths mirrors the TS inspect shape (configPaths) so plugin
-	// clients can report which files they manage.
+	// ConfigPaths lists which files the client manages, so plugin
+	// clients can report them.
 	ConfigPaths []string
 }
 
-// Adapter mirrors ClientAdapter.
+// Adapter is implemented by every client.
 type Adapter interface {
 	ID() string
 	Name() string
@@ -227,7 +223,7 @@ type ConfigPreflighter interface {
 	Preflight(ctx *ApplyContext) (*ConfigInspection, error)
 }
 
-// Registry mirrors ClientRegistry. Registration happens only during
+// Registry holds the registered clients. Registration happens only during
 // composition; the list of clients says what exists — never what pairings are
 // allowed (that is transport.Adapter.transportFor).
 type Registry struct {

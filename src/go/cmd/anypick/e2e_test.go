@@ -203,9 +203,9 @@ func TestSupervisorStatusStop(t *testing.T) {
 	}
 }
 
-// TestTrayStatusRoutesToSupervisorStatus pins the P1 fix: TS exposes visible
-// `tray status`, so it must print the supervisor status line and never fall
-// through into cmdAppRun's desktop snapshot protocol on stdout.
+// TestTrayStatusRoutesToSupervisorStatus pins the fix: `tray status` must
+// print the supervisor status line and never fall through into cmdAppRun's
+// desktop snapshot protocol on stdout.
 func TestTrayStatusRoutesToSupervisorStatus(t *testing.T) {
 	isolateEnv(t)
 	clearGlobalsForParity()
@@ -421,8 +421,8 @@ func TestPoolActivationEndToEnd(t *testing.T) {
 	}
 	assertNoLeakedChildren(t, "pool stop")
 
-	// A verified stop releases the (provider, "") pool lease (TS
-	// releaseLease(providerId, undefined)) — the lease store must be empty.
+	// A verified stop releases the (provider, "") pool lease — the lease
+	// store must be empty.
 	a2, closeFn2, err := appReadyForTest()
 	if err != nil {
 		t.Fatal(err)

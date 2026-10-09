@@ -1,7 +1,7 @@
 package desktop
 
-// Negative contract tests: payloads TypeScript's isTray*Command guards reject
-// must be rejected at the Go boundary too (P2 — exact bounded contract).
+// Negative contract tests: payloads the strict command guards reject must
+// be rejected at the Go boundary too (P2 — exact bounded contract).
 
 import (
 	"encoding/base64"

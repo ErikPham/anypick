@@ -1,6 +1,5 @@
-// Ports src/providers/codex-credential-store.ts: read Codex's credential-store
-// choice without interpreting the rest of its TOML configuration. `file` is
-// Codex's default when no setting is present.
+// Read Codex's credential-store choice without interpreting the rest of its
+// TOML configuration. `file` is Codex's default when no setting is present.
 package provider
 
 import (
@@ -21,7 +20,6 @@ const (
 	CodexStoreUnknown CodexCredentialStore = "unknown"
 )
 
-// CodexCredentialStoreStatus mirrors CodexCredentialStoreStatus in TS.
 type CodexCredentialStoreStatus struct {
 	Mode CodexCredentialStore
 	// SupportsSnapshotSwitch is true only when AnyPick can atomically snapshot
@@ -30,7 +28,7 @@ type CodexCredentialStoreStatus struct {
 	ConfigPath             string
 }
 
-// InspectCodexCredentialStore ports inspectCodexCredentialStore. `auto` is
+// InspectCodexCredentialStore reads the credential-store choice. `auto` is
 // deliberately not treated as file: on machines with a usable OS credential
 // store it can resolve to the keyring, where writing auth.json would leave the
 // actual CLI login unchanged.
@@ -64,7 +62,7 @@ func InspectCodexCredentialStore(codexHome string) CodexCredentialStoreStatus {
 }
 
 // CodexCredentialStoreGuidance is human-safe remediation that never contains
-// credential material (ports codexCredentialStoreGuidance).
+// credential material.
 func CodexCredentialStoreGuidance(status CodexCredentialStoreStatus) string {
 	setting := "cli_auth_credentials_store = \"file\""
 	switch status.Mode {
@@ -158,7 +156,7 @@ func matchTOMLAssignment(line, key string) (string, bool) {
 	}
 	name := strings.TrimSpace(strings.TrimRight(line[:idx], " \t"))
 	// Strip an inline comment that starts directly at the name token boundary
-	// is not possible here; TS anchors the whole line instead.
+	// is not possible here; only an exact name match counts.
 	if name != key {
 		return "", false
 	}

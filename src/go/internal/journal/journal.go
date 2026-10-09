@@ -1,4 +1,4 @@
-// Package journal ports src/core/journal.ts: the operation journal state
+// Package journal implements the operation journal state
 // machine over the operation_journal table.
 package journal
 
@@ -12,7 +12,6 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// State mirrors JournalState.
 type State string
 
 const (
@@ -25,7 +24,7 @@ const (
 	StateFailed      State = "failed"
 )
 
-// Entry mirrors OperationJournalEntry. Params may carry credential-adjacent
+// Entry is one operation journal row. Params may carry credential-adjacent
 // metadata; keep it out of error messages.
 type Entry struct {
 	ID                string                 `json:"id"`
@@ -75,7 +74,6 @@ func formatUUID(b []byte) string {
 	return string(out)
 }
 
-// CreateOptions mirrors create() opts.
 type CreateOptions struct {
 	ID                string
 	AffectedResources []string
@@ -193,7 +191,7 @@ func decodeStoredList(raw string, into *[]string) bool {
 	return json.Unmarshal([]byte(raw), into) == nil
 }
 
-// Patch mirrors update(): zero-value fields keep the stored value.
+// UpdateContext applies a patch: zero-value fields keep the stored value.
 func (j *OperationJournal) UpdateContext(ctx context.Context, id string, patch Entry) (Entry, error) {
 	existing, err := j.GetContext(ctx, id)
 	if err != nil {

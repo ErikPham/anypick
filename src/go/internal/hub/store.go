@@ -1,6 +1,5 @@
-// Package hub ports the Proxy Hub essence (src/core/proxy-hub-*): one local
-// endpoint that serves many sources, with token-scoped routes and model-based
-// source selection.
+// Package hub implements one local endpoint that serves many sources, with
+// token-scoped routes and model-based source selection.
 //
 // Security: loopback-only bind, per-route secrets (constant-time compare,
 // fail-closed), tokens never appear in status output.
@@ -26,16 +25,16 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// Source names one upstream account. A TS-authored row persists sources as
-// {ref:{kind:'account'|'account-pool', provider, name?}, enabled}; Go keeps
-// the flat essential form and maps on the store boundary (decodeHubConfig).
+// Source names one upstream account. Rows persist sources as
+// {ref:{kind:'account'|'account-pool', provider, name?}, enabled}; the store
+// maps to the flat essential form on the boundary (decodeHubConfig).
 // Account "pool:<provider>" is the serialization of an account-pool ref.
 type Source struct {
 	ProviderID string `json:"providerId"`
 	Account    string `json:"account"`
-	// Enabled mirrors ProxyHubSource.enabled (src/types/proxy-hub.ts). The TS
-	// codec reads absent as enabled, so nil — the zero value — must mean on;
-	// a plain bool would flip every existing constructor to disabled.
+	// Enabled controls whether the source participates in routing. Absent
+	// reads as enabled, so nil — the zero value — must mean on; a plain
+	// bool would flip every existing constructor to disabled.
 	Enabled *bool `json:"-"`
 }
 
@@ -55,7 +54,7 @@ func (c Config) SpreadsRequests() bool { return c.Strategy == StrategyRoundRobin
 
 const defaultHubHost = "127.0.0.1"
 
-// Config mirrors the essential fields of ProxyHubConfig.
+// Config is the persisted hub configuration.
 type Config struct {
 	Name    string   `json:"name"`
 	Enabled bool     `json:"enabled"`
@@ -66,23 +65,23 @@ type Config struct {
 	// to the source the model resolves to, "round-robin" spreads it across the
 	// enabled sources that can serve that model (the resolved source's
 	// provider — one provider's accounts are interchangeable for its models,
-	// which is the same assumption the pool ring is built on). It is a Go-side
-	// extension: the TS config had no hub-level mode.
+	// which is the same assumption the pool ring is built on). It is an
+	// extension: persisted configs written before the mode existed carry none.
 	Strategy string `json:"strategy,omitempty"`
 	// Token is the hub listener bearer. The row is written through
 	// tsHubConfig, which keeps the field. Marshaling Config itself is the
 	// status path, and that path must not carry the bearer (ADR 0006 §6,
 	// ADR 0013 decision 2).
 	Token     string `json:"-"`
-	Revision  int    `json:"revision"` // positive integer per the TS decoder
+	Revision  int    `json:"revision"` // positive integer
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
-	// modelOwners carries the TS-only field verbatim across read-modify-write
-	// cycles so a Go save never drops TS data it does not model.
+	// modelOwners carries the unmodeled field verbatim across
+	// read-modify-write cycles so a save never drops data it does not model.
 	modelOwners json.RawMessage
 }
 
-// ModelRoute pins a model id to a source (ProxyHubRouteTarget essence).
+// ModelRoute pins a model id to a source.
 // Owner names the source by value ("provider/account", pools as
 // "provider/pool:provider") instead of by position: positions shift on
 // removal and silently re-pointed pins at the wrong account (ADR-0029).
@@ -173,7 +172,7 @@ func (s *Store) upsertConfigLocked(ctx context.Context, cfg Config) (Config, err
 	if existing != nil {
 		created = existing.CreatedAt
 		cfg.CreatedAt = created
-		// Mirror ProxyHubStore.save(): every write bumps revision.
+		// Every write bumps revision.
 		if existing.Revision > 0 {
 			cfg.Revision = existing.Revision + 1
 		}
@@ -215,7 +214,7 @@ func (s *Store) upsertConfigLocked(ctx context.Context, cfg Config) (Config, err
 
 // marshalConfigJSON re-encodes a stored config without touching membership.
 // It exists only for upsert rollback above; normal writes go through
-// marshalTSConfig so the TypeScript wire shape never drifts.
+// marshalTSConfig so the wire shape never drifts.
 func marshalConfigJSON(cfg *Config) []byte {
 	data, err := marshalTSConfig(*cfg, cfg.modelOwners)
 	if err != nil {
@@ -282,7 +281,7 @@ func (s *Store) GetConfigContext(ctx context.Context, name string) (*Config, err
 		return nil, err
 	}
 	// Membership is relational (ADR-0029): the document shape stays
-	// TypeScript-compatible, but rows win. A hub whose rows are absent while
+	// wire-compatible, but rows win. A hub whose rows are absent while
 	// the document names sources is pre-migration or foreign-written; reading
 	// the document then is the only way not to lose members.
 	rows, rerr := s.loadSources(ctx, name)
@@ -300,8 +299,8 @@ func (s *Store) GetConfigContext(ctx context.Context, name string) (*Config, err
 	return cfg, nil
 }
 
-// sourcesRelational reports a Go-written hub whose membership rows are the
-// authority, even when a cascade has left the row set empty.
+// sourcesRelational reports a hub whose membership rows are the authority,
+// even when a cascade has left the row set empty.
 func sourcesRelational(data []byte) bool {
 	var doc struct {
 		SourcesRelational bool `json:"sourcesRelational"`
@@ -408,10 +407,9 @@ func (s *Store) insertSourceRow(ctx context.Context, hubName string, position in
 	return err
 }
 
-// wireRef / wireSource mirror src/core/codec/proxy-hub.ts exactly. wireSource
-// also accepts the legacy Go-written flat shape so pre-cutover rows still
-// load; anything else fails closed instead of zero-decoding into an empty
-// config that would 502 every request.
+// wireRef / wireSource are the persisted wire shape. wireSource also accepts
+// the legacy flat shape so older rows still load; anything else fails closed
+// instead of zero-decoding into an empty config that would 502 every request.
 type wireRef struct {
 	Kind     string `json:"kind"`
 	Provider string `json:"provider"`
@@ -421,7 +419,7 @@ type wireRef struct {
 type wireSource struct {
 	Ref     *wireRef `json:"ref"`
 	Enabled *bool    `json:"enabled"`
-	// Legacy Go-only shape (pre-cutover rows written by this package).
+	// Legacy flat shape (older rows written by this package).
 	ProviderID string `json:"providerId"`
 	Account    string `json:"account"`
 }
@@ -499,11 +497,11 @@ func decodeHubConfig(data []byte, name string) (*Config, error) {
 	return cfg, nil
 }
 
-// tsSource/tsHubConfig are the write-side twins of the TS decoder contract:
-// every key decodeProxyHubConfig requires is present, so TypeScript reading a
-// Go-written row decodes it natively (round-trip without protocol drift).
+// tsSource/tsHubConfig are the write-side wire shape: every key
+// decodeHubConfig requires is present, so a written row decodes natively
+// (round-trip without protocol drift).
 //
-// TS does not model Strategy: it is a Go-side extension. An absent port is
+// Strategy is an extension the original wire shape does not model. An absent port is
 // treated as kernel-assigned (the 0 value). Host defaults to 127.0.0.1; when
 // given an explicit port the row is fully TS-readable.
 type tsSource struct {
@@ -523,7 +521,7 @@ type tsHubConfig struct {
 	Revision    int             `json:"revision"`
 	CreatedAt   string          `json:"createdAt"`
 	UpdatedAt   string          `json:"updatedAt"`
-	// SourcesRelational marks a Go-written document whose proxy_hub_sources
+	// SourcesRelational marks a document whose proxy_hub_sources rows are
 	// rows are authoritative. Foreign and pre-migration documents omit it.
 	SourcesRelational bool `json:"sourcesRelational,omitempty"`
 }

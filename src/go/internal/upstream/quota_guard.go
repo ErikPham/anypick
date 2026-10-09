@@ -1,7 +1,6 @@
-// QuotaGuard ports the QuotaGuard class from src/providers/quota-guard.ts:
-// credential-ring ordering with per-account cooldowns persisted across proxy
-// restarts. It only accepts saved account names supplied by the pool and never
-// writes credential material.
+// QuotaGuard orders a credential ring with per-account cooldowns persisted
+// across proxy restarts. It only accepts saved account names supplied by the
+// pool and never writes credential material.
 package upstream
 
 import (
@@ -14,7 +13,6 @@ import (
 	"time"
 )
 
-// GuardOptions mirrors QuotaGuardOptions.
 type GuardOptions struct {
 	Enabled      bool
 	CooldownMs   int64
@@ -66,9 +64,9 @@ func (g *Guard) SetClock(now func() int64) { g.nowMillis = now }
 // Enabled reports whether failover policy is active.
 func (g *Guard) Enabled() bool { return g.options.Enabled }
 
-// Ordered ports QuotaGuard.ordered: drop cooling accounts, keep the last
-// active account at the head of the ring. Fewer than two candidates never
-// reorders; all-cooling returns nil.
+// Ordered drops cooling accounts and keeps the last active account at the
+// head of the ring. Fewer than two candidates never reorder; all-cooling
+// returns nil.
 func (g *Guard) Ordered(candidates []Candidate) ([]Candidate, error) {
 	if !g.options.Enabled || len(candidates) < 2 {
 		return append([]Candidate(nil), candidates...), nil
@@ -177,15 +175,15 @@ func (g *Guard) Cooling(candidates []Candidate) ([]Candidate, error) {
 	return out, nil
 }
 
-// Exhausted ports QuotaGuard.exhausted: cool `from` down for at least one
-// second (or Retry-After), promote `to`, and record an audit event.
+// Exhausted cools `from` down for at least one second (or Retry-After),
+// promotes `to`, and records an audit event.
 func (g *Guard) Exhausted(from, to string, retryAfterMs *int64) error {
 	if !g.options.Enabled || from == "" {
 		return nil
 	}
-	// TS: max(1_000, retryAfterMs ?? configuredCooldown). A PRESENT value —
-	// even below one second — clamps to 1s; only an absent value falls back to
-	// the configured cooldown.
+	// Cooldown is max(1_000, retryAfterMs if present else configuredCooldown):
+	// a PRESENT value — even below one second — clamps to 1s; only an absent
+	// value falls back to the configured cooldown.
 	cooldownMs := g.options.CooldownMs
 	if retryAfterMs != nil {
 		cooldownMs = *retryAfterMs

@@ -19,8 +19,7 @@ const maxModelOptions = 60
 //
 // The native host only ever sees the opaque action id: source refs and model
 // ids stay engine-side, and resolution happens at apply time against the
-// snapshot that published them (the Go counterpart of
-// src/tray/model-role-actions.ts).
+// snapshot that published them.
 type modelRoleTarget struct {
 	ClientID string
 	Source   refs.Ref
@@ -29,8 +28,7 @@ type modelRoleTarget struct {
 
 // clientModelConfigs fills Snapshot.ClientModelConfigs — one row per app:
 // the roles it can configure, the roles it currently has, and the model ids
-// this connection can serve. It mirrors
-// src/tray/snapshot-client-routes.ts (the `modelConfig` block).
+// this connection can serve.
 //
 // Rows are published for every app, including unbound ones: the macOS Models
 // section reads `roles` to decide whether to render at all, and an unbound

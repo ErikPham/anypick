@@ -41,7 +41,7 @@ func writeGrokAuth(t *testing.T, dir, storageKey, entry string) string {
 }
 
 // TestGrokResolveUpstreamNoAuth asserts a missing snapshot auth.json fails
-// fast with NO_LIVE_AUTH (ports the TS "Grok auth not found" error).
+// fast with NO_LIVE_AUTH.
 func TestGrokResolveUpstreamNoAuth(t *testing.T) {
 	dir := t.TempDir()
 	up, err := grokUpstream(filepath.Join(dir, "auth.json"))
@@ -54,8 +54,7 @@ func TestGrokResolveUpstreamNoAuth(t *testing.T) {
 }
 
 // TestGrokResolveUpstreamNoToken fails fast when the session has neither an
-// access nor a refresh token (ports "Grok session has no access or refresh
-// token.").
+// access nor a refresh token.
 func TestGrokResolveUpstreamNoToken(t *testing.T) {
 	dir := t.TempDir()
 	path := writeGrokAuth(t, dir, "https://auth.x.ai::client",

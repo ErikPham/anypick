@@ -38,6 +38,7 @@ immutable once accepted.
 | [0029](0029-relational-hub-membership.md) | Hub membership is relational: `proxy_hub_sources` rows reference accounts and hubs with foreign keys instead of a serialized list, so a renamed or deleted account cannot leave a member behind that serving still resolves. | accepted |
 | [0030](0030-hub-child-freshness.md) | Hub `/health` reports the config `Revision` the child started with and every start path rejects a child whose revision predates the current config; liveness is not freshness. | accepted |
 | [0031](0031-provider-registration-is-in-tree.md) | A provider is registered in-tree and `app.Options` gains no registration parameter; the extension point is a declarative compatible-provider definition, and the two constructors that implemented the documented-but-absent hook are deleted. | accepted, amends [0015](0015-declarative-compatible-provider-plugins.md) and [0021](0021-plugin-host-removed-from-native-builds.md) |
+| [0032](0032-delete-provider-owned-proxy-seam.md) | The provider-owned proxy seam is deleted rather than reserved: 849 unreachable lines, five branches on a predicate no provider satisfies, and three files describing a Node host that no longer exists. Log screening stays, because it is how ADR-0006's token boundary holds. | accepted, amends [0021](0021-plugin-host-removed-from-native-builds.md) decision 3 |
 
 ## Writing a new one
 

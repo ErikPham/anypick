@@ -609,8 +609,8 @@ func (m *Model) updateBoardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "q":
-		// q closes the TUI only from the Apps home (matches the prior TUI and
-		// the spec's "Keys on Apps"); a stray q never drops a drilled board.
+		// q closes the TUI only from the Apps home (the spec's "Keys on Apps"),
+		// so a stray q never drops a drilled board.
 		if m.board == boardApps {
 			m.quitting = true
 			return m, tea.Quit

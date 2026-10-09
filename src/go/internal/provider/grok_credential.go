@@ -21,11 +21,9 @@ import (
 // Grok's proxy speaks OpenAI + Anthropic against cli-chat-proxy.grok.com and
 // authenticates with the OIDC access token from <snapshot>/auth.json. The token
 // is short-lived, so the proxy must refresh it (OIDC refresh_token grant)
-// before forwarding. This file is the faithful Go port of
-// src/providers/grok-proxy/auth.ts (loadGrokSession / ensureAccessToken /
-// refreshSession / writeSession): it reads the saved auth.json, picks a
-// session, refreshes when expired, and writes the rotated tokens back so the
-// snapshot stays in sync.
+// before forwarding. This file reads the saved auth.json, picks a session,
+// refreshes when expired, and writes the rotated tokens back so the snapshot
+// stays in sync.
 
 const (
 	grokOIDCIssuer      = "https://auth.x.ai"
@@ -41,7 +39,7 @@ const (
 
 type grokSession struct {
 	// raw is the on-disk object for storageKey; mutated in place on refresh so
-	// unrelated fields survive the round-trip (ports GrokSession.raw).
+	// unrelated fields survive the round-trip.
 	raw          map[string]json.RawMessage
 	accessToken  string
 	refreshToken string
@@ -173,10 +171,9 @@ func grokEnsureAccessToken(authPath string) (string, error) {
 	return s2.accessToken, nil
 }
 
-// refreshGrokSession is refreshSession + refreshSessionUnlocked: serialize
-// across processes with a file lock (ports withFileLock on
-// ${authPath}.refresh.lock), reload to adopt a winner's rotated token, then
-// redeem the refresh_token and write back so the snapshot stays current.
+// refreshGrokSession serializes refreshes across processes with a file lock
+// (${authPath}.refresh.lock), reloads to adopt a winner's rotated token, then
+// redeems the refresh_token and writes back so the snapshot stays current.
 func refreshGrokSession(authPath string, s grokSession) (grokSession, error) {
 	fl, err := lock.AcquireFileLock(authPath+".refresh.lock", grokRefreshLockTimeout)
 	if err != nil {
@@ -477,8 +474,8 @@ func fixGrokNullRequired(v any) bool {
 	return changed
 }
 
-// setRawString updates one key in the on-disk session object, omitting it when
-// empty (ports the undefined-key omission of JSON.stringify on the TS raw).
+// setRawString updates one key in the on-disk session object, omitting it
+// when empty so the JSON wire shape stays stable.
 func setRawString(m map[string]json.RawMessage, key, val string) {
 	if val == "" {
 		delete(m, key)
@@ -528,9 +525,9 @@ func writeGrokAuthAtomic(authPath string, raw []byte) error {
 }
 
 // grokUpstream builds the shared-proxy Upstream for this account's saved auth
-// (ports the dual-protocol server's base + injected headers). The token comes
-// from AuthProvider so it refreshes per request; static ExtraHeaders pin the
-// client version the upstream expects. authPath is the snapshot auth.json.
+// (the dual-protocol base + injected headers). The token comes from
+// AuthProvider so it refreshes per request; static ExtraHeaders pin the client
+// version the upstream expects. authPath is the snapshot auth.json.
 func grokUpstream(authPath string) (*proxy.Upstream, error) {
 	// Fail fast when the snapshot has no usable session so the proxy refuses to
 	// start with a clear error rather than 401-ing the first request.
@@ -562,7 +559,7 @@ func grokUpstream(authPath string) (*proxy.Upstream, error) {
 		ModelDiscovery:        grokModelDiscovery(authPath),
 		MapModel:              grokMapModel,
 		// Native Anthropic target on the same base — cli-chat-proxy.grok.com
-		// speaks both shapes (ports the default native /v1/messages path).
+		// speaks both shapes.
 		Anthropic: &proxy.UpstreamTarget{
 			BaseURL:         base,
 			AuthHeader:      "Authorization",

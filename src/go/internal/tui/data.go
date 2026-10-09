@@ -1,6 +1,6 @@
 // Package tui is the Go terminal UI.
 //
-// It replaces the Ink/React tree in src/tui (ADR 0020 §5, NATIVE-M7 row 3):
+// It replaces the prior terminal UI (ADR 0020 §5, NATIVE-M7 row 3):
 // native releases ship no Node runtime, so the terminal UI is a bubbletea
 // program over the same Go services the CLI commands use. It deliberately does
 // not shell out to the CLI handlers — those live in package main.
@@ -31,9 +31,7 @@ import (
 
 // Relation is the live-login ↔ saved-account relationship.
 //
-// Ported from deriveLiveRelation in src/tui/model/identity.ts so the Go and
-// TypeScript trees agree while both still exist. The important property of the
-// original is preserved: it never invents a match when an identity is missing.
+// It never invents a match when an identity is missing.
 type Relation string
 
 const (
@@ -101,7 +99,6 @@ func identitiesMatch(a, b string) *bool {
 	return &match
 }
 
-// deriveLiveRelation mirrors the TypeScript function of the same name.
 func deriveLiveRelation(in relationInput) Relation {
 	if in.err {
 		return RelationError
@@ -182,7 +179,7 @@ type AccountRow struct {
 
 // DisplayName prefers a human label, then the account name, then the identity.
 // Path-like labels ("Live ~/.codex/auth.json") are an import artifact and are
-// never shown — same rule as accountDisplayName in the TypeScript tree.
+// never shown.
 func (r AccountRow) DisplayName() string {
 	if l := strings.TrimSpace(r.Label); l != "" && !isPathLikeLabel(l) && !strings.EqualFold(l, "live") {
 		return l
@@ -205,8 +202,7 @@ func isPathLikeLabel(label string) bool {
 }
 
 // LoadProviders reads the home screen. A provider whose status cannot be read
-// degrades to a single error row instead of aborting the whole screen — the
-// TypeScript loadRootModel does the same via safeCurrent/safeList.
+// degrades to a single error row instead of aborting the whole screen.
 func LoadProviders(ctx context.Context, a *app.App) []ProviderRow {
 	ids := append([]string(nil), a.Providers.IDs()...)
 	sort.Strings(ids)
@@ -316,9 +312,9 @@ func LoadAccounts(ctx context.Context, a *app.App, providerID string) ([]Account
 	return rows, nil
 }
 
-// formatProxyLabel mirrors formatProxyPortLabel: show a port only when the
-// proxy is actually serving, and let a real unavailable reason through
-// verbatim rather than hiding it behind a neutral word.
+// formatProxyLabel shows a port only when the proxy is actually serving, and
+// lets a real unavailable reason through verbatim rather than hiding it
+// behind a neutral word.
 func formatProxyLabel(st *proxy.Status) string {
 	if st == nil {
 		return ""
@@ -359,7 +355,6 @@ func endpointHostPort(endpoint string) (string, error) {
 	return u.Host, nil
 }
 
-// formatRelativeTime mirrors formatRelativeTime in the TypeScript tree.
 func formatRelativeTime(iso string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339, iso)
 	if err != nil {
@@ -387,7 +382,7 @@ func formatRelativeTime(iso string, now time.Time) string {
 }
 
 // suggestAccountName derives a save name from a live identity, preferring the
-// email local-part. Mirrors suggestAccountSlug in the TypeScript tree.
+// email local-part.
 //
 // The name is a suggestion only — Save still runs it through slug.AccountName,
 // and a collision returns an error rather than silently overwriting the
@@ -630,7 +625,7 @@ type SourceOption struct {
 
 // LoadSourceOptions lists every safe pairing the wizard may route an app
 // through. Only compatible sources appear — an empty list means "save an
-// account (a) or add a gateway (g) first", matching the Node spec.
+// account (a) or add a gateway (g) first", as the terminal-ui guide describes.
 func LoadSourceOptions(ctx context.Context, a *app.App, clientID string) []SourceOption {
 	native := clientNativeProvider(a, clientID)
 	var opts []SourceOption

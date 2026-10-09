@@ -19,15 +19,12 @@ import (
 // Zen/Go gateway targets, the same pair compatible.go declares for the
 // opencode-zen / opencode-go definitions.
 //
-// The base is chosen once per account, not per model: the TypeScript proxy
-// routed with CatalogStore.route(modelId), which merged both live catalogs and
-// fell back to `entitlement.hasGo ? 'go' : 'zen'` for any model they did not
-// list — a Go subscription was probed with GET /zen/go/v1/usage. The engine's
-// upstream has one base and no catalog, so the port keeps that fallback rule
-// and reads the entitlement from the credential itself: a key stored under the
+// The base is chosen once per account, not per model: any model the live
+// catalogs do not list falls back to the Go gateway for a Go subscription
+// key, else to Zen. The upstream has one base and no catalog, so the
+// entitlement is read from the credential itself: a key stored under the
 // opencode-go service is the subscription key. Per-model routing, `public`
-// mode and OPENCODE_PROXY_UPSTREAM are not ported (the parity trackers that
-// recorded this are retired — see src/go/README.md).
+// mode and OPENCODE_PROXY_UPSTREAM are not supported.
 const (
 	openCodeZenBaseURL      = "https://opencode.ai/zen/v1"
 	openCodeZenAnthropicURL = "https://opencode.ai/zen"
@@ -35,7 +32,7 @@ const (
 	openCodeGoAnthropicURL  = "https://opencode.ai/zen/go"
 )
 
-// opencode mirrors OpenCodeProvider: ~/.local/share/opencode/auth.json
+// opencode manages OpenCode credentials: ~/.local/share/opencode/auth.json
 // (XDG-aware) plus account.json.
 type opencode struct{ home string }
 
@@ -72,8 +69,8 @@ func homeDirOf() string {
 	return home
 }
 
-// openCodeIdentity mirrors extractOpenCodeIdentity: prefer an oauth entry's
-// email (JWT claim or metadata), else provider:accountId prefix.
+// openCodeIdentity prefers an oauth entry's email (JWT claim or metadata),
+// else provider:accountId prefix.
 func openCodeIdentity(data map[string]json.RawMessage) string {
 	for provider, raw := range data {
 		var entry struct {
@@ -203,10 +200,9 @@ func (p *opencode) DescribeSnapshot(srcDir string) (SnapshotInfo, error) {
 // (ChatGPT, Anthropic, GitLab…) holds nothing the gateway accepts, so it fails
 // here with a coded error the caller can surface: those logins are applied to
 // native clients by `anypick use`, which writes the credential back to the
-// CLI, not through this proxy. The three failure messages are the ones the
-// TypeScript proxy raised (src/providers/opencode-proxy-lifecycle.ts) — "no
-// login at all" and "logged in without a Zen/Go key" send the user to
-// different commands, so they are not collapsed into one.
+// CLI, not through this proxy. The three failure messages below are kept
+// distinct — "no login at all" and "logged in without a Zen/Go key" send the
+// user to different commands, so they are not collapsed into one.
 func (p *opencode) ResolveUpstream(snapshotDir string) (*proxy.Upstream, error) {
 	key, service, state := openCodeGatewayKey(snapshotDir)
 	if key == "" {

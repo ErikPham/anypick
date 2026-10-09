@@ -91,10 +91,9 @@ func cmdPresetRemove(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// TS semantics (src/core/binding-service.ts): `link` writes a PROJECT
-// binding, `unlink` removes project binding(s), and `reset` clears the
-// client's managed config AND its global binding. None of them touch global
-// bindings implicitly.
+// `link` writes a PROJECT binding, `unlink` removes project binding(s),
+// and `reset` clears the client's managed config AND its global binding.
+// None of them touch global bindings implicitly.
 
 func cmdLink(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
@@ -116,9 +115,8 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 	}
 
 	// Without --with: re-apply the ENTIRE global spec into this project —
-	// model, client options (model roles) and provenance travel with it, like
-	// BindingService.link in TypeScript. Planning a fresh source-only request
-	// would silently drop them.
+	// model, client options (model roles) and provenance travel with it.
+	// Planning a fresh source-only request would silently drop them.
 	var planOpts activation.Options
 	var catalogSource *refs.Ref
 	if *withFlag == "" {
@@ -135,8 +133,8 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 		planOpts.ReapplySpec = &specCopy
 		sourceCopy := specCopy.Source
 		catalogSource = &sourceCopy
-		// TS authority records globalBindingUpdatedAt from the source global
-		// binding — snapshot provenance must survive link-without---with.
+		// Snapshot provenance must survive link-without---with: record
+		// globalBindingUpdatedAt from the source global binding.
 		planOpts.ReapplyProv = &bindings.Provenance{
 			Kind:                   "global_binding_snapshot",
 			GlobalBindingUpdatedAt: global.UpdatedAt,
@@ -167,8 +165,8 @@ func cmdLink(ctx context.Context, a *appView, args []string) int {
 		return reportErr(err)
 	}
 	if globals.DryRun {
-		// Plan-steps output per primary.ts: planning is pure, so nothing was
-		// persisted and nothing will be executed.
+		// Planning is pure, so nothing was persisted and nothing will be
+		// executed.
 		if globals.JSON {
 			display := ""
 			if plan.ResolvedSource != nil {
@@ -216,7 +214,7 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 	}
 	clientID := fs.Arg(0)
 	if globals.DryRun {
-		// Read-only count (commands.ts unlink): no lock, no mutation.
+		// Read-only count for unlink: no lock, no mutation.
 		var removed int64
 		if clientID == "" {
 			n, cerr := a.BindingSvc.CountProjectsContext(ctx, root)
@@ -267,7 +265,7 @@ func cmdUnlink(ctx context.Context, a *appView, args []string) int {
 }
 
 // cmdReset clears AnyPick-managed client configuration and the global
-// binding under the client lock (mirrors bindingService.reset).
+// binding under the client lock.
 func cmdReset(ctx context.Context, a *appView, args []string) int {
 	fs := fsFor(args)
 	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 1 {

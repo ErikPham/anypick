@@ -1,5 +1,5 @@
-// Package proxy ports the ProxyService essentials (src/core/proxy-service.ts,
-// lease-store.ts) and a real in-process builtin proxy server.
+// Package proxy provides the ProxyService essentials and a real in-process
+// builtin proxy server.
 //
 // Security model (PROXY-01 / ADR 0006):
 //   - loopback bind only (assertLoopbackHost);
@@ -7,8 +7,8 @@
 //   - constant-time token comparison;
 //   - /health echoes the instance id without auth (ownership proof).
 //
-// Unlike the TS implementation (detached node children), the Go proxy runs
-// in-process: ownership is trivially provable and shutdown is deterministic.
+// The proxy runs in-process: ownership is trivially provable and shutdown
+// is deterministic.
 package proxy
 
 import (
@@ -73,7 +73,7 @@ func ApplyServingLimits(srv *http.Server) *http.Server {
 	return srv
 }
 
-// LoopbackHosts mirrors assertLoopbackHost's accepted set.
+// LoopbackHosts is the accepted loopback set.
 var loopbackHosts = map[string]bool{
 	"127.0.0.1": true,
 	"::1":       true,
@@ -91,8 +91,7 @@ func AssertLoopbackHost(host string) error {
 	return nil
 }
 
-// NewToken generates a per-instance secret: 32 random bytes, hex encoded
-// (randomBytes(32).toString('hex') in TS).
+// NewToken generates a per-instance secret: 32 random bytes, hex encoded.
 func NewToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -101,7 +100,7 @@ func NewToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// NewInstanceID mirrors instanceId = randomUUID().
+// NewInstanceID generates a random instance id.
 func NewInstanceID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {

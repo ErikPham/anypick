@@ -14,9 +14,9 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// kv is one ordered JSON object member. TS builds dry-run objects by
-// insertion order and JSON.stringify drops undefined members, so plain-nil
-// values are omitted while jsonNull emits an explicit null.
+// kv is one ordered JSON object member. Objects render by insertion order
+// and nil members are dropped, so plain-nil values are omitted while
+// jsonNull emits an explicit null.
 type kv struct {
 	Key   string
 	Value any
@@ -25,15 +25,15 @@ type kv struct {
 // jsonNull distinguishes "present but null" from "omitted".
 type jsonNull struct{}
 
-// orderedJSON renders fields in insertion order with TS JSON.stringify
-// semantics; map[string]any would randomize key order across runs.
+// orderedJSON renders fields in insertion order; map[string]any would
+// randomize key order across runs.
 func orderedJSON(fields []kv) string {
 	var b strings.Builder
 	b.WriteByte('{')
 	first := true
 	for _, f := range fields {
 		if f.Value == nil {
-			continue // undefined members vanish, exactly like JSON.stringify
+			continue // nil members vanish from the output
 		}
 		if !first {
 			b.WriteByte(',')
@@ -56,7 +56,7 @@ func orderedJSON(fields []kv) string {
 	return b.String()
 }
 
-// printDryRunFields ports printDryRunCommand/printDryRun: --json prints
+// printDryRunFields prints the dry-run plan: --json prints
 // exactly one {"dryRun":true,"action":…,…} value on stdout; human mode prints
 // "[dry-run] <detail>". stdout only — stderr stays free for diagnostics.
 func printDryRunFields(action, detail string, fields ...kv) {
@@ -67,7 +67,7 @@ func printDryRunFields(action, detail string, fields ...kv) {
 	fmt.Printf("[dry-run] %s\n", detail)
 }
 
-// strOrNil maps an unset flag to an omitted member (TS undefined).
+// strOrNil maps an unset flag to an omitted member.
 func strOrNil(s string) any {
 	if s == "" {
 		return nil
@@ -83,7 +83,7 @@ func intOrNil(n int) any {
 	return n
 }
 
-// strOrJSONNull maps "" to an explicit null member (TS `client ?? null`).
+// strOrJSONNull maps "" to an explicit null member.
 func strOrJSONNull(s string) any {
 	if s == "" {
 		return jsonNull{}
@@ -91,7 +91,7 @@ func strOrJSONNull(s string) any {
 	return s
 }
 
-// emitResetDryRun renders bindingService.reset's dry-run result
+// emitResetDryRun renders the reset dry-run result
 // ({client, removedGlobal, dryRun:true}): --json prints the whole object;
 // gateway reset prefixes [dry-run], plain reset describes the global binding.
 func emitResetDryRun(clientID string, removedGlobal, gatewayStyle bool) {
@@ -117,9 +117,9 @@ func emitResetDryRun(clientID string, removedGlobal, gatewayStyle bool) {
 // errDeclined marks an interactive "n" answer: nothing happened, exit 0.
 var errDeclined = errors.New("confirmation declined")
 
-// confirmDelete ports commands.ts confirmDelete: --yes short-circuits;
-// otherwise a non-TTY stdin/stdout refuses with CONFIRMATION_REQUIRED and the
-// TS exit code 2 WITHOUT consuming stdin, and a real TTY gets a y/N prompt.
+// confirmDelete guards destructive commands: --yes short-circuits;
+// otherwise a non-TTY stdin/stdout refuses with CONFIRMATION_REQUIRED and
+// exit code 2 WITHOUT consuming stdin, and a real TTY gets a y/N prompt.
 func confirmDelete(label string, yes bool) error {
 	if yes {
 		return nil

@@ -1,5 +1,5 @@
-// Package provider ports src/providers/* and src/core/registry.ts for
-// account-auth providers: where credentials live and how they move.
+// Package provider implements account-auth providers: where credentials live
+// and how they move.
 package provider
 
 import (
@@ -10,11 +10,9 @@ import (
 
 	"github.com/outof0/anypick/go/internal/browserlogin"
 	"github.com/outof0/anypick/go/internal/pubgate"
-	"github.com/outof0/anypick/go/internal/store"
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// LiveAuthStatus mirrors LiveAuthStatus from src/types/account.ts.
 type LiveAuthStatus struct {
 	Present   bool
 	Identity  string
@@ -35,18 +33,18 @@ type SnapshotInfo struct {
 	CredentialClass string // provider_api_key | coding_plan_key | external_oauth (raw)
 }
 
-// Provider is the Go surface of the TS Provider interface, restricted to what
-// core needs. Optional capabilities are separate interfaces asserted at
-// runtime (PreflightRestorer, LiveClearer, LiveMatcher).
+// Provider is the provider surface core needs. Optional capabilities are
+// separate interfaces asserted at runtime (PreflightRestorer, LiveClearer,
+// LiveMatcher).
 type Provider interface {
 	ID() string
 	Name() string
 	Description() string
-	// CanProxy reports whether this provider implements startProxy — the input
+	// CanProxy reports whether this provider implements StartProxy — the input
 	// to transport.ProviderInfo.CanProxy. Never inferred from the client list.
 	CanProxy() bool
-	// AccountAdapter returns this provider's source adapter (sourceAdapter in
-	// TS). Providers own their transport policy; core never branches on id.
+	// AccountAdapter returns this provider's source adapter. Providers own
+	// their transport policy; core never branches on id.
 	AccountAdapter(accountName string, proxyEnabled bool) transport.Adapter
 	DetectLive() (LiveAuthStatus, error)
 	// Backup copies live auth into destDir and returns display metadata.
@@ -209,7 +207,6 @@ type SnapshotValidator interface {
 	ValidateSnapshot(snapshotDir string) error
 }
 
-// LoginMethod mirrors ProviderLoginMethod from src/types/account.ts.
 // Provenance is presentation data ('official' | 'community'), not policy.
 // It aliases browserlogin.Method so availability resolution stays in one
 // package without duplicating the shape.
@@ -229,87 +226,6 @@ type Loginer interface {
 	Login(ctx context.Context, methodID, source string) error
 }
 
-// ProxyContext mirrors ProxyContext from src/types/account.ts and crosses the
-// plugin RPC boundary with exactly those TS keys (providerId, accountName,
-// snapshotDir, runtimeDir, config, token). Token is the ENGINE-generated
-// per-instance secret (ADR 0006): it is handed to the provider so the proxy
-// can authenticate requests, but a token returned by a provider is never
-// trusted or published — generation and persistence stay with the engine.
-type ProxyContext struct {
-	ProviderID  string
-	AccountName string
-	// SnapshotDir is read-only material for the proxy.
-	SnapshotDir string
-	// RuntimeDir holds provider-owned pid/log/state files for this proxy.
-	RuntimeDir string
-	Config     store.ProxyConfig
-	Token      string
-}
-
-// ProxyHandle mirrors ProxyHandle from src/types/account.ts — what a
-// successful start reports. InstanceID carries the PROC-01 ownership identity:
-// callers must verify it through the /health instance echo, never through the
-// numeric PID alone.
-type ProxyHandle struct {
-	Endpoint         string   `json:"endpoint"`
-	Compatibility    string   `json:"compatibility,omitempty"`
-	PID              int      `json:"pid,omitempty"`
-	InstanceID       string   `json:"instanceId,omitempty"`
-	Token            string   `json:"token,omitempty"`
-	LeaseID          string   `json:"leaseId,omitempty"`
-	StartedNow       bool     `json:"startedNow,omitempty"`
-	LogPath          string   `json:"logPath,omitempty"`
-	RealignedClients []string `json:"realignedClients,omitempty"`
-}
-
-// ProxyStatus mirrors ProxyStatus from src/types/account.ts.
-type ProxyStatus struct {
-	Enabled       bool   `json:"enabled"`
-	Running       bool   `json:"running"`
-	Port          int    `json:"port,omitempty"`
-	Host          string `json:"host,omitempty"`
-	Endpoint      string `json:"endpoint,omitempty"`
-	Compatibility string `json:"compatibility,omitempty"`
-	PID           int    `json:"pid,omitempty"`
-	LogPath       string `json:"logPath,omitempty"`
-	Detail        string `json:"detail,omitempty"`
-}
-
-// ProxyStarter starts a provider-owned compatibility proxy (TS startProxy).
-// Presence of this method on an adapter is the ONLY proxy-capability signal —
-// it must never be inferred from client registries or protocols.
-//
-// Idempotency contract: a second call while a healthy process for this
-// account already exists must NOT spawn a second listener. The engine's proxy
-// Service enforces reuse before forwarding; implementations keep their own
-// guard as defense in depth.
-//
-// A cancelled invocation may return an error wrapping the proxy package's
-// ErrUnsettledInvocation: the host could not confirm the plugin coroutine
-// finished, so it may still bind afterwards. Callers must then prove
-// termination through the runtime itself — termination, never an empty
-// timing window — before treating the start as cleanly compensated.
-type ProxyStarter interface {
-	StartProxy(ctx context.Context, pluginCtx ProxyContext) (ProxyHandle, error)
-}
-
-// ProxyStopper optionally stops the proxy (TS stopProxy). Must not fail when
-// the proxy is already stopped.
-type ProxyStopper interface {
-	StopProxy(ctx context.Context, pluginCtx ProxyContext) error
-}
-
-// ProxyStatusReporter optionally reports running state (TS proxyStatus).
-type ProxyStatusReporter interface {
-	ProxyStatus(ctx context.Context, pluginCtx ProxyContext) (ProxyStatus, error)
-}
-
-// ProxyLogReader optionally returns recent log text (TS readProxyLogs).
-type ProxyLogReader interface {
-	ReadProxyLogs(ctx context.Context, pluginCtx ProxyContext, lines int) (string, error)
-}
-
-// Registry mirrors ProviderRegistry (src/core/registry.ts).
 type Registry struct {
 	gate   *pubgate.Gate
 	mu     sync.RWMutex

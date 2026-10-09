@@ -10,8 +10,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// kiroAdapter ports src/clients/kiro.ts: an env-file based adapter. Native
-// Kiro auth remains under account backup/restore (SSO cache files).
+// kiroAdapter is an env-file based adapter. Native Kiro auth remains under
+// account backup/restore (SSO cache files).
 type kiroAdapter struct{ home string }
 
 func newKiro(home string) *kiroAdapter { return &kiroAdapter{home: home} }

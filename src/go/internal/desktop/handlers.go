@@ -103,7 +103,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 }
 
 // startEnabledProxies starts every account proxy whose stored config is
-// enabled (startEnabledProxies in src/tray/supervisor-mutations.ts).
+// enabled.
 func (s *Server) startEnabledProxies(ctx context.Context) {
 	for _, providerID := range s.Deps.Providers.IDs() {
 		list, lerr := s.Deps.Accounts.List(ctx, providerID)
@@ -124,7 +124,7 @@ func (s *Server) startEnabledProxies(ctx context.Context) {
 }
 
 // restartRunningPools restarts pool proxies that are currently running so a
-// Quota Guard toggle takes effect immediately (restartRunningPools in TS).
+// Quota Guard toggle takes effect immediately.
 func (s *Server) restartRunningPools(ctx context.Context) error {
 	if s.Deps.Proxy == nil || !s.Deps.Proxy.HasPools() {
 		return nil
@@ -159,8 +159,8 @@ func (s *Server) restartRunningPools(ctx context.Context) error {
 	}
 	joined := errors.Join(restartErrs...)
 	if joined != nil {
-		// Keep TypeScript's per-provider isolation by attempting every pool,
-		// then surface the aggregate to the mutation result and diagnostic log.
+		// Attempt every pool, then surface the aggregate to the mutation
+		// result and diagnostic log.
 		s.logErr(joined)
 	}
 	return joined

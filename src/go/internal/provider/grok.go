@@ -14,8 +14,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// grok mirrors GrokProvider: ~/.grok/auth.json holds OIDC sessions keyed by
-// account; no external binary needed.
+// grok manages Grok credentials: ~/.grok/auth.json holds OIDC sessions keyed
+// by account; no external binary needed.
 type grok struct{ home string }
 
 const grokLoginMethodID = "grok-subscription"
@@ -35,7 +35,6 @@ func (p *grok) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	return transport.GrokAccountAdapter(p.ID(), accountName)
 }
 
-// loginCommand mirrors GrokProvider.loginCommand (src/providers/grok.ts).
 func (p *grok) loginCommand() browserlogin.Command {
 	names := []string{"grok"}
 	if env := os.Getenv("GROK_BINARY"); env != "" {
@@ -48,7 +47,6 @@ func (p *grok) loginCommand() browserlogin.Command {
 	}
 }
 
-// LoginMethods mirrors GrokProvider.loginMethods.
 func (p *grok) LoginMethods() []LoginMethod {
 	return []LoginMethod{
 		browserlogin.Availability(LoginMethod{
@@ -61,7 +59,7 @@ func (p *grok) LoginMethods() []LoginMethod {
 	}
 }
 
-// Login mirrors GrokProvider.login (no source-scoped methods).
+// Login runs the browser sign-in (no source-scoped methods).
 func (p *grok) Login(ctx context.Context, methodID, source string) error {
 	if methodID != grokLoginMethodID || source != "" {
 		return anyerr.Newf("Unknown Grok sign-in method.", "PROVIDER_LOGIN_METHOD_UNKNOWN")
@@ -76,8 +74,7 @@ func (p *grok) authPath() string {
 	return filepath.Join(expandHome(p.home), ".grok", "auth.json")
 }
 
-// grokIdentity finds the first email-looking value across session objects
-// (firstEmail in TS).
+// grokIdentity finds the first email-looking value across session objects.
 func grokIdentity(data map[string]json.RawMessage) string {
 	for _, raw := range data {
 		var session map[string]json.RawMessage

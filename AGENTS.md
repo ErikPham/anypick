@@ -47,11 +47,12 @@ all there is. The Node projects are `docs/` (the documentation site, with its
 own lockfile) and the dependency-free npm launcher in `npm/anypick/` (no
 dependencies, so no lockfile).
 
-CI (`.github/workflows/ci.yml`) runs seven jobs: format/vet/staticcheck/version
-sync, Go tests on Ubuntu, Go tests on Windows, the Tauri app check and UI build,
-the macOS app and helper contract, the docs site, and the distribution adapters
-(npm launcher + packaging scripts). Run the Go ones before you claim a change is
-done.
+CI (`.github/workflows/ci.yml`) runs nine jobs: `check`
+(format/vet/staticcheck/actionlint/pin-resolution), `go` (Ubuntu vet, test and
+race), `linux-cli-headless` (static CLI smoke), `go-windows`, `tauri` (app check
+and UI build), `macos-app` (app, helper contract and universal build), `macos-ui`
+(XCUITest, non-blocking), `docs`, and `distribution` (npm launcher, packaging
+adapters and payload smoke). Run the Go ones before you claim a change is done.
 
 > **GOPATH trap.** `~/.zshrc` currently exports `GOPATH="$HOME/workspace/ocg/go"`,
 > which is *another project's* module cache. Tests that shell out to `go build`
@@ -326,5 +327,9 @@ The macOS app’s main window must look like an app Apple could ship:
   generated from commits by `changelogithub`. A behavior change is recorded by
   writing a Conventional Commit subject a release reader would understand —
   `CONTRIBUTING.md` has the format.
-- Provider-specific behavior belongs on the provider (`roleDefaults`,
-  `suggestModels`, …). Core, CLI, and TUI must not grow a `switch (providerId)`.
+- Provider-specific behavior belongs on the provider, not in core: the
+  per-provider proxy upstream is `ResolveUpstream` on the provider value, the
+  per-client model-role shape is `client.RolesFor`, and per-provider model-role
+  defaults live in the `provider_model_roles` row keyed by
+  `bindings.ModelRolesProviderKey`. Core, CLI, and TUI must not grow a
+  `switch (providerId)`.

@@ -1,8 +1,6 @@
-// Package db ports src/core/db.ts + src/core/db-schema.ts.
+// Package db owns the SQLite schema for ~/.anypick/anypick.db.
 //
-// The DDL is kept byte-equivalent with the TypeScript baseline so the Go and
-// Node runtimes can open the same ~/.anypick/anypick.db. Schema versioning
-// keys off PRAGMA user_version exactly like migrateSchema in TS.
+// Schema versioning keys off PRAGMA user_version.
 package db
 
 import "database/sql"
@@ -55,11 +53,6 @@ CREATE TABLE IF NOT EXISTS profiles (
   secrets_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS client_state (
-  client_id TEXT PRIMARY KEY NOT NULL,
-  state_json TEXT NOT NULL
 );
 
 -- Named client routes are separate from the one active global binding. Codex
@@ -199,7 +192,7 @@ CREATE TABLE IF NOT EXISTS proxy_hub_routes (
 );
 `
 
-// BaselineVersion mirrors BASELINE_VERSION.
+// BaselineVersion is the fresh-install schema version.
 const BaselineVersion = 1
 
 // execer is satisfied by both *sql.DB and *sql.Tx, letting migrations run on
@@ -246,8 +239,7 @@ func hasColumn(d execer, table, column string) bool {
 	return false
 }
 
-// migrations applies in array order; index i corresponds to version i+2 —
-// identical ordering to MIGRATIONS in src/core/db-schema.ts.
+// migrations applies in array order; index i corresponds to version i+2.
 var migrations = []migration{
 	{
 		name: "add source resume history",

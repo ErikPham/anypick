@@ -1,9 +1,9 @@
 package desktop
 
-// Strict command validation mirroring isTray*Command guards in
-// src/tray/protocol.ts: unknown fields rejected, required fields present,
-// booleans explicit where TS demands them, bounded strings, unique bounded
-// entryIds. A payload that TypeScript would reject must not reach a handler.
+// Strict command validation: unknown fields rejected, required fields
+// present, booleans explicit where the contract demands them, bounded
+// strings, unique bounded entryIds. A payload the contract rejects must not
+// reach a handler.
 
 import (
 	"bytes"

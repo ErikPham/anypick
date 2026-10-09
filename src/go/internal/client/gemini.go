@@ -12,8 +12,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// geminiAdapter ports src/clients/gemini.ts: API-key/env runtime apply into
-// ~/.gemini/.env plus a managed marker in settings.json.
+// geminiAdapter applies API-key/env runtime config into ~/.gemini/.env
+// plus a managed marker in settings.json.
 type geminiAdapter struct{ home string }
 
 func newGemini(home string) *geminiAdapter { return &geminiAdapter{home: home} }
@@ -319,7 +319,7 @@ func readManagedMarkerKeys(path string) ([]string, error) {
 }
 
 // upsertEnvFile writes KEY=VALUE lines for every entry, preserving unrelated
-// lines and comments in the existing file (ports providers/gemini upsertEnvFile).
+// lines and comments in the existing file.
 func upsertEnvFile(path string, env map[string]string) error {
 	existing, _ := os.ReadFile(path)
 	lines := strings.Split(string(existing), "\n")
@@ -394,7 +394,6 @@ func removeClientEnvFiles(root, clientID string) {
 	_ = os.Remove(filepath.Join(dir, "env.ps1"))
 }
 
-// anyPickRootFallback mirrors the TS reset fallback chain.
 func anyPickRootFallback() string {
 	if env := os.Getenv("ANYPICK_HOME"); env != "" {
 		return env

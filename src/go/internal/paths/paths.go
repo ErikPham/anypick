@@ -1,4 +1,4 @@
-// Package paths ports src/core/paths.ts: every filesystem path under the data
+// Package paths defines every filesystem path under the data
 // root. The data directory is ~/.anypick (ANYPICK_HOME overrides) — invariant #7.
 package paths
 
@@ -66,14 +66,14 @@ func ProxyLogPath(root, providerID, accountName string) string {
 	return filepath.Join(AccountProxyRuntimeDir(root, providerID, accountName), "proxy.log")
 }
 
-// PoolRuntimeDir mirrors poolRuntimeDir (src/core/pool-store.ts): shared
-// runtime area for a provider's multi-account pool (pid/log/quota-guard).
+// PoolRuntimeDir is the shared runtime area for a provider's multi-account
+// pool (pid/log/quota-guard).
 func PoolRuntimeDir(root, providerID string) string {
 	return filepath.Join(ProviderDir(root, providerID), "pool-runtime")
 }
 
-// PoolQuotaGuardStatePath is the secret-free Quota Guard audit file TS reads
-// back for `quotaGuardEvents` — the layout is cross-runtime.
+// PoolQuotaGuardStatePath is the secret-free Quota Guard audit file backing
+// `quotaGuardEvents`.
 func PoolQuotaGuardStatePath(root, providerID string) string {
 	return filepath.Join(PoolRuntimeDir(root, providerID), "quota-guard.json")
 }

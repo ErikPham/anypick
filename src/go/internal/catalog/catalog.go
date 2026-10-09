@@ -1,7 +1,7 @@
-// Package catalog ports src/catalog/providers.ts: declarative metadata for
-// gateway vendors — what exists, what protocols they speak, and their official
-// endpoints. This list says what exists; capability pairing stays in the
-// source adapters (invariant #1).
+// Package catalog holds declarative metadata for gateway vendors — what
+// exists, what protocols they speak, and their official endpoints. This list
+// says what exists; capability pairing stays in the source adapters
+// (invariant #1).
 package catalog
 
 import (
@@ -10,7 +10,6 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// APIStyle mirrors ApiStyle.
 type APIStyle string
 
 const (
@@ -19,7 +18,6 @@ const (
 	StyleCustom    APIStyle = "custom"
 )
 
-// Provider mirrors CatalogProvider (metadata subset).
 type Provider struct {
 	ID              string
 	Name            string
@@ -45,8 +43,7 @@ func dualProtocols() []transport.Protocol {
 	return []transport.Protocol{transport.OpenAI, transport.Anthropic}
 }
 
-// Builtin returns the eight catalog entries shipped with AnyPick, mirroring
-// src/catalog/providers.ts.
+// Builtin returns the eight catalog entries shipped with AnyPick.
 func Builtin() map[string]Provider {
 	builtin := map[string]Provider{
 		"openrouter": {
@@ -123,9 +120,9 @@ func Builtin() map[string]Provider {
 	return builtin
 }
 
-// cloudflareAIGatewayEntry is Go-native (no TS mirror entry): the base
-// embeds the Cloudflare account id, so like custom there is no
-// DefaultEndpoint and gateway add requires an explicit --endpoint.
+// cloudflareAIGatewayEntry has no DefaultEndpoint: the base embeds the
+// Cloudflare account id, so like custom, gateway add requires an explicit
+// --endpoint.
 func cloudflareAIGatewayEntry() Provider {
 	return Provider{
 		ID:              "cloudflare-aigateway",

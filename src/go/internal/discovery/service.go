@@ -1,5 +1,5 @@
-// Package discovery ports src/core/model-discovery.ts: live model lists with
-// a fallback chain — fresh cache → live fetch → stale cache → static catalog.
+// Package discovery resolves live model lists with a fallback chain —
+// fresh cache → live fetch → stale cache → static catalog.
 // A model list is advisory, so no step fails the caller.
 package discovery
 
@@ -29,7 +29,7 @@ const (
 	SourceCatalog Source = "catalog"
 )
 
-// Result mirrors ModelListResult.
+// Result is one resolved model list.
 type Result struct {
 	Models    []string `json:"models"`
 	Source    Source   `json:"source"`
@@ -37,7 +37,7 @@ type Result struct {
 	Note      string   `json:"note,omitempty"`
 }
 
-// Request mirrors ModelDiscoveryRequest.
+// Request describes one model-list lookup.
 type Request struct {
 	ProviderID string
 	Endpoint   string

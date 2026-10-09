@@ -15,8 +15,8 @@ type closeGuard struct{ once sync.Once }
 func (g *closeGuard) Do(fn func()) { g.once.Do(fn) }
 
 // ensureBootstrapState creates directories later milestones rely on and
-// bootstraps the global config row (config.ensure() in TS createAppReady).
-// Keeping the hook here preserves the createAppReady ordering.
+// bootstraps the global config row. Keeping the hook here preserves the
+// startup ordering.
 func ensureBootstrapState(ctx context.Context, a *App) error {
 	for _, dir := range []string{
 		filepath.Join(a.Root, "runtime", "tray"),
@@ -33,8 +33,8 @@ func ensureBootstrapState(ctx context.Context, a *App) error {
 	return nil
 }
 
-// RunningTrayPid ports runningTrayPid from src/core/tray-runtime.ts: the PID
-// recorded in runtime/tray/tray.pid when that process is still alive.
+// RunningTrayPid reports the PID recorded in runtime/tray/tray.pid when
+// that process is still alive.
 func RunningTrayPid(root string) *int {
 	raw, err := os.ReadFile(filepath.Join(root, "runtime", "tray", "tray.pid"))
 	if err != nil {

@@ -13,8 +13,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// opencodeAdapter ports src/clients/opencode.ts: a multi-provider runtime
-// configured through opencode.json(c) with an anypick-managed provider entry.
+// opencodeAdapter configures a multi-provider runtime through
+// opencode.json(c) with an anypick-managed provider entry.
 type opencodeAdapter struct{ home string }
 
 func newOpenCode(home string) *opencodeAdapter { return &opencodeAdapter{home: home} }
@@ -94,8 +94,8 @@ func readOpenCodeConfig(path string) (map[string]json.RawMessage, error) {
 	return doc, nil
 }
 
-// stripJsonc ports parseJsonc's normalization: comments become spaces and
-// trailing commas are dropped without touching string contents.
+// stripJsonc normalizes JSONC: comments become spaces and trailing commas
+// are dropped without touching string contents.
 func stripJsonc(raw []byte) []byte {
 	text := string(raw)
 	var out strings.Builder

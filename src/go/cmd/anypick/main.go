@@ -1,4 +1,4 @@
-// Command anypick is the Go CLI over the ported core. Command handlers stay
+// Command anypick is the Go CLI. Command handlers stay
 // thin; behavior lives on services composed by internal/app.
 //
 // Invariant #2: proxy secrets never cross an output boundary — commands print
@@ -242,8 +242,7 @@ func isExplicitTuiSurface(args []string) bool {
 // runTuiSurface opens the terminal UI and maps its failure to an exit code.
 //
 // The UI is a bubbletea program over the same services the CLI commands use
-// (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime, so the
-// Ink/React tree in src/tui cannot be the one users get.
+// (ADR 0020 §5, NATIVE-M7 row 3): native releases ship no Node runtime.
 func runTuiSurface(ctx context.Context, a *app.App) int {
 	if err := tui.Run(ctx, a, os.Stdin, os.Stdout); err != nil {
 		// Invariant 7: refusing to run without a TTY is a usage problem,
@@ -258,7 +257,7 @@ func runTuiSurface(ctx context.Context, a *app.App) int {
 	return int(anyerr.Success)
 }
 
-// bareInvocation mirrors the TS default: open the configured desktop surface.
+// bareInvocation opens the configured desktop surface.
 // The configured surface comes from ui.defaultSurface in global config — an
 // explicit, persisted policy (plan §Scope: never silently add a Go TUI).
 func bareInvocation(ctx context.Context, a *app.App) int {
@@ -699,7 +698,7 @@ func cmdUse(ctx context.Context, a *app.App, args []string) int {
 		}
 	}
 	// Known account providers = every registered provider (file-snapshot AND
-	// compatible vendors), mirroring parseAndResolveSourceInput.
+	// compatible vendors).
 	providerSet := map[string]bool{}
 	for _, id := range a.Providers.IDs() {
 		providerSet[id] = true
@@ -848,8 +847,8 @@ func cmdCurrent(ctx context.Context, a *app.App, args []string) int {
 			return int(anyerr.Success)
 		}
 	}
-	// TS prints a human table by default and JSON only under --json; keep the
-	// same contract here (machine stream stays exactly one JSON value).
+	// Print a human table by default and JSON only under --json
+	// (machine stream stays exactly one JSON value).
 	if !globals.JSON {
 		if cur.Active == "" {
 			fmt.Printf("%s: no active account\n", providerID)
@@ -1285,14 +1284,14 @@ func cmdProxy(ctx context.Context, a *app.App, args []string) int {
 			return usage()
 		}
 		if globals.DryRun {
-			// TS extras: enable {provider,name,port,host,start}; disable
-			// {provider,name}. Unset flags stay omitted like JSON.stringify.
+			// Dry-run extras: enable {provider,name,port,host,start}; disable
+			// {provider,name}. Unset flags stay omitted.
 			if sub == "enable" {
 				printDryRunFields("proxy.enable",
 					fmt.Sprintf("Would enable %s/%s", fs.Arg(0), fs.Arg(1)),
 					kv{Key: "provider", Value: fs.Arg(0)}, kv{Key: "name", Value: fs.Arg(1)},
 					kv{Key: "port", Value: intOrNil(*port)},
-					kv{Key: "host", Value: "127.0.0.1"}, // TS option default
+					kv{Key: "host", Value: "127.0.0.1"}, // option default
 					kv{Key: "start", Value: true})
 			} else {
 				printDryRunFields("proxy.disable",
@@ -1486,9 +1485,8 @@ func cmdProxyToken(ctx context.Context, a *app.App, rest []string) int {
 }
 
 // cmdAppRun is the desktop-app core (supervisor): pushes snapshots over
-// stdout and executes commands from stdin — the Go counterpart of
-// `tray run` in src/tray/supervisor.ts. Set ANYPICK_APP_BIN to have this
-// process spawn and pipe the native app exactly like the TS supervisor does.
+// stdout and executes commands from stdin. Set ANYPICK_APP_BIN to have this
+// process spawn and pipe the native app.
 func cmdAppRun(ctx context.Context, a *app.App, args []string) int {
 	if cli.WantsHelp(args) {
 		fmt.Print("usage: anypick app\n\n" +

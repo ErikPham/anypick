@@ -139,8 +139,7 @@ func TestOpenCodeResolveUpstreamPrefersLiveKeyOverMirror(t *testing.T) {
 }
 
 // The credential database that sits BESIDE a saved auth.json outranks the
-// mirror (readDbPlatformCredentials(opencodeDbPathFor()) in the TypeScript
-// port). Backup never copies a database, but the step exists so a caller
+// mirror. Backup never copies a database, but the step exists so a caller
 // pointing at a live data directory resolves like the CLI does.
 func TestOpenCodeResolveUpstreamPrefersSnapshotDBOverMirror(t *testing.T) {
 	pinNoLiveOpenCodeStore(t)
@@ -160,8 +159,7 @@ func TestOpenCodeResolveUpstreamPrefersSnapshotDBOverMirror(t *testing.T) {
 	}
 }
 
-// Service ids are matched case-insensitively in the TypeScript port
-// (PLATFORM_SERVICES.has(service.toLowerCase())).
+// Service ids are matched case-insensitively.
 func TestOpenCodeResolveUpstreamMatchesServiceCaseInsensitively(t *testing.T) {
 	pinNoLiveOpenCodeStore(t)
 	snap := t.TempDir()
@@ -179,8 +177,8 @@ func TestOpenCodeResolveUpstreamMatchesServiceCaseInsensitively(t *testing.T) {
 	}
 }
 
-// Three different failures, three different messages — the TypeScript proxy
-// separated them because they send the user to different commands.
+// Three different failures, three different messages — kept separate because
+// they send the user to different commands.
 func TestOpenCodeResolveUpstreamFailureMessages(t *testing.T) {
 	cases := []struct {
 		name        string

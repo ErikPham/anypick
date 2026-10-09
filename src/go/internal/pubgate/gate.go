@@ -1,5 +1,5 @@
-// Package pubgate is the shared publication lock for plugin-host generation
-// commits (GO-PARITY-M7).
+// Package pubgate is the shared publication lock for provider/client registry
+// generation commits.
 //
 // Provider/client registries and catalog indexes each have their own mutex, so
 // holding the supervisor lock does not make Get/Lookup/IDs atomic with identity
@@ -8,17 +8,18 @@
 // a mixed generation, and never see a B value that is later rolled back.
 //
 // THE WRITER HALF HAS NO CALLER TODAY. ADR 0021 removed the executable plugin
-// host, and the generation-commit path went with it: nothing in the tree takes
-// Gate.Lock outside this package's own test. The read half is live (ten RLock
-// sites across the four registries), so the gate still serializes nothing while
-// costing one uncontended RWMutex read per lookup.
+// host and ADR-0032 deleted the seam that would have used this lock, so nothing
+// in the tree takes Gate.Lock outside this package's own test. The read half is
+// live (ten RLock sites across the four registries), so the gate still
+// serializes nothing while costing one uncontended RWMutex read per lookup.
 //
-// It is kept, not deleted, for the reason ADR 0021 decision 3 keeps
-// proxy.PluginLifecycle: a future Go-native declarative executor would commit
-// registrations the same way, and it would need exactly this lock to publish
-// them without a mixed generation. Deleting it would mean rediscovering the
-// requirement. If that executor is abandoned, delete this package and the ten
-// RLock sites together.
+// It is kept, not deleted, on its own reasoning rather than any record's: a
+// runtime that can swap a registry identity in place would need exactly this
+// lock, and rediscovering that requirement costs more than carrying an
+// uncontended read. ADR-0032 does not mention this package. If in-tree provider
+// registration ever grows a live writer, decide then whether this earns its
+// place — and if that never happens, delete this package and the ten RLock
+// sites together.
 package pubgate
 
 import "sync"

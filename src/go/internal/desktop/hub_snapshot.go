@@ -23,7 +23,7 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// This file ports the Hub section of the tray supervisor: hub sources,
+// This file builds the Hub section of the snapshot: hub sources,
 // conflicts, published models, the hub proxy row and its lifecycle actions.
 // Previously the snapshot left all of these empty, so Proxy Hub was dead in
 // production (empty state, disabled Start, zero models) — H1/H2/H3.

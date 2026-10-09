@@ -23,8 +23,7 @@ func isRecord(v interface{}) bool {
 // SanitizeGeminiSchema converts a client JSON Schema into the smaller Schema
 // dialect Gemini's FunctionDeclaration accepts. OpenAI/Anthropic clients
 // commonly send draft-07 metadata and object-schema keywords that Gemini
-// rejects with a 400 instead of ignoring them, so those are dropped. Ports
-// translate-schema.ts.
+// rejects with a 400 instead of ignoring them, so those are dropped.
 func SanitizeGeminiSchema(schema interface{}) map[string]interface{} {
 	input := asMap(schema)
 	out := map[string]interface{}{}

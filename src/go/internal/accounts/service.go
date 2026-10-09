@@ -1,7 +1,7 @@
-// Package accounts ports the essential surface of src/core/service.ts:
-// save, use (switch), current, and the live-auth checkpoints that make
-// switches compensable. Proxy side effects stay behind an optional interface —
-// a service that was never handed proxy collaborators must not fake them.
+// Package accounts saves, switches, and reports the active account, with
+// the live-auth checkpoints that make switches compensable. Proxy side
+// effects stay behind an optional interface — a service that was never
+// handed proxy collaborators must not fake them.
 package accounts
 
 import (
@@ -27,8 +27,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transfer"
 )
 
-// Checkpoint mirrors LiveAuthCheckpoint: the exact local auth captured before
-// a switch, used to compensate failures and crash recovery.
+// Checkpoint is the exact local auth captured before a switch, used to
+// compensate failures and crash recovery.
 type Checkpoint struct {
 	ProviderID    string  `json:"providerId"`
 	Source        *string `json:"source,omitempty"`
@@ -37,7 +37,7 @@ type Checkpoint struct {
 	Directory     string  `json:"directory"`
 }
 
-// SwitchResult mirrors SwitchResult; proxy fields are omitted.
+// SwitchResult describes a completed account switch.
 type SwitchResult struct {
 	Provider          string `json:"provider"`
 	ProviderName      string `json:"providerName"`
@@ -47,7 +47,8 @@ type SwitchResult struct {
 	RefreshedAccount  string `json:"refreshedAccount,omitempty"`
 }
 
-// CurrentResult mirrors current() minus proxy status.
+// CurrentResult reports the active pointer, live detection, and whether
+// they agree.
 type CurrentResult struct {
 	Active         string
 	Live           provider.LiveAuthStatus
@@ -125,7 +126,6 @@ func (s *Service) SetBeforeDelete(fn func(context.Context, string, string) ([]st
 	s.BeforeDelete = fn
 }
 
-// CredentialInput mirrors CredentialInput from src/types/account.ts.
 type CredentialInput struct {
 	Kind    string
 	Secret  string
@@ -452,7 +452,7 @@ func (s *Service) saveLockedSource(ctx context.Context, pv provider.Provider, ac
 	return meta, nil
 }
 
-// Use switches live auth to a saved account (useLocked in TS). The previous
+// Use switches live auth to a saved account (see useLocked). The previous
 // login is checkpointed before anything mutates; any failure restores it.
 func (s *Service) Use(ctx context.Context, providerID, name string, opts UseOptions) (SwitchResult, error) {
 	return useLocked(s, ctx, providerID, name, opts)
@@ -750,7 +750,7 @@ func (s *Service) DuplicateSnapshotGroups(ctx context.Context) ([]DuplicateSnaps
 }
 
 // ResolveIdentityTarget resolves a duplicate identity to its existing local
-// account after confirmation (ports resolveIdentityTarget in src/core/service.ts).
+// account after confirmation.
 func (s *Service) ResolveIdentityTarget(ctx context.Context, providerID string, identity, accountName string, allowOverwrite bool) (string, error) {
 	if !accountScopedIdentity(identity) {
 		return accountName, nil
@@ -833,8 +833,7 @@ func computeLiveMatch(pv provider.Provider, snapshotDir string, live provider.Li
 
 func identitiesEqual(a, b string) bool { return normalizeIdentity(a) == normalizeIdentity(b) }
 
-// normalizeIdentity compares emails case-insensitively (mirrors
-// identitiesMatch in TS without its full alias table).
+// normalizeIdentity compares emails case-insensitively.
 func normalizeIdentity(identity string) string {
 	var parsed struct {
 		Email string `json:"email"`

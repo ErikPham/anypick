@@ -1,8 +1,7 @@
-// Pool lifecycle regressions (service_pool.go): token rotation mirrors TS
-// startPoolProxy observable semantics — a verified stop clears the primary's
-// proxy_state so restarts rotate the token, and only a surviving record is
-// reused; and the planned/persisted port is bound deterministically
-// (pool.port ?? provider default ?? 8080) instead of a random free port.
+// Pool lifecycle regressions (service_pool.go): a verified stop clears the
+// primary's proxy_state so restarts rotate the token, and only a surviving
+// record is reused; and the planned/persisted port is bound deterministically
+// (pool.port, provider default, else 8080) instead of a random free port.
 package proxy
 
 import (
@@ -154,7 +153,7 @@ func TestStartPoolProxyRotatesTokenAcrossConsecutiveStarts(t *testing.T) {
 		t.Fatalf("second start: %v", err)
 	}
 	// Reading prior state before the stops used to make every restart REUSE
-	// the token; TS rotates it because the stop clears the record first.
+	// the token; the stop clears the record first, so restarts rotate it.
 	if first.Token == "" || second.Token == "" || first.Token == second.Token {
 		t.Fatalf("consecutive starts must rotate the pool token: %q then %q",
 			first.Token, second.Token)
@@ -173,8 +172,8 @@ func TestStartPoolProxyRotatesTokenAcrossConsecutiveStarts(t *testing.T) {
 	}
 }
 
-// pickPoolToken ports the surviving-record branch of TS startPoolProxy: reuse
-// happens ONLY when a stop left the record behind (no-op/unverified stop).
+// pickPoolToken reuses a surviving record: reuse happens ONLY when a stop
+// left the record behind (no-op/unverified stop).
 func TestPickPoolTokenSurvivingRecordWins(t *testing.T) {
 	fresh, err := pickPoolToken(nil)
 	if err != nil || fresh == "" {
@@ -230,8 +229,7 @@ func TestStartPoolProxyBindsDeterministicPort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// An occupied planned port fails loudly instead of relocating (TS
-	// validatePort semantics).
+	// An occupied planned port fails loudly instead of relocating.
 	busy := mustFreePort(t)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", busy))
 	if err != nil {

@@ -16,8 +16,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// Snapshot mirrors TraySnapshot field-for-field. Sections the Go engine does
-// not populate yet are emitted as empty arrays so UI typing keeps working.
+// Snapshot is the desktop snapshot. Sections not populated yet are emitted
+// as empty arrays so UI typing keeps working.
 type Snapshot struct {
 	ProxyCount         int                `json:"proxyCount"`
 	Revision           int                `json:"revision"`
@@ -55,7 +55,7 @@ type DegradedCondition struct {
 	Detail string `json:"detail"`
 }
 
-// ActionRow mirrors TrayActionSnapshot (subset emitted today).
+// ActionRow is one action row (subset emitted today).
 type ActionRow struct {
 	ID             string `json:"id"`
 	ClientID       string `json:"clientId"`
@@ -71,7 +71,7 @@ type ActionRow struct {
 	RouteKind      string `json:"routeKind,omitempty"` // 'direct-account' | 'managed-account' | 'gateway' | 'hub'
 }
 
-// ProxyRow mirrors TrayProxySnapshot.
+// ProxyRow is one proxy row.
 type ProxyRow struct {
 	ID              string `json:"id"`
 	ProviderID      string `json:"providerId"`
@@ -89,7 +89,7 @@ type ProxyRow struct {
 	HasToken bool `json:"hasToken,omitempty"`
 }
 
-// AccountRow mirrors TrayManagedAccountSnapshot.
+// AccountRow is one managed-account row.
 type AccountRow struct {
 	ID             string `json:"id"`
 	ProviderID     string `json:"providerId"`
@@ -102,7 +102,7 @@ type AccountRow struct {
 	SwitchActionID string `json:"switchActionId"`
 }
 
-// LogSourceRow mirrors TrayLogSourceSnapshot.
+// LogSourceRow is one log-source row.
 type LogSourceRow struct {
 	ID         string `json:"id"`
 	ProviderID string `json:"providerId"`
@@ -111,11 +111,11 @@ type LogSourceRow struct {
 	Detail     string `json:"detail"`
 }
 
-// GatewayRow mirrors TrayGatewaySnapshot (display subset; gateways arrive
-// with the profile store port).
+// GatewayRow is the gateway display subset (gateways arrive with the
+// profile store port).
 type GatewayRow = map[string]any
 
-// AccountProviderRow mirrors TrayAccountProviderSnapshot.
+// AccountProviderRow is one account-provider row.
 type AccountProviderRow struct {
 	ID           string           `json:"id"`
 	ProviderID   string           `json:"providerId"`
@@ -168,7 +168,7 @@ type LoginMethodRow struct {
 	UnavailableReason string `json:"unavailableReason,omitempty"`
 }
 
-// GatewayProviderRow mirrors TrayGatewayProviderSnapshot.
+// GatewayProviderRow is one gateway-provider row.
 type GatewayProviderRow struct {
 	ID                  string   `json:"id"`
 	Label               string   `json:"label"`
@@ -182,7 +182,7 @@ type GatewayProviderRow struct {
 	RequiresAccountID   bool     `json:"requiresAccountId,omitempty"`
 }
 
-// Preferences mirrors TrayPreferences.
+// Preferences is the desktop settings surface.
 type Preferences struct {
 	LaunchAtLogin       bool `json:"launchAtLogin"`
 	StartEnabledProxies bool `json:"startEnabledProxies"`
@@ -191,7 +191,7 @@ type Preferences struct {
 }
 
 // currentSettings reads tray preferences from the config service when wired,
-// falling back to TS defaults (showQuota/startEnabledProxies true).
+// falling back to defaults (showQuota/startEnabledProxies true).
 func (s *Server) currentSettings(ctx context.Context) Preferences {
 	prefs := Preferences{StartEnabledProxies: true, ShowQuota: true}
 	// Login-item state is platform truth: only a wired host-state provider
@@ -340,11 +340,10 @@ func (b *snapshotBuilder) accountsAndProxies(ctx context.Context) {
 			rowID := providerID + "/" + acc.Meta.Name
 			clientID := nativeClientIDOf(pv, providerID)
 
-			// Two distinct registrations per saved account, mirroring TS:
-			// the accounts-panel row switches the provider's active account
-			// (account-switch operation), while the Switch-menu chip binds the
-			// client through the persistent planner (invokeTrayAction →
-			// bindingService.use). One shared id cannot serve both.
+			// Two distinct registrations per saved account: the accounts-panel
+			// row switches the provider's active account (account-switch
+			// operation), while the Switch-menu chip binds the client through
+			// the persistent planner. One shared id cannot serve both.
 			switchID := b.actionID()
 			routeID := b.actionID()
 			name := acc.Meta.Name
@@ -423,8 +422,7 @@ func (b *snapshotBuilder) accountProviders(ctx context.Context, pv provider.Prov
 	row := AccountProviderRow{
 		ID: providerID, ProviderID: providerID,
 		// ClientID lets the native client resolve this provider to its
-		// managed app row (Store.managedAppClientIDs). Without it the
-		// Apps view can only see providers that already own actions, so
+		// managed app row. Without it the Apps view can only see providers that already own actions, so
 		// a provider with zero saved accounts (e.g. fresh WorkBuddy)
 		// never appears.
 		ClientID: clientID,
@@ -617,7 +615,7 @@ func (b *snapshotBuilder) crossProviderActions(ctx context.Context) {
 				b.snap.Actions = append(b.snap.Actions, row)
 				// The chip binds THIS client to the other provider's account;
 				// switching that provider's own active account would be a
-				// wrong-scope mutation (TS target: {clientId, source}).
+				// wrong-scope mutation.
 				b.registry[id] = b.srv.routeActivator(clientID,
 					refs.AccountRef(otherProviderID, acc.Meta.Name))
 			}
@@ -653,8 +651,9 @@ func (b *snapshotBuilder) gatewayActions(ctx context.Context) {
 					RouteKind:    "gateway",
 				}
 				b.snap.Actions = append(b.snap.Actions, row)
-				// Gateway chips activate like any other source (bindingService.use).
-				// A nil handler reported success without mutating anything.
+				// Gateway chips activate like any other source (through the
+				// bindings service). A nil handler reported success without
+				// mutating anything.
 				b.registry[id] = b.srv.routeActivator(clientID, refs.GatewayRef(gwName))
 			}
 		}
@@ -696,7 +695,8 @@ func (b *snapshotBuilder) hubActions(ctx context.Context) {
 				RouteKind:    "hub",
 			}
 			b.snap.Actions = append(b.snap.Actions, row)
-			// Hub chips activate like any other source (bindingService.use).
+			// Hub chips activate like any other source (through the bindings
+			// service).
 			b.registry[id] = b.srv.routeActivator(clientID, refs.ProxyHubRef(cfg.Name))
 		}
 	}
@@ -844,8 +844,8 @@ func (b *snapshotBuilder) gateways(ctx context.Context) {
 }
 
 // buildSnapshot assembles the current state and registers opaque action
-// handlers for this revision. Field names match TraySnapshot exactly so the
-// existing native app can consume it unchanged.
+// handlers for this revision. Field names match the native app's snapshot
+// contract exactly so it can consume it unchanged.
 func (s *Server) buildSnapshot(ctx context.Context) (*Snapshot, error) {
 	s.actionsMu.Lock() // see the revision field
 	s.revision++
@@ -1205,8 +1205,8 @@ func (s *Server) buildUsage(ctx context.Context) []UsageSnapshotRow {
 	return rows
 }
 
-// primaryModelOf mirrors primaryModel: explicit selection wins, then the
-// default model role from client options.
+// primaryModelOf resolves the effective model: explicit selection wins,
+// then the default model role from client options.
 func primaryModelOf(spec bindings.Spec) string {
 	if spec.Model.Mode == "explicit" {
 		return spec.Model.ID
@@ -1370,7 +1370,7 @@ func designAppNameExplicit(client string) (string, bool) {
 	}
 }
 
-// managedAppClientIDs mirrors Store.managedAppClientIDs: every clientId that
+// managedAppClientIDs lists every clientId that appears on any action,
 // appears on any action, first-occurrence order, plus every registered client
 // so unbound/absent apps still render a row.
 //
@@ -1417,7 +1417,7 @@ func snapActionsOrder(snap *Snapshot) []string {
 	return out
 }
 
-// UsageSnapshotRow mirrors TrayUsageSnapshot.
+// UsageSnapshotRow is one live-usage readout row.
 type UsageSnapshotRow struct {
 	Client  string                   `json:"client"`
 	Account string                   `json:"account"`

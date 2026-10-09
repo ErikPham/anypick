@@ -1,9 +1,8 @@
 package transfer
 
-// Multi-account backup packages, ported from src/core/account-backup.ts +
-// account-restore.ts: export selected accounts as one owner-only package,
-// inspect it with dispositions, and restore a selection atomically with
-// explicit replacement approval.
+// Multi-account backup packages: export selected accounts as one owner-only
+// package, inspect it with dispositions, and restore a selection atomically
+// with explicit replacement approval.
 
 import (
 	"context"
@@ -55,7 +54,7 @@ func backupError(code, format string, args ...interface{}) error {
 }
 
 // ValidateBackupSelection normalizes and orders the selection, rejecting
-// empty/duplicate/invalid entries exactly like validateBackupSelection.
+// empty/duplicate/invalid entries.
 func ValidateBackupSelection(accounts []BackupEntry) ([]BackupEntry, error) {
 	if len(accounts) == 0 {
 		return nil, backupError("BACKUP_EMPTY", "No saved accounts were selected for backup.")
@@ -161,7 +160,7 @@ func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts 
 	return len(selected), nil
 }
 
-// Disposition mirrors AccountRestoreDisposition.
+// Disposition is the per-account restore outcome.
 type Disposition string
 
 const (
@@ -171,7 +170,7 @@ const (
 	DispositionUnavailable Disposition = "unavailable"
 )
 
-// PreviewEntry mirrors AccountRestorePreviewEntry.
+// PreviewEntry is one account's restore preview.
 type PreviewEntry struct {
 	Provider    string      `json:"provider"`
 	Name        string      `json:"name"`
@@ -180,7 +179,7 @@ type PreviewEntry struct {
 	Reason      string      `json:"reason,omitempty"`
 }
 
-// Inspection mirrors AccountRestoreInspection.
+// Inspection is the decoded package with per-account dispositions.
 type Inspection struct {
 	CreatedAt string         `json:"createdAt"`
 	Entries   []PreviewEntry `json:"entries"`
@@ -413,8 +412,8 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 	return &pkg, nil
 }
 
-// prepareBackup ports prepareAccountBackup: describe each envelope against its
-// provider, then compute dispositions from local identities.
+// prepareBackup describes each envelope against its provider, then computes
+// dispositions from local identities.
 func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) (*preparedPackage, error) {
 	pkg, err := readBackupPackage(path)
 	if err != nil {
@@ -534,7 +533,7 @@ func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) 
 	return &preparedPackage{createdAt: pkg.CreatedAt, entries: entries}, nil
 }
 
-// normalizeIdentityKey mirrors the case-insensitive email comparison used for
+// normalizeIdentityKey is the case-insensitive identity comparison used for
 // identity collisions.
 func normalizeIdentityKey(identity string) string {
 	if identity == "" {

@@ -5,7 +5,7 @@
 // that: a native release ships one Go engine and no Node runtime, and
 // executable ESM plugins are not a native-release requirement.
 //
-// What survives here is the seam, deliberately:
+// What survives here is the registry, deliberately:
 //
 //   - internal/plugins still owns the registry: manifests, whole-package
 //     digests, enable/disable, add/remove. `anypick plugin …` keeps working.
@@ -13,22 +13,17 @@
 //     with a reason that names this removal, so `doctor` and the desktop
 //     protocol stay authoritative instead of silently reporting a healthy
 //     empty plugin set.
-//   - proxy.PluginLifecycle and internal/proxy/service_plugin.go are kept even
-//     though no provider currently implements provider.ProxyStarter. They are
-//     the contract a future Go-native declarative executor would implement.
 //
-// When that executor lands it replaces activatePlugins and this file's header;
-// the registry, the CLI and the proxy contract do not change.
+// When a Go-native executor lands (ADR-0032) it replaces activatePlugins and
+// this file's header; the registry and the CLI do not change.
 package app
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/outof0/anypick/go/internal/plugins"
-	"github.com/outof0/anypick/go/internal/proxy"
 )
 
 // ErrPluginHostRemoved reports that a package cannot run because this build
@@ -67,23 +62,6 @@ func (s *pluginSupervisor) runtimeSnapshot() ([]plugins.LoadedPlugin, []plugins.
 	defer s.mu.Unlock()
 	return append([]plugins.LoadedPlugin(nil), s.loaded...),
 		append([]plugins.LoadFailure(nil), s.startupFailures...)
-}
-
-// Identity is the zero value: there is no supervised generation. An invalid
-// identity makes every ownership check in internal/proxy fail closed, which is
-// the correct answer when no plugin-owned child can exist.
-func (s *pluginSupervisor) Identity() proxy.PluginRuntimeIdentity {
-	return proxy.PluginRuntimeIdentity{}
-}
-
-// TerminateGeneration has no generation to kill. A zero expectation is a
-// no-op; anything else names a generation this build can never have produced,
-// so it is refused rather than silently accepted.
-func (s *pluginSupervisor) TerminateGeneration(expected proxy.PluginRuntimeIdentity) error {
-	if !expected.IsValid() {
-		return nil
-	}
-	return fmt.Errorf("%w: cannot terminate %+v", ErrPluginHostRemoved, expected)
 }
 
 func (s *pluginSupervisor) Close() {

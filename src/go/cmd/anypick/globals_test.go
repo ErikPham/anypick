@@ -2,7 +2,7 @@ package main
 
 // Global-flag matrix regressions (M8): flags are recorded wherever they
 // appear before the command, --dry-run plans without persisting, and secret
-// redaction follows TS maskSecret unless --reveal.
+// redaction follows maskSecret unless --reveal.
 
 import (
 	"context"
@@ -162,7 +162,7 @@ func TestGatewayShowRedactsUnlessRevealed(t *testing.T) {
 	globals.Reveal = false
 }
 
-func TestMaskSecretMatchesTS(t *testing.T) {
+func TestMaskSecretMasking(t *testing.T) {
 	if got := maskSecret(""); got != "(empty)" {
 		t.Fatalf("empty: %q", got)
 	}
@@ -257,8 +257,7 @@ func TestBareInvocationHonoursConfiguredSurface(t *testing.T) {
 	// Persisted tui surface: honour it by actually opening the Go TUI. Under a
 	// test there is no TTY, so it must fail closed with the usage exit code
 	// (invariant #6) rather than print help and exit 0. The exit code is the
-	// assertion: 2 proves the configured surface reached runTuiSurface, where
-	// the old "ships with the TypeScript build" path returned 0.
+	// assertion: 2 proves the configured surface reached runTuiSurface.
 	a, closeFn, err := appReadyForTest()
 	if err != nil {
 		t.Fatal(err)

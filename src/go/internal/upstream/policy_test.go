@@ -1,7 +1,8 @@
 package upstream
 
-// Contract tests for the TS-ported quota-guard and failure classification.
-// State-file shapes are cross-runtime: TypeScript reads what Go writes.
+// Contract tests for the quota-guard and failure classification.
+// State-file shapes are contractual: the file persists across restarts, so
+// field names and the version literal must not drift.
 
 import (
 	"encoding/json"

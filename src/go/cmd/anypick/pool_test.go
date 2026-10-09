@@ -82,7 +82,7 @@ func TestPoolMemberCommandRequiresExplicitValidState(t *testing.T) {
 	}
 }
 
-func TestPoolMemberStateMatchesTypeScriptAliases(t *testing.T) {
+func TestPoolMemberStateAliases(t *testing.T) {
 	for _, tc := range []struct {
 		state   string
 		enabled bool

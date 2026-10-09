@@ -1,6 +1,5 @@
-// Package lock ports src/utils/lock.ts (advisory flock with in-process
-// serialization) and src/core/mutation-lock.ts (scoped, sorted, re-entrant
-// coordinator locks — ADR 0009).
+// Package lock provides advisory flock with in-process serialization and
+// scoped, sorted, re-entrant coordinator locks (ADR 0009).
 package lock
 
 import (
@@ -21,9 +20,8 @@ const (
 	pollInterval   = 25 * time.Millisecond
 )
 
-// Per-path in-process serialization so concurrent goroutines queue like the
-// TS promise chain (utils/lock.ts localTails); flock then arbitrates across
-// processes. Different paths never block each other.
+// Per-path in-process serialization so concurrent goroutines queue in order;
+// flock then arbitrates across processes. Different paths never block each other.
 var pathMutexes sync.Map
 
 func pathMutex(path string) *sync.Mutex {
@@ -32,7 +30,7 @@ func pathMutex(path string) *sync.Mutex {
 }
 
 // FileLock is an advisory exclusive lock on one file. The lock file persists
-// after release (no unlink ⇒ no ABA split), matching utils/lock.ts.
+// after release (no unlink ⇒ no ABA split).
 type FileLock struct {
 	path     string
 	platform platformFileLock
@@ -108,8 +106,8 @@ func (l *FileLock) Release() error {
 	return err
 }
 
-// MutationLockPath ports mutationLockPath: scope sanitization is lossy, which
-// is exactly why held-lock identity is the resolved path.
+// MutationLockPath resolves a scope to a lock file path. Scope sanitization
+// is lossy, which is exactly why held-lock identity is the resolved path.
 func MutationLockPath(root, scope string) string {
 	var b strings.Builder
 	for _, r := range scope {
@@ -161,11 +159,11 @@ func WithMutationLock(ctx context.Context, root, scope string, fn func(ctx conte
 	return WithMutationLocks(ctx, root, []string{scope}, fn, 0)
 }
 
-// WithMutationLocks ports withMutationLocks: scopes are de-duplicated and
-// acquired in sorted order (deadlock freedom across overlapping mutations);
-// scopes already held by this context are skipped instead of re-acquired.
-// Re-entrancy replaces the TS AsyncLocalStorage with explicit context
-// propagation — nested service calls receive the enriched ctx.
+// WithMutationLocks runs fn under scoped exclusive locks: scopes are
+// de-duplicated and acquired in sorted order (deadlock freedom across
+// overlapping mutations); scopes already held by this context are skipped
+// instead of re-acquired. Re-entrancy uses explicit context propagation —
+// nested service calls receive the enriched ctx.
 // A timeout of 0 means the default (5s); pass -1 or AcquireFileLock(…,0)
 // directly for try-lock.
 func WithMutationLocks(ctx context.Context, root string, scopes []string, fn func(context.Context) error, timeout time.Duration) error {

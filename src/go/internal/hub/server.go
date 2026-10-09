@@ -28,8 +28,7 @@ type UpstreamResolver interface {
 
 // PoolRingResolver resolves a pool-backed source into its credential ring —
 // the same guard-ordered, quota-class failover pipeline a standalone pool
-// serves (src/core/proxy-hub-server.ts hands every enabled pool member to the
-// backend ring; TS hub sources are account OR pool refs).
+// serves. Hub sources are account OR pool refs.
 type PoolRingResolver interface {
 	ResolvePoolRing(ctx context.Context, providerID string) (*proxy.PoolServer, error)
 }

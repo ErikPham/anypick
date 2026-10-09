@@ -15,8 +15,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// codex mirrors CodexProvider: live auth is ~/.codex/auth.json. Detection,
-// backup, restore, and snapshot matching all use that one authority.
+// codex manages Codex credentials. Live auth is ~/.codex/auth.json;
+// detection, backup, restore, and snapshot matching all use that one authority.
 type codex struct{ home string }
 
 const codexLoginMethodID = "chatgpt-subscription"
@@ -32,7 +32,6 @@ func (p *codex) AccountAdapter(accountName string, proxyEnabled bool) transport.
 	return transport.CodexAccountAdapter(p.ID(), accountName, proxyEnabled)
 }
 
-// loginCommand mirrors CodexProvider.loginCommand (src/providers/codex.ts).
 func (p *codex) loginCommand() browserlogin.Command {
 	names := []string{"codex"}
 	extraPaths := []string{
@@ -53,7 +52,6 @@ func (p *codex) loginCommand() browserlogin.Command {
 	}
 }
 
-// LoginMethods mirrors CodexProvider.loginMethods.
 func (p *codex) LoginMethods() []LoginMethod {
 	return []LoginMethod{
 		browserlogin.Availability(LoginMethod{
@@ -67,8 +65,8 @@ func (p *codex) LoginMethods() []LoginMethod {
 	}
 }
 
-// Login mirrors CodexProvider.login: the file credential store is asserted
-// first so the OAuth flow lands in auth.json where snapshots can see it.
+// Login asserts the file credential store first so the OAuth flow lands in
+// auth.json where snapshots can see it.
 func (p *codex) Login(ctx context.Context, methodID, source string) error {
 	if methodID != codexLoginMethodID || (source != "" && source != "codex") {
 		return anyerr.Newf("Unknown Codex sign-in method.", "PROVIDER_LOGIN_METHOD_UNKNOWN")
@@ -93,7 +91,8 @@ func (p *codex) authPath() string {
 	return filepath.Join(p.codexHome(), "auth.json")
 }
 
-// codexAuthJSON mirrors hasCodexAuth: API key or OAuth token material.
+// codexAuthJSON reports whether the parsed auth.json holds API key or OAuth
+// token material.
 func codexAuthJSON(data map[string]json.RawMessage) bool {
 	if raw, ok := data["OPENAI_API_KEY"]; ok {
 		var s string
@@ -225,8 +224,8 @@ func (p *codex) Restore(srcDir string) error {
 	return atomicfile.Write(dest, data, 0o600)
 }
 
-// PreflightRestore mirrors CodexProvider.preflightRestore: refuse before any
-// checkpoint is taken so an unsafe owner/store fails without rollback work.
+// PreflightRestore refuses before any checkpoint is taken so an unsafe
+// owner/store fails without rollback work.
 func (p *codex) PreflightRestore(_ string) error {
 	return AssertFileCredentialStore(p.codexHome())
 }

@@ -425,6 +425,60 @@ func TestCheckPathsReportsAnEmptyExtraction(t *testing.T) {
 	}
 }
 
+// TestGoSourceCitationsFindsADeletedEngineReference drives the check in both
+// directions. Without the clean direction, a check whose pattern stopped
+// matching would report "OK" and the repository would keep shipping pointers
+// into a tree that no longer exists.
+func TestGoSourceCitationsFindsADeletedEngineReference(t *testing.T) {
+	fixture := newFixtureRepo(t)
+	fixture.gitInit()
+
+	clean := checkGoSourceCitations(fixture.root)
+	if len(clean.Findings) != 0 {
+		t.Fatalf("a live-path comment is a false positive: %v", clean.Findings)
+	}
+
+	fixture.write("src/go/internal/proxy/dead.go",
+		"package proxy\n\n// ports src/core/proxy-service.ts for the ring.\nconst x = 1\n")
+	fixture.git("add", "-A")
+
+	broken := checkGoSourceCitations(fixture.root)
+	if len(broken.Findings) == 0 {
+		t.Fatal("a deleted engine citation must be reported")
+	}
+	if !strings.Contains(broken.Findings[0].Detail, "src/core/proxy-service.ts") {
+		t.Errorf("finding must name the path, got %q", broken.Findings[0].Detail)
+	}
+}
+
+// TestDeadEngineCitationPatternStaysNarrow keeps the pattern on the ten deleted
+// directories only. Widening it to every `src/…` path would flag src/go and
+// src/macos, which are live, and a gate that cries wolf is a gate that gets
+// deleted.
+func TestDeadEngineCitationPatternStaysNarrow(t *testing.T) {
+	for _, live := range []string{
+		"src/go/internal/buildinfo/buildinfo.go",
+		"src/macos/Store.swift",
+		"src/tauri/app/src/protocol.rs",
+		"src/go/README.md",
+	} {
+		if deadEngineCitation.MatchString(live) {
+			t.Errorf("%s is a live path and must not match", live)
+		}
+	}
+	for _, dead := range []string{
+		"src/core/registry.ts",
+		"src/providers/claude.ts",
+		"src/types/bindings.ts",
+		"src/utils/lock.ts",
+		"src/tray/supervisor.ts",
+	} {
+		if !deadEngineCitation.MatchString(dead) {
+			t.Errorf("%s was deleted and must match", dead)
+		}
+	}
+}
+
 // TestRootEntriesIgnoresDeliberatelyIgnoredFiles is the anti-false-positive
 // case: the rule is "tracked or ignored", not "tracked".
 func TestRootEntriesIgnoresDeliberatelyIgnoredFiles(t *testing.T) {

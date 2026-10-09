@@ -89,8 +89,8 @@ func cmdAccountRemove(ctx context.Context, a *appView, args []string) int {
 		return reportErr(anyerr.Newf("Account not found: "+providerID+"/"+name, "ACCOUNT_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound)))
 	}
-	// confirmDelete port (commands.ts): --yes short-circuits; non-TTY refuses
-	// with CONFIRMATION_REQUIRED exit 2 instead of consuming stdin (#6).
+	// --yes short-circuits; non-TTY refuses with CONFIRMATION_REQUIRED and
+	// exit 2 instead of consuming stdin (#6).
 	switch err := confirmDelete(providerID+"/"+name, globals.Yes); {
 	case errors.Is(err, errDeclined):
 		return int(anyerr.Success)
@@ -344,7 +344,7 @@ func cmdGatewayShow(ctx context.Context, a *appView, args []string) int {
 		return reportErr(anyerr.Newf("gateway not found", "GATEWAY_NOT_FOUND",
 			anyerr.WithExitCode(anyerr.NotFound)))
 	}
-	// Secrets are masked unless --reveal (mirrors profiles.redact).
+	// Secrets are masked unless --reveal.
 	shown := pr.Secrets.APIKey
 	if !globals.Reveal && shown != "" {
 		shown = maskSecret(shown)
@@ -372,7 +372,6 @@ func cmdGatewayShow(ctx context.Context, a *appView, args []string) int {
 	return int(anyerr.Success)
 }
 
-// maskSecret ports maskSecret from src/core/profile-service.ts.
 func maskSecret(value string) string {
 	if len(value) == 0 {
 		return "(empty)"

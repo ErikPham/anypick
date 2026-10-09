@@ -1,5 +1,4 @@
-// Package upstream ports src/providers/upstream-policy.ts and
-// src/providers/quota-guard.ts: failure classification, retry-after parsing,
+// Package upstream holds failure classification, retry-after parsing,
 // cooldown bookkeeping, and the multi-account Quota Guard ordering policy.
 // These are runtime-only policies: never account settings, never credentials.
 package upstream
@@ -16,7 +15,6 @@ import (
 	"github.com/outof0/anypick/go/internal/atomicfile"
 )
 
-// FailureKind mirrors UpstreamFailureKind.
 type FailureKind string
 
 const (
@@ -27,7 +25,6 @@ const (
 	KindPermanent FailureKind = "permanent"
 )
 
-// LimitScope mirrors LimitScope.
 type LimitScope string
 
 const (
@@ -53,8 +50,8 @@ var (
 	scopeIPRe        = regexp.MustCompile(`(?i)freeusagelimit|free usage|\bip\b`)
 )
 
-// IsInsufficientBalanceFailure ports isInsufficientBalanceFailure: billing
-// exhaustion is credential-scoped, unlike an IP/model rate limit. Deliberately
+// IsInsufficientBalanceFailure reports billing exhaustion, which is
+// credential-scoped, unlike an IP/model rate limit. Deliberately
 // narrow — a generic 403 must not disable a healthy account.
 func IsInsufficientBalanceFailure(status int, bodyPreview string) bool {
 	if status != 402 && status != 403 {
@@ -64,9 +61,9 @@ func IsInsufficientBalanceFailure(status int, bodyPreview string) bool {
 	return balanceRe.MatchString(text)
 }
 
-// IsCredentialQuotaFailure ports isCredentialQuotaFailure: true only when the
-// vendor response explicitly attributes exhaustion to an API key, project,
-// account, billing balance, or quota allocation.
+// IsCredentialQuotaFailure is true only when the vendor response explicitly
+// attributes exhaustion to an API key, project, account, billing balance,
+// or quota allocation.
 func IsCredentialQuotaFailure(status int, headerValue func(string) string, bodyPreview string) bool {
 	text := headerValue("x-goog-api-client") + " " + truncate(bodyPreview, 2000)
 	if status != 429 && !IsInsufficientBalanceFailure(status, bodyPreview) {
@@ -100,7 +97,7 @@ func MatchesQuotaErrorPattern(patterns []string, body string) bool {
 	return false
 }
 
-// ParseRetryAfter ports parseRetryAfter (delta-seconds or HTTP-date).
+// ParseRetryAfter accepts delta-seconds or HTTP-date values.
 func ParseRetryAfter(value string, now time.Time) *int64 {
 	raw := trimSpace(value)
 	if raw == "" {
@@ -120,7 +117,6 @@ func ParseRetryAfter(value string, now time.Time) *int64 {
 	return nil
 }
 
-// ClassifyUpstreamFailure ports classifyUpstreamFailure.
 func ClassifyUpstreamFailure(status int, headerValue func(string) string, bodyPreview string, now time.Time) ClassifiedFailure {
 	text := truncate(bodyPreview, 2000)
 	switch {
@@ -142,7 +138,7 @@ func ClassifyUpstreamFailure(status int, headerValue func(string) string, bodyPr
 	}
 }
 
-// CooldownRegistry mirrors CooldownRegistry: in-memory per-key deadlines.
+// CooldownRegistry holds in-memory per-key deadlines.
 type CooldownRegistry struct {
 	mu        sync.Mutex
 	deadlines map[string]time.Time
@@ -185,10 +181,8 @@ func (c *CooldownRegistry) Size() int {
 	return len(c.deadlines)
 }
 
-// MaxEvents mirrors MAX_EVENTS.
 const MaxEvents = 100
 
-// Event mirrors QuotaGuardEvent.
 type Event struct {
 	ID            string `json:"id"`
 	CreatedAt     string `json:"createdAt"`
@@ -198,8 +192,9 @@ type Event struct {
 	CooldownUntil int64  `json:"cooldownUntil"`
 }
 
-// State mirrors QuotaGuardState. The shape is cross-runtime: TypeScript reads
-// the same file, so field names and the version literal are contractual.
+// State is the persisted quota-guard audit shape. Field names and the
+// version literal are contractual: the file persists across restarts, so a
+// rename would orphan or misread what earlier versions wrote.
 type State struct {
 	Version       int              `json:"version"`
 	ActiveAccount string           `json:"activeAccount,omitempty"`
@@ -212,8 +207,8 @@ func EmptyState() State {
 	return State{Version: 1, Cooling: map[string]int64{}, Events: []Event{}}
 }
 
-// ReadState ports readQuotaGuardState: absent paths yield the empty state and
-// corrupt files degrade instead of preventing the proxy from serving requests.
+// ReadState loads the persisted audit file: absent paths yield the empty state
+// and corrupt files degrade instead of preventing the proxy from serving requests.
 func ReadState(path string) (State, error) {
 	if path == "" {
 		return EmptyState(), nil
@@ -225,10 +220,10 @@ func ReadState(path string) (State, error) {
 	return NormalizeState([]byte(raw)), nil
 }
 
-// NormalizeState ports normalizeQuotaGuardState with its strict field filters:
-// a non-object document yields the empty state; cooling entries keep only
-// account names ≤128 chars with positive numeric deadlines; events must carry
-// id/createdAt/from/cooldownUntil and are capped at MaxEvents.
+// NormalizeState applies strict field filters: a non-object document yields
+// the empty state; cooling entries keep only account names ≤128 chars with
+// positive numeric deadlines; events must carry id/createdAt/from/cooldownUntil
+// and are capped at MaxEvents.
 func NormalizeState(raw []byte) State {
 	var top map[string]json.RawMessage
 	state := EmptyState()

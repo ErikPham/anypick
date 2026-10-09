@@ -14,10 +14,10 @@ import (
 // loopback server instead of opencode.ai.
 var openCodeUsageEndpoint = "https://opencode.ai/zen/go/v1/usage"
 
-// LiveUsage ports opencode.ts liveUsage: ask the Zen/Go gateway for the
-// subscription's rolling/weekly/monthly windows. The key comes from the same
-// resolution the proxy uses (live CLI store, then a mirror), and an
-// OAuth-only login has no platform key to read a quota with.
+// LiveUsage asks the Zen/Go gateway for the subscription's rolling/weekly/
+// monthly windows. The key comes from the same resolution the proxy uses
+// (live CLI store, then a mirror), and an OAuth-only login has no platform
+// key to read a quota with.
 func (p *opencode) LiveUsage(ctx context.Context) (*LiveUsage, error) {
 	key, _, _ := openCodeGatewayKey(p.dataDir())
 	if key == "" {
@@ -47,7 +47,7 @@ func (p *opencode) LiveUsage(ctx context.Context) (*LiveUsage, error) {
 	return parseOpenCodeUsage(raw)
 }
 
-// parseOpenCodeUsage ports parseOpenCodeUsage: the vendor reports *used*
+// parseOpenCodeUsage parses the usage payload: the vendor reports *used*
 // percent per window, so each becomes its complement.
 func parseOpenCodeUsage(raw []byte) (*LiveUsage, error) {
 	var root map[string]interface{}

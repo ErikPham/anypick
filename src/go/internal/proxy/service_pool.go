@@ -1,6 +1,6 @@
-// Pool lifecycle ports startPoolProxy/stopPoolProxy from
-// src/core/proxy-service.ts: one shared pool proxy per provider serving every
-// enabled member account through a credential ring with Quota Guard failover.
+// Pool lifecycle (StartPoolProxy/StopPoolProxy): one shared pool proxy per
+// provider serving every enabled member account through a credential ring
+// with Quota Guard failover.
 //
 // Invariants carried over:
 //   - multi-mode + ≥1 enabled member or POOL_NOT_ENABLED / POOL_EMPTY;
@@ -39,7 +39,8 @@ import (
 
 func poolScope(providerID string) string { return "pool/" + providerID }
 
-// defaultPoolPort mirrors TS `pool.port ?? provider.defaultProxyPort ?? 8080`.
+// defaultPoolPort is the last-resort pool port when neither the pool row nor
+// the provider default names one.
 const defaultPoolPort = 8080
 
 // defaultPortFor resolves the provider's advertised default proxy port via the
@@ -51,9 +52,8 @@ func (s *Service) defaultPortFor(providerID string) int {
 	return s.DefaultPort(providerID)
 }
 
-// pickPoolToken ports the priorState branch of TS startPoolProxy: a surviving
-// record's token wins so issued client configs stay valid; otherwise a fresh
-// secret is generated.
+// pickPoolToken reuses a surviving record's token so issued client configs
+// stay valid; otherwise a fresh secret is generated.
 func pickPoolToken(prior *store.ProxyRuntimeState) (string, error) {
 	if prior != nil && prior.Token != "" {
 		return prior.Token, nil
@@ -111,11 +111,11 @@ func (r *poolServerRegistry) removeAll() []*PoolServer {
 	return out
 }
 
-// StartPoolProxy ports startPoolProxy: persist {enabled, host, port}, point
-// the primary member's own config at the pool port, stop the previous pool AND
-// the primary's single-account proxy, then bind one loopback listener guarded
-// by the reused-or-fresh pool token. Like TypeScript there is no instance
-// adoption — every start restarts, only the TOKEN survives.
+// StartPoolProxy persists {enabled, host, port}, points the primary member's
+// own config at the pool port, stops the previous pool AND the primary's
+// single-account proxy, then binds one loopback listener guarded by the
+// reused-or-fresh pool token. There is no instance adoption — every start
+// restarts, only the TOKEN survives.
 func (s *Service) StartPoolProxy(ctx context.Context, providerID string) (*StartResult, error) {
 	var result *StartResult
 	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
@@ -166,9 +166,8 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 	}
 	port := pool.Port
 	if port == 0 {
-		// TS parity (proxy-service.ts startPoolProxy → validatePort): bind the
-		// planned/persisted port deterministically — pool.port ??
-		// provider.defaultProxyPort ?? 8080 — so the planner's advertised
+		// Bind the planned/persisted port deterministically — pool.port, the
+		// provider default, else 8080 — so the planner's advertised
 		// endpoint always equals the served one. The previous pool and primary
 		// proxy are pre-stopped below, so collision is rare, and a busy port
 		// fails loudly instead of silently relocating.
@@ -213,8 +212,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 	// Token reuse reads prior state only AFTER the stop attempts: a verified
 	// stop clears the primary's proxy_state, so a normal restart rotates the
 	// token; reuse happens only when a stop was a no-op/failure that left the
-	// record — mirroring TS observable semantics (proxy-service.ts reads
-	// priorState after both stops).
+	// record behind.
 	priorState, err := s.Store.ReadProxyState(ctx, providerID, primary)
 	if err != nil {
 		return nil, errors.Join(err, stopErrs)
@@ -236,7 +234,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 
 	// Persist BEFORE spawning so the child reads its own credentials and a
 	// parent crash leaves a coherent record. State lives under the PRIMARY
-	// account slot, mirroring TS writeProxyState(providerId, primary, …).
+	// account slot.
 	st := store.ProxyRuntimeState{
 		AccountName: primary, Endpoint: endpoint,
 		PID: 0, InstanceID: instanceID, StartedAt: nowISO(), Token: poolToken,
@@ -312,7 +310,7 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 }
 
 // guardOptions builds the QuotaGuard configuration from the composition hook,
-// defaulting to the TS policy defaults when unwired.
+// defaulting to disabled with a 60-minute cooldown when unwired.
 func (s *Service) guardOptions(providerID string, members []string) upstream.GuardOptions {
 	opts := upstream.GuardOptions{
 		Enabled:    false,
@@ -381,7 +379,7 @@ func (s *Service) abortPoolStarted(
 	return errors.Join(errs...)
 }
 
-// StopPoolProxy ports stopPoolProxy under the provider scope: stop the pool
+// StopPoolProxy stops the pool under the provider scope: stop the pool
 // (listener first, then records) and release the (provider, "") lease.
 func (s *Service) StopPoolProxy(ctx context.Context, providerID string) error {
 	return lock.WithMutationLocks(ctx, s.Store.Root, []string{
@@ -461,7 +459,7 @@ func (s *Service) stopPoolLocked(ctx context.Context, providerID, primary string
 		}
 		waitHealthGone(state.Endpoint, state.InstanceID, 5*time.Second)
 		if healthOwnership(state.Endpoint).InstanceID == state.InstanceID {
-			// Fail closed like TS PROXY_STOP_UNVERIFIED: never erase the record
+			// Fail closed with PROXY_STOP_UNVERIFIED: never erase the record
 			// of an orphaned credential-bearing proxy we could not verify dead.
 			return anyerr.Newf("pool process did not stop after SIGTERM",
 				"PROXY_STOP_UNVERIFIED")

@@ -13,9 +13,8 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// codexAdapter ports the essential surface of createCodexClient:
-// a managed block in the live Codex config, private native profile homes, and
-// Codex's supported model catalog override. The catalog is source-scoped:
+// codexAdapter writes a managed block in the live Codex config, private
+// native profile homes, and Codex's supported model catalog override. The catalog is source-scoped:
 // custom providers do not cause Codex to fetch /models itself, so AnyPick must
 // publish the exact list discovered from the selected proxy or gateway.
 type codexAdapter struct {

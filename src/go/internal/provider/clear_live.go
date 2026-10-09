@@ -1,6 +1,5 @@
-// LiveClearer implementations missing from the per-provider ports
-// (clearLive in src/providers/{grok,codex,opencode,gemini}.ts). Clearing is
-// local-only: server-side OAuth revocation is never attempted.
+// LiveClearer implementations for grok, codex, opencode, and gemini.
+// Clearing is local-only: server-side OAuth revocation is never attempted.
 package provider
 
 import (
@@ -16,28 +15,26 @@ func removeQuiet(paths ...string) {
 }
 
 // ClearLive deletes local Grok auth.json only — it does NOT revoke OIDC
-// tokens server-side (mirrors GrokProvider.clearLive).
+// tokens server-side.
 func (p *grok) ClearLive() error {
 	removeQuiet(p.authPath(), p.authPath()+".lock")
 	return nil
 }
 
 // ClearLive removes auth.json so Codex treats this machine as signed out.
-// Saved AnyPick snapshots remain valid for restore (CodexProvider.clearLive).
+// Saved AnyPick snapshots remain valid for restore.
 func (p *codex) ClearLive() error {
 	path := p.authPath()
 	removeQuiet(path, path+".lock")
 	return nil
 }
 
-// ClearLive forgets the local OpenCode login; saved snapshots stay valid
-// (OpenCodeProvider.clearLive).
+// ClearLive forgets the local OpenCode login; saved snapshots stay valid.
 func (p *opencode) ClearLive() error {
 	removeQuiet(p.authPath())
 	return nil
 }
 
-// geminiAuthEnvKeys mirrors AUTH_ENV_KEYS in src/providers/gemini-env.ts.
 var geminiAuthEnvKeys = map[string]bool{
 	"GEMINI_API_KEY":                 true,
 	"GOOGLE_API_KEY":                 true,
@@ -49,7 +46,7 @@ var geminiAuthEnvKeys = map[string]bool{
 }
 
 // stripEnvAuthKeys removes known Gemini auth assignments from a dotenv file
-// and returns the remaining body ("port of stripEnvAuthKeys").
+// and returns the remaining body.
 func stripEnvAuthKeys(raw string) string {
 	kept := make([]string, 0, 16)
 	for _, line := range splitLines(raw) {

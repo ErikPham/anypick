@@ -19,9 +19,9 @@ type RecoveryResult struct {
 	Refused   []string
 }
 
-// RecoverIncompleteOperations ports recoverIncompleteOperations: exact file
-// rollback from recorded backups, durable checkpoint restore, never forward
-// execution when the source cannot be re-resolved exactly (spec §23.4).
+// RecoverIncompleteOperations performs exact file rollback from recorded
+// backups and durable checkpoint restore, never forward execution when the
+// source cannot be re-resolved exactly (spec §23.4).
 func RecoverIncompleteOperations(ctx context.Context, deps *Deps) (*RecoveryResult, error) {
 	incomplete, err := deps.Journal.ListIncompleteContext(ctx)
 	if err != nil {
@@ -258,8 +258,8 @@ func recover(ctx context.Context, deps *Deps, entry *journal.Entry, result *Reco
 	markFailed()
 }
 
-// recoveryScopes ports recoveryScopes: journal refs map account/pool back onto
-// their provider scope — the same lock an activation would have held.
+// recoveryScopes maps journal refs back onto lock scopes: account/pool refs
+// map onto their provider scope — the same lock an activation would have held.
 func recoveryScopes(entry journal.Entry) []string {
 	set := map[string]bool{}
 	for _, resource := range entry.AffectedResources {

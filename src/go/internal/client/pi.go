@@ -12,7 +12,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// piAdapter ports Pi (@earendil-works/pi-coding-agent), the minimal agent
+// piAdapter configures Pi (@earendil-works/pi-coding-agent), the minimal agent
 // harness. Pi reads provider credentials from ~/.pi/agent/auth.json (never
 // written here) and resolves models through ~/.pi/agent/models.json, where a
 // provider entry may override baseUrl/apiKey while keeping its models.

@@ -19,18 +19,17 @@ import (
 	"github.com/outof0/anypick/go/internal/proxy"
 )
 
-// gemini OAuth/API-key egress. Ports the auth half of gemini-proxy/server.ts:
-// api-key mode posts straight to generativelanguage.googleapis.com; OAuth mode
-// (gemini-cli or antigravity) refreshes a refresh_token grant and posts to the
-// Code Assist upstream with an Authorization: Bearer envelope.
+// Gemini OAuth/API-key egress: api-key mode posts straight to
+// generativelanguage.googleapis.com; OAuth mode (gemini-cli or antigravity)
+// refreshes a refresh_token grant and posts to the Code Assist upstream with
+// an Authorization: Bearer envelope.
 
 const (
 	geminiCliOAuthSource   = "gemini-cli"
 	antigravityOAuthSource = "antigravity"
 )
 
-// OAuth client profiles. Mirrors oauthProfile (server.ts) — constants with
-// ANTIGRAVITY_* / GEMINI_OAUTH_* env overrides.
+// OAuth client profiles with ANTIGRAVITY_* / GEMINI_OAUTH_* env overrides.
 const (
 	geminiOAuthClientID      = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	geminiOAuthClientSecret  = "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"
@@ -104,8 +103,8 @@ func geminiAllCredentialFiles() []string {
 	return out
 }
 
-// geminiOAuthCredentials ports GeminiOAuthCredentials: the flat on-disk
-// oauth_creds.json shape (expiry_date is a millisecond epoch).
+// geminiOAuthCredentials is the flat on-disk oauth_creds.json shape
+// (expiry_date is a millisecond epoch).
 //
 // Antigravity stores the same fields one level down, under `token`, with an
 // RFC3339 `expiry` instead of a millisecond epoch, plus `auth_method` and
@@ -291,8 +290,8 @@ func parseGeminiExpiry(value string) *int64 {
 	return nil
 }
 
-// geminiEnsureAccessToken ports currentOAuthToken + refreshOAuthToken: return a
-// valid access token, refreshing the refresh_token grant when expired. Both
+// geminiEnsureAccessToken returns a valid access token, refreshing the
+// refresh_token grant when expired. Both
 // sources refresh under a file lock and write the rotated token back: the
 // credential is a file we own (the snapshot, or ANTIGRAVITY_OAUTH_FILE), and
 // skipping the write would turn every proxied request into an OAuth
@@ -401,8 +400,8 @@ func refreshGeminiOAuth(path, source string, c *geminiOAuthCredentials) (string,
 }
 
 // writeGeminiOAuthCredentials preserves the on-disk shape and only rotates the
-// live fields (ports the undefined-key omission of JSON.stringify on the TS raw
-// object). A file that was read as the nested Antigravity envelope is written
+// live fields (empty keys are omitted so the JSON wire shape stays stable).
+// A file that was read as the nested Antigravity envelope is written
 // back as one: converting it to the flat shape would leave the owning app
 // unable to read its own login.
 func writeGeminiOAuthCredentials(path string, c *geminiOAuthCredentials) error {
@@ -671,8 +670,7 @@ func geminiUpstream(snapshotDir string) (*proxy.Upstream, error) {
 		UserAgent:      profile.userAgent,
 	}
 	// Auto-fallback: when the snapshot also carries the other identity, retry
-	// once through it on 401/403/404 (ports callGeminiWithAutoFallback's
-	// gemini-cli ↔ antigravity failover).
+	// once through it on 401/403/404 (gemini-cli ↔ antigravity failover).
 	if alt := geminiAltRouteFromSnapshot(snapshotDir, source); alt != nil {
 		target.AltRoute = alt
 	}

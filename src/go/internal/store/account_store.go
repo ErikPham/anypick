@@ -16,7 +16,7 @@ import (
 	"github.com/outof0/anypick/go/internal/slug"
 )
 
-// AccountStore is the SQLite-backed account store (src/core/store.ts).
+// AccountStore is the SQLite-backed account store.
 // Structured data lives in <root>/anypick.db; snapshot bytes are BLOBs
 // materialized to a cache dir when providers need a real filesystem path.
 type AccountStore struct {
@@ -212,7 +212,7 @@ func (s *AccountStore) patchMetaContext(ctx context.Context, providerID, name st
 }
 
 // MetaPatch uses explicit set-flags so clearing a field is distinguishable
-// from leaving it alone (the TS patch object has the same property).
+// from leaving it alone.
 type MetaPatch struct {
 	IdentitySet     bool
 	Identity        string
@@ -342,9 +342,9 @@ type BatchWrite struct {
 	SnapshotDir string
 }
 
-// WriteAccountsBatch atomically writes many accounts in one transaction —
-// the equivalent of writeAccountsBatch in src/core/store.ts. A failure leaves
-// every prior row untouched, so a batch restore cannot half-land.
+// WriteAccountsBatch atomically writes many accounts in one transaction. A
+// failure leaves every prior row untouched, so a batch restore cannot
+// half-land.
 // WriteAccountsBatch is mutation-guarded (ADR 0009). A batch can span
 // providers, so it takes every affected provider scope at once: acquiring them
 // in sorted order is what keeps a mixed batch from deadlocking against a
@@ -485,40 +485,6 @@ func (s *AccountStore) ReadProxyState(ctx context.Context, providerID, name stri
 	return &state, nil
 }
 
-// ProxyStateRef is one persisted proxy runtime state row.
-type ProxyStateRef struct {
-	Provider string
-	Account  string
-	State    *ProxyRuntimeState
-}
-
-// ListProxyStates returns every account's persisted proxy runtime state. It
-// powers host-loss reconciliation: after the shared plugin host is terminated,
-// every in-host or non-detached forwarded proxy it served is gone, so their
-// state rows and leases must be reconciled. Corrupt rows are skipped rather
-// than failing the whole sweep.
-func (s *AccountStore) ListProxyStates(ctx context.Context) ([]ProxyStateRef, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT provider, account, state_json FROM proxy_state`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ProxyStateRef
-	for rows.Next() {
-		var provider, account, raw string
-		if err := rows.Scan(&provider, &account, &raw); err != nil {
-			return nil, err
-		}
-		var state ProxyRuntimeState
-		if err := json.Unmarshal([]byte(raw), &state); err != nil {
-			continue
-		}
-		out = append(out, ProxyStateRef{Provider: provider, Account: account, State: &state})
-	}
-	return out, rows.Err()
-}
-
 // ClearProxyStateContext is mutation-guarded (ADR 0009).
 func (s *AccountStore) ClearProxyStateContext(ctx context.Context, providerID, name string) error {
 	return s.mutate(ctx, providerID, func(ctx context.Context) error {
@@ -532,38 +498,14 @@ func (s *AccountStore) clearProxyStateContext(ctx context.Context, providerID, n
 	return err
 }
 
-// ClearProxyStateAndLeasesContext drops an account's proxy_state row and ALL
-// of its account-scoped proxy_leases rows in one SQLite transaction. This is
-// the atomic commit point for verified-dead cleanup (ADR 0004 discipline):
-// host-loss reconciliation enumerates proxy_state, so clearing the row before
-// the leases — or stranding either half through a partial failure — means no
-// later pass ever revisits the account. Either both halves land or neither. The
-// pair of deletes is mutation-guarded (ADR 0009): it must not interleave with
-// another mutation of the same provider.
-func (s *AccountStore) ClearProxyStateAndLeasesContext(ctx context.Context, providerID, name string) error {
-	return s.mutate(ctx, providerID, func(ctx context.Context) error {
-		return s.clearProxyStateAndLeasesContext(ctx, providerID, name)
-	})
-}
-
-func (s *AccountStore) clearProxyStateAndLeasesContext(ctx context.Context, providerID, name string) error {
-	return s.DB.InTransactionContext(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.Exec(
-			`DELETE FROM proxy_state WHERE provider = ? AND account = ?`, providerID, name); err != nil {
-			return err
-		}
-		_, err := tx.Exec(
-			`DELETE FROM proxy_leases WHERE provider = ? AND account = ?`, providerID, name)
-		return err
-	})
-}
-
 // ReleaseProxyRuntime releases an account's proxy liveness (endpoint, pid,
 // instance, started-at) and ALL of its leases in one transaction, but KEEPS
 // the persisted bearer token. Client configs are written once at activation
 // holding that token; rotating it on every stop would 401 every configured
 // app until the next activation rewrote it, so stopping must not rotate.
-// Dropping the secret stays explicit via ClearProxyStateAndLeasesContext.
+// Dropping the secret stays explicit via ClearProxyStateContext, which is
+// also why a token that must be discarded is not discarded here: this method
+// is on the stop path, and stop must leave every configured app working.
 // There is deliberately no ctx-less form: AGENTS.md invariant 5 forbids one
 // for a mutating method, and nothing needs it — every caller already holds a
 // context from the proxy lifecycle it is cleaning up after.
@@ -708,7 +650,8 @@ func orDefault(v, fallback string) string {
 	return v
 }
 
-// normalizeAccountName ports utils/slug normalizeAccountName.
+// normalizeAccountName slugifies a name for use as the SQL key and snapshot
+// path.
 func normalizeAccountName(name string) string {
 	s, err := slug.AccountName(name)
 	if err != nil {

@@ -1,4 +1,4 @@
-// Package pools ports src/core/pool-store.ts: per-provider multi-account
+// Package pools stores per-provider multi-account
 // pools served through that provider's proxy.
 package pools
 
@@ -13,13 +13,11 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// Member mirrors PoolMember.
 type Member struct {
 	Account string `json:"account"`
 	Enabled bool   `json:"enabled"`
 }
 
-// Pool mirrors ProviderProxyPool.
 type Pool struct {
 	Provider  string   `json:"provider"`
 	Mode      string   `json:"mode"` // 'single' | 'multi'

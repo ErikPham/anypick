@@ -1,4 +1,5 @@
-// Package slug ports src/utils/slug.ts.
+// Package slug normalizes provider and account names into stable, filesystem-safe
+// identifiers used as the account key everywhere else.
 package slug
 
 import (
@@ -8,7 +9,6 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxSlugLen mirrors MAX_SLUG_LEN.
 const MaxSlugLen = 64
 
 // Normalize slugifies human-friendly input ("Kiro Key - 1k" → "kiro-key-1k").
@@ -55,7 +55,7 @@ func Normalize(raw, kind string) (string, error) {
 	return name, nil
 }
 
-// AccountName ports normalizeAccountName.
+// AccountName normalizes an account name.
 func AccountName(raw string) (string, error) { return Normalize(raw, "Account name") }
 
 func isAlnum(b byte) bool {
@@ -79,8 +79,8 @@ func replaceRuns(s, set, with string) string {
 	return b.String()
 }
 
-// collapseDots implements `.replace(/\.\.+/g, '.')` — two or more dots
-// collapse to one, but a single dot survives untouched.
+// collapseDots collapses runs of dots: two or more dots collapse to one,
+// but a single dot survives untouched.
 func collapseDots(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

@@ -1,8 +1,8 @@
-// Package store ports src/core/store.ts + src/core/store-snapshot.ts.
+// Package store is the SQLite-backed account store.
 //
-// JSON field names match the TypeScript AccountMeta exactly (camelCase) so
-// both runtimes read the same rows. writeMeta is the atomic commit point for
-// an account snapshot — invariant #4 / ADR 0004 / DATA-01.
+// JSON field names match the AccountMeta wire shape exactly (camelCase) so
+// exported artifacts stay interchangeable. writeMeta is the atomic commit
+// point for an account snapshot — invariant #4 / ADR 0004 / DATA-01.
 package store
 
 import (
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// CredentialClass mirrors the TS union.
+// CredentialClass is the account credential classification.
 type CredentialClass string
 
 const (
@@ -21,8 +21,8 @@ const (
 	CredentialProxyOnly          CredentialClass = "proxy_only"
 )
 
-// Meta mirrors AccountMeta from src/types/account.ts. Optional fields use
-// omitempty so round-tripping through SQLite keeps byte-compatible shapes.
+// Meta is the account metadata record. Optional fields use omitempty so
+// round-tripping through SQLite keeps byte-compatible shapes.
 type Meta struct {
 	Name            string          `json:"name"`
 	Provider        string          `json:"provider"`
@@ -35,7 +35,7 @@ type Meta struct {
 	CredentialClass CredentialClass `json:"credentialClass,omitempty"`
 }
 
-// ProxyConfig mirrors AccountProxyConfig; DEFAULT_PROXY_CONFIG = {enabled:false}.
+// ProxyConfig is one account's proxy preference; the default is disabled.
 type ProxyConfig struct {
 	Enabled bool                   `json:"enabled"`
 	Port    int                    `json:"port,omitempty"`
@@ -52,19 +52,18 @@ type Account struct {
 	Proxy       ProxyConfig
 }
 
-// ProxyRuntimeState mirrors ProxyRuntimeState. Token is owner-only material
-// (PROXY-01): persisted in proxy_state, never surfaced in status output.
+// ProxyRuntimeState is the persisted runtime record. Token is owner-only
+// material (PROXY-01): persisted in proxy_state, never surfaced in status
+// output.
 type ProxyRuntimeState struct {
-	AccountName             string `json:"accountName"`
-	Endpoint                string `json:"endpoint"`
-	Compatibility           string `json:"compatibility,omitempty"`
-	PID                     int    `json:"pid,omitempty"`
-	InstanceID              string `json:"instanceId,omitempty"`
-	LogPath                 string `json:"logPath,omitempty"`
-	StartedAt               string `json:"startedAt"`
-	Token                   string `json:"token,omitempty"`
-	PluginRuntimeGeneration string `json:"pluginRuntimeGeneration,omitempty"`
-	PluginRuntimePID        int    `json:"pluginRuntimePid,omitempty"`
+	AccountName   string `json:"accountName"`
+	Endpoint      string `json:"endpoint"`
+	Compatibility string `json:"compatibility,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+	InstanceID    string `json:"instanceId,omitempty"`
+	LogPath       string `json:"logPath,omitempty"`
+	StartedAt     string `json:"startedAt"`
+	Token         string `json:"token,omitempty"`
 }
 
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }

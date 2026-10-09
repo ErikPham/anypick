@@ -16,7 +16,7 @@ import (
 )
 
 // EnvelopeJSON is the wire form of one account (version 1, kind
-// anypick-account). Field names match the TypeScript envelope exactly so the
+// anypick-account). Field names match the envelope contract exactly so
 // artifacts are interchangeable.
 type EnvelopeJSON struct {
 	Version int                `json:"version"`
@@ -65,7 +65,7 @@ func ExportEnvelope(st *store.AccountStore, ctx context.Context, providerID, nam
 	return nil
 }
 
-// ImportDeps mirrors ImportAccountDeps.
+// ImportDeps carries the collaborators for ImportEnvelope.
 type ImportDeps struct {
 	Store     *store.AccountStore
 	Providers *provider.Registry

@@ -25,8 +25,7 @@ import (
 )
 
 // Route actions (Switch-menu chips, app-route chips) must activate through the
-// persistent planner/executor — the bindingService.use port. TS authority:
-// src/tray/supervisor-actions.ts invokeTrayAction routes EVERY non-proxy
+// persistent planner/executor. invokeTrayAction routes EVERY non-proxy
 // target through app.bindingService.use(target.clientId, { with: target.source }).
 // A handler that mutates the source provider's account directly (wrong scope)
 // or returns success without mutating anything (false success) violates that
@@ -351,9 +350,9 @@ func TestInvokeCrossProviderAppRouteBindsClientNotSourceProvider(t *testing.T) {
 	}
 
 	// The source provider's live login must be untouched. Grok's adapter
-	// declares requiresNativeAuthWrite: false (src/sources/account-adapters.ts),
-	// so TS's WriteNativeAuth step never runs for grok sources and switching
-	// claude onto grok/a must not rewrite grok's live auth or active pointer.
+	// declares requiresNativeAuthWrite: false, so the WriteNativeAuth step
+	// never runs for grok sources and switching claude onto grok/a must not
+	// rewrite grok's live auth or active pointer.
 	live, rerr := os.ReadFile(grokAuth)
 	if rerr != nil {
 		t.Fatal(rerr)

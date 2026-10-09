@@ -19,8 +19,8 @@ func quote(s string) string {
 	return string(b)
 }
 
-// stagedFilePath ports src/core/account-codec.ts stagedFilePath: validate a
-// relative key and resolve it inside stagingRoot, refusing escapes.
+// stagedFilePath validates a relative key and resolves it inside stagingRoot,
+// refusing escapes.
 func stagedFilePath(stagingRoot, relKey string) (string, error) {
 	if err := validateImportFileKey(relKey); err != nil {
 		return "", err
@@ -62,8 +62,8 @@ func isWindowsAbsolute(key string) bool {
 
 func isLetter(b byte) bool { return unicode.IsUpper(rune(b)) || unicode.IsLower(rune(b)) }
 
-// IngestSnapshotDir ports ingestSnapshotDir: replace this account's BLOB rows
-// with the directory contents. Caller runs inside a transaction.
+// IngestSnapshotDir replaces this account's BLOB rows with the directory
+// contents. Caller runs inside a transaction.
 func IngestSnapshotDir(tx *sql.Tx, providerID, name, snapDir string) error {
 	if _, err := tx.Exec(
 		`DELETE FROM account_snapshot_files WHERE provider = ? AND account = ?`,
@@ -146,8 +146,8 @@ func (s *AccountStore) CopySnapshotFiles(ctx context.Context, providerID, name, 
 	return rows.Err()
 }
 
-// MaterializeSnapshot ports materializeSnapshot: rebuild the on-disk snapshot
-// cache from committed BLOB rows. Path traversal and collisions are rejected.
+// MaterializeSnapshot rebuilds the on-disk snapshot cache from committed BLOB
+// rows. Path traversal and collisions are rejected.
 func MaterializeSnapshot(root string, d *sql.DB, providerID, name string) error {
 	snap := paths.AccountSnapshotDir(root, providerID, name)
 	if err := os.MkdirAll(snap, 0o700); err != nil {

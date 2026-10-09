@@ -1,12 +1,11 @@
-// PoolServer ports the multi-account credential ring served by
-// src/providers/compatible/backend.ts behind startPoolProxy
-// (src/core/proxy-service.ts): one loopback listener, one pool token, and a
-// ring of enabled member accounts resolved through the same upstream resolver
-// path as single-account proxies.
+// PoolServer is the multi-account credential ring behind StartPoolProxy:
+// one loopback listener, one pool token, and a ring of enabled member
+// accounts resolved through the same upstream resolver path as
+// single-account proxies.
 //
-// Failover parity is intentional: the persisted strategy (failover |
-// round-robin) is recorded but NOT rotated — like TypeScript, the ring is
-// always ordered-failover with active-account promotion via the QuotaGuard.
+// Failover is intentional: the persisted strategy (failover |
+// round-robin) is recorded but NOT rotated — the ring is always
+// ordered-failover with active-account promotion via the QuotaGuard.
 package proxy
 
 import (
@@ -55,7 +54,7 @@ type PoolServer struct {
 	InstanceID string
 	Token      string
 	Members    []string
-	// Strategy mirrors the persisted pool row ('failover' | 'round-robin').
+	// Strategy is the persisted pool row ('failover' | 'round-robin').
 	//
 	// failover: the guard keeps the account that last served at the head of the
 	// ring, so every request is sticky until an account is cooled down.
@@ -191,7 +190,7 @@ func (s *PoolServer) coolingOrder(candidates []upstream.Candidate) ([]upstream.C
 
 // servePoolRequest walks the guard-ordered member ring. Statuses pass through
 // verbatim unless the failure is quota-class AND a next candidate exists AND
-// the guard is enabled — exactly backend.ts fetch().
+// the guard is enabled.
 //
 // obs may be nil when a caller has its own accounting; every method on it is
 // nil-safe, so the ring never needs to care whether it is being watched.
@@ -205,7 +204,7 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request, ob
 		ringDeadline = start.Add(budget)
 	}
 
-	// TS reuses a buffered body for every ring attempt; ReverseProxy drains
+	// Reuse a buffered body for every ring attempt; ReverseProxy drains
 	// r.Body on the first hop, so snapshot it once and replay per member.
 	var bodyBytes []byte
 	if r.Body != nil {
@@ -291,8 +290,6 @@ func (s *PoolServer) servePoolRequest(w http.ResponseWriter, r *http.Request, ob
 			writeJSONError(w, http.StatusGatewayTimeout, "upstream_timeout", "pool ring deadline exceeded")
 			return
 		}
-		// TS: `if (!next || !guard.enabled || !isExhausted(...)) return last;`
-		//
 		// fromCooling stops after the one attempt: every member is cooling, so
 		// walking the rest would spend the request's whole budget repeating a
 		// verdict the caller can already read.
@@ -539,7 +536,7 @@ func jsonErrorBody(typ, message string) string {
 	return string(payload)
 }
 
-// isQuotaClassFailure ports backend.ts isExhausted: 401/402, insufficient
+// isQuotaClassFailure reports quota-class exhaustion: 401/402, insufficient
 // balance, explicit credential-quota attribution, or a provider-declared
 // quotaErrorPatterns regex matching the body.
 func isQuotaClassFailure(status int, headerValue func(string) string, bodyPreview string, patterns []string) bool {

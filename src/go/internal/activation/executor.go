@@ -78,7 +78,7 @@ type activationContext struct {
 	allowForeignConfig bool
 }
 
-// Execute ports executeActivation: dry-run short-circuit, then the whole
+// Execute runs the activation: dry-run short-circuit, then the whole
 // critical section under sorted mutation scopes with a journalled rollback.
 func Execute(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOptions) (*ExecuteResult, error) {
 	if opts.SkipIfActive && plan.Mode == ModePersistent && plan.BindingSpec != nil {
@@ -134,11 +134,12 @@ func bindingEqual(a, b bindings.Spec) bool {
 	return normalize(a) == normalize(b)
 }
 
-// mutationScopes ports mutationScopes. Hub activations ADDITIONALLY hold the
-// hub/<name> scope for the whole critical section: the undo closures below
-// touch hub config/routes directly, and rollback runs inside these scopes —
-// releasing the hub lock after the attach step (the old behavior) let a
-// concurrent mutation interleave with compensation (invariant #5).
+// mutationScopes returns the scopes for the activation's critical section.
+// Hub activations ADDITIONALLY hold the hub/<name> scope for the whole
+// critical section: the undo closures below touch hub config/routes
+// directly, and rollback runs inside these scopes — releasing the hub lock
+// after the attach step (the old behavior) let a concurrent mutation
+// interleave with compensation (invariant #5).
 func mutationScopes(plan *Plan) []string {
 	scopes := []string{"client/" + plan.Client}
 	if plan.Mode == ModeProject && plan.ProjectRoot != "" {
@@ -255,7 +256,7 @@ func executeLocked(ctx context.Context, plan *Plan, deps *Deps, opts ExecuteOpti
 }
 
 // runStep dispatches one planned step. The switch must cover every StepKind;
-// planner-time markers are explicit no-ops exactly like STEP_HANDLERS in TS.
+// planner-time markers are explicit no-ops.
 func runStep(ctx context.Context, step PlanStep, plan *Plan, deps *Deps, opts ExecuteOptions, actx *activationContext, journalID string) error {
 	switch step.Kind {
 	case StepWriteNativeAuth:
@@ -414,8 +415,8 @@ func validateCredential(ctx context.Context, plan *Plan, deps *Deps) error {
 	return nil
 }
 
-// writeNativeAuth ports the WriteNativeAuth handler: refuse ephemeral, skip
-// when already live-matched, preflight, durable checkpoint, then accounts.use.
+// writeNativeAuth refuses ephemeral, skips when already live-matched,
+// preflights, checkpoints durably, then switches via accounts.use.
 func writeNativeAuth(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext, journalID string) error {
 	if plan.Mode == ModeEphemeral {
 		return anyerr.Newf(
@@ -513,7 +514,7 @@ func recordNativeAuthCheckpoint(ctx context.Context, deps *Deps, actx *activatio
 // UseNoProxyOption keeps native-auth switches off the proxy path.
 func UseNoProxyOption() accounts.UseOptions { return accounts.UseOptions{NoProxy: true} }
 
-// createEphemeralHome ports createEphemeralHome: exactly one isolated runtime
+// createEphemeralHome creates exactly one isolated runtime
 // per ephemeral run; cleanup registered before anything else can fail. The
 // SpawnChild step stays a no-op — the launcher spawns the child using
 // result.Isolated.
@@ -763,7 +764,7 @@ func hubHealthy(endpoint string) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-// startManagedProxy ports the StartProxy handler: start the account proxy,
+// startManagedProxy starts the account proxy,
 // record the lease, and register inverse operations. Pool sources are routed
 // through the pool lifecycle (proxy pool start), not a per-account proxy.
 func startManagedProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activationContext) error {
@@ -778,8 +779,8 @@ func startManagedProxy(ctx context.Context, plan *Plan, deps *Deps, actx *activa
 	}
 
 	// Pool sources route through the pool lifecycle: one shared provider-scope
-	// proxy serving every enabled member (activation-executor.ts startManagedProxy
-	// account-pool branch). Undo stops the whole pool when we started it now.
+	// proxy serving every enabled member. Undo stops the whole pool when we started
+	// it now.
 	if ref.Kind == refs.KindAccountPool {
 		started, err := deps.Proxy.StartPoolProxy(ctx, ref.Provider)
 		if err != nil {
@@ -845,7 +846,7 @@ func fillManagedProxy(plan *Plan, started *proxy.StartResult) {
 	}
 }
 
-// writeClientConfig ports the WriteClientConfig handler branches:
+// writeClientConfig applies the client configuration branches:
 //   - account + managed proxy → inject endpoint into native client config;
 //   - gateway (persistent/project/named profile) → apply the saved profile;
 //   - codex + direct persistent → restore native model/provider config;

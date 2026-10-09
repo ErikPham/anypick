@@ -15,10 +15,9 @@ import (
 // server instead of xAI.
 var grokUsageEndpoint = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 
-// LiveUsage ports grok.ts liveUsage: read the CLI's credit window with the
-// live OIDC session. Like the other providers, quota polling never refreshes
-// or writes a credential — an expired session stays unread until the user
-// acts.
+// LiveUsage reads the CLI's credit window with the live OIDC session. Like
+// the other providers, quota polling never refreshes or writes a credential —
+// an expired session stays unread until the user acts.
 func (p *grok) LiveUsage(ctx context.Context) (*LiveUsage, error) {
 	session, err := loadGrokSession(p.authPath())
 	if err != nil || session.accessToken == "" || isGrokExpired(session, time.Now()) {
@@ -62,8 +61,9 @@ func grokSessionUserID(session grokSession) string {
 	return stringField(session.raw, "userId")
 }
 
-// parseGrokUsage ports parseGrokUsage: config.creditUsagePercent wins, else the
-// used/monthlyLimit pair; the window name comes from the vendor's period type.
+// parseGrokUsage parses the billing payload: config.creditUsagePercent wins,
+// else the used/monthlyLimit pair; the window name comes from the vendor's
+// period type.
 func parseGrokUsage(raw []byte) (*LiveUsage, error) {
 	var root map[string]interface{}
 	if json.Unmarshal(raw, &root) != nil {

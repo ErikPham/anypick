@@ -1,5 +1,4 @@
-// Package transport ports src/sources/account-adapters.ts and
-// src/core/capabilities.ts.
+// Package transport classifies capability pairs through account adapters.
 //
 // INVARIANT (AGENTS.md #1): capability pairs come from these adapters. The
 // client registry lists what exists, never what is allowed; adapter_matrix_test.go
@@ -16,7 +15,7 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// Capability mirrors TransportCapability.
+// Capability is the transport classification for one client.
 type Capability string
 
 const (
@@ -27,7 +26,7 @@ const (
 	Unsupported          Capability = "unsupported"
 )
 
-// Protocol mirrors Protocol ('openai' | 'anthropic').
+// Protocol is the client protocol ('openai' | 'anthropic').
 type Protocol string
 
 const (
@@ -35,7 +34,7 @@ const (
 	Anthropic Protocol = "anthropic"
 )
 
-// Policy mirrors TransportPolicy ('auto' | 'direct' | 'proxy').
+// Policy is the transport policy ('auto' | 'direct' | 'proxy').
 type Policy string
 
 const (
@@ -44,7 +43,7 @@ const (
 	PolicyProxy  Policy = "proxy"
 )
 
-// Capabilities mirrors SourceCapabilities.
+// Capabilities describes what a source offers.
 type Capabilities struct {
 	SourceKind              string // 'account' | 'gateway' | 'proxy-hub'
 	Provider                string
@@ -55,17 +54,16 @@ type Capabilities struct {
 	RequiresNativeAuthWrite bool
 }
 
-// ProviderCanProxy is the minimal core hook the adapters need. In TS this is
-// src/core/capabilities.ts providerCanProxy(provider) — true when the provider
-// implements startProxy. The Go side models providers as data, so callers pass
-// the boolean their provider registry reports.
+// ProviderCanProxy is the minimal core hook the adapters need — true when the
+// provider implements startProxy. Providers are modeled as data, so callers
+// pass the boolean their provider registry reports.
 type ProviderInfo struct {
 	ID         string
 	CanProxy   bool
 	HasAdapter bool // provider.sourceAdapter implemented
 }
 
-// Adapter mirrors SourceAdapter: a value plus its classification functions.
+// Adapter pairs a source with its classification functions.
 type Adapter struct {
 	SourceRef struct {
 		Kind     string
@@ -184,10 +182,10 @@ func GeminiAccountAdapter(provider, name string) Adapter {
 
 // GrokAccountAdapter: built-in dual-protocol proxy for compatible clients.
 // No native-auth write: the proxy authenticates per request from the account
-// snapshot (grokUpstream), and TS parity (activation-planner.ts) emits
-// WriteNativeAuth only for direct transports — a cross-provider proxy binding
-// like `use claude --with grok/x` must not rewrite grok's live login or
-// active pointer as a side effect.
+// snapshot (grokUpstream). WriteNativeAuth is emitted only for direct
+// transports — a cross-provider proxy binding like `use claude --with
+// grok/x` must not rewrite grok's live login or active pointer as a side
+// effect.
 func GrokAccountAdapter(provider, name string) Adapter {
 	a := Adapter{
 		Capabilities: baseAccountCapabilities("grok", nil),
@@ -310,7 +308,7 @@ func KiroAccountAdapter(provider, name string, findExecutable func() string) Ada
 	return a
 }
 
-// PoolAdapterFor mirrors poolAdapterFor: a pool serves only borrowing clients
+// PoolAdapterFor builds a pool adapter: a pool serves only borrowing clients
 // through a proxy. gemini/kiro are unsupported regardless of the pool.
 func PoolAdapterFor(providerID string, info ProviderInfo, proxyTransport Capability, acceptedClients ...string) Adapter {
 	accepted := map[string]bool{}
@@ -345,7 +343,7 @@ func PoolAdapterFor(providerID string, info ProviderInfo, proxyTransport Capabil
 	return a
 }
 
-// managedProxySet mirrors MANAGED_PROXY in src/core/transport-resolver.ts.
+// managedProxySet is the set of managed proxy capabilities.
 // ExternalManualProxy is deliberately excluded: it is not a managed proxy
 // (no process to spawn/health-check), so --transport proxy must not accept it.
 var managedProxySet = map[Capability]bool{
@@ -353,11 +351,10 @@ var managedProxySet = map[Capability]bool{
 	ManagedExternalProxy: true,
 }
 
-// ResolveTransportPolicy ports resolveTransportPolicy
-// (src/core/transport-resolver.ts): resolve an adapter's provider-owned
-// transport offer against explicit user intent. Auto preserves the adapter
-// default. Explicit policy never falls back to another path: a direct request
-// either resolves to direct or fails.
+// ResolveTransportPolicy resolves an adapter's provider-owned transport offer
+// against explicit user intent. Auto preserves the adapter default. Explicit
+// policy never falls back to another path: a direct request either resolves
+// to direct or fails.
 func ResolveTransportPolicy(a Adapter, clientID string, policy Policy) (Capability, error) {
 	automatic := a.TransportFor(clientID)
 	if policy == "" || policy == PolicyAuto {

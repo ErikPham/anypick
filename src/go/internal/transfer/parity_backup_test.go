@@ -33,20 +33,21 @@ func repoRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }
 
-// tsFixturePath is the committed TypeScript-authored package.
+// tsFixturePath is the committed package, authored by the TypeScript engine
+// before 9702015 deleted it. The generator that produced it went with that
+// engine, so this file is now the only copy: it is edited by hand, and a
+// format change means changing it deliberately rather than regenerating.
 func tsFixturePath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(repoRoot(t), "go", "testdata", "parity", "multi-account-backup.json")
 }
 
-// saveParityAccount mirrors saveFakeAccount but with the deterministic parity
-// credentials shared with the TypeScript fixture generator.
-
 func TestParityRestoreFromTypeScriptFixture(t *testing.T) {
 	path := tsFixturePath(t)
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("missing TS-authored fixture (regenerate with npx tsx scripts/gen-parity-fixtures.ts): %v", err)
+		t.Fatalf("missing TypeScript-authored fixture (the generator went with 9702015; "+
+			"edit testdata/parity/multi-account-backup.json by hand): %v", err)
 	}
 	var pkg struct {
 		Version   int    `json:"version"`

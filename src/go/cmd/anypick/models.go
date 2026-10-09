@@ -26,9 +26,8 @@ import (
 // account/gateway sources, the hub's routed models for hub sources), so the
 // CLI and the app cannot disagree about what is pinnable.
 //
-// Go-only command: the TypeScript tree has no equivalent (its Configure Models
-// picker lives in the tray), which is declared in
-// testdata/parity/cli-tree.json's omitted list.
+// Go-only command, listed in testdata/parity/cli-tree.json's omitted list
+// because it has no command-line counterpart in any earlier CLI.
 func cmdModels(ctx context.Context, a *app.App, args []string) int {
 	if cli.WantsHelp(args) {
 		fmt.Print("usage: anypick models <client> [--with <source>] [--json]\n\n" +

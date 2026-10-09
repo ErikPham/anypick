@@ -23,7 +23,7 @@ import (
 	"github.com/outof0/anypick/go/internal/store"
 )
 
-// StartResult mirrors the subset of ProxyHandle the activation flow consumes.
+// StartResult is the subset of the proxy handle the activation flow consumes.
 // Token is owner-only material (invariant #2): never print it, never put it
 // in JSON output boundaries.
 type StartResult struct {
@@ -39,7 +39,7 @@ type StartResult struct {
 	PortMovedFrom int
 }
 
-// Status mirrors ProxyStatus.
+// Status describes a proxy's enablement and liveness.
 type Status struct {
 	Enabled       bool   `json:"enabled"`
 	Running       bool   `json:"running"`
@@ -119,9 +119,8 @@ type Upstream struct {
 	// assist) used by the serveGemini branch.
 	Gemini *GeminiTarget
 	// QuotaErrorPatterns: provider-declared regexes that mark a failure as
-	// quota-class for pool failover (backend.ts isExhausted's
-	// definition.quotaErrorPatterns branch). Empty → classification falls back
-	// to the built-in 401/402/balance/credential-quota rules only.
+	// quota-class for pool failover. Empty → classification falls back to the
+	// built-in 401/402/balance/credential-quota rules only.
 	QuotaErrorPatterns []string
 	// MapModel, when set, translates an inbound client model name (such as
 	// a native Codex alias slug like gpt-5.6-sol) into the upstream provider's
@@ -138,8 +137,8 @@ type GeminiTarget struct {
 	// call the Code Assist upstream with Authorization: Bearer + the
 	// {model, project, session_id} envelope (OAuth).
 	APIKeyMode bool
-	// APIKeyBase overrides the API-key upstream (generativelanguage.googleapis.com).
-	// Mirrors the TS opts.upstream override; defaults to the Google endpoint.
+	// APIKeyBase overrides the API-key upstream; defaults to the Google
+	// endpoint.
 	APIKeyBase *url.URL
 	// CodeAssistBase is the OAuth upstream (cloudcode-pa.googleapis.com or
 	// daily-cloudcode-pa.googleapis.com). Ignored in APIKeyMode.
@@ -153,9 +152,9 @@ type GeminiTarget struct {
 	IDEType   string
 	UserAgent string
 	// AltRoute, when set on an OAuth target, is the secondary Code Assist
-	// identity retried once on 401/403/404 (ports callGeminiWithAutoFallback's
-	// gemini-cli ↔ antigravity failover). The engine's multi-account pool also
-	// covers this, but AltRoute lets one account carry both credentials.
+	// identity retried once on 401/403/404 (gemini-cli ↔ antigravity
+	// failover). The engine's multi-account pool also covers this, but AltRoute
+	// lets one account carry both credentials.
 	AltRoute *GeminiAltRoute
 }
 
@@ -208,99 +207,11 @@ type StartupUpstreamResolver interface {
 }
 
 // Spawner launches a detached child that serves the proxy after this process
-// exits (the Go equivalent of TS detached spawn). nil → in-process serving,
-// used by library consumers and tests.
+// exits. nil → in-process serving, used by library consumers and tests.
 type Spawner func(providerID, account string, st store.ProxyRuntimeState, logPath string) (pid int, err error)
 
 // PoolSpawner launches a detached `_serve-pool` child for a provider pool.
 type PoolSpawner func(providerID string) (pid int, err error)
-
-// ErrPluginMethodAbsent reports that a forwarding provider does not implement
-// one optional lifecycle method. TS keeps stopProxy/proxyStatus/readProxyLogs
-// optional next to a present startProxy, so the caller decides the fallback.
-var ErrPluginMethodAbsent = errors.New("plugin provider does not implement this optional proxy method")
-
-// PluginRequest carries exactly the TS ProxyContext fields across the plugin
-// boundary. Token is engine-generated (ADR 0006): it is handed OUT to the
-// provider and never accepted back from it.
-type PluginRequest struct {
-	ProviderID  string
-	AccountName string
-	SnapshotDir string
-	RuntimeDir  string
-	Config      store.ProxyConfig
-	Token       string
-}
-
-// PluginStart is the validated subset of a plugin ProxyHandle that the Service
-// consumes. The plugin's own token field is deliberately absent: the Service
-// persists only its own generated secret. Runtime is engine-owned identity of
-// the host that actually served the call (filled by the composition adapter,
-// never decoded from plugin JSON) so a not-dispatched recovery cannot stamp
-// generation A's identity onto generation B's listener.
-type PluginStart struct {
-	Endpoint      string
-	Compatibility string
-	PID           int
-	InstanceID    string
-	LogPath       string
-	Runtime       PluginRuntimeIdentity
-}
-
-// PluginRuntimeIdentity identifies one exact engine-supervised plugin host.
-// Generation prevents PID reuse from associating state with a later host.
-type PluginRuntimeIdentity struct {
-	Generation string
-	PID        int
-}
-
-func (id PluginRuntimeIdentity) valid() bool { return id.Generation != "" && id.PID > 0 }
-
-// IsValid reports whether the identity names an exact supervised runtime.
-// Exported for composition-root callers (recovery termination guards) that
-// cannot reach the unexported form across package boundaries.
-func (id PluginRuntimeIdentity) IsValid() bool { return id.valid() }
-
-// pluginRuntimeIdentitySource is an optional engine-side capability. Third-
-// party plugin output cannot implement or influence it.
-type pluginRuntimeIdentitySource interface {
-	RuntimeIdentity() PluginRuntimeIdentity
-}
-
-func runtimeIdentityOf(lifecycle PluginLifecycle) PluginRuntimeIdentity {
-	source, ok := lifecycle.(pluginRuntimeIdentitySource)
-	if !ok {
-		return PluginRuntimeIdentity{}
-	}
-	return source.RuntimeIdentity()
-}
-
-// PluginLifecycle forwards per-account lifecycle calls to providers that own
-// their own compatibility-proxy implementation (arbitrary JavaScript plugins).
-// It is transport-only by contract: tokens (ADR 0006), instance-identity
-// verification (ADR 0003), leases and persisted records stay with the Service.
-// The composition root wires an implementation over the sealed provider
-// registry; nil keeps every provider on the built-in engine path.
-type PluginLifecycle interface {
-	// ForwardsLifecycle reports whether the provider owns its proxy lifecycle —
-	// presence of startProxy on the adapter, never inferred from clients or
-	// protocols.
-	ForwardsLifecycle(providerID string) bool
-	StartProxy(ctx context.Context, req PluginRequest) (*PluginStart, error)
-	// StopProxy, ProxyStatus and ReadProxyLogs return ErrPluginMethodAbsent
-	// when the provider leaves the optional method unimplemented.
-	StopProxy(ctx context.Context, req PluginRequest) error
-	ProxyStatus(ctx context.Context, req PluginRequest) (*Status, error)
-	ReadProxyLogs(ctx context.Context, req PluginRequest, lines int) (string, error)
-	// Terminate kills whatever runtime hosts the plugin's listeners WITHOUT
-	// relying on cooperation. Last resort for cancelled starts whose
-	// settlement could not be confirmed: no timing window can prove a
-	// coroutine ended, but its process dying can. The expected identity MUST
-	// be captured BEFORE dispatching the failed call: a stale generation is
-	// refused (never killing a replacement that other accounts now depend on).
-	// Must be idempotent.
-	Terminate(ctx context.Context, expected PluginRuntimeIdentity) error
-}
 
 // Service manages per-account builtin proxies. State persists in proxy_state
 // + proxy_leases so crashes leave recoverable records; every start runs under
@@ -325,18 +236,14 @@ type Service struct {
 	RotateLockTimeout time.Duration
 	PoolSpawner       PoolSpawner
 	// QuotaGuardPolicy reads the validated quota-guard settings; nil → the
-	// TS defaults (disabled, 60-minute cooldown, keep serving when every
+	// policy defaults (disabled, 60-minute cooldown, keep serving when every
 	// member is cooling).
 	QuotaGuardPolicy func(ctx context.Context) config.QuotaGuardPolicy
-	// DefaultPort returns a provider's advertised default proxy port
-	// (CompatibleProviderDefinition.defaultProxyPort); 0 when unknown or
-	// unwired. Composition-root wiring only — core proxy never imports
-	// providers (capability routing lives in the adapters, invariant #1).
+	// DefaultPort returns a provider's advertised default proxy port; 0 when
+	// unknown or unwired. Composition-root wiring only — core proxy never
+	// imports providers (capability routing lives in the adapters,
+	// invariant #1).
 	DefaultPort func(providerID string) int
-	// PluginLifecycle forwards lifecycle operations for providers that own
-	// their own proxy implementation (JS plugins). Composition wiring only;
-	// nil keeps the built-in engine path for everyone.
-	PluginLifecycle PluginLifecycle
 	// Pools owns the pools table; required for pool lifecycle methods.
 	Pools *pools.Store
 
@@ -574,37 +481,23 @@ func (s *Service) Configure(
 // someone else's process (PROC-01).
 func (s *Service) StartProxy(ctx context.Context, providerID, accountName string) (*StartResult, error) {
 	var result *StartResult
-	// Carries shared-state facts (host termination) out of the locked callback:
-	// their consequences touch OTHER accounts and may only run once these
-	// locks are released.
-	outcome := &forwardedCompensation{}
 	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
-		r, runErr := s.startLocked(c, providerID, accountName, outcome)
+		r, runErr := s.startLocked(c, providerID, accountName)
 		if runErr != nil {
 			return runErr
 		}
 		result = r
 		return nil
 	}, 0)
-	if outcome.hostTerminated {
-		// Locks are released: reconcile every other forwarding account whose
-		// proxy was served by the terminated runtime. Detached from the
-		// caller's context so a cancelled client cannot strand other accounts'
-		// rows in the just-killed host's state.
-		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*lifecycleVerifyTimeout)
-		defer cancel()
-		err = errors.Join(err, s.reconcileForwardedOnHostLoss(
-			reconcileCtx, providerID, accountName, outcome.terminatedRuntime))
-	}
 	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (s *Service) startLocked(ctx context.Context, providerID, accountName string, outcome *forwardedCompensation) (*StartResult, error) {
+func (s *Service) startLocked(ctx context.Context, providerID, accountName string) (*StartResult, error) {
 	account, err := s.Store.Get(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
@@ -613,13 +506,6 @@ func (s *Service) startLocked(ctx context.Context, providerID, accountName strin
 		return nil, anyerr.Newf(
 			fmt.Sprintf(`No account "%s" for provider "%s".`, accountName, providerID),
 			"ACCOUNT_NOT_FOUND", anyerr.WithExitCode(anyerr.NotFound))
-	}
-
-	// Providers that own their proxy implementation (JS plugins) keep the same
-	// Service contract — locks, tokens, leases, records — while the transport
-	// call itself crosses the plugin boundary.
-	if s.forwardsLifecycle(providerID) {
-		return s.startForwardedLocked(ctx, providerID, accountName, account.Proxy, outcome)
 	}
 
 	if existing, ok := s.servers.get(providerID, accountName); ok {
@@ -983,9 +869,6 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if s.forwardsLifecycle(providerID) {
-		return 0, s.stopForwardedLocked(ctx, providerID, accountName)
-	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*healthTimeout)
 	defer cancel()
 
@@ -1097,8 +980,8 @@ func (s *Service) cleanupLeasesContext(ctx context.Context, providerID, accountN
 	return nil
 }
 
-// StopIfLeaseOwned ports stopProxyIfLeaseOwned semantics: stop only when the
-// caller presents the instance id this activation created.
+// StopIfLeaseOwned stops only when the caller presents the instance id this
+// activation created.
 func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName, instanceID, leaseID string) error {
 	if instanceID == "" {
 		return nil
@@ -1144,9 +1027,6 @@ func (s *Service) StatusContext(ctx context.Context, providerID, accountName str
 	cfg, err := s.Store.GetProxyConfig(ctx, providerID, accountName)
 	if err != nil {
 		return nil, err
-	}
-	if s.forwardsLifecycle(providerID) {
-		return s.statusForwarded(ctx, providerID, accountName, cfg)
 	}
 	out := &Status{Enabled: cfg.Enabled}
 	if server, ok := s.servers.get(providerID, accountName); ok {

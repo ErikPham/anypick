@@ -10,7 +10,7 @@ import (
 )
 
 // runSecurity shells out to /usr/bin/security (macOS keychain). The credential
-// travels via stdin exactly like the TS store — never in process argv.
+// travels via stdin — never in process argv.
 func runSecurity(script string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

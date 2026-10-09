@@ -1,7 +1,5 @@
-// Package runtime ports the RuntimeService essentials
-// (src/core/runtime-service.ts): applying proxy endpoints and gateway
-// profiles to client configurations, with exact file compensation for
-// rollback.
+// Package runtime applies proxy endpoints and gateway profiles to client
+// configurations, with exact file compensation for rollback.
 package runtime
 
 import (
@@ -65,7 +63,7 @@ func codexConfigPath(s *Service) string {
 	return filepath.Join(clientHome(s), ".codex", "config.toml")
 }
 
-// ProxyEndpointOptions mirrors applyProxyEndpoint's payload.
+// ProxyEndpointOptions carries the inputs for ApplyProxyEndpoint.
 type ProxyEndpointOptions struct {
 	Endpoint              string
 	APIKey                string // proxy token; 'anypick-proxy' placeholder is never used implicitly

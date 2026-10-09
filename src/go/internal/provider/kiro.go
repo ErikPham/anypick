@@ -55,7 +55,7 @@ func (p *kiro) AccountAdapter(accountName string, _ bool) transport.Adapter {
 	return transport.KiroAccountAdapter(p.ID(), accountName, p.proxyCommand)
 }
 
-// PoolAdapter mirrors poolSourceAdapter: the external bridge, never builtin.
+// PoolAdapter is the external bridge, never builtin.
 type poolAdapterProvider interface{ PoolAdapter() transport.Adapter }
 
 func (p *kiro) PoolAdapter() transport.Adapter {
@@ -71,7 +71,6 @@ func (p *kiro) proxyCommand() string {
 	return discoverKiroProxyCommand()
 }
 
-// loginCommand mirrors KiroProvider.loginCommand (src/providers/kiro.ts).
 func (p *kiro) loginCommand() browserlogin.Command {
 	names := []string{"kiro-cli", "kiro"}
 	if env := os.Getenv("KIRO_BINARY"); env != "" {
@@ -87,7 +86,6 @@ func (p *kiro) loginCommand() browserlogin.Command {
 	}
 }
 
-// LoginMethods mirrors KiroProvider.loginMethods.
 func (p *kiro) LoginMethods() []LoginMethod {
 	return []LoginMethod{
 		browserlogin.Availability(LoginMethod{
@@ -101,7 +99,6 @@ func (p *kiro) LoginMethods() []LoginMethod {
 	}
 }
 
-// Login mirrors KiroProvider.login.
 func (p *kiro) Login(ctx context.Context, methodID, source string) error {
 	if methodID != kiroLoginMethodID || (source != "" && source != "kiro") {
 		return anyerr.Newf("Unknown Kiro sign-in method.", "PROVIDER_LOGIN_METHOD_UNKNOWN")

@@ -1,6 +1,5 @@
-// Package transfer ports src/core/account-codec.ts, account-transfer.ts,
-// account-backup.ts and account-restore.ts: versioned import/export envelopes
-// and multi-account backup packages.
+// Package transfer provides versioned import/export envelopes and
+// multi-account backup packages.
 //
 // Imports arrive as untrusted bytes. The codec validates the ENTIRE payload —
 // shape, provider ownership, every file key (traversal/absolute/separators/
@@ -23,8 +22,7 @@ import (
 	"github.com/outof0/anypick/go/internal/store"
 )
 
-// Envelope version/kind must match the TypeScript constants exactly so the
-// two runtimes exchange artifacts.
+// Envelope version/kind are fixed so artifacts on disk stay interchangeable.
 const (
 	EnvelopeVersion = 1
 	EnvelopeKind    = "anypick-account"
@@ -37,7 +35,7 @@ const (
 	MaxFieldLen           = 4096
 )
 
-// DecodedEnvelope mirrors DecodedAccountEnvelope.
+// DecodedEnvelope is the validated import payload.
 type DecodedEnvelope struct {
 	Version int
 	Kind    string
@@ -86,8 +84,7 @@ func ValidateImportFileKey(key string) error {
 
 var driveAbs = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 
-// normalizeKey converts backslashes to slashes then cleans, mirroring
-// normalize(key.split('\\').join('/')).
+// normalizeKey converts backslashes to slashes then cleans the result.
 func normalizeKey(key string) string {
 	slash := strings.ReplaceAll(key, `\`, "/")
 	return filepath.ToSlash(filepath.Clean(slash))
@@ -238,7 +235,7 @@ func decodeMeta(raw json.RawMessage) (store.Meta, error) {
 	case "":
 	default:
 		// Losing credentialKind would turn a user-supplied credential back
-		// into a native one; unknown values are rejected like TS's undefined.
+		// into a native one; unknown values are dropped.
 	}
 	switch store.CredentialClass(m.CredentialClass) {
 	case store.CredentialNativeSubscription, store.CredentialProviderAPIKey,

@@ -1,19 +1,19 @@
-// Package gemini ports the Gemini translation layer
-// (rotate/src/providers/protocol/gemini/*) into the Go engine: OpenAI Chat
+// Package gemini implements the Gemini translation layer: OpenAI Chat
 // Completions, Anthropic Messages, and OpenAI Responses become Gemini
 // generateContent / streamGenerateContent requests, and Gemini responses
 // become any of the three wire formats on the way back.
 //
-// Scope mirrors the TypeScript source: text + basic function/tool calls — enough
-// for Claude Code / Codex via AnyPick. Every converter is a pure function over
-// decoded JSON so it can be unit-tested without a live upstream.
+// Scope: text + basic function/tool calls — enough for Claude Code / Codex
+// via AnyPick. Every converter is a pure function over decoded JSON so it can
+// be unit-tested without a live upstream.
 package gemini
 
 import "encoding/json"
 
 // Carriers round-trip Gemini thought signatures through a channel that does
 // not have a native signature field (OpenAI tool_calls, Anthropic thinking
-// blocks). They are invisible zero-width characters; see translate-thinking.ts.
+// blocks). They are invisible zero-width characters; the thinking converter
+// documents the carrier scheme.
 const (
 	// ToolSignatureCarrier is an invisible standard thinking block used to
 	// carry a function-call signature through Claude.
@@ -78,9 +78,8 @@ type GeminiGenerateRequest struct {
 }
 
 // GeminiCodeAssistEnvelope wraps a generateContent body for the OAuth/Code
-// Assist upstream (cloudcode-pa / antigravity). Ports the inline envelope built
-// in callGemini (gemini-proxy/server.ts): { model, project, user_prompt_id,
-// request: { ...generateContent, session_id } }.
+// Assist upstream (cloudcode-pa / antigravity): { model, project,
+// user_prompt_id, request: { ...generateContent, session_id } }.
 type GeminiCodeAssistEnvelope struct {
 	Model        string                 `json:"model"`
 	Project      string                 `json:"project"`

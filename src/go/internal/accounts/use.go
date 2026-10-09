@@ -13,7 +13,7 @@ import (
 
 func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00") }
 
-// useLocked ports AccountService.use: preflight → checkpoint → stop the
+// useLocked runs preflight → checkpoint → stop the
 // previous account proxy → refresh previous → restore target → set active →
 // start the target proxy when enabled. The proxy lifecycle is optional so the
 // account service remains usable in import/tests that do not compose a proxy.

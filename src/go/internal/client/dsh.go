@@ -10,7 +10,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// dshAdapter ports the DeepSeek Harness (dsh) CLI. dsh is a Cordis-based
+// dshAdapter configures the DeepSeek Harness (dsh) CLI. dsh is a Cordis-based
 // harness whose DeepSeek adapter (route deepseek-official) reads its API key
 // from an environment variable (DEEPSEEK_API_KEY) and its endpoint from
 // $DEEPSEEK_BASE_URL. The key lives in the harness home's .env (read by dsh

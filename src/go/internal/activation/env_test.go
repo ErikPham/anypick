@@ -237,7 +237,7 @@ func splitDot(s string) []string {
 	return out
 }
 
-// errorsAsAny mirrors TS isAnyPickError checks in tests.
+// errorsAsAny reports whether err unwraps to *anyerr.Error.
 func errorsAsAny(err error, target **anyerr.Error) bool {
 	for err != nil {
 		if e, ok := err.(*anyerr.Error); ok {

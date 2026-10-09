@@ -10,9 +10,9 @@ import (
 	"testing"
 )
 
-// The fixtures below are ported from scripts/node-free-artifact-fixtures.mjs.
-// They are shared contract: src/macos/scripts/check-node-free-app.sh rejects
-// the same shapes, and the two scanners must stay in agreement.
+// The fixtures below are the shared contract:
+// src/macos/scripts/check-node-free-app.sh rejects the same shapes, and the
+// two scanners must stay in agreement.
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()

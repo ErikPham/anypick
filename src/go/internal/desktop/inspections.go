@@ -1,5 +1,4 @@
-// Process-local backup inspection manager: ports TrayBackupInspectionManager
-// from src/tray/backup-inspections.ts. A visible preview is bound to a
+// Process-local backup inspection manager: a visible preview is bound to a
 // privately staged copy of the backup bytes; restore re-verifies the digest
 // and the plan before committing.
 package desktop
@@ -127,7 +126,7 @@ func (m *InspectionManager) Inspect(reg *provider.Registry, requestID, path stri
 }
 
 // Restore restores entryIds from the staged inspection. Replacements require
-// overwriteConfirmed; blocked/unavailable entries are rejected like TS.
+// overwriteConfirmed; blocked/unavailable entries are rejected.
 func (m *InspectionManager) Restore(
 	ctx context.Context, reg *provider.Registry,
 	inspectionID string, entryIDs []string, overwriteConfirmed bool,
@@ -168,8 +167,8 @@ func (m *InspectionManager) Restore(
 		return 0, inspectionError("Replacing selected accounts requires confirmation.")
 	}
 
-	// Consume the record only after validation passes (TS deletes before
-	// restoring; either order is safe because the digest gate follows).
+	// Consume the record only after validation passes; either order is safe
+	// because the digest gate follows.
 	digest, derr := hashBoundedFile(record.stagedPath, stagedFileLimit)
 	if derr != nil || digest != record.digest {
 		return 0, inspectionError("The staged backup failed its integrity check.")
@@ -247,7 +246,7 @@ func (m *InspectionManager) Forget(id string) {
 	m.deleteLocked(id)
 }
 
-// inspectionError mirrors inspectionError in TS (stable user-facing message).
+// inspectionError builds the stable user-facing inspection error.
 func inspectionError(msg string) error {
 	return anyerr.Newf(msg, "BACKUP_INSPECT_FAILED")
 }
@@ -311,7 +310,7 @@ func newUUID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// inspectionFailureReason maps an inspection error to the TS protocol reason.
+// inspectionFailureReason maps an inspection error to the protocol reason.
 func inspectionFailureReason(err error) string {
 	if ae, ok := err.(*anyerr.Error); ok {
 		switch ae.Code {

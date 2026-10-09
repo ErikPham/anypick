@@ -8,8 +8,8 @@ import (
 	"github.com/outof0/anypick/go/internal/anyerr"
 )
 
-// GetProxyConfig mirrors AccountStore.getProxyConfig: missing rows decode to
-// DEFAULT_PROXY_CONFIG.
+// GetProxyConfig reads one account's proxy config; missing rows decode to the
+// default (disabled).
 func (s *AccountStore) GetProxyConfig(ctx context.Context, providerID, name string) (ProxyConfig, error) {
 	var raw sql.NullString
 	err := s.DB.QueryRowContext(ctx,

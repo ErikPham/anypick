@@ -1,6 +1,5 @@
-// Package bindings ports src/core/binding-store.ts and the binding types from
-// src/types/bindings.ts. JSON shapes match TypeScript so both runtimes read
-// the same rows.
+// Package bindings owns the global/project binding rows, the source-resume
+// history, and the provider model-role defaults.
 package bindings
 
 import (
@@ -14,7 +13,7 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// ModelSelection mirrors the TS tagged union:
+// ModelSelection is a tagged union:
 //
 //	{mode:'explicit', id} | {mode:'omitted'} | {mode:'unknown', reason}
 type ModelSelection struct {
@@ -26,7 +25,6 @@ type ModelSelection struct {
 func ExplicitModel(id string) ModelSelection { return ModelSelection{Mode: "explicit", ID: id} }
 func OmittedModel() ModelSelection           { return ModelSelection{Mode: "omitted"} }
 
-// Spec mirrors BindingSpec.
 type Spec struct {
 	Client          string                 `json:"client"`
 	Source          refs.Ref               `json:"source"`
@@ -35,7 +33,7 @@ type Spec struct {
 	ClientOptions   map[string]interface{} `json:"clientOptions,omitempty"`
 }
 
-// Provenance mirrors BindingProvenance. Kind is one of
+// Provenance records how a binding was created. Kind is one of
 // direct | preset_snapshot | global_binding_snapshot | legacy_migration.
 type Provenance struct {
 	Kind                     string `json:"kind"`
@@ -48,7 +46,6 @@ type Provenance struct {
 	ImportedAt               string `json:"importedAt,omitempty"`
 }
 
-// Global mirrors GlobalBinding.
 type Global struct {
 	Client                string     `json:"client"`
 	Spec                  Spec       `json:"spec"`
@@ -58,7 +55,6 @@ type Global struct {
 	UpdatedAt             string     `json:"updatedAt"`
 }
 
-// Project mirrors ProjectBinding.
 type Project struct {
 	ProjectRoot string     `json:"projectRoot"`
 	Client      string     `json:"client"`
@@ -305,7 +301,7 @@ func (s *Store) DeleteProjectContext(ctx context.Context, root, clientID string)
 }
 
 // CountProjects reports how many project bindings exist under a root without
-// mutating anything — `unlink --dry-run` needs TS's read-only removal count.
+// mutating anything — `unlink --dry-run` needs a read-only removal count.
 func (s *Store) CountProjectsContext(ctx context.Context, root string) (int64, error) {
 	var n int64
 	err := s.DB.QueryRowContext(ctx,
@@ -314,7 +310,7 @@ func (s *Store) CountProjectsContext(ctx context.Context, root string) (int64, e
 }
 
 // DeleteAllProjects removes every project binding under a project root and
-// reports how many were removed (TS deleteProject(root)).
+// reports how many were removed.
 func (s *Store) DeleteAllProjectsContext(ctx context.Context, root string) (int64, error) {
 	var removed int64
 	err := s.mutate(ctx, "project/"+root, func(c context.Context) error {
@@ -340,7 +336,7 @@ type SourceResume struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// RecordSourceResumeContext ports recordSourceResume. Presets are expanded by
+// RecordSourceResumeContext records a successful setup. Presets are expanded by
 // the planner before activation, so a symbolic preset pointer is never retained
 // — it could be edited or deleted independently of this history row. No
 // ctx-less form — see the note on UpsertGlobalContext.
@@ -389,7 +385,7 @@ func (s *Store) ListSourceResumesContext(ctx context.Context, source refs.Ref) (
 			return nil, err
 		}
 		if json.Unmarshal([]byte(specJSON), &r.Spec) != nil {
-			continue // corrupt rows are skipped, matching parseSourceResume
+			continue // corrupt rows are skipped.
 		}
 		out = append(out, r)
 	}

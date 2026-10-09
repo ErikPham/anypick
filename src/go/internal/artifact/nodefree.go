@@ -158,7 +158,7 @@ func walk(entry, realRoot string, out *[]Violation) {
 }
 
 // hasNodeShebang reports whether the file starts with a shebang that invokes
-// Node. Only the first line is considered, matching the JS scanner.
+// Node. Only the first line is considered.
 func hasNodeShebang(content []byte) bool {
 	if len(content) < 3 || content[0] != '#' || content[1] != '!' {
 		return false

@@ -1,5 +1,4 @@
-// Package app is the Go composition root — the counterpart of createApp /
-// createAppReady in src/core/app.ts. It builds the full service graph, runs
+// Package app is the Go composition root. It builds the full service graph, runs
 // the one-time bootstrap under `.migrate.lock`, performs startup journal
 // recovery and stale lease reaping, and exposes an idempotent Close.
 package app
@@ -107,7 +106,7 @@ type runtimeView struct {
 	Catalog    *catalog.Index
 }
 
-// Options mirror CreateAppOptions in src/core/app.ts.
+// Options configures the composition root.
 type Options struct {
 	// Root overrides the data root; empty resolves to ANYPICK_HOME/~/.anypick.
 	Root string
@@ -268,10 +267,6 @@ func (a *App) compose() error {
 	}
 	px.Resolver = &snapshotUpstreamResolver{store: st, providers: provReg, profiles: rt.Profiles}
 	px.Pools = poolsStore
-	// Plugin providers that own their proxy lifecycle route through the
-	// private Node host; built-ins keep the engine path. Wiring lives here so
-	// core proxy never imports providers (invariant #1).
-	px.PluginLifecycle = pluginProxyLifecycle{app: a}
 	px.DefaultPort = func(providerID string) int {
 		pv, err := provReg.Get(providerID)
 		if err != nil {
@@ -348,16 +343,16 @@ func (a *App) compose() error {
 	return nil
 }
 
-// Ready runs the createAppReady lifecycle:
+// Ready runs the startup lifecycle:
 //
 //	.migrate.lock → legacy root migration → schema migration →
 //	config/binding bootstrap → startup journal recovery → stale lease reap.
 //
-// The lock is best-effort like TS: contention fails fast instead of blocking.
+// The lock is best-effort: contention fails fast instead of blocking.
 func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error) {
 	root := paths.Root(opts.Root)
 	lockPath := filepath.Join(root, ".migrate.lock")
-	// The lock guards ONLY the bootstrap section below, exactly like TS:
+	// The lock guards ONLY the bootstrap section below:
 	// it must be released before command execution so short-lived helpers
 	// (detached proxy children) can boot while the parent keeps running.
 	fl, lockErr := lock.AcquireFileLock(lockPath, 0)
@@ -395,15 +390,15 @@ func Ready(ctx context.Context, opts Options) (_ *App, closeFn func(), err error
 		}
 	}
 	// Registries are immutable once startup begins resolving adapters. Plugin
-	// activation is the final registration window (matching the TS composition
-	// root), so long-lived services can never observe a graph that changes under
+	// activation is the final registration window, so long-lived services can never
+	// observe a graph that changes under
 	// an in-flight operation.
 	a.Providers.Seal()
 	a.Clients.Seal()
 
 	if !opts.SkipMigrate {
-		// Filesystem→SQLite and binding migrations are TS-side history this
-		// port never shipped mid-flight; fresh Go roots start at baseline.
+		// No mid-flight filesystem→SQLite or binding migrations exist here;
+		// fresh Go roots start at baseline.
 		// Config bootstrap lands with the config service milestone.
 		_ = ensureBootstrapState(ctx, a)
 	}

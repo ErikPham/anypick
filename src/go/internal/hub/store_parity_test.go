@@ -1,11 +1,10 @@
 package hub
 
-// Cross-runtime contract fixtures (go/testdata/parity): a TypeScript-authored
-// proxy_hubs row must decode in Go with the ref→Source mapping and enabled
-// flags preserved, a corrupt row must fail closed instead of zero-decoding
-// into an empty config, and a Go-written row must carry every key the TS
-// decoder (src/core/codec/proxy-hub.ts) requires. If the TS codec changes,
-// these tests force an explicit corresponding Go decision.
+// Contract fixtures (go/testdata/parity): a checked-in proxy_hubs row must
+// decode with the ref→Source mapping and enabled flags preserved, a corrupt
+// row must fail closed instead of zero-decoding into an empty config, and a
+// written row must carry every key the decoder requires. If the wire shape
+// changes, these tests force an explicit corresponding decision.
 
 import (
 	"context"
@@ -87,7 +86,7 @@ func TestHubConfigRowFromTypeScriptDecodes(t *testing.T) {
 	if cfg.Sources[1].IsEnabled() {
 		t.Fatal("disabled pool source decoded as enabled")
 	}
-	// TS treats absent enabled as on.
+	// Absent enabled reads as on, per the recorded decoder contract.
 	if cfg.Sources[2].ProviderID != "codex" || cfg.Sources[2].Account != "ws" || !cfg.Sources[2].IsEnabled() {
 		t.Fatalf("absent-enabled source = %#v, want codex/ws enabled", cfg.Sources[2])
 	}
@@ -141,7 +140,7 @@ func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Every key decodeProxyHubConfig requires must exist with a valid value.
+	// Every key decodeHubConfig requires must exist with a valid value.
 	var doc struct {
 		Name      string `json:"name"`
 		Host      string `json:"host"`
@@ -165,11 +164,11 @@ func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 	if doc.Name == "" || doc.Host == "" || doc.Port < 1 || doc.Port > 65535 ||
 		doc.Revision < 1 || doc.CreatedAt == "" || doc.UpdatedAt == "" ||
 		doc.Sources == nil || doc.ModelOwners == nil {
-		t.Fatalf("Go-written row misses keys the TS decoder requires: %s", raw)
+		t.Fatalf("Go-written row misses keys the recorded decoder contract requires: %s", raw)
 	}
 	for i, s := range doc.Sources {
 		if s.Ref == nil || (s.Ref.Kind != "account" && s.Ref.Kind != "account-pool") || s.Ref.Provider == "" {
-			t.Fatalf("source[%d] ref unusable by TS decoder: %s", i, raw)
+			t.Fatalf("source[%d] ref unusable by the recorded decoder contract: %s", i, raw)
 		}
 		if s.Ref.Kind == "account" && s.Ref.Name == "" {
 			t.Fatalf("source[%d] account ref missing name: %s", i, raw)
@@ -179,8 +178,8 @@ func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 		t.Fatalf("pool convention not round-tripped as account-pool ref: %s", raw)
 	}
 
-	// And Go itself re-reads its own write losslessly, including the disabled
-	// third source and the preserved TS-only modelOwners field.
+	// A re-read of its own write is lossless, including the disabled
+	// third source and the preserved unmodeled modelOwners field.
 	back, err := st.GetConfig("default")
 	if err != nil || back == nil || len(back.Sources) != 3 {
 		t.Fatalf("Go re-read of own write failed: %v %#v", err, back)
@@ -196,7 +195,7 @@ func TestHubWrittenShapeSatisfiesTypeScriptReader(t *testing.T) {
 // A kernel-assigned hub port is persisted as absent: inventing a concrete
 // port collides with the managed builtin proxy's default listener (observed
 // as e2e 401s from the wrong listener), so this is the ONE deliberate
-// deviation from the TS decoder contract — see tsHubConfig in store.go.
+// deviation from the decoder contract — see tsHubConfig in store.go.
 func TestHubKernelAssignedPortStaysAbsentNotInvented(t *testing.T) {
 	st := newHubStore(t)
 	if _, err := st.UpsertConfigContext(context.Background(), Config{Name: "auto", Enabled: true}); err != nil {

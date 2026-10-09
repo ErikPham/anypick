@@ -13,7 +13,8 @@ import (
 )
 
 // DB wraps database/sql with the narrow surface core needs (the Go equivalent
-// of AnyPickDatabase). Stores own SQL; services never embed it.
+// of AnyPickDatabase). Each group of tables has exactly one owning package;
+// see TableOwners in tables.go for the enforced registry.
 type DB struct {
 	*sql.DB
 }

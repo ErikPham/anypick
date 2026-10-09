@@ -11,7 +11,7 @@ import (
 	"github.com/outof0/anypick/go/internal/transport"
 )
 
-// ompAdapter ports omp (@oh-my-pi/pi-coding-agent), the IDE-wired coding
+// ompAdapter configures omp (@oh-my-pi/pi-coding-agent), the IDE-wired coding
 // agent. omp reads provider overrides from <agentDir>/models.yml — a
 // `providers:` mapping where each entry may set baseUrl/apiKey/api/models —
 // and keeps credentials in a local SQLite store AnyPick must not parse.

@@ -1,9 +1,9 @@
 package transfer
 
-// Cross-runtime contract fixtures (go/testdata/parity): a TypeScript-produced
-// envelope must decode identically in Go, and a rejected envelope must be
-// rejected for the same reason. If the TS codec changes, these tests force an
-// explicit corresponding Go decision.
+// Contract fixtures (go/testdata/parity): a committed envelope fixture must
+// decode identically, and a rejected envelope must be rejected for the same
+// reason. The checked-in fixture pins the reader against the envelope shape
+// users have on disk, which is exactly what a format change must not break.
 
 import (
 	"encoding/json"

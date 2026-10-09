@@ -20,10 +20,10 @@ import (
 // never a failed snapshot.
 const geminiUsageTimeout = 5 * time.Second
 
-// LiveUsage ports gemini.ts liveUsage / fetchCodeAssistUsage: read the
-// current Code Assist quota using whichever live OAuth login is valid. It
-// deliberately never refreshes or writes a credential — quota polling runs
-// every 30s and must not rotate a login the owning app is using.
+// LiveUsage reads the current Code Assist quota using whichever live OAuth
+// login is valid. It deliberately never refreshes or writes a credential —
+// quota polling runs every 30s and must not rotate a login the owning app is
+// using.
 func (p *gemini) LiveUsage(ctx context.Context) (*LiveUsage, error) {
 	token, source := p.liveUsageAccessToken()
 	if token == "" {
@@ -86,9 +86,9 @@ func antigravityUsageCredentials(payload *geminiAntigravityFile) *geminiOAuthCre
 }
 
 // fetchGeminiCodeAssistUsage resolves the account's Code Assist project and
-// asks for its quota. Mirrors fetchCodeAssistUsage in the reference
-// implementation: loadCodeAssist can answer without a project for consumer
-// accounts, and retrieveUserQuota is still the quota read for them.
+// asks for its quota. As in the reference implementation, loadCodeAssist can
+// answer without a project for consumer accounts, and retrieveUserQuota is
+// still the quota read for them.
 func fetchGeminiCodeAssistUsage(ctx context.Context, base, token, ideType, userAgent string) (*LiveUsage, error) {
 	base = strings.TrimSuffix(base, "/")
 	project, err := geminiLoadCodeAssistProject(ctx, base, token, ideType, userAgent)

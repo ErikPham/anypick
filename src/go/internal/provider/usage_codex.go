@@ -51,8 +51,8 @@ func nowUnixMilli() int64 {
 	return time.Now().UnixMilli()
 }
 
-// parseCodexUsage mirrors parseCodexUsage in src/providers/codex-usage.ts:
-// reads primary_window/secondary_window used_percent → remaining percent.
+// parseCodexUsage reads primary_window/secondary_window used_percent →
+// remaining percent.
 func parseCodexUsage(body []byte) (*LiveUsage, error) {
 	var root map[string]interface{}
 	if json.Unmarshal(body, &root) != nil {

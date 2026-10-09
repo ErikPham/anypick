@@ -1,7 +1,6 @@
-// Ports AccountService.login/loginMethods (src/core/service.ts): run a
-// provider-owned browser sign-in, then commit its native credential as an
-// AnyPick account. The prior native login and active pointer are restored
-// exactly if any step after checkpointing fails.
+// Run a provider-owned browser sign-in, then commit its native credential
+// as an AnyPick account. The prior native login and active pointer are
+// restored exactly if any step after checkpointing fails.
 package accounts
 
 import (
@@ -25,7 +24,8 @@ const fallbackAccountName = "stash"
 // barrier. Tests cancel in that window. Production leaves it nil.
 var loginCommitHook func()
 
-// LoginResult mirrors ProviderLoginResult minus protocol framing.
+// LoginResult is the saved-account outcome of a browser sign-in, minus
+// protocol framing.
 type LoginResult struct {
 	Provider   string               `json:"provider"`
 	Account    store.Meta           `json:"account"`
@@ -479,7 +479,7 @@ func (s *Service) refuseDistinctOverwrite(ctx context.Context, pv provider.Provi
 			"Or sign in as that account again so the saved login is refreshed."))
 }
 
-// stashBackupTarget ports resolveStashBackupTarget for the no-explicit-name
+// stashBackupTarget resolves the backup name for the no-explicit-name
 // path used by login: identity match first, then active reuse, then an
 // identity-derived name, then "stash".
 func (s *Service) stashBackupTarget(ctx context.Context, pv provider.Provider) (string, error) {
@@ -510,7 +510,7 @@ func (s *Service) stashBackupTarget(ctx context.Context, pv provider.Provider) (
 	return fallbackAccountName, nil
 }
 
-// resolveCurrentSaveName ports resolveCurrentSaveName: existing identities win
+// resolveCurrentSaveName resolves the save name: existing identities win
 // so a refreshed token overwrites its snapshot instead of aliasing.
 func (s *Service) resolveCurrentSaveName(ctx context.Context, pv provider.Provider, requestedName string, live provider.LiveAuthStatus) (string, error) {
 	if !live.Present {
@@ -569,8 +569,8 @@ func (s *Service) findAccountNameByIdentity(ctx context.Context, providerID, ide
 	return ""
 }
 
-// accountNameFromIdentity derives a stable account name from an email or id
-// (ports accountNameFromIdentity); failures fall back to "stash".
+// accountNameFromIdentity derives a stable account name from an email or id;
+// failures fall back to "stash".
 func accountNameFromIdentity(identity string) (string, error) {
 	trimmed := strings.TrimSpace(identity)
 	local := trimmed
@@ -613,15 +613,15 @@ func loginLiveSource(pv provider.Provider, source string) (provider.LiveAuthStat
 	return pv.DetectLive()
 }
 
-// errLoginCancelled mirrors PROVIDER_LOGIN_CANCELLED for post-launcher
+// errLoginCancelled reports PROVIDER_LOGIN_CANCELLED for post-launcher
 // cancellation barriers.
 func errLoginCancelled() error {
 	return anyerr.Newf("Browser sign-in was cancelled.", "PROVIDER_LOGIN_CANCELLED")
 }
 
-// selectLoginMethod ports selectLoginMethod: explicit ids resolve strictly;
-// otherwise the single preferred official method wins and ambiguity is an
-// interactive decision we never guess.
+// selectLoginMethod resolves the sign-in method: explicit ids resolve
+// strictly; otherwise the single preferred official method wins and
+// ambiguity is an interactive decision we never guess.
 func selectLoginMethod(methods []provider.LoginMethod, requestedMethodID string) (provider.LoginMethod, error) {
 	if requestedMethodID != "" {
 		for _, m := range methods {
