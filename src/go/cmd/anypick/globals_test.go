@@ -5,6 +5,7 @@ package main
 // redaction follows maskSecret unless --reveal.
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -34,19 +35,31 @@ func openAppBindingForTest(t *testing.T, clientID string) (*bindings.Global, err
 }
 
 // captureStdout redirects os.Stdout for the duration of fn.
+//
+// The pipe is drained by a goroutine started before fn runs. Reading it only
+// afterwards deadlocks once the command writes more than the pipe buffer holds.
+// See captureBoth in help_parity_test.go for the full account.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(&buf, r)
+	}()
+
 	saved := os.Stdout
 	os.Stdout = w
 	fn()
 	os.Stdout = saved
 	_ = w.Close()
-	data, _ := io.ReadAll(r)
-	return string(data)
+	<-done
+	_ = r.Close()
+	return buf.String()
 }
 
 func TestGlobalFlagMatrixRecorded(t *testing.T) {

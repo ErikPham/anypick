@@ -8,6 +8,7 @@ package main
 // dispatch).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"go/ast"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -114,6 +116,13 @@ func globalsClean() bool {
 
 // captureBoth redirects stdout and stderr for the duration of fn, returning
 // (stdout, stderr) and mirroring them into lastStdout/lastStderr.
+//
+// Both pipes are drained by a goroutine started before fn runs. Reading only
+// afterwards deadlocks once the command writes more than the pipe buffer holds
+// (64KB on Linux, 16KB on Darwin): the write blocks on a full pipe while the
+// reader has not started, so the test hangs until the package timeout rather
+// than failing. `doctor --fix --dry-run --json` reached 82KB once stale
+// temp overlays piled up in TMPDIR, which is how this was found.
 var lastStdout, lastStderr string
 
 func captureBoth(t *testing.T, fn func()) (string, string) {
@@ -126,15 +135,28 @@ func captureBoth(t *testing.T, fn func()) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var outBuf, errBuf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&outBuf, soutR)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&errBuf, serrR)
+	}()
+
 	savedOut, savedErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = soutW, serrW
 	fn()
 	os.Stdout, os.Stderr = savedOut, savedErr
 	_ = soutW.Close()
 	_ = serrW.Close()
-	outData, _ := io.ReadAll(soutR)
-	errData, _ := io.ReadAll(serrR)
-	lastStdout, lastStderr = string(outData), string(errData)
+	wg.Wait()
+	_ = soutR.Close()
+	_ = serrR.Close()
+	lastStdout, lastStderr = outBuf.String(), errBuf.String()
 	return lastStdout, lastStderr
 }
 
