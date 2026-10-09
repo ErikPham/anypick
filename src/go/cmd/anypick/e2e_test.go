@@ -122,6 +122,8 @@ func isolateEnv(t *testing.T) string {
 	base := t.TempDir()
 	t.Setenv("HOME", filepath.Join(base, "home"))
 	t.Setenv("ANYPICK_HOME", filepath.Join(base, "data"))
+	// codexHomePath follows CODEX_HOME and ignores the sandboxed HOME.
+	t.Setenv("CODEX_HOME", "")
 	if err := os.MkdirAll(filepath.Join(base, "home"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -598,14 +600,11 @@ func TestLinkWithoutWithPreservesGlobalSpec(t *testing.T) {
 	// immediately so neither the normal nor the race suite leaks _serve-proxy
 	// children (review finding: orphaned processes across runs).
 	//
-	// The wait is the point. `proxy stop` SIGTERMs the child and returns once
-	// the child's health endpoint stops answering, which is not the same as the
-	// process having exited and released its files. t.TempDir() then removes the
-	// root, and under load the child is still writing into it: the suite failed
-	// with "TempDir RemoveAll cleanup: directory not empty" on exactly this
-	// test. assertNoLeakedChildren polls until no child matches this test's temp
-	// root, which is the condition cleanup actually needs, and it names the pids
-	// when the wait runs out instead of leaving an unexplained unlinkat.
+	// proxy stop waits until the child pid has exited, not only until /health
+	// stops. The detached argv is `_serve-proxy <provider> <account>`, so the
+	// temp root is only in the environment and pgrep -f cannot see the child.
+	// assertNoLeakedChildren still names any leftover whose command line does
+	// carry this temp root.
 	t.Cleanup(func() {
 		if code := run([]string{"proxy", "stop", "deepseek", "ds"}); code != 0 {
 			t.Errorf("cleanup proxy stop exited %d", code)
