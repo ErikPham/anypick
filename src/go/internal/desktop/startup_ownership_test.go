@@ -418,9 +418,8 @@ func TestTakeoverConsentAppliesToAStoredBindingReapply(t *testing.T) {
 }
 
 // The desktop service boots with SkipMaintenance, so startup maintenance never
-// runs there. Its own rehydrate step is the only place that can sweep a Codex
-// profile whose account is gone — otherwise the leftover is replayed as a
-// restore failure on every launch and its credential home is never removed.
+// runs there. Rehydrate drops a Codex profile whose account is gone so the
+// leftover is not replayed as a restore failure. The credential home stays.
 func TestRehydrateSweepsOrphanedCodexProfiles(t *testing.T) {
 	env := newTrayEnv(t)
 	wireActivation(t, env)
@@ -441,6 +440,10 @@ func TestRehydrateSweepsOrphanedCodexProfiles(t *testing.T) {
 	if err := os.WriteFile(authPath, []byte(`{"OPENAI_API_KEY":"sk-orphan"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	history := filepath.Join(home, "history.jsonl")
+	if err := os.WriteFile(history, []byte("session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	srv := New(env.Deps, strings.NewReader(""), &strings.Builder{})
 	if err := srv.rehydrateManagedBindings(ctx); err != nil {
@@ -455,5 +458,8 @@ func TestRehydrateSweepsOrphanedCodexProfiles(t *testing.T) {
 	}
 	if _, err := os.Stat(authPath); !os.IsNotExist(err) {
 		t.Fatalf("orphaned profile kept the deleted account's credential: %v", err)
+	}
+	if _, err := os.Stat(history); err != nil {
+		t.Fatalf("desktop startup deleted history in the credential home: %v", err)
 	}
 }

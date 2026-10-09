@@ -635,10 +635,10 @@ func (s *Server) rehydrateManagedBindings(ctx context.Context) error {
 // Native direct profiles need no service process and remain isolated from the
 // desktop login, so only routes that own a managed child are replayed.
 //
-// Profiles whose account is gone are swept first. The desktop service starts
-// with SkipMaintenance (a detached helper may hold the parent's mutation
-// locks), so startup maintenance never runs here and this is the only place
-// that can clean up before the sweep's leftovers are replayed as failures.
+// Profiles whose account is gone are dropped from the route list first, and
+// their credential homes stay on disk. The desktop service starts with
+// SkipMaintenance (a detached helper may hold the parent's mutation locks),
+// so this is the only sweep that runs here. It must not delete the home.
 func (s *Server) rehydrateCodexProfiles(ctx context.Context) error {
 	if s.Deps.Activation == nil || s.Deps.Activation.ClientProfiles == nil {
 		return nil

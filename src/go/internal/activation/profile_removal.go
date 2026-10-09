@@ -12,13 +12,11 @@ import (
 	"github.com/outof0/anypick/go/internal/refs"
 )
 
-// Removing a named native profile is one operation with four callers: the
-// `codex profile remove` command, the desktop `codex-profile-remove` mutation,
-// the account-deletion cascade (the profile's account is gone), and the startup
-// orphan sweep (the account disappeared while nothing was running). They all
-// run this plan, so "remove a profile" cannot mean four slightly different
-// things — the failure mode that matters, because two of the four run without
-// a user watching.
+// Removing a named native profile has four callers. Explicit removal and the
+// unattended orphan sweep leave the private credential home on disk. The
+// account-deletion cascade is the one that purges it, because the user deleted
+// the account. Opening the app must not delete sessions and history that live
+// in a home whose account row is merely missing.
 
 // ProfileRemoval describes one named profile to remove and whether the
 // credential material inside its private home must go with it.
@@ -26,10 +24,9 @@ type ProfileRemoval struct {
 	Client string
 	Name   string
 	// PurgeCredentials removes the profile's private credential home in
-	// addition to the generated route files. It is set when the account the
-	// profile pointed at no longer exists: ResetProfile keeps auth.json so a
-	// later activation of the same name can reuse it, which would strand a
-	// deleted account's token in a file nothing else references.
+	// addition to the generated route files. Only the account-deletion
+	// cascade sets it. The orphan sweep does not. It runs when the app
+	// opens, and the home still holds sessions and history.
 	PurgeCredentials bool
 	// HubName is the Proxy Hub behind the route, when there is one. It is
 	// needed because the route row lives under the hub's mutation scope; a
@@ -213,7 +210,10 @@ func OrphanedAccountProfiles(ctx context.Context, deps *Deps) ([]ProfileRemoval,
 		if account != nil {
 			continue
 		}
-		out = append(out, ProfileRemovalFor(&named, true))
+		// Leave the credential home. This list feeds the unattended desktop
+		// sweep. Purging here deleted sessions the moment a restored
+		// database lacked the account row.
+		out = append(out, ProfileRemovalFor(&named, false))
 	}
 	if len(failures) > 0 {
 		return out, anyerr.Newf(

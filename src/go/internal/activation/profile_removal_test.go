@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -100,6 +101,10 @@ func TestCleanOrphanedProfilesRemovesOnlyProfilesWithMissingAccounts(t *testing.
 		t.Fatal(err)
 	}
 	orphan := env.makeCodexProfile(t, "orphan", refs.AccountRef("codex", "deleted"), "auto")
+	history := filepath.Join(orphan.profileDir, "history.jsonl")
+	if err := os.WriteFile(history, []byte("session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	kept := env.makeCodexProfile(t, "alive", refs.AccountRef("codex", "alive"), "auto")
 	gateway := env.makeCodexProfile(t, "gateway", refs.GatewayRef("openrouter"), "direct")
 
@@ -110,7 +115,15 @@ func TestCleanOrphanedProfilesRemovesOnlyProfilesWithMissingAccounts(t *testing.
 	if len(removed) != 1 || removed[0].Name != "orphan" {
 		t.Fatalf("swept %#v, want exactly the orphan", removed)
 	}
-	orphan.assertGone(t)
+	if removed[0].PurgeCredentials {
+		t.Fatal("unattended orphan sweep set PurgeCredentials")
+	}
+	if _, err := os.Stat(orphan.profileDir); err != nil {
+		t.Fatalf("orphan sweep deleted the credential home: %v", err)
+	}
+	if _, err := os.Stat(history); err != nil {
+		t.Fatalf("orphan sweep deleted history in the credential home: %v", err)
+	}
 	if _, err := env.ClientProfiles.GetContext(ctx, "codex", "orphan"); err != nil {
 		t.Fatal(err)
 	}
