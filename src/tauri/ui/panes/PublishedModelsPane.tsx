@@ -436,14 +436,12 @@ function InspectDialog({
       <Row testId="model-inspect.copy-curl">
         <RowText title="Test in Terminal" detail="OpenAI-compatible" />
         <RowActions>
-          <Button
-            kind="secondary"
+          <CopyButton
+            label="Copy cURL command"
             testId="published-models.copy-curl"
-            disabled={!chat}
-            onClick={() => void service.copy(curlTemplate(chat, model.id))}
-          >
-            Copy cURL
-          </Button>
+            value={curlTemplate(chat, model.id)}
+            copy={service.copy}
+          />
         </RowActions>
       </Row>
     </Dialog>

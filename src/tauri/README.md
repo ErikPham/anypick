@@ -96,6 +96,42 @@ claim. `make screenshots-tauri-ui` renders each destination and dialog to
 `.screenshots/` for a human to look at; it needs Playwright, so it is not a
 gate.
 
+`make check-parity` deliberately checks that a control *exists*, not how it
+behaves, so state parity has its own gates in
+`test/command-state.test.tsx`.
+
+### An icon command owns its state
+
+macOS reaches for an `NSButton` in `DesignIconButton` so AppKit paints the
+hover, the press and the disabled bezel. A web button already paints all three
+from CSS, so the control kind was never the parity gap. The state was: eight
+copy commands reported nothing at all, and one swapped its own glyph inline.
+
+`IconButton` therefore carries a `phase` of `idle`, `working` or `confirmed`, and
+`CopyButton` makes a copy a component rather than a prop, so a pane cannot grow
+a second spelling. Both draw through `Symbol`, which is the only place a path
+lives.
+
+- A copy reports whether the text reached the clipboard. `service.copy` returns
+  a boolean for this: a control that confirmed a refused write would be lying to
+  the one user who cannot select the value and read it back.
+- A `working` command sets `aria-busy` and is disabled, so a second click cannot
+  land on the same single-flight slot.
+- A row-menu command is the one place that may call `service.copy` directly, and
+  the exemption is a named list in the test rather than a comment.
+
+**A refresh greys; it does not spin.** The engine single-flights a mutation, so
+a refresh disables while its own request is in flight and that disabled state is
+the feedback. Spinning it would need a per-command in-flight slot with its own
+confirm path, for a state the HIG reserves spinners for background work. macOS
+made the same call; see `macos/README.md`.
+
+Three regressions here are invisible to a rendered test, because jsdom never
+loads `styles.css` and never fires a hover. `test/command-state.test.tsx` reads
+the source for all three, the same way `test/colour-tokens.test.ts` does:
+a `.spinner` that never named its `@keyframes`, a copy glyph drawn by hand, and
+an icon-only control with no name.
+
 ### The parity map is the work list
 
 `test/parity-map.ts` has one row per macOS feature: `done` names the Tauri

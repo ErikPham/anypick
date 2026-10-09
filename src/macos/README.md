@@ -418,6 +418,10 @@ These still apply; chrome must not fight them:
   `AnyPickTests` hold this: every `DesignIconButton` names itself, no
   icon-only command is a bare SwiftUI button again, and copy feedback has
   one spelling.
+- The Tauri port owns the same matrix in `IconCommandPhase`, and
+  `src/tauri/README.md` records why a web button did not need a different
+  answer: CSS already paints the hover, the press and the disabled bezel, so
+  the gap there was the state, not the control kind.
 - **A refresh does not spin; it greys.** The engine single-flights a
   mutation, so a refresh control disables while its own request is in
   flight, and that disabled bezel is the feedback. Spinning it would need a

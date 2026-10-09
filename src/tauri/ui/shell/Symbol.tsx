@@ -75,7 +75,7 @@ const SYMBOL_PATHS: Record<string, string> = {
   // the widths match: `IconButton` holds a fixed box, so a swap costs nothing.
   'doc.on.doc':
     'M9 3h6l4 4v9 M15 3v4h4 M9 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8 M15 3h4 M20 15v6 M17 18l3 3 3-3',
-  checkmark: 'M20 6 9 17l-4-4',
+  'checkmark': 'M20 6 9 17l-4-4',
 
   // Provider marks. One silhouette per provider, so two unbundled rows never
   // collapse into the same glyph — the reason macOS keeps a fallback *table*
