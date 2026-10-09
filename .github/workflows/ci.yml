@@ -97,11 +97,13 @@ jobs:
       - name: Test
         working-directory: src/go
         run: |
-          set -o pipefail
+          # GitHub runs bash with -e, which aborts on the failing pipeline
+          # before the grep below can report anything.
+          set +e
           go test ./... -count=1 2>&1 | tee /tmp/go-test.log
-          rc=$?
+          rc=${PIPESTATUS[0]}
           echo "::group::failing tests"
-          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
           exit $rc
 
@@ -140,11 +142,11 @@ jobs:
         working-directory: src/go
         shell: bash
         run: |
-          set -o pipefail
+          set +e
           go test ./... -count=1 2>&1 | tee /tmp/go-test.log
-          rc=$?
+          rc=${PIPESTATUS[0]}
           echo "::group::failing tests"
-          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
           exit $rc
 
