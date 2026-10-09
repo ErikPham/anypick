@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/transport"
 )
 
 func TestCodexApplyRefusesForeignRootModel(t *testing.T) {
@@ -37,6 +38,29 @@ func TestCodexApplyRefusesForeignRootModel(t *testing.T) {
 	raw, _ := os.ReadFile(configPath)
 	if string(raw) != userConfig {
 		t.Fatalf("foreign config was modified before consent:\n%s", raw)
+	}
+}
+
+func TestCodexNativeProfileReapplyIsOwned(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	home := t.TempDir()
+	root := t.TempDir()
+	a := newCodex(home, root)
+	snap := t.TempDir()
+	if err := os.WriteFile(filepath.Join(snap, "auth.json"), []byte(`{"token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &ApplyContext{
+		Endpoint: "http://127.0.0.1:9100", DefaultModel: "proxy-model",
+		AnyPickRoot: root, Home: home, ProfileName: "work",
+		SourceKind: "account", TransportCapability: transport.Direct,
+		NativeAuthSnapshotDir: snap,
+	}
+	if _, err := a.Apply(ctx); err != nil {
+		t.Fatalf("first native apply: %v", err)
+	}
+	if _, err := a.Apply(ctx); err != nil {
+		t.Fatalf("re-apply of an AnyPick native profile was refused: %v", err)
 	}
 }
 

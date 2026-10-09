@@ -358,7 +358,14 @@ func (a *codexAdapter) Preflight(ctx *ApplyContext) (*ConfigInspection, error) {
 		}
 		return nil, err
 	}
-	if _, hasBlock := stripManagedBlock(string(raw)); hasBlock {
+	text := string(raw)
+	// A native profile block is AnyPick's own write. The plain marker is a
+	// prefix of the native one, so only the native stripper recognises it.
+	// Treating those root keys as a user's would refuse every re-apply.
+	if _, hasBlock := stripManagedBlock(text); hasBlock {
+		return &ConfigInspection{}, nil
+	}
+	if _, hasNative := stripCodexNativeProfileBlock(text); hasNative {
 		return &ConfigInspection{}, nil
 	}
 	removeModel := selectedDefaultModel(ctx) != ""
@@ -948,8 +955,10 @@ func (a *codexAdapter) InspectProfile(name string) (*InspectResult, error) {
 		}
 		return nil, err
 	}
-	if strings.Contains(string(raw), codexBeginMarker) || strings.Contains(string(raw), codexNativeBeginMarker) {
-		return &InspectResult{Present: true, ConfigPaths: []string{
+	if hasMarkerLine(string(raw), codexBeginMarker) || hasMarkerLine(string(raw), codexNativeBeginMarker) {
+		// Present stays true because the block is there, but a profile whose
+		// config Codex cannot parse has to be reported, not called healthy.
+		return &InspectResult{Present: true, Issues: codexConfigIssues(path, string(raw)), ConfigPaths: []string{
 			path, CodexProfileAuthPath(root, name), codexProfileCatalogPath(path, name),
 		}}, nil
 	}
@@ -981,20 +990,70 @@ func (a *codexAdapter) Inspect() (*InspectResult, error) {
 		}
 		return nil, err
 	}
-	if strings.Contains(string(raw), codexBeginMarker) {
-		return &InspectResult{
-			Present:     true,
-			ConfigPaths: []string{configPath, codexModelCatalogPath(configPath)},
-		}, nil
+	// Validate before answering. A marker substring is not a block: the plain
+	// marker is a prefix of the native one, and a comment can mention either.
+	// The same whole-line rule as the strippers decides presence.
+	issues := codexConfigIssues(configPath, string(raw))
+	rawText := string(raw)
+	if !hasMarkerLine(rawText, codexBeginMarker) && !hasMarkerLine(rawText, codexNativeBeginMarker) {
+		issues = append(issues, "no anypick-managed block")
+		return &InspectResult{Present: false, Issues: issues, ConfigPaths: []string{configPath}}, nil
 	}
-	return &InspectResult{Present: false, Issues: []string{"no anypick-managed block"}, ConfigPaths: []string{configPath}}, nil
+	return &InspectResult{
+		Present:     true,
+		Issues:      issues,
+		ConfigPaths: []string{configPath, codexModelCatalogPath(configPath)},
+	}, nil
 }
+
+// codexConfigIssues turns a config document into doctor findings. A file that
+// cannot be parsed keeps Present set — the block is there — but stops reading
+// as healthy, which is the whole point: `anypick doctor codex` has to say why
+// the client will not start.
+func codexConfigIssues(path, raw string) []string {
+	if err := ValidateTOMLDocument(raw); err != nil {
+		return []string{path + ": " + err.Error()}
+	}
+	return nil
+}
+
+// findMarkerLine returns where marker occupies a whole line, or -1. The plain
+// and native marker families overlap: codexBeginMarker is a strict prefix of
+// codexNativeBeginMarker, and codexEndMarker of codexNativeEndMarker, so a
+// plain strings.Index matches the native block's own marker line. Stripping
+// then advances len(codexEndMarker) past the longer native END line and leaves
+// that line's tail — "-native-profile" — alone at the document root, a bare
+// line Codex refuses with "key with no value". Requiring the line to start and
+// end at the marker keeps the families apart without changing the on-disk
+// contract, and matches how the other adapters compare their markers.
+func findMarkerLine(content, marker string) int {
+	for offset := 0; offset < len(content); {
+		i := strings.Index(content[offset:], marker)
+		if i < 0 {
+			return -1
+		}
+		i += offset
+		startsLine := i == 0 || content[i-1] == '\n' || content[i-1] == '\r'
+		rest := content[i+len(marker):]
+		endsLine := rest == "" || rest[0] == '\n' || rest[0] == '\r'
+		if startsLine && endsLine {
+			return i
+		}
+		offset = i + 1
+	}
+	return -1
+}
+
+// hasMarkerLine reports whether a whole line of the document is exactly marker.
+// Presence checks need the same whole-line rule as the strippers: a substring
+// test cannot tell the plain family from the native one.
+func hasMarkerLine(content, marker string) bool { return findMarkerLine(content, marker) >= 0 }
 
 // stripManagedBlock removes an existing managed block, reporting whether one
 // was present.
 func stripManagedBlock(content string) (string, bool) {
-	begin := strings.Index(content, codexBeginMarker)
-	end := strings.Index(content, codexEndMarker)
+	begin := findMarkerLine(content, codexBeginMarker)
+	end := findMarkerLine(content, codexEndMarker)
 	if begin < 0 || end < 0 || end < begin {
 		return content, false
 	}
@@ -1012,8 +1071,8 @@ func stripManagedBlock(content string) (string, bool) {
 }
 
 func stripCodexNativeProfileBlock(content string) (string, bool) {
-	begin := strings.Index(content, codexNativeBeginMarker)
-	end := strings.Index(content, codexNativeEndMarker)
+	begin := findMarkerLine(content, codexNativeBeginMarker)
+	end := findMarkerLine(content, codexNativeEndMarker)
 	if begin < 0 || end < 0 || end < begin {
 		return content, false
 	}

@@ -90,6 +90,11 @@ func DiagnoseClient(ctx context.Context, deps Deps, clientID string) (*Report, e
 			detail = cad.Name() + ": " + joinIssues(insp.Issues)
 		}
 		add("client", "warn", detail)
+	} else if ierr == nil && insp != nil && len(insp.Issues) > 0 {
+		// A parser-rejected config still has its managed block, so Present
+		// stays set. Reporting only "installed" would hide that the client
+		// cannot start.
+		add("client", "warn", cad.Name()+" installed: "+joinIssues(insp.Issues))
 	} else {
 		add("client", "ok", cad.Name()+" installed")
 	}
