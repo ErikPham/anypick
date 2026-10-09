@@ -14,21 +14,73 @@ extension View {
   }
 }
 
+/// SwiftUI's own identifier for the window its `Settings { }` scene creates.
+/// Its title is the selected pane's name ("General", "Diagnostics"), so the
+/// window cannot be found by title and neither this name nor the identifier is
+/// visible to `make check-paths`.
+let settingsWindowIdentifier = "com_apple_SwiftUI_Settings_window"
+
+@MainActor
+func isDesignSettingsWindow(_ window: NSWindow) -> Bool {
+  window.identifier?.rawValue == settingsWindowIdentifier
+}
+
 @MainActor
 func openDesignSettings() {
   if NSApp.activationPolicy() != .regular {
     NSApp.setActivationPolicy(.regular)
   }
-  _ = NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-    || NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-  NSApp.activate(ignoringOtherApps: true)
-  // Settings can open without becoming key under automation; order it front.
-  DispatchQueue.main.async {
-    for window in NSApp.windows where window.title == "Settings" {
-      window.makeKeyAndOrderFront(nil)
-      window.orderFrontRegardless()
-    }
+  if let existing = NSApp.windows.first(where: isDesignSettingsWindow) {
+    existing.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    return
   }
+  orderFrontSettingsWhenReady()
+}
+
+/// `sendAction(showSettingsWindow:)` returns without opening anything while the
+/// Settings scene has not been realized, and retrying it never helps: it was
+/// measured, not assumed. Dumping the app's windows with this fixture flag on
+/// showed Settings absent, and the same dump after the ⌘, menu command showed
+/// it present, so the scene is reached only through the command it installs.
+///
+/// The command is sent as a real key event rather than another sendAction,
+/// because a synthetic action is exactly what fails here. AppEntry.swift
+/// routes its own "Settings…" item through SettingsLink for the same reason.
+@MainActor
+private func orderFrontSettingsWhenReady(attemptsRemaining: Int = 60) {
+  if let window = NSApp.windows.first(where: isDesignSettingsWindow) {
+    window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
+    NSApp.activate(ignoringOtherApps: true)
+    return
+  }
+  guard attemptsRemaining > 0 else { return }
+  DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
+    orderFrontSettingsWhenReady(attemptsRemaining: attemptsRemaining - 1)
+  }
+}
+
+/// Opens the Settings scene the way the menu does. Kept separate from
+/// `openDesignSettings` so the tray item and the fixture can both reach it.
+@MainActor
+func openSettingsSceneViaCommand() {
+  guard !NSApp.windows.contains(where: isDesignSettingsWindow) else { return }
+  if let event = NSEvent.keyEvent(
+    with: .keyDown,
+    location: .zero,
+    modifierFlags: .command,
+    timestamp: 0,
+    windowNumber: 0,
+    context: nil,
+    characters: ",",
+    charactersIgnoringModifiers: ",",
+    isARepeat: false,
+    keyCode: 43
+  ) {
+    NSApp.sendEvent(event)
+  }
+  orderFrontSettingsWhenReady()
 }
 
 extension DesignApp {

@@ -242,12 +242,22 @@ final class AnyPickUITests: XCTestCase {
       dismissWelcome(app)
     }
 
-    let settingsWindow = app.windows["Settings"].firstMatch
+    // Match the identifier SwiftUI gives the scene, not the title. The window
+    // is titled after the selected pane ("Diagnostics"), so looking up
+    // "Settings" never matched and this case failed on every run.
+    let settingsWindow = app.windows
+      .matching(
+        NSPredicate(format: "identifier == %@", "com_apple_SwiftUI_Settings_window")
+      ).firstMatch
     waitFor(settingsWindow, "Settings window")
-    waitFor(element(app, "settings.getting-started"), "Settings General (settings.getting-started)")
+    // A pane control is the proof the window is really there and rendering.
+    // Without it a future no-op in the open path can hide behind a window that
+    // exists but never laid out.
+    XCTAssertTrue(
+      element(app, "settings.tabs").exists,
+      "Settings window opened with no sidebar content")
     let tabs = element(app, "settings.tabs")
     waitFor(tabs, "Settings sidebar (settings.tabs)")
-    attachScreenshot("settings-general")
 
     let expectedTabs = ["General", "Usage", "Proxies", "Security", "Diagnostics"]
     for name in expectedTabs {
@@ -273,8 +283,12 @@ final class AnyPickUITests: XCTestCase {
       waitFor(app.staticTexts[name].firstMatch, "\(name) navigation title")
     }
 
+    // General is selected first, before its content is asserted. The pane is
+    // @AppStorage-backed, so the window reopens on whichever pane ran last and
+    // a General control is absent until the tab is chosen.
     selectTab("General")
     waitFor(element(app, "settings.getting-started"), "settings.getting-started")
+    attachScreenshot("settings-general")
     let version = element(app, "settings.version")
     waitFor(version, "settings.version")
     let short = marketingVersion(of: app)

@@ -91,8 +91,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
 
     if isFixture {
       if ProcessInfo.processInfo.environment["ANYPICK_UITEST_OPEN_SETTINGS"] == "1" {
-        DispatchQueue.main.async { openDesignSettings() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { openDesignSettings() }
+        DispatchQueue.main.async { openSettingsSceneViaCommand() }
       }
       if ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_PATH"] != nil {
         // Settle delay for layout-accurate captures (slow first paint would
@@ -206,7 +205,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc private func openSettingsFromTray(_ sender: NSMenuItem) {
-    openDesignSettings()
+    openSettingsSceneViaCommand()
   }
 
   @objc private func quitAnyPickFromTray(_ sender: NSMenuItem) {
@@ -326,7 +325,10 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
     if Self.isStatusItemWindow(window) { return false }
     if window is NSPanel { return false }
     if window.identifier?.rawValue == "main" { return true }
-    if window.title == "Settings" || window.title == "Menu Bar" { return false }
+    // The Settings scene's window is titled after the selected pane, never
+    // "Settings", so the old title check never matched it and a Settings
+    // window wide enough to qualify was treated as a main window.
+    if isDesignSettingsWindow(window) || window.title == "Menu Bar" { return false }
     return window.canBecomeMain && window.frame.width > 500
   }
 
