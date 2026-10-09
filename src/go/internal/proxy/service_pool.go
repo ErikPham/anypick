@@ -200,12 +200,15 @@ func (s *Service) startPoolLocked(ctx context.Context, providerID string) (*Star
 	cfg.Host = host
 	cfg.Port = port
 
-	// Stop previous pool AND the primary's own single-account proxy before
-	// binding — skipping either collides on the port (TS does both).
-	stopErrs := errors.Join(
-		s.stopPoolLocked(ctx, providerID, primary),
-		s.stopLocked(ctx, providerID, primary),
-	)
+	// Stop the pool listener before the account proxy. They share the primary
+	// account's runtime row, and an in-process pool reports this process on
+	// /health. Account stop would treat that pid as a detached child and
+	// SIGTERM this process. The account stop's pid is discarded on purpose:
+	// this function still holds the provider lock, and a detached child's
+	// cleanup takes that lock only after its listener has closed.
+	stopPoolErr := s.stopPoolLocked(ctx, providerID, primary)
+	_, stopAccountErr := s.stopLocked(ctx, providerID, primary)
+	stopErrs := errors.Join(stopPoolErr, stopAccountErr)
 
 	// Token reuse reads prior state only AFTER the stop attempts: a verified
 	// stop clears the primary's proxy_state, so a normal restart rotates the
@@ -438,6 +441,19 @@ func (s *Service) stopPoolLocked(ctx context.Context, providerID, primary string
 	pid := health.PID
 	if pid <= 0 {
 		pid = state.PID
+	}
+	if pid == ownPID() {
+		// The listener is in this process. An account proxy lives in
+		// s.servers and stopLocked closes it. A pool server that this map
+		// already missed must fail closed: SIGTERM would kill the service,
+		// and returning success would leave the listener bound.
+		if _, ok := s.servers.get(providerID, primary); ok {
+			return nil
+		}
+		return anyerr.Newf(
+			"pool listener is in this process and was not closed",
+			"PROXY_STOP_FAILED",
+		)
 	}
 	if pid > 0 && processAlive(pid) {
 		if err := signalPID(pid); err != nil {

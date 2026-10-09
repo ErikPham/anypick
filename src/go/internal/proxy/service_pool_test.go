@@ -93,6 +93,42 @@ func setPoolRow(t *testing.T, svc *Service, port int) {
 	}
 }
 
+// TestStopLockedClosesInProcessPoolWithoutSignalingSelf is the regression
+// for a pool restart that treated /health's pid as a detached child. That
+// pid is this process. SIGTERM killed the desktop test and, in the app,
+// cancels the service signal handler.
+func TestStopLockedClosesInProcessPoolWithoutSignalingSelf(t *testing.T) {
+	database, err := openPoolTestDB(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := newPoolTestService(t, database, mapResolver{
+		"a": {BaseURL: mustParseURLHelper(t, "http://127.0.0.1:1"), Auth: "s-a"},
+		"b": {BaseURL: mustParseURLHelper(t, "http://127.0.0.1:2"), Auth: "s-b"},
+	})
+	defer svc.Close()
+	port := mustFreePort(t)
+	setPoolRow(t, svc, port)
+	ctx := context.Background()
+	started, err := svc.StartPoolProxy(ctx, "deepseek")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := svc.stopLocked(ctx, "deepseek", "a")
+	if err != nil {
+		t.Fatalf("stopLocked: %v", err)
+	}
+	if pid != 0 {
+		t.Fatalf("in-process pool stop returned child pid %d", pid)
+	}
+	if got := healthInstance(started.Endpoint); got != "" {
+		t.Fatalf("pool listener still echoing %q", got)
+	}
+	if _, ok := svc.poolServers.get("deepseek"); ok {
+		t.Fatal("pool server remained registered")
+	}
+}
+
 func TestStartPoolProxyRotatesTokenAcrossConsecutiveStarts(t *testing.T) {
 	database, err := openPoolTestDB(t)
 	if err != nil {

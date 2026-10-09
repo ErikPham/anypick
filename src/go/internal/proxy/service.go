@@ -907,11 +907,21 @@ func (s *Service) buildServer(providerID, accountName, instanceID, token string,
 // detached child, but ONLY after /health proves the running instance is the
 // one our state recorded (PROC-01).
 func (s *Service) Stop(ctx context.Context, providerID, accountName string) error {
-	return lock.WithMutationLocks(ctx, s.Store.Root, []string{
+	var pid int
+	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
-		return s.stopLocked(c, providerID, accountName)
+		var serr error
+		pid, serr = s.stopLocked(c, providerID, accountName)
+		return serr
 	}, 0)
+	if err != nil {
+		return err
+	}
+	// The child closes its listener, then takes these same locks to release
+	// its runtime row. Waiting for the pid inside the callback deadlocks that
+	// cleanup, so the wait starts only after the locks are released.
+	return waitForProxyExit(pid, func() bool { return true }, 5*time.Second)
 }
 
 // ProxyRunning reports the verified liveness of one account proxy without
@@ -930,21 +940,28 @@ func (s *Service) ProxyRunning(ctx context.Context, providerID, accountName stri
 // resurrect it; account switching has different semantics and must be able to
 // restore the previous account's listener during rollback or a later switch.
 func (s *Service) StopProxyForSwitch(ctx context.Context, providerID, accountName string) error {
-	return lock.WithMutationLocks(ctx, s.Store.Root, []string{
+	var pid int
+	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
 		cfg, err := s.Store.GetProxyConfig(c, providerID, accountName)
 		if err != nil {
 			return err
 		}
-		if err := s.stopLocked(c, providerID, accountName); err != nil {
-			return err
+		var serr error
+		pid, serr = s.stopLocked(c, providerID, accountName)
+		if serr != nil {
+			return serr
 		}
 		if !cfg.Enabled {
 			return nil
 		}
 		return s.Store.SetProxyConfigContext(c, providerID, accountName, cfg)
 	}, 0)
+	if err != nil {
+		return err
+	}
+	return waitForProxyExit(pid, func() bool { return true }, 5*time.Second)
 }
 
 // StartProxyIfEnabled is the account-switch counterpart of StartProxy. A
@@ -962,12 +979,12 @@ func (s *Service) StartProxyIfEnabled(ctx context.Context, providerID, accountNa
 	return err
 }
 
-func (s *Service) stopLocked(ctx context.Context, providerID, accountName string) error {
+func (s *Service) stopLocked(ctx context.Context, providerID, accountName string) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	if s.forwardsLifecycle(providerID) {
-		return s.stopForwardedLocked(ctx, providerID, accountName)
+		return 0, s.stopForwardedLocked(ctx, providerID, accountName)
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*healthTimeout)
 	defer cancel()
@@ -979,21 +996,21 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 		// The bearer token survives: client configs written at activation
 		// hold it, so stop must not rotate it.
 		clearErr := s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName)
-		return errors.Join(closeErr, clearErr,
+		return 0, errors.Join(closeErr, clearErr,
 			s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 	}
 
 	state, err := s.Store.ReadProxyState(cleanupCtx, providerID, accountName)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if state == nil {
-		return s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName)
+		return 0, s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName)
 	}
 	health := healthOwnership(state.Endpoint)
 	if health.InstanceID != state.InstanceID {
 		// Not ours / already dead: drop stale records atomically, keep token.
-		return errors.Join(
+		return 0, errors.Join(
 			s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName),
 			s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 	}
@@ -1001,26 +1018,44 @@ func (s *Service) stopLocked(ctx context.Context, providerID, accountName string
 	if pid <= 0 {
 		pid = state.PID
 	}
+	if pid == ownPID() {
+		// In-process pool listeners are stored on this account's runtime row
+		// but registered in poolServers, so the s.servers lookup above missed
+		// them. Their /health pid is this process. Signaling it shuts down
+		// the desktop service and kills a test that has not caught SIGTERM.
+		if _, ok := s.poolServers.get(providerID); ok {
+			return 0, s.stopPoolLocked(ctx, providerID, accountName)
+		}
+		return 0, anyerr.Newf(
+			"proxy listener is in this process and was not closed",
+			"PROXY_STOP_FAILED",
+		)
+	}
+	signaled := 0
 	if pid > 0 && processAlive(pid) {
 		if err := signalPID(pid); err != nil {
-			return anyerr.Wrapf(err, "signal proxy child", "PROXY_STOP_FAILED")
+			return 0, anyerr.Wrapf(err, "signal proxy child", "PROXY_STOP_FAILED")
 		}
+		signaled = pid
+		// Health only. The process is still alive on purpose: its cleanup
+		// takes the provider lock this caller still holds, so reaping it here
+		// deadlocks. The caller waits once that lock is released.
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) &&
 			healthInstance(state.Endpoint) == state.InstanceID {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if healthInstance(state.Endpoint) == state.InstanceID {
-			return anyerr.Newf(
+			return 0, anyerr.Newf(
 				"proxy process did not stop after SIGTERM",
 				"PROXY_STOP_FAILED",
 			)
 		}
 	}
-	// Verified dead: drop the runtime state and every lease as ONE SQLite
+	// Listener is down. Drop the runtime state and every lease as ONE SQLite
 	// transaction, so neither half can strand the other (ADR 0004 discipline).
 	// The bearer token survives like every other stop path.
-	return errors.Join(
+	return signaled, errors.Join(
 		s.Store.ReleaseProxyRuntimeContext(cleanupCtx, providerID, accountName),
 		s.disableProxyConfigIfSet(cleanupCtx, providerID, accountName))
 }
@@ -1068,11 +1103,14 @@ func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName,
 	if instanceID == "" {
 		return nil
 	}
-	return lock.WithMutationLocks(ctx, s.Store.Root, []string{
+	var pid int
+	err := lock.WithMutationLocks(ctx, s.Store.Root, []string{
 		refs.ProviderScope(providerID), proxyScope(providerID, accountName),
 	}, func(c context.Context) error {
 		if server, ok := s.servers.get(providerID, accountName); ok && server.InstanceID == instanceID {
-			return s.stopLocked(c, providerID, accountName)
+			var serr error
+			pid, serr = s.stopLocked(c, providerID, accountName)
+			return serr
 		}
 		// Detached child: stop only when the recorded instance matches.
 		state, err := s.Store.ReadProxyState(c, providerID, accountName)
@@ -1080,7 +1118,9 @@ func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName,
 			return err
 		}
 		if state != nil && state.InstanceID == instanceID {
-			return s.stopLocked(c, providerID, accountName)
+			var serr error
+			pid, serr = s.stopLocked(c, providerID, accountName)
+			return serr
 		}
 		if leaseID != "" {
 			s.stopLeaseHeartbeat(leaseID)
@@ -1088,6 +1128,10 @@ func (s *Service) StopIfLeaseOwned(ctx context.Context, providerID, accountName,
 		}
 		return nil
 	}, 0)
+	if err != nil {
+		return err
+	}
+	return waitForProxyExit(pid, func() bool { return true }, 5*time.Second)
 }
 
 // Status reports enablement and liveness without ever exposing the token.
@@ -1130,6 +1174,25 @@ func (s *Service) StatusContext(ctx context.Context, providerID, accountName str
 		}
 	}
 	return out, nil
+}
+
+// waitForProxyExit blocks until /health has stopped echoing our instance and
+// the child pid is gone. Stop used to return at the first condition. The
+// process can still be writing the data directory after the listener closes.
+func waitForProxyExit(pid int, healthGone func() bool, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if healthGone() && (pid <= 0 || !processAlive(pid)) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return anyerr.Newf(
+				"proxy process did not stop after SIGTERM",
+				"PROXY_STOP_FAILED",
+			)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // healthInstance returns the instanceId a live proxy echoes on its
