@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Symbol } from '../shell/Symbol';
 
 import type { HubConflict, HubSource, ProxyRow, Snapshot } from '../lib/contract';
 import { hubSourceChange } from '../lib/desktop-actions';
@@ -24,6 +25,7 @@ import { ConfirmDialog } from './ProxiesPane';
 import { Dialog } from '../ui/Dialog';
 import {
   Button,
+  CopyButton,
   EmptyState,
   Group,
   IconButton,
@@ -152,13 +154,12 @@ export function ProxyHubPane({
             <RowText title="Address" detail={hub.address ?? 'Not running'} />
             <RowActions>
               {hub.address ? (
-                <IconButton
+                <CopyButton
                   label="Copy Proxy Hub address"
                   testId="hub.copy-address-button"
-                  onClick={() => void service.copy(hub.address ?? '')}
-                >
-                  <CopyGlyph />
-                </IconButton>
+                  value={hub.address ?? ''}
+                  copy={service.copy}
+                />
               ) : null}
             </RowActions>
           </Row>
@@ -175,7 +176,7 @@ export function ProxyHubPane({
                   testId="hub.copy-api-key-button"
                   onClick={() => copyHubKey(service, hub)}
                 >
-                  <CopyGlyph />
+                  <Symbol name="doc.on.doc" size={15} />
                 </IconButton>
                 <IconButton
                   label="Rotate Proxy Hub API key"
@@ -509,16 +510,3 @@ function ConflictRow({
   );
 }
 
-function CopyGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
-      <path
-        d="M8 8h11v12H8z M5 16H4V4h12v1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}

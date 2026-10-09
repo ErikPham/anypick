@@ -38,11 +38,14 @@ export function OverviewPane({
   snapshot,
   onNavigate,
   onRefresh,
+  busy,
 }: {
   snapshot: Snapshot;
   onNavigate?: (destination: Destination) => void;
   /** Ask the engine for a fresh snapshot. */
   onRefresh?: () => void;
+  /** Any command in flight; the Refresh greys rather than spinning. */
+  busy?: ReadonlySet<string>;
 }) {
   const [onboardingDismissed, setOnboardingDismissed] = useState(
     () => globalThis.localStorage?.getItem(ONBOARDING_KEY) === '1',
@@ -161,7 +164,9 @@ export function OverviewPane({
             {installedApp ? (
               <span className="text-[12px] whitespace-nowrap text-secondary">Done</span>
             ) : (
-              <Button onClick={() => onRefresh?.()}>Refresh</Button>
+              <Button onClick={() => onRefresh?.()} disabled={(busy?.size ?? 0) > 0}>
+                Refresh
+              </Button>
             )}
           </RowActions>
         </Row>

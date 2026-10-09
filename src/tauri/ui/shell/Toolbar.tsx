@@ -17,6 +17,7 @@ export function Toolbar({
   onQuery,
   onRefresh,
   snapshot,
+  busy,
   onBack,
 }: {
   title: string;
@@ -25,6 +26,12 @@ export function Toolbar({
   onQuery: (value: string) => void;
   onRefresh: () => void;
   snapshot: Snapshot | null;
+  /**
+   * Any command in flight. The refresh greys rather than spins: the engine
+   * single-flights, so a second refresh lands on the same slot, and macOS
+   * makes the same call on `OverviewView`'s Refresh.
+   */
+  busy: ReadonlySet<string>;
   onBack?: () => void;
 }) {
   return (
@@ -90,7 +97,8 @@ export function Toolbar({
           aria-label="Refresh"
           title="Refresh"
           data-testid="toolbar-refresh"
-          disabled={!snapshot}
+          aria-busy={busy.size > 0 || undefined}
+          disabled={!snapshot || busy.size > 0}
         >
           <svg
             viewBox="0 0 24 24"

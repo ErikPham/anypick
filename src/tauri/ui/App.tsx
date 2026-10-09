@@ -418,6 +418,7 @@ export function App({
           onQuery={setQuery}
           onRefresh={() => service.port.refresh()}
           snapshot={snapshot}
+          busy={busy}
         />
         <div
           ref={contentRef}
@@ -592,6 +593,7 @@ function DestinationPane({
           snapshot={snapshot}
           onNavigate={onNavigate}
           onRefresh={() => service.refresh()}
+          busy={busy}
         />
       );
     case 'apps':
