@@ -368,4 +368,8 @@ var migrations = []migration{
 			return backfillHubSources(d)
 		},
 	},
+	{
+		name: "slug account primary keys",
+		up:   renameUnsluggedAccountKeys,
+	},
 }
