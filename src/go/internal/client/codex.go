@@ -519,6 +519,7 @@ func writeCodexNativeProfileConfig(ctx *ApplyContext, profileName, configPath, m
 	}
 	stripped, managed := stripManagedBlock(string(raw))
 	stripped, native := stripCodexNativeProfileBlock(stripped)
+	stripped = dropCodexMarkerTail(stripped)
 	stripped, removedRootKeys := stripCodexRootKeys(stripped, true)
 	if err := checkpointCodexProfileRootKeys(ctx, profileName, removedRootKeys); err != nil {
 		return err
@@ -555,6 +556,7 @@ func writeCodexConfig(ctx *ApplyContext, profileName, configPath, catalogPath, m
 	block := codexManagedBlock(model, catalogPath, len(modelIDs) > 0, base, envKey, ctx.APIKey)
 	stripped, hadBlock := stripManagedBlock(string(raw))
 	stripped, removedRootKeys := stripCodexRootKeys(stripped, model != "")
+	stripped = dropCodexMarkerTail(stripped)
 	next := reinsertManagedBlock(stripped, block, hadBlock)
 	if profileName != "" {
 		if err := checkpointCodexProfileRootKeys(ctx, profileName, removedRootKeys); err != nil {
@@ -1068,6 +1070,32 @@ func stripManagedBlock(content string) (string, bool) {
 	default:
 		return before + "\n\n" + after, true
 	}
+}
+
+// dropCodexMarkerTail removes a root line that is only the suffix left when an
+// older plain-marker strip cut a native marker. The line has no '=', so Codex
+// refuses the file ("key with no value") and every later re-apply used to
+// write it back. An assignment, a comment, and the same spelling inside a
+// table stay: those can be user content. The strippers themselves stay pure.
+func dropCodexMarkerTail(content string) string {
+	if !strings.Contains(content, "-native-profile") {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	tableSeen := false
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !tableSeen && trimmed == "-native-profile" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "#") &&
+			strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			tableSeen = true
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func stripCodexNativeProfileBlock(content string) (string, bool) {

@@ -14,10 +14,11 @@ import (
 //	1 | -native-profile
 //
 // The property below is the one that was missing: stripping must not
-// manufacture a bare line. It does NOT repair a file that already carries one
-// — that stray line is indistinguishable from user content to a stripper, which
-// is exactly why it survived every re-apply and made five named profiles
-// unloadable.
+// manufacture a bare line. The strippers still remove only their own block.
+// A file that already carries the tail is healed by dropCodexMarkerTail on
+// the write path, because that root line is the cut suffix of our marker and
+// is not a TOML assignment. Leaving it is what made five named profiles
+// unloadable across every re-apply.
 func TestStripNativeBlockLeavesNoMarkerTail(t *testing.T) {
 	fresh := codexNativeProfileBlock("m")
 
@@ -34,9 +35,8 @@ func TestStripNativeBlockLeavesNoMarkerTail(t *testing.T) {
 		t.Errorf("native strip: ok=%v left %q; expected empty", native, stripped)
 	}
 
-	// A file that already carries the stray line keeps it: the strippers remove
-	// their own block and nothing else. Repair is deliberately out of scope here
-	// so the write path stays a pure function of the document it reads.
+	// A file that already carries the stray line keeps it through the strippers.
+	// They remove their own block and nothing else. The write path drops it.
 	corrupted := "-native-profile\n\n" + fresh
 	stripped, _ = stripManagedBlock(corrupted)
 	stripped, native = stripCodexNativeProfileBlock(stripped)
@@ -77,6 +77,7 @@ func TestNativeProfileStripReinsertIsAFixedPoint(t *testing.T) {
 	round := func(content string) string {
 		stripped, managed := stripManagedBlock(content)
 		stripped, native := stripCodexNativeProfileBlock(stripped)
+		stripped = dropCodexMarkerTail(stripped)
 		return reinsertManagedBlock(stripped, codexNativeProfileBlock("m"), managed || native)
 	}
 
@@ -86,5 +87,27 @@ func TestNativeProfileStripReinsertIsAFixedPoint(t *testing.T) {
 	}
 	if second := round(first); second != first {
 		t.Errorf("re-apply changed the document\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
+
+// Re-apply is what a named profile does on the next activation. A file that
+// already carries the bare tail has to come back as a document Codex can
+// parse, while a real assignment that happens to use the same spelling stays.
+func TestNativeReapplyDropsTheMarkerTail(t *testing.T) {
+	round := func(content string) string {
+		stripped, managed := stripManagedBlock(content)
+		stripped, native := stripCodexNativeProfileBlock(stripped)
+		stripped = dropCodexMarkerTail(stripped)
+		return reinsertManagedBlock(stripped, codexNativeProfileBlock("m"), managed || native)
+	}
+	got := round("-native-profile\n" + codexNativeProfileBlock("m"))
+	for _, line := range strings.Split(got, "\n") {
+		if strings.TrimSpace(line) == "-native-profile" {
+			t.Fatalf("bare marker tail survived re-apply:\n%s", got)
+		}
+	}
+	assigned := round("-native-profile = \"user-value\"\n")
+	if !strings.Contains(assigned, "-native-profile = \"user-value\"") {
+		t.Fatalf("user assignment removed: %q", assigned)
 	}
 }
