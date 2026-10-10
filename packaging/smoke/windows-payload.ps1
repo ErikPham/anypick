@@ -54,11 +54,11 @@ if ($null -eq $helper) {
 Invoke-HelperSmoke -Helper $helper.FullName -Label 'msi'
 
 if (Get-Command go -ErrorAction SilentlyContinue) {
-  Push-Location $env:GITHUB_WORKSPACE
+  Push-Location (Join-Path $env:GITHUB_WORKSPACE 'src/go')
   try {
     $env:GOPATH = if ($env:GOPATH) { $env:GOPATH } else { Join-Path $env:USERPROFILE 'go' }
     $env:GOTOOLCHAIN = 'auto'
-    & go run ./src/go/cmd/anypick-artifact node-free $extract
+    & go run ./cmd/anypick-artifact node-free $extract
     if ($LASTEXITCODE -ne 0) { throw 'anypick-artifact node-free failed on the MSI payload' }
   } finally {
     Pop-Location
