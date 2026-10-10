@@ -700,11 +700,14 @@ struct AddSavedAccountSheet: View {
           .labelsHidden()
           .accessibilityIdentifier("account-flow.api-key")
 
-          DesignIconButton(
-            symbol: revealSecret ? "eye.slash" : "eye",
-            help: revealSecret ? "Hide API Key" : "Show API Key",
-            action: { revealSecret.toggle() }
-          )
+          Button {
+            revealSecret.toggle()
+          } label: {
+            Image(systemName: revealSecret ? "eye.slash" : "eye")
+              .foregroundStyle(.secondary)
+          }
+          .buttonStyle(.borderless)
+          .accessibilityLabel(revealSecret ? "Hide API Key" : "Show API Key")
         }
       }
       if isZaiProvider {
@@ -724,23 +727,29 @@ struct AddSavedAccountSheet: View {
 
   private var loginAccessories: some View {
     HStack(spacing: 4) {
-      DesignIconButton(
-        symbol: sourceMode == .newAccount && !hasIdentity
-          ? "arrow.up.right.square"
-          : "arrow.clockwise",
-        help: checkAgainHelp,
-        phase: isDetecting || isVerifying ? .working : .idle,
-        isEnabled: !model.isBusy,
-        identifier: "account-flow.detect",
-        action: {
+      if isDetecting || isVerifying {
+        ProgressView()
+          .controlSize(.small)
+          .accessibilityLabel("Checking")
+      } else {
+        Button {
           if sourceMode == .newAccount, !hasIdentity { signIn() } else { detectLogin() }
+        } label: {
+          Image(
+            systemName: sourceMode == .newAccount && !hasIdentity
+              ? "arrow.up.right.square"
+              : "arrow.clockwise"
+          )
         }
-      )
-      .accessibilityLabel(
-        isDetecting || isVerifying
-          ? "Checking"
-          : (sourceMode == .newAccount && !hasIdentity ? "Start Sign In" : "Check Again")
-      )
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(model.isBusy)
+        .help(checkAgainHelp)
+        .accessibilityLabel(
+          sourceMode == .newAccount && !hasIdentity ? "Start Sign In" : "Check Again"
+        )
+        .accessibilityIdentifier("account-flow.detect")
+      }
       if showsSignOutMenu {
         Menu {
           Button("Sign Out on This Mac", role: .destructive) { requestSignOut() }

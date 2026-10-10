@@ -329,192 +329,27 @@ struct DesignEmptyState: View {
   }
 }
 
-/// What an icon-only row command is doing right now.
+/// A row-level copy command.
 ///
-/// One enum, not a pair of `Bool`s. Every call site used to carry its own
-/// `copied` / `switching` / `busyRow` / `isDetecting` flag, five of them drew
-/// "copied" differently, and a pair of booleans can disagree — a control can
-/// read as both busy and confirmed. Three cases cannot.
-enum DesignIconCommandPhase: Equatable {
-  /// Ready. The control shows its own symbol.
-  case idle
-  /// The command is in flight. The bezel greys out and a spinner replaces the
-  /// symbol, so a second click cannot land on the same request.
-  case working
-  /// The command landed. The symbol becomes `confirmedSymbol` and the help tag
-  /// and the VoiceOver label both say so. The control does not move.
-  case confirmed
-}
-
-/// One icon-only row command, backed by a real `NSButton`.
-///
-/// SwiftUI draws its own buttons on macOS. Probed in a live window on this
-/// machine, a `Button` never becomes an `NSControl`: the only `NSButton`s under
-/// a hosted SwiftUI hierarchy are empty, `isBordered == false` proxies with no
-/// title and no image. So `.borderless` has no bezel for AppKit to paint on,
-/// and the control has no system hover, no pressed state, and no disabled
-/// bezel — which is why a dozen row commands read as inert. Wrapping `NSButton`
-/// hands hover, press, the disabled bezel, Increase Contrast and the help tag
-/// back to AppKit, which is the control System Settings uses.
-struct DesignIconButton: NSViewRepresentable {
-  /// The help tag and the VoiceOver label while `.confirmed`. Owned here so
-  /// every copy command in the app announces the same word.
-  static let confirmedHelp = "Copied"
-
-  /// How long a confirmation stays on screen. One number, because the tree
-  /// carried three of them (1.4s, 1.5s, and the store's own reset) and the
-  /// disagreement was invisible but real.
-  static let confirmationDuration: TimeInterval = 1.4
-
-  let symbol: String
-  /// The help tag, and the accessibility label while idle and working. Never
-  /// empty: an icon-only control with no name is unreachable, so a gate in
-  /// `AnyPickTests` fails the build on one.
-  let help: String
-  /// The glyph shown while `.confirmed`. Supplying one pins the control's width
-  /// to the widest symbol it can show, so a copy cannot shove the row sideways.
-  /// Leaving it nil keeps the symbol and changes only the help tag.
-  var confirmedSymbol: String? = nil
-  var phase: DesignIconCommandPhase = .idle
-  var isEnabled = true
-  var identifier: String? = nil
-  var controlSize: NSControl.ControlSize = .small
+/// The glyph never changes — only its colour — so nothing in the row moves when
+/// the copy lands. Swapping `doc.on.doc` for a checkmark, or the title "Copy"
+/// for "Copied", changes the control's width and shoves every control to its
+/// left, which is the jump this replaces.
+struct DesignCopyButton: View {
+  let copied: Bool
+  let label: String
+  let identifier: String
   let action: () -> Void
 
-  func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-
-  func makeNSView(context: Context) -> DesignIconButtonBox {
-    let box = DesignIconButtonBox(controlSize: controlSize)
-    box.target = context.coordinator
-    box.action = #selector(Coordinator.click)
-    return box
-  }
-
-  func updateNSView(_ box: DesignIconButtonBox, context: Context) {
-    context.coordinator.action = action
-    box.apply(
-      symbol: symbol,
-      confirmedSymbol: confirmedSymbol,
-      help: phase == .confirmed ? Self.confirmedHelp : help,
-      phase: phase,
-      isEnabled: isEnabled
-    )
-    if let identifier {
-      box.setAccessibilityIdentifier(identifier)
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "doc.on.doc")
+        .foregroundStyle(copied ? .green : .secondary)
     }
-  }
-
-  final class Coordinator: NSObject {
-    var action: () -> Void
-    init(action: @escaping () -> Void) { self.action = action }
-    @objc func click() { action() }
-  }
-}
-
-/// The `NSButton` behind `DesignIconButton`.
-///
-/// It owns the spinner and the width freeze. The width is frozen by painting
-/// every symbol it can show onto a canvas of one shared width, rather than by
-/// an Auto Layout constraint, because a constraint on a view that its own
-/// SwiftUI parent is also sizing is a conflict waiting to happen. Measured on
-/// this machine, `doc.on.doc` fits 33pt and `checkmark` fits 32pt, so without
-/// the canvas a copy moves the row by a point.
-final class DesignIconButtonBox: NSButton {
-  private let spinner = NSProgressIndicator()
-  private var drawnSymbols: String = ""
-  private var canvasWidth: CGFloat = 0
-
-  init(controlSize: NSControl.ControlSize) {
-    super.init(frame: .zero)
-    bezelStyle = .rounded
-    setButtonType(.momentaryPushIn)
-    self.controlSize = controlSize
-    imagePosition = .imageOnly
-    spinner.controlSize = controlSize
-    spinner.style = .spinning
-    spinner.isDisplayedWhenStopped = false
-    addSubview(spinner)
-  }
-
-  @available(*, unavailable)
-  required init?(coder: NSCoder) { nil }
-
-  func apply(
-    symbol: String,
-    confirmedSymbol: String?,
-    help: String,
-    phase: DesignIconCommandPhase,
-    isEnabled commandEnabled: Bool
-  ) {
-    let candidates = [symbol, confirmedSymbol].compactMap { $0 }
-    let signature = candidates.joined(separator: "|")
-    if drawnSymbols != signature || canvasWidth == 0 {
-      drawnSymbols = signature
-      canvasWidth = candidates
-        .map { NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.size.width ?? 0 }
-        .max() ?? 0
-    }
-
-    switch phase {
-    case .working:
-      // A blank canvas rather than no image: clearing it would drop the bezel
-      // padding with it and the control would shrink by its own width the
-      // moment it starts working.
-      image = blankCanvas()
-      spinner.startAnimation(nil)
-    case .idle, .confirmed:
-      spinner.stopAnimation(nil)
-      let shown = phase == .confirmed ? (confirmedSymbol ?? symbol) : symbol
-      image = canvasImage(named: shown)
-    }
-    toolTip = help
-    setAccessibilityLabel(help)
-    // The spinner is not decoration: it is what stops a second click landing on
-    // the same request while the first one is still in flight.
-    isEnabled = commandEnabled && phase != .working
-  }
-
-  private func blankCanvas() -> NSImage? {
-    guard canvasWidth > 0 else { return nil }
-    return NSImage(size: NSSize(width: canvasWidth, height: 1), flipped: false) { (_: NSRect) -> Bool in
-      true
-    }
-  }
-
-  private func canvasImage(named symbol: String) -> NSImage? {
-    guard let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) else {
-      return nil
-    }
-    return NSImage(
-      size: NSSize(width: canvasWidth, height: glyph.size.height),
-      flipped: false
-    ) { (rect: NSRect) -> Bool in
-      glyph.draw(
-        in: NSRect(
-          x: (rect.width - glyph.size.width) / 2,
-          y: rect.minY,
-          width: glyph.size.width,
-          height: rect.height
-        ),
-        from: .zero,
-        operation: .sourceOver,
-        fraction: 1
-      )
-      return true
-    }
-  }
-
-  override func layout() {
-    super.layout()
-    spinner.frame = bounds
-  }
-
-  override var intrinsicContentSize: NSSize {
-    guard let image else { return super.intrinsicContentSize }
-    return NSSize(
-      width: image.size.width,
-      height: max(image.size.height, spinner.intrinsicContentSize.height)
-    )
+    .buttonStyle(.borderless)
+    .help(copied ? "Copied" : label)
+    .accessibilityLabel(copied ? "Copied" : label)
+    .accessibilityIdentifier(identifier)
   }
 }
 

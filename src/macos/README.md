@@ -410,25 +410,6 @@ These still apply; chrome must not fight them:
 - Instant-apply for pane toggles and pickers.
 - Single-flight mutations in production (`TrayStore`). Disable controls
   when `isBusy`.
-- **Every command is one control with one state.** `DesignIconButton` owns
-  idle / working / confirmed for an icon-only row command, and AppKit draws
-  its hover, its press and its disabled bezel. Do not spell one by hand:
-  a SwiftUI `Button` is not an `NSControl` on macOS, so `.borderless` and
-  `.plain` have no bezel for the platform to paint on. Three gates in
-  `AnyPickTests` hold this: every `DesignIconButton` names itself, no
-  icon-only command is a bare SwiftUI button again, and copy feedback has
-  one spelling.
-- The Tauri port owns the same matrix in `IconCommandPhase`, and
-  `src/tauri/README.md` records why a web button did not need a different
-  answer: CSS already paints the hover, the press and the disabled bezel, so
-  the gap there was the state, not the control kind.
-- **A refresh does not spin; it greys.** The engine single-flights a
-  mutation, so a refresh control disables while its own request is in
-  flight, and that disabled bezel is the feedback. Spinning it would need a
-  per-row in-flight slot with its own confirm path and timeout, for a state
-  the HIG reserves spinners for background work. Do not add one. The one
-  exception is a service lifecycle command, which has a real target state in
-  the snapshot to wait on and therefore already tracks `serviceOperations`.
 - Errors: `NSAlert` / `.alert` only. Success is silent (VoiceOver
   announcement) — not a toast stack.
 - Backups: `NSSavePanel` / `NSOpenPanel`. Files contain credentials;

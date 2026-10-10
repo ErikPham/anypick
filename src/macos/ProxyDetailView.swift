@@ -89,11 +89,9 @@ struct ProxyDetailView: View {
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                  DesignIconButton(
-                    symbol: "doc.on.doc",
-                    help: "Copy proxy address",
-                    confirmedSymbol: "checkmark",
-                    phase: didCopy ? .confirmed : .idle,
+                  DesignCopyButton(
+                    copied: didCopy,
+                    label: "Copy proxy address",
                     identifier: "proxies.inspector.copy",
                     action: copyAddress
                   )
@@ -118,21 +116,22 @@ struct ProxyDetailView: View {
                       .truncationMode(.middle)
                       .textSelection(.enabled)
                   }
-                  DesignIconButton(
-                    symbol: "doc.on.doc",
-                    help: "Copy proxy API key",
-                    confirmedSymbol: "checkmark",
-                    phase: didCopyApiKey ? .confirmed : .idle,
+                  DesignCopyButton(
+                    copied: didCopyApiKey,
+                    label: "Copy proxy API key",
                     identifier: "proxies.inspector.copy-key",
                     action: { model.copyProxyAPIKey(id: proxy.id) }
                   )
                   if proxy.status == .running {
-                    DesignIconButton(
-                      symbol: "arrow.triangle.2.circlepath",
-                      help: "Rotate API Key",
-                      identifier: "proxies.inspector.rotate-key",
-                      action: requestRotate
-                    )
+                    Button {
+                      requestRotate()
+                    } label: {
+                      Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Rotate API Key")
+                    .accessibilityLabel("Rotate API Key")
+                    .accessibilityIdentifier("proxies.inspector.rotate-key")
                   }
                 }
               }

@@ -498,14 +498,17 @@ struct PublishedModelsView: View {
         )
         .fixedSize()
 
-        DesignIconButton(
-          symbol: "info.circle",
-          help: "Inspect Model",
-          identifier: "published-models.switch-inspect.\(item.modelID)",
-          action: { inspectingModel = item }
-        )
+        Button {
+          inspectingModel = item
+        } label: {
+          Image(systemName: "info.circle")
+            .font(.body)
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Inspect Model")
         .accessibilityLabel("Inspect \(item.modelID)")
-        .controlSize(.regular)
+        .accessibilityIdentifier("published-models.switch-inspect.\(item.modelID)")
       }
       .layoutPriority(1)
     }
@@ -584,28 +587,29 @@ struct PublishedModelsView: View {
           .fixedSize()
         }
 
-        DesignIconButton(
-          symbol: "doc.on.doc",
-          help: "Copy Model ID",
-          confirmedSymbol: "checkmark",
-          phase: isCopied ? .confirmed : .idle,
+        DesignCopyButton(
+          copied: isCopied,
+          label: "Copy Model ID",
           identifier: "published-models.copy.\(item.modelID)"
         ) {
           copyText(item.modelID)
           copiedID = item.modelID
-          DispatchQueue.main.asyncAfter(deadline: .now() + DesignIconButton.confirmationDuration) {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             if copiedID == item.modelID { copiedID = nil }
           }
         }
 
-        DesignIconButton(
-          symbol: "info.circle",
-          help: "Inspect Model",
-          identifier: "published-models.inspect.\(item.modelID)",
-          action: { inspectingModel = item }
-        )
+        Button {
+          inspectingModel = item
+        } label: {
+          Image(systemName: "info.circle")
+            .font(.body)
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Inspect Model")
         .accessibilityLabel("Inspect \(item.modelID)")
-        .controlSize(.regular)
+        .accessibilityIdentifier("published-models.inspect.\(item.modelID)")
       }
       .layoutPriority(1)
     }
@@ -900,15 +904,17 @@ struct PublishedModelInspectSheet: View {
           }
 
           LabeledContent("Test in Terminal") {
-            DesignIconButton(
-              symbol: "terminal",
-              help: "Copy cURL Command",
-              confirmedSymbol: "checkmark",
-              phase: copiedLabel == "curl" ? .confirmed : .idle,
-              identifier: "model-inspect.copy-curl",
-              action: { copyToClipboard(curlExample, label: "curl") }
-            )
-            .controlSize(.regular)
+            Button {
+              copyToClipboard(curlExample, label: "curl")
+            } label: {
+              HStack(spacing: 4) {
+                Image(systemName: copiedLabel == "curl" ? "checkmark" : "doc.on.doc")
+                Text(copiedLabel == "curl" ? "Copied" : "Copy cURL Command")
+              }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier("model-inspect.copy-curl")
           }
         } header: {
           Text("Proxy Hub Endpoint")
@@ -921,13 +927,16 @@ struct PublishedModelInspectSheet: View {
 
   @ViewBuilder
   private func copyButton(for text: String, label: String) -> some View {
-    DesignIconButton(
-      symbol: "doc.on.doc",
-      help: "Copy",
-      confirmedSymbol: "checkmark",
-      phase: copiedLabel == label ? .confirmed : .idle,
-      action: { copyToClipboard(text, label: label) }
-    )
+    Button {
+      copyToClipboard(text, label: label)
+    } label: {
+      Image(systemName: copiedLabel == label ? "checkmark" : "doc.on.doc")
+        .font(.caption)
+        .foregroundStyle(copiedLabel == label ? .green : .secondary)
+        .frame(width: 18, height: 18)
+    }
+    .buttonStyle(.plain)
+    .help("Copy")
   }
 
   private func copyToClipboard(_ text: String, label: String) {
@@ -935,7 +944,7 @@ struct PublishedModelInspectSheet: View {
     NSPasteboard.general.setString(text, forType: .string)
     copiedLabel = label
     model.announceOnly("Copied to clipboard.")
-    DispatchQueue.main.asyncAfter(deadline: .now() + DesignIconButton.confirmationDuration) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
       if copiedLabel == label { copiedLabel = nil }
     }
   }

@@ -124,10 +124,7 @@ struct OverviewView: View {
               ? "Claude Code, Codex, or another supported app is available."
               : "Install Claude Code or Codex, then refresh.",
             actionTitle: "Refresh",
-            identifier: "overview.onboarding.use-app",
-            // Single-flight, like every other command in the app: a second
-            // refresh while one is in flight lands on the same pipe.
-            isEnabled: !model.isBusy
+            identifier: "overview.onboarding.use-app"
           ) {
             model.refresh()
           }
@@ -371,7 +368,6 @@ struct OverviewView: View {
     detail: String,
     actionTitle: String,
     identifier: String,
-    isEnabled: Bool = true,
     action: @escaping () -> Void
   ) -> some View {
     LabeledContent {
@@ -384,8 +380,6 @@ struct OverviewView: View {
         Button(actionTitle, action: action)
           .buttonStyle(.bordered)
           .controlSize(.small)
-          .disabled(!isEnabled)
-          .help(actionTitle)
       }
     } label: {
       Label {
