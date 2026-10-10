@@ -43,8 +43,8 @@ scan_node_free() {
   if [[ -z "${GITHUB_WORKSPACE:-}" || ! -d "$GITHUB_WORKSPACE/src/go" ]]; then
     return 0
   fi
-  ( cd "$GITHUB_WORKSPACE" && GOPATH="${GOPATH:-$HOME/go}" GOTOOLCHAIN=auto \
-      go run ./src/go/cmd/anypick-artifact node-free "$root" )
+  ( cd "$GITHUB_WORKSPACE/src/go" && GOPATH="${GOPATH:-$HOME/go}" GOTOOLCHAIN=auto \
+      go run ./cmd/anypick-artifact node-free "$root" )
 }
 
 smoked=0

@@ -33,7 +33,8 @@
     "icon": [
       "../../../assets/icon-32.png",
       "../../../assets/icon-128.png",
-      "../../../assets/icon-256.png"
+      "../../../assets/icon-256.png",
+      "../../../assets/icon.ico"
     ]
   }
 }
