@@ -198,6 +198,15 @@ func (r *Record) Alive() bool {
 	return processAlive(r.PID)
 }
 
+// CurrentIdentity reports the calling process's executable and start stamp,
+// the pair Spawn records. It lets a caller build a Record that describes
+// itself, which is what a test needs to stand in for a live child: a record
+// carrying only a PID verifies on Unix and fails on Windows, where
+// verifyLiveRecord requires both fields.
+func CurrentIdentity() (string, uint64, error) {
+	return captureProcessIdentity(os.Getpid())
+}
+
 // VerifyLive proves current ownership: the pid must be alive AND its live
 // command line must contain every recorded argument token. A reused PID
 // running unrelated code cannot match.

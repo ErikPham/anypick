@@ -248,7 +248,20 @@ func TestDeleteStalePIDAppliesAndRefusesLive(t *testing.T) {
 	stalePath := f.write(t, "providers/grok/accounts/work/runtime/proxy.pid", 0o600)
 	livePath := f.write(t, "providers/grok/accounts/live/runtime/proxy.pid", 0o600)
 	f.records[stalePath] = &ownership.Record{PID: 999999}
-	f.records[livePath] = &ownership.Record{PID: os.Getpid()}
+	// A record carrying only a PID is not what Spawn writes, and it does not
+	// verify on Windows, where the executable and start stamp are required.
+	// This read the live process as dead there, so the live case silently
+	// became the stale case.
+	selfExe, selfStart, err := ownership.CurrentIdentity()
+	if err != nil {
+		t.Fatalf("current identity: %v", err)
+	}
+	f.records[livePath] = &ownership.Record{
+		PID:          os.Getpid(),
+		Command:      append([]string(nil), os.Args[1:]...),
+		Executable:   selfExe,
+		ProcessStart: selfStart,
+	}
 
 	plan := PlanFixes(context.Background(), f.deps)
 	var stale *FixAction

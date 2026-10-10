@@ -96,7 +96,14 @@ jobs:
         run: go vet ./...
       - name: Test
         working-directory: src/go
-        run: go test ./... -count=1
+        run: |
+          set -o pipefail
+          go test ./... -count=1 2>&1 | tee /tmp/go-test.log
+          rc=$?
+          echo "::group::failing tests"
+          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          echo "::endgroup::"
+          exit $rc
 
       - name: Race test
         working-directory: src/go
@@ -131,7 +138,15 @@ jobs:
           cache-dependency-path: src/go/go.sum
       - name: Test native Windows process, lock, proxy, and CLI paths
         working-directory: src/go
-        run: go test ./... -count=1
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./... -count=1 2>&1 | tee /tmp/go-test.log
+          rc=$?
+          echo "::group::failing tests"
+          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          echo "::endgroup::"
+          exit $rc
 
   tauri:
     name: Tauri app / Linux check & UI build
