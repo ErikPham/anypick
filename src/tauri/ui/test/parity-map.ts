@@ -318,4 +318,8 @@ export const PARITY: ParityRow[] = [
  */
 export const OUT_OF_SCOPE = new Map<string, string>([
   ['tray.', 'MenuBarExtra(.window) AppKit surface. Tauri ships a system tray, not this window.'],
+  [
+    'com_apple_',
+    'Identifiers SwiftUI and AppKit assign to their own surfaces, here the Settings scene window. The inventory reads any `let <name>Id = "literal"` binding, and an NSWindow identifier looks like an accessibility one. Not an AnyPick control and nothing to port.',
+  ],
 ]);

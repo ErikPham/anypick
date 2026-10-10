@@ -66,11 +66,17 @@ func TestHandleLogsProxyHub(t *testing.T) {
 	}
 
 	// 3. Hub live (running), but log file empty -> res.State == "empty" (not "not-running")
+	//
+	// Command is the child's argv[1:], which is what ownership.Spawn records:
+	// exec.Command(selfExe, args...) makes selfExe the argv[0], so a record
+	// carrying os.Args[0] is a shape Spawn never writes. It also cannot verify:
+	// on linux/amd64 a Go binary's /proc/<pid>/cmdline carries no argv[0], so
+	// the token lookup missed and this reported the live process as gone.
 	rec := &ownership.Record{
 		RecordVersion: ownership.RecordVersion,
 		InstanceID:    "11111111-2222-3333-4444-555555555555",
 		PID:           os.Getpid(),
-		Command:       []string{os.Args[0]},
+		Command:       append([]string(nil), os.Args[1:]...),
 		Executable:    os.Args[0],
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
