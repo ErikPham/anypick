@@ -21,12 +21,30 @@ const uiDir = resolve(__dirname, '..');
  * see it because jsdom renders no stylesheet and never fires a hover.
  */
 describe('an icon command owns its whole state matrix', () => {
-  it('names itself while idle and working, and says Copied once it lands', () => {
-    render(<CopyButton value="http://127.0.0.1:41401" label="Copy proxy address" copy={async () => true} />);
-    const button = screen.getByRole('button', { name: 'Copy proxy address' });
-    expect(button).toHaveAttribute('title', 'Copy proxy address');
+  it('names itself while idle and working', () => {
+    // `aria-busy` is the machine-readable half; `disabled` is what actually
+    // stops the click, because the engine single-flights the request. An
+    // in-flight command still has to name itself: a spinner with no name is
+    // an unlabelled control, not a neutral one.
+    const { rerender } = render(
+      <IconButton label="Copy proxy API key" phase="idle">
+        <span />
+      </IconButton>
+    );
+    const button = screen.getByRole('button', { name: 'Copy proxy API key' });
+    expect(button).toHaveAttribute('title', 'Copy proxy API key');
     expect(button).not.toHaveAttribute('aria-busy');
     expect(button).toBeEnabled();
+
+    rerender(
+      <IconButton label="Copy proxy API key" phase="working">
+        <span />
+      </IconButton>
+    );
+    const working = screen.getByRole('button', { name: /Copy proxy API key/ });
+    expect(working).toHaveAttribute('aria-busy', 'true');
+    expect(working).toBeDisabled();
+    expect(working.querySelector('.spinner')).not.toBeNull();
   });
 
   it('confirms a copy and takes it back', async () => {
@@ -69,35 +87,35 @@ describe('an icon command owns its whole state matrix', () => {
     expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
-  it('will not take a second click while the first is in flight', () => {
-    // `aria-busy` is the machine-readable half; `disabled` is what actually
-    // stops the click, because the engine single-flights the request.
-    render(
-      <IconButton label="Rotate API Key" phase="working">
-        <span />
-      </IconButton>
-    );
-    const button = screen.getByRole('button', { name: /Rotate API Key/ });
-    expect(button).toHaveAttribute('aria-busy', 'true');
-    expect(button).toBeDisabled();
-  });
-
   it('holds one box across every phase', () => {
-    // The macOS control needs a canvas to stop a glyph swap resizing the row;
-    // a fixed `size-[22px]` here makes the same guarantee structural.
+    // Asserted on the class, not on a measurement, because jsdom reports every
+    // element as 0x0: a version of this that read `getBoundingClientRect`
+    // compared 0 to 0 and passed for the wrong reason, which is the same trap
+    // `extracts a non-empty set` guards against elsewhere in this suite.
+    //
+    // The real numbers were measured in Chrome against the built bundle: an
+    // idle copy command and its confirmed state are both 22.00pt wide at the
+    // same x. A browser run is not a gate here because Playwright is not a
+    // dependency, the same reason `make screenshots-tauri-ui` is not one.
     const { rerender, container } = render(
       <IconButton label="Copy" phase="idle" confirmed={<span data-testid="mark" />}>
         <span data-testid="glyph" />
       </IconButton>
     );
-    const box = () => container.querySelector('button')?.getBoundingClientRect().width;
-    const idle = box();
+    const button = () => container.querySelector('button')!;
+    const sizing = () => button().className.match(/(?:^|\s)size-\[[^\]]+\]/)?.[0];
+
+    const idle = sizing();
+    expect(idle, 'the control carries no fixed box, so a glyph swap can resize the row').toBeTruthy();
+
     rerender(
       <IconButton label="Copy" phase="confirmed" confirmed={<span data-testid="mark" />}>
         <span data-testid="glyph" />
       </IconButton>
     );
-    expect(box()).toBe(idle);
+    expect(sizing(), 'the box changed between idle and confirmed').toBe(idle);
+    expect(container.querySelector('[data-testid="mark"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-testid="glyph"]')).not.toBeInTheDocument();
   });
 
   it('greys the toolbar refresh while any command is in flight', () => {
