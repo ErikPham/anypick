@@ -105,7 +105,7 @@ jobs:
           echo "::group::failing tests"
           grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
-          exit $rc
+          exit "$rc"
 
       - name: Race test
         working-directory: src/go
@@ -148,7 +148,7 @@ jobs:
           echo "::group::failing tests"
           grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
-          exit $rc
+          exit "$rc"
 
   tauri:
     name: Tauri app / Linux check & UI build
