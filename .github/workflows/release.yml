@@ -302,7 +302,7 @@ jobs:
 
       - name: Tauri UI typecheck and bundle build
         run: |
-          cd src/tauri/ui && npm ci
+          (cd src/tauri/ui && npm ci)
           make typecheck-tauri-ui
           # The Rust bin embeds frontendDist (../frontend) at compile time, so
           # the bundle must exist before cargo check/test/clippy/build run.
@@ -391,7 +391,7 @@ jobs:
 
       - name: Tauri UI typecheck and bundle build
         run: |
-          cd src/tauri/ui && npm ci
+          (cd src/tauri/ui && npm ci)
           make typecheck-tauri-ui
           # The Rust bin embeds frontendDist (../frontend) at compile time, so
           # the bundle must exist before cargo test/clippy/build run.
@@ -477,7 +477,7 @@ jobs:
           test -n "$app"
           test -x "$app/Contents/Helpers/anypick-core"
           src/macos/scripts/check-node-free-app.sh "$app"
-          GOPATH="${HOME}/go" GOTOOLCHAIN=auto go run ./src/go/cmd/anypick-artifact node-free "$app"
+          (cd src/go && GOPATH="${HOME}/go" GOTOOLCHAIN=auto go run ./cmd/anypick-artifact node-free "$app")
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/AnyPick-macos-universal.zip"
           hdiutil create -volname AnyPick -srcfolder "$app" -ov -format UDZO \
             "$RUNNER_TEMP/AnyPick-macos-universal.dmg"
