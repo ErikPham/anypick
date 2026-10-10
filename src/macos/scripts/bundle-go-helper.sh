@@ -77,9 +77,8 @@ if [[ "${CONFIGURATION:-Debug}" == "Release" ]]; then
     echo "error: Release helper builds require a stable ANYPICK_GO_VERSION or MARKETING_VERSION; got '${release_version}'" >&2
     exit 1
   fi
-  # Source/Debug builds intentionally remain (devel). Only the signed Release
-  # configuration receives the canonical version used by the app handshake and
-  # update check.
+  # Source/Debug builds intentionally remain (devel). Release builds receive
+  # the canonical version used by the app handshake and update check.
   ldflags+=("-X=github.com/outof0/anypick/go/internal/buildinfo.Version=${release_version}")
 fi
 binaries=()
@@ -121,8 +120,8 @@ fi
 # Never copy plugin-host.mjs, a private Node runtime, or ESM plugin packs.
 /bin/rm -rf "${resources_dir}/plugin-host" "${resources_dir}/plugins"
 
-# Nested code must be signed before Xcode signs the outer app bundle. Local
-# builds use ad-hoc signing; archives inherit the selected Developer ID identity.
+# When Xcode code signing is enabled, sign the helper before Xcode signs the
+# outer bundle. With code signing disabled, the caller signs the completed app.
 if [[ "${CODE_SIGNING_ALLOWED:-NO}" == "YES" ]]; then
   identity="${EXPANDED_CODE_SIGN_IDENTITY:--}"
   sign_args=(--force --sign "${identity}" --options runtime)

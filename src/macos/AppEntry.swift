@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+private enum AppVersion {
+  static var marketing: String {
+    let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    return value.flatMap { $0.isEmpty ? nil : $0 } ?? "(devel)"
+  }
+}
+
 struct AnyPickMenuBarScene: Scene {
   @ObservedObject var model: MacOSDesignModel
   @Environment(\.openWindow) private var openWindow
@@ -28,8 +35,7 @@ struct AnyPickMenuBarLabel: View {
 
   var body: some View {
     ZStack(alignment: .topTrailing) {
-      Image(systemName: "point.3.connected.trianglepath.dotted")
-        .symbolRenderingMode(.monochrome)
+      Image(nsImage: AnyPickAppIcon.menuBarImage())
       if attentionCount > 0 {
         Circle()
           .fill(Color.orange)
@@ -57,7 +63,7 @@ struct AppCommands: Commands {
 
   var body: some Commands {
     // The standard panel appends CFBundleVersion as "(1)"; an empty `.version`
-    // drops it so the panel reads exactly what General → About shows.
+    // keeps the panel focused on the marketing version.
     CommandGroup(replacing: .appInfo) {
       Button("About AnyPick") {
         NSApp.orderFrontStandardAboutPanel(options: [
@@ -66,6 +72,12 @@ struct AppCommands: Commands {
         ])
         NSApp.activate(ignoringOtherApps: true)
       }
+      .help("View the app version and product information.")
+    }
+    CommandGroup(after: .appInfo) {
+      Button("Settings…") { open(.settings) }
+        .keyboardShortcut(",", modifiers: .command)
+        .help("Open Settings in the main window.")
     }
     CommandGroup(after: .newItem) {
       Button("Add Login…") {
@@ -73,6 +85,7 @@ struct AppCommands: Commands {
         open(.accounts)
       }
         .keyboardShortcut("n", modifiers: .command)
+        .help("Save a login or API key for an AI provider.")
     }
     // No Edit → Undo: mutations apply server-side with no compensation
     // path, so a local undo would be reverted by the next snapshot.
@@ -80,23 +93,20 @@ struct AppCommands: Commands {
     CommandGroup(after: .toolbar) {
       Button("Refresh") { model.refresh() }
         .keyboardShortcut("r", modifiers: .command)
+        .help("Refresh accounts, apps, services, and usage.")
       Button("Restart Proxies") { model.restartRunningProxies() }
         .keyboardShortcut("r", modifiers: [.command, .shift])
+        .help("Restart every running proxy service.")
     }
     CommandMenu("Go") {
       ForEach(Array(DesignDestination.allCases.enumerated()), id: \.element.id) {
         index, destination in
         Button(destination.title) { open(destination) }
+          .help("Open \(destination.title).")
           .keyboardShortcut(
             KeyEquivalent(Character("\(index + 1)")),
             modifiers: .command
           )
-      }
-      Divider()
-      // SettingsLink owns the Settings scene open path; a plain Button +
-      // sendAction often no-ops under XCUITest even when the menu click lands.
-      SettingsLink {
-        Text("Settings…")
       }
     }
   }
@@ -135,10 +145,5 @@ struct AnyPickApp: App {
 #endif
 
     AnyPickMenuBarScene(model: delegate.designModel)
-
-    Settings {
-      SettingsView(model: delegate.designModel)
-        .followingDesignAppearance(delegate.designModel.appearance)
-    }
   }
 }

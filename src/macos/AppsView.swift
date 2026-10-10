@@ -26,6 +26,7 @@ struct AppsView: View {
             showingAddApp = true
           }
           .buttonStyle(.borderedProminent)
+          .help("Add a supported coding app to configure with AnyPick.")
           .accessibilityIdentifier("apps.empty.add")
         }
       } else {
@@ -106,6 +107,7 @@ struct AppsView: View {
       } label: {
         Label("Remove App", systemImage: "trash")
       }
+      .help("Remove this app from the AnyPick list.")
       .disabled(model.isBusy)
       if isAppManagedByAnyPick(app) {
         Button(role: .destructive) {
@@ -113,10 +115,12 @@ struct AppsView: View {
         } label: {
           Label("Disconnect from AnyPick", systemImage: "bolt.slash")
         }
+        .help("Return this app to its own connection and model settings.")
         .disabled(model.isBusy)
       }
       Divider()
       Toggle("Show in Quick Panel", isOn: quickPanelBinding(app))
+        .help("Show this app in the menu bar Quick Panel.")
         .disabled(model.isBusy)
     }
   }

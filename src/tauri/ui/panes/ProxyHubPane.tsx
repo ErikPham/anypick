@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Symbol } from '../shell/Symbol';
 
 import type { HubConflict, HubSource, ProxyRow, Snapshot } from '../lib/contract';
@@ -36,6 +36,7 @@ import {
   Select,
   StatusLabel,
   Switch,
+  useCopyConfirmation,
   WarningGlyph,
 } from '../ui/primitives';
 import { SegmentedControl } from '../ui/SegmentedControl';
@@ -60,6 +61,7 @@ export function ProxyHubPane({
   snapshot,
   query = '',
   busy = new Set<string>(),
+  copyKeyResult = null,
   hubRowResult = null,
   onNavigate,
   onOpenModels,
@@ -68,12 +70,30 @@ export function ProxyHubPane({
   snapshot: Snapshot;
   query?: string;
   busy?: ReadonlySet<string>;
+  /** Completion of a protected API-key copy request. */
+  copyKeyResult?: { requestId: string; success: boolean | null } | null;
   /** The last refused source toggle, so the row that sent it can say so. */
   hubRowResult?: HubRowResult | null;
   onNavigate?: (destination: 'accounts' | 'proxies') => void;
   /** Opens Published Models, which the hub's own row leads to on macOS. */
   onOpenModels?: () => void;
 }) {
+  const [copyRequestId, setCopyRequestId] = useState<string | null>(null);
+  const copyConfirmation = useCopyConfirmation();
+  useEffect(() => {
+    if (!copyRequestId) return;
+    if (copyKeyResult?.requestId === copyRequestId) {
+      if (copyKeyResult.success === null) return;
+      copyConfirmation.report(copyKeyResult.success);
+      setCopyRequestId(null);
+      return;
+    }
+    if (!busy.has(copyRequestId)) {
+      copyConfirmation.report(false);
+      setCopyRequestId(null);
+    }
+  }, [busy, copyKeyResult, copyConfirmation.report, copyRequestId]);
+
   const needle = query.trim().toLocaleLowerCase();
   const hub = hubProxy(snapshot.proxies);
   const rows = hubSourceRows(snapshot.hubSources);
@@ -174,7 +194,13 @@ export function ProxyHubPane({
                 <IconButton
                   label="Copy Proxy Hub API key"
                   testId="hub.copy-api-key-button"
-                  onClick={() => copyHubKey(service, hub)}
+                  phase={copyConfirmation.phase}
+                  confirmed={<Symbol name="checkmark" size={13} />}
+                  disabled={busy.size > 0}
+                  onClick={() => {
+                    if (!copyConfirmation.begin()) return;
+                    setCopyRequestId(copyHubKey(service, hub));
+                  }}
                 >
                   <Symbol name="doc.on.doc" size={15} />
                 </IconButton>
@@ -217,6 +243,7 @@ export function ProxyHubPane({
                 className="inline-flex size-5 cursor-default items-center justify-center text-tertiary hover:not-disabled:text-text disabled:opacity-30"
                 data-testid="hub-open-models"
                 aria-label="View Published Models"
+                title="View models published by Proxy Hub"
                 disabled={snapshot.hubPublishedModels.length === 0}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -345,10 +372,10 @@ function hubStatus(hub: ProxyRow): 'running' | 'attention' | 'stopped' {
   return hub.enabled ? 'attention' : 'stopped';
 }
 
-function copyHubKey(service: ServicePort, hub: ProxyRow) {
+function copyHubKey(service: ServicePort, hub: ProxyRow): string {
   // The engine mints the key on request and returns it in the result payload.
   // Nothing here reads or stores it; App copies it and names the action only.
-  service.mutate('proxy-token', { providerId: hub.providerId, name: hub.id.split('/').slice(1).join('/') });
+  return service.mutate('proxy-token', { providerId: hub.providerId, name: hub.id.split('/').slice(1).join('/') });
 }
 
 /**

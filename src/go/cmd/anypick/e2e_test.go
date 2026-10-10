@@ -116,11 +116,16 @@ func assertNoLeakedChildren(t *testing.T, phase string) {
 	}
 }
 
-// isolateEnv points HOME/ANYPICK_HOME at a sandbox for one test.
+// isolateEnv points home, app-data and AnyPick paths at a sandbox for one test.
 func isolateEnv(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
-	t.Setenv("HOME", filepath.Join(base, "home"))
+	home := filepath.Join(base, "home")
+	t.Setenv("HOME", home)
+	// On Windows, os.UserHomeDir and app-data lookups ignore HOME.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("ANYPICK_HOME", filepath.Join(base, "data"))
 	// codexHomePath follows CODEX_HOME and ignores the sandboxed HOME.
 	t.Setenv("CODEX_HOME", "")
@@ -507,6 +512,21 @@ func buildCLI() {
 	bin := filepath.Join(dir, "anypick-cli")
 	cmd := exec.Command("go", "build", "-o", bin, "./cmd/anypick")
 	cmd.Dir = filepath.Join(thisFileDir(), "..", "..")
+	// Tests replace HOME with a TempDir. The child Go command then places its
+	// module cache below that TempDir; writable module directories let cleanup
+	// remove the cache when the test finishes.
+	goFlags := strings.TrimSpace(os.Getenv("GOFLAGS") + " -modcacherw")
+	cmd.Env = os.Environ()
+	flagsFound := false
+	for i, variable := range cmd.Env {
+		if strings.HasPrefix(variable, "GOFLAGS=") {
+			cmd.Env[i] = "GOFLAGS=" + goFlags
+			flagsFound = true
+		}
+	}
+	if !flagsFound {
+		cmd.Env = append(cmd.Env, "GOFLAGS="+goFlags)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		builtCLIErr = fmt.Errorf("build helper binary: %v\n%s", err, out)
 		return

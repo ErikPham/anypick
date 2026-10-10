@@ -348,6 +348,7 @@ struct AppRouteSheet: View {
       }
       .contentShape(Rectangle())
     }
+    .help(isCurrent ? "Keep the current connection for this app." : "Use \(route.name) as this app’s connection.")
     .buttonStyle(.plain)
     .disabled(model.isBusy)
     .accessibilityLabel(route.detail.isEmpty ? route.name : "\(route.name), \(route.detail)")
@@ -618,6 +619,7 @@ struct AppModelsSheet: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(model.isBusy)
+                .help("Reload the available models for this app.")
                 .accessibilityIdentifier("app.models.refresh")
             }
             if provenance == .custom, let providerName {
@@ -626,6 +628,7 @@ struct AppModelsSheet: View {
                   .buttonStyle(.bordered)
                   .controlSize(.small)
                   .disabled(model.isBusy || awaitingSaveResult)
+                  .help("Remove this override and use the provider’s default model.")
                   .accessibilityIdentifier("app.models.reset")
               }
             }

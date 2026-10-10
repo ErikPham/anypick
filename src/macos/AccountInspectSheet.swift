@@ -53,6 +53,7 @@ struct AccountInspectSheet: View {
               }
             }
             Button("Edit…") { editing = true }
+              .help("Change this account’s name or saved settings.")
               .accessibilityIdentifier("account-inspect.edit")
           }
 

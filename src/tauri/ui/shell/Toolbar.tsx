@@ -1,4 +1,5 @@
 import type { Snapshot } from '../lib/contract';
+import { IconButton } from '../ui/primitives';
 import { Symbol } from './Symbol';
 
 /**
@@ -38,24 +39,13 @@ export function Toolbar({
     <header className="flex min-h-11 items-center justify-between gap-4 bg-transparent px-5 pt-2.5 pb-1.5">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         {onBack ? (
-          <button
-            type="button"
-            className="inline-flex size-6 flex-none cursor-default items-center justify-center rounded-control border border-control-border bg-control text-secondary hover:not-disabled:bg-hover hover:not-disabled:text-text disabled:opacity-50"
+          <IconButton
+            label="Back"
+            testId="toolbar-back"
             onClick={onBack}
-            aria-label="Back"
-            data-testid="toolbar-back"
           >
-            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
-              <path
-                d="M15 18l-6-6 6-6"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+            <Symbol name="chevron.left" size={14} />
+          </IconButton>
         ) : null}
         <h1 className="min-w-0 flex-1 overflow-hidden text-[15px] font-semibold tracking-[-0.01em] text-ellipsis whitespace-nowrap">
           {title}
@@ -84,36 +74,21 @@ export function Toolbar({
                 className="flex-none cursor-default text-tertiary hover:text-text"
                 onClick={() => onQuery('')}
                 aria-label="Clear search"
+                title="Clear the search text"
               >
                 <Symbol name="xmark.circle" size={11} />
               </button>
             ) : null}
           </label>
         ) : null}
-        <button
-          type="button"
-          className="inline-flex size-6 cursor-default items-center justify-center rounded-control border border-control-border bg-control text-secondary hover:not-disabled:bg-hover hover:not-disabled:text-text disabled:opacity-50"
+        <IconButton
+          label="Refresh"
+          testId="toolbar-refresh"
           onClick={onRefresh}
-          aria-label="Refresh"
-          title="Refresh"
-          data-testid="toolbar-refresh"
-          aria-busy={busy.size > 0 || undefined}
           disabled={!snapshot || busy.size > 0}
         >
-          <svg
-            viewBox="0 0 24 24"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            aria-hidden="true"
-            focusable="false"
-          >
-            <path d="M20 11a8 8 0 1 0 1 4 M20 5v6h-6" />
-          </svg>
-        </button>
+          <Symbol name="arrow.clockwise" size={15} />
+        </IconButton>
       </div>
     </header>
   );

@@ -43,16 +43,32 @@ function outOfScopeReason(id: string): string | undefined {
 
 /**
  * Tauri ids that two or more `done` rows legitimately share, with the exact
- * macOS ids in each group and the reason one Tauri control carries them all.
+ * macOS ids in each group and the reason the source inventory normalizes them
+ * to the same id.
  *
  * A shared id is legitimate when macOS names one control twice — a list-row
  * button and its detail-pane twin, or two row shapes over one model list —
- * because this app deliberately has one control. The macOS ids are pinned, so a
- * new row on an allowlisted id changes the group and fails rather than slipping
- * in behind an existing exemption. These eight groups predate this check; the
- * ninth, `onboarding-choose-route`, was the defect and is now a row of its own.
+ * because this app deliberately has one control. It is also legitimate when a
+ * parameterized Tauri test id is normalized to `{x}`; the runtime values stay
+ * distinct. The macOS ids are pinned, so a new row on an allowlisted id changes
+ * the group and fails rather than slipping in behind an existing exemption.
+ * The original eight groups predate this check; the ninth,
+ * `onboarding-choose-route`, was the defect and is now a row of its own.
  */
 const SHARED_TAURI_ID_REASONS = new Map<string, { macos: string[]; reason: string }>([
+  [
+    'setting-{x}',
+    {
+      macos: [
+        'settings.open-at-login',
+        'settings.start-enabled-proxies',
+        'settings.show-usage',
+        'settings.quota-guard',
+      ],
+      reason:
+        'Settings rows are rendered from the same preference component. Each preference has a distinct runtime test id; the source inventory normalizes the shared template to `{x}`.',
+    },
+  ],
   [
     'app.disconnect-menu',
     {

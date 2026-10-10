@@ -7,6 +7,9 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 
 const releasesUrl = "https://github.com/outof0/anypick/releases/latest";
 const npmCommand = "npm install -g anypick";
+const starBadgeUrl = "https://img.shields.io/github/stars/outof0/anypick?style=social";
+const heroDescription = "Switch accounts, route through Grok, Gemini or OpenRouter, and preview every config change. CLI + desktop app, open source.";
+const socialTitle = "AnyPick — Run Claude Code & Codex on any provider";
 
 const capabilities = [
   {
@@ -93,8 +96,9 @@ const proof = [
 ---
 
 <BaseLayout
-  title={`${config.title} — ${config.description}`}
-  description={config.description}
+  title={socialTitle}
+  socialTitle={socialTitle}
+  description={heroDescription}
   socialImage="/og-image.png"
 >
   <div class="landing min-h-screen bg-[#080A11] text-[#F8FAFC]">
@@ -109,16 +113,16 @@ const proof = [
           <div class="hero-copy max-w-2xl">
             <p class="eyebrow">
               <span></span>
-              Native releases · one Go engine
+              Pick any. Code on.
             </p>
 
-            <h1 class="mt-7 text-balance text-[clamp(3rem,7vw,5.4rem)] font-semibold leading-[0.96] tracking-[-0.055em]">
-              Pick any.<br />
-              <span>Code on.</span>
+            <h1 class="mt-5 text-balance text-[clamp(2.6rem,8vw,5.4rem)] font-semibold leading-[0.98] tracking-[-0.055em]">
+              Run Claude Code &amp; Codex<br />
+              <span>on any login you already pay for.</span>
             </h1>
 
             <p class="mt-7 max-w-xl text-pretty text-lg leading-8 text-[#98A2B3] sm:text-xl">
-              Route <strong>Claude Code</strong> and <strong>Codex</strong> through compatible accounts and gateways you already have. Switch native provider logins from the same place.
+              {heroDescription}
             </p>
 
             <div class="mt-9 flex flex-wrap items-center gap-3">
@@ -126,24 +130,102 @@ const proof = [
                 Get started
                 <Icon name="ph:arrow-right" class="h-4 w-4" />
               </a>
+              <a class="star-link" href={config.github ?? "https://github.com/outof0/anypick"} target="_blank" rel="noopener" aria-label="★ Star on GitHub">
+                <span class="star-link-full">★ Star on GitHub</span>
+                <span class="star-link-short">★ Star</span>
+                <img src={starBadgeUrl} alt="GitHub stars" width="104" height="20" />
+              </a>
               <a class="secondary-cta" href="#workflow">See the workflow</a>
             </div>
 
-            <a class="download-link mt-8 max-w-lg" href={releasesUrl}>
-              <Icon name="ph:download-simple" class="h-4 w-4" aria-hidden="true" />
-              <span>Download on GitHub Releases</span>
-              <Icon name="ph:arrow-up-right" class="ml-auto h-4 w-4" aria-hidden="true" />
-            </a>
-            <div class="install-shell mt-3 max-w-lg">
-              <span class="prompt" aria-hidden="true">$</span>
-              <code>{npmCommand}</code>
-              <button type="button" data-copy={npmCommand} aria-label="Copy npm install command">
-                <Icon name="ph:copy" class="copy-icon h-4 w-4" />
-                <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
-                <span>Copy</span>
-              </button>
+            <div class="install-card mt-8 max-w-lg" data-install-tabs>
+              <div class="install-tabs" role="tablist" aria-label="Choose an install method">
+                <button id="install-tab-macos" class="install-tab" type="button" role="tab" aria-selected="true" aria-controls="install-panel-macos" data-install-tab="macos">macOS</button>
+                <button id="install-tab-windows" class="install-tab" type="button" role="tab" aria-selected="false" aria-controls="install-panel-windows" tabindex="-1" data-install-tab="windows">Windows</button>
+                <button id="install-tab-linux" class="install-tab" type="button" role="tab" aria-selected="false" aria-controls="install-panel-linux" tabindex="-1" data-install-tab="linux">Linux</button>
+                <button id="install-tab-npm" class="install-tab" type="button" role="tab" aria-selected="false" aria-controls="install-panel-npm" tabindex="-1" data-install-tab="npm">npm</button>
+              </div>
+
+              <div class="install-panel" id="install-panel-macos" role="tabpanel" aria-labelledby="install-tab-macos" data-install-panel="macos">
+                <p class="install-label">CLI</p>
+                <div class="install-shell">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>brew install outof0/tap/anypick</code>
+                  <button type="button" data-copy="brew install outof0/tap/anypick" aria-label="Copy Homebrew CLI install command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <p class="install-label install-label-spaced">Desktop app</p>
+                <div class="install-shell">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>brew install --cask outof0/tap/anypick</code>
+                  <button type="button" data-copy="brew install --cask outof0/tap/anypick" aria-label="Copy Homebrew app install command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="install-panel" id="install-panel-windows" role="tabpanel" aria-labelledby="install-tab-windows" data-install-panel="windows" hidden>
+                <p class="install-label">CLI · Scoop</p>
+                <div class="install-shell">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>scoop bucket add outof0 https://github.com/outof0/scoop-bucket</code>
+                  <button type="button" data-copy="scoop bucket add outof0 https://github.com/outof0/scoop-bucket" aria-label="Copy Scoop bucket command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <div class="install-shell mt-2">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>scoop install anypick</code>
+                  <button type="button" data-copy="scoop install anypick" aria-label="Copy Scoop install command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="install-panel" id="install-panel-linux" role="tabpanel" aria-labelledby="install-tab-linux" data-install-panel="linux" hidden>
+                <p class="install-label">CLI · Homebrew</p>
+                <div class="install-shell">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>brew install outof0/tap/anypick</code>
+                  <button type="button" data-copy="brew install outof0/tap/anypick" aria-label="Copy Homebrew CLI install command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <p class="install-hint">Desktop packages: `.deb`, `.rpm`, or AppImage.</p>
+              </div>
+
+              <div class="install-panel" id="install-panel-npm" role="tabpanel" aria-labelledby="install-tab-npm" data-install-panel="npm" hidden>
+                <p class="install-label">Node 18+</p>
+                <div class="install-shell">
+                  <span class="prompt" aria-hidden="true">$</span>
+                  <code>{npmCommand}</code>
+                  <button type="button" data-copy={npmCommand} aria-label="Copy npm install command">
+                    <Icon name="ph:copy" class="copy-icon h-4 w-4" />
+                    <Icon name="ph:check" class="check-icon hidden h-4 w-4" />
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <p class="install-hint">Downloads the matching native CLI on first run.</p>
+              </div>
+
+              <a class="desktop-release-link" href={releasesUrl}>
+                Desktop apps → GitHub Releases
+                <Icon name="ph:arrow-up-right" class="h-4 w-4" aria-hidden="true" />
+              </a>
             </div>
-            <p class="mt-3 font-mono text-xs text-[#8b93a7]">macOS 14+ · Linux/Windows · npm launcher installs the native CLI</p>
+            <p class="install-meta mt-3">v1.1 · MIT</p>
+            <p class="macos-warning mt-3 max-w-lg">The macOS app is not notarized. On first launch, right-click AnyPick.app and choose <strong>Open</strong>, or go to System Settings → Privacy &amp; Security → <strong>Open Anyway</strong>. You can also run <code>xattr -dr com.apple.quarantine /Applications/AnyPick.app</code>.</p>
             <p class="sr-only" aria-live="polite" data-copy-status></p>
           </div>
 
@@ -300,22 +382,70 @@ const proof = [
 
   <script>
     const status = document.querySelector("[data-copy-status]");
+    const installTabs = document.querySelector<HTMLElement>("[data-install-tabs]");
+    const tabs = Array.from(installTabs?.querySelectorAll<HTMLButtonElement>("[data-install-tab]") ?? []);
+    const panels = Array.from(installTabs?.querySelectorAll<HTMLElement>("[data-install-panel]") ?? []);
+
+    const activateTab = (name: string, focus = false) => {
+      for (const tab of tabs) {
+        const selected = tab.dataset.installTab === name;
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        if (selected && focus) tab.focus();
+      }
+      for (const panel of panels) panel.hidden = panel.dataset.installPanel !== name;
+    };
+
+    for (const [index, tab] of tabs.entries()) {
+      tab.addEventListener("click", () => activateTab(tab.dataset.installTab ?? "macos"));
+      tab.addEventListener("keydown", (event) => {
+        const next = event.key === "ArrowRight" || event.key === "ArrowDown"
+          ? (index + 1) % tabs.length
+          : event.key === "ArrowLeft" || event.key === "ArrowUp"
+            ? (index + tabs.length - 1) % tabs.length
+            : event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? tabs.length - 1
+                : -1;
+        if (next < 0) return;
+        event.preventDefault();
+        activateTab(tabs[next].dataset.installTab ?? "macos", true);
+      });
+    }
+
+    const userAgent = navigator.userAgent.toLowerCase();
+    const detectedOS = /macintosh|mac os x|iphone|ipad/.test(userAgent)
+      ? "macos"
+      : /windows/.test(userAgent)
+        ? "windows"
+        : /linux|x11/.test(userAgent)
+          ? "linux"
+          : null;
+    if (detectedOS) activateTab(detectedOS);
 
     document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((button) => {
       button.addEventListener("click", async () => {
         const value = button.dataset.copy;
         if (!value) return;
-        await navigator.clipboard.writeText(value);
-        button.querySelector(".copy-icon")?.classList.add("hidden");
-        button.querySelector(".check-icon")?.classList.remove("hidden");
         const label = button.querySelector("span");
-        if (label) label.textContent = "Copied";
-        if (status) status.textContent = "npm install command copied";
-        window.setTimeout(() => {
-          button.querySelector(".copy-icon")?.classList.remove("hidden");
-          button.querySelector(".check-icon")?.classList.add("hidden");
-          if (label) label.textContent = "Copy";
-        }, 1800);
+        const originalLabel = button.getAttribute("aria-label") ?? "Copy command";
+        try {
+          await navigator.clipboard.writeText(value);
+          button.querySelector(".copy-icon")?.classList.add("hidden");
+          button.querySelector(".check-icon")?.classList.remove("hidden");
+          if (label) label.textContent = "Copied";
+          button.setAttribute("aria-label", "Copied install command");
+          if (status) status.textContent = "Install command copied";
+          window.setTimeout(() => {
+            button.querySelector(".copy-icon")?.classList.remove("hidden");
+            button.querySelector(".check-icon")?.classList.add("hidden");
+            if (label) label.textContent = "Copy";
+            button.setAttribute("aria-label", originalLabel);
+          }, 1800);
+        } catch {
+          if (status) status.textContent = "Could not copy install command";
+        }
       });
     });
   </script>
@@ -412,6 +542,39 @@ const proof = [
     transform: translateY(-1px);
   }
 
+  .star-link {
+    display: inline-flex;
+    min-height: 2.8rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    border: 1px solid rgb(255 255 255 / 0.13);
+    border-radius: 0.75rem;
+    padding: 0.55rem 0.8rem;
+    background: rgb(255 255 255 / 0.035);
+    color: #d6d9e0;
+    font-size: 0.82rem;
+    font-weight: 650;
+    text-decoration: none;
+    transition: 160ms ease;
+  }
+
+  .star-link:hover {
+    border-color: rgb(255 255 255 / 0.22);
+    background: rgb(255 255 255 / 0.07);
+    color: white;
+  }
+
+  .star-link img {
+    display: block;
+    width: 104px;
+    height: 20px;
+  }
+
+  .star-link-short {
+    display: none;
+  }
+
   .secondary-cta {
     border: 1px solid rgb(255 255 255 / 0.13);
     background: rgb(255 255 255 / 0.035);
@@ -425,6 +588,7 @@ const proof = [
   }
 
   .primary-cta:focus-visible,
+  .star-link:focus-visible,
   .secondary-cta:focus-visible,
   .text-link:focus-visible,
   .proof-card a:focus-visible,
@@ -434,30 +598,124 @@ const proof = [
     outline-offset: 3px;
   }
 
-  .download-link {
+  .install-card {
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 1rem;
+    background: rgb(4 6 12 / 0.72);
+    box-shadow: 0 14px 40px rgb(0 0 0 / 0.22);
+  }
+
+  .install-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25rem;
+    padding: 0.45rem;
+    border-bottom: 1px solid rgb(255 255 255 / 0.09);
+  }
+
+  .install-tab {
+    min-width: 0;
+    min-height: 2.3rem;
+    border: 0;
+    border-radius: 0.6rem;
+    padding: 0.4rem 0.3rem;
+    background: transparent;
+    color: #98a2b3;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+
+  .install-tab:hover {
+    background: rgb(255 255 255 / 0.06);
+    color: #f8fafc;
+  }
+
+  .install-tab[aria-selected="true"] {
+    background: rgb(124 58 237 / 0.2);
+    color: #e9ddff;
+  }
+
+  .install-tab:focus-visible {
+    outline: 2px solid #c4b5fd;
+    outline-offset: 1px;
+  }
+
+  .install-panel[hidden] {
+    display: none !important;
+  }
+
+  .install-panel {
+    min-width: 0;
+    padding: 0.9rem 0.75rem;
+  }
+
+  .install-label {
+    margin: 0 0 0.45rem 0.2rem;
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.67rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .install-label-spaced {
+    margin-top: 0.9rem;
+  }
+
+  .install-hint {
+    margin: 0.75rem 0.2rem 0;
+    color: #8b93a7;
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+
+  .desktop-release-link {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    min-height: 3.4rem;
-    padding: 0.45rem 1rem;
-    border: 1px solid rgb(255 255 255 / 0.12);
-    border-radius: 0.85rem;
-    background: rgb(4 6 12 / 0.7);
-    box-shadow: 0 14px 40px rgb(0 0 0 / 0.22);
-    color: #d6d9e0;
-    font-size: 0.875rem;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.8rem 1rem;
+    border-top: 1px solid rgb(255 255 255 / 0.09);
+    color: #c4b5fd;
+    font-size: 0.78rem;
     font-weight: 600;
     text-decoration: none;
   }
 
-  .download-link:hover {
-    border-color: rgb(255 255 255 / 0.2);
-    color: white;
+  .desktop-release-link:hover {
+    color: #e9ddff;
   }
 
-  .download-link:focus-visible {
+  .desktop-release-link:focus-visible {
     outline: 2px solid #c4b5fd;
-    outline-offset: 2px;
+    outline-offset: -3px;
+  }
+
+  .install-meta {
+    color: #8b93a7;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+  }
+
+  .macos-warning {
+    border-left: 2px solid rgb(167 139 250 / 0.45);
+    padding-left: 0.8rem;
+    color: #98a2b3;
+    font-size: 0.76rem;
+    line-height: 1.65;
+  }
+
+  .macos-warning strong {
+    color: #d6d9e0;
+    font-weight: 600;
+  }
+
+  .macos-warning code {
+    color: #d6d9e0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    overflow-wrap: anywhere;
   }
 
   .install-shell {
@@ -774,6 +1032,32 @@ const proof = [
   @media (max-width: 40rem) {
     .install-shell button span {
       display: none;
+    }
+
+    .star-link {
+      gap: 0.35rem;
+      padding-inline: 0.55rem;
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
+
+    .star-link-full {
+      display: none;
+    }
+
+    .star-link-short {
+      display: inline;
+    }
+
+    .star-link img {
+      width: 88px;
+    }
+
+    .install-shell code {
+      overflow: visible;
+      overflow-wrap: anywhere;
+      text-overflow: clip;
+      white-space: normal;
     }
 
     .plan-code li {

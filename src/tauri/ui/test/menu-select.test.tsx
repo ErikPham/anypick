@@ -87,6 +87,24 @@ describe('MenuSelect', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('focuses the selected option and supports arrow navigation', async () => {
+    const user = userEvent.setup();
+    render(
+      <MenuSelect label="Provider" value="opencode" onChange={() => {}} options={OPTIONS} ariaLabel="Provider" />,
+    );
+    const trigger = screen.getByRole('combobox');
+    await user.click(trigger);
+    const selected = screen.getByRole('option', { selected: true });
+    expect(document.activeElement).toBe(selected);
+
+    await user.keyboard('{ArrowUp}');
+    expect(document.activeElement).toBe(screen.getByRole('option', { name: 'Anthropic Claude' }));
+    await user.keyboard('{Home}');
+    expect(document.activeElement).toBe(screen.getByRole('option', { name: 'All Providers' }));
+    await user.keyboard('{Escape}');
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('is one control that cannot be opened while disabled', async () => {
     const user = userEvent.setup();
     render(<MenuSelect label="Provider" value="" onChange={() => {}} options={OPTIONS} disabled />);

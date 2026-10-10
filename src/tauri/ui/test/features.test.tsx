@@ -1,15 +1,12 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { act, useMemo, useState, type MutableRefObject } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../App';
 import { createService, type ServiceHandle } from '../lib/service';
 import { AccountsPane, ActivityPane, AppsPane, BackupsPane, ProxiesPane } from '../panes';
-import { SettingsSheet } from '../panes/SettingsSheet';
+import { SettingsPane } from '../panes/SettingsPane';
 import type { AccountFlowResult } from '../panes/AddAccountSheet';
 import type { GatewayFlowResult } from '../panes/AddGatewaySheet';
 import type { Snapshot } from '../lib/contract';
@@ -947,39 +944,33 @@ describe('apps', () => {
 });
 
 describe('settings', () => {
-  it('sends the quota toggle the switch moved to, and runs the doctor', async () => {
+  it('updates preferences and reopens Getting Started without linking to other panes', async () => {
     const bridge = new FakeBridge();
     bridges.push(bridge);
     const { port } = createService({ bridge });
     const user = userEvent.setup();
+    const onShowGettingStarted = vi.fn();
     render(
-      <SettingsSheet
+      <SettingsPane
         settings={snapshotFixture().settings}
-        snapshot={snapshotFixture()}
         service={port}
-        onClose={() => undefined}
+        onShowGettingStarted={onShowGettingStarted}
       />,
     );
-    await user.click(screen.getByRole('switch', { name: 'Show Quota' }));
-    await user.click(screen.getByTestId('settings-doctor'));
+    await user.click(screen.getByRole('switch', { name: 'Show Usage Remaining' }));
+    await user.click(screen.getByRole('switch', { name: 'Skip Accounts That Reach Their Usage Limit' }));
+    await user.click(screen.getByRole('button', { name: 'Show Checklist' }));
+    expect(onShowGettingStarted).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: /Open Proxies|Manage Backups|Check AnyPick/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Credentials')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not encrypted')).not.toBeInTheDocument();
+    expect(screen.queryByText('Check AnyPick')).not.toBeInTheDocument();
     expect(mutatePayloads(bridge)[0]).toEqual(
       expect.objectContaining({ operation: 'setting-show-quota', name: 'settings', enabled: false }),
     );
-    expect(bridge.commands().some((entry) => entry.kind === 'doctor')).toBe(true);
-  });
-
-  it('ends with the same version string tauri.conf.json ships', () => {
-    const conf = JSON.parse(readFileSync(resolve(__dirname, '../../app/tauri.conf.json'), 'utf8')) as { version: string };
-    const { port } = createService({ bridge: new FakeBridge() });
-    render(
-      <SettingsSheet
-        settings={snapshotFixture().settings}
-        snapshot={snapshotFixture()}
-        service={port}
-        onClose={() => undefined}
-      />,
+    expect(mutatePayloads(bridge)[1]).toEqual(
+      expect.objectContaining({ operation: 'setting-quota-guard', name: 'settings', enabled: true }),
     );
-    expect(screen.getByTestId('settings-version').textContent).toBe(`AnyPick ${conf.version}`);
   });
 });
 

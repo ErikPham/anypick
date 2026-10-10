@@ -70,7 +70,7 @@ Environment Variables**), then Run:
 | Variable | Values | Default |
 | --- | --- | --- |
 | `ANYPICK_MACOS_FIXTURE` | `ready`, `loading`, `empty`, `error` | — (unset = live data) |
-| `ANYPICK_MACOS_DESTINATION` | `overview`, `apps`, `accounts`, `proxyHub`, `proxies`, `activity`, `backups` | `overview` |
+| `ANYPICK_MACOS_DESTINATION` | `overview`, `apps`, `accounts`, `proxyHub`, `proxies`, `activity`, `backups`, `settings` | `overview` |
 | `ANYPICK_MACOS_FLOW` | `add-account`, `add-gateway`, `remove-account`, `published-models`, `hub-overlap`, `create-backup`, `restore-backup`, `import-backup`, `getting-started`, `tray`, `tray-attention`, `tray-use-with`, `tray-switching`, `tray-recovery`, `tray-first-run` | — |
 | `ANYPICK_MACOS_APPEARANCE` | `system`, `light`, `dark` | `system` |
 | `ANYPICK_MACOS_ACTIVITY_MODE` | `events`, `logs` | `events` |
@@ -150,11 +150,14 @@ System Settings → Wi‑Fi / Displays / Battery / Privacy & Security:
 - Destructive work asks through one native alert (see
   [Confirmations](#confirmations)), never a custom modal card.
 
-The **Settings scene** (`Settings { }` / ⌘,) contains app-wide preferences
-and Diagnostics. Task-specific options stay on the pane they affect. The
-Diagnostics pane runs the read-only installation Doctor and offers recovery
-actions for Codex accounts whose profile model list is ready. Do not put a
-Settings row in the main sidebar.
+**Settings is a normal main-window destination** in the sidebar. It uses one
+grouped `Form` with the app preferences for startup and usage; do not split it
+into a separate window or tabs. Settings also has one action to reopen the
+Getting Started checklist on Overview; it does not host status summaries or
+controls for other product panes. Account backups, proxy controls, and Codex
+profiles stay in their own destinations. Installation diagnostics are
+available on Overview. The app-menu Settings… command and ⌘, shortcut route to
+the same Settings destination.
 
 The **menu bar extra** is a status-item menu, not a second app. See
 [Menu bar extra](#menu-bar-extra).
@@ -166,7 +169,7 @@ tints, and materials. Do not wrap them in a custom “design system”.
 
 | Job | Use |
 | --- | --- |
-| App / window / prefs | `Window`, `Settings`, `MenuBarExtra`, native `Toolbar` |
+| App / window | `Window`, `MenuBarExtra`, native `Toolbar` |
 | Shell | `NavigationSplitView` + `List` + `.listStyle(.sidebar)` |
 | Drill-in | `NavigationStack` + `NavigationLink` + `navigationTitle` |
 | Pane body | `Form` + `.formStyle(.grouped)` + `Section` |
@@ -177,6 +180,23 @@ tints, and materials. Do not wrap them in a custom “design system”.
 | Confirm | `DesignConfirmation` + `.designConfirmation(_:)` |
 | Files | `NSSavePanel` / `NSOpenPanel` |
 | Brand mark | Provider / app rows: bundled logo via `DesignProviderIcon`. All other chrome: SF Symbol. No card, no badge plate. |
+
+## Button help and in-form guidance
+
+Use native help for toolbar icons, icon-only row commands, menu triggers, and
+controls whose effect is not clear from their label (`.help(_:)` in SwiftUI or
+`NSButton.toolTip` when bridging AppKit). Keep each help tag brief (aim for 60
+to 75 characters) and specific to that control; describe the action and change
+the wording when its state changes. Do not build a custom tooltip view or
+repeat a long workflow in a help tag.
+Follow [Apple’s help-tag guidance](https://developer.apple.com/design/human-interface-guidelines/offering-help)
+for tooltip content and length.
+
+Put instructions people need to finish a task in the sheet itself: a concise
+`Section` footer for a group, or a short explanatory `Text` beside the field.
+Tooltips supplement that visible guidance; they must not be the only place to
+learn a required format, warning, or next step. Keep the main window and sheets
+as native grouped Forms with system controls.
 
 ## Forbidden (this is why previous prompts failed)
 
@@ -372,7 +392,7 @@ the section open.
 
 ## Information architecture
 
-Main window sidebar (peer destinations, System Settings style):
+Main window sidebar (pane destinations, System Settings style):
 
 | Destination | Job |
 | --- | --- |
@@ -383,15 +403,12 @@ Main window sidebar (peer destinations, System Settings style):
 | Proxies | Per-account translation processes and their service lifecycle. |
 | Activity | Searchable events and live logs in a bounded, independently scrolling region. |
 | Account Backups | Export / import saved accounts. |
+| Settings | App-wide startup and usage preferences. |
 
-Settings scene (⌘, — **not** a sidebar row):
-
-| Pane | Job |
-| --- | --- |
-| General | Open at Login, Getting Started, About. |
-| Usage | Quota visibility + low-usage warning. |
-| Proxies | Start-at-launch policy. |
-| Security | Always-on facts (loopback, no secrets in UI, backup warning). |
+Settings groups related controls into Startup and Usage. It contains only
+preferences; each feature's management, status, and recovery actions stay in
+their own sidebar destination. The sidebar row, app-menu command, and ⌘,
+shortcut all select this same main-window destination.
 
 Do not duplicate a toggle across General and a specialized pane.
 Do not put appearance, scrolling, or other **system** preferences here.

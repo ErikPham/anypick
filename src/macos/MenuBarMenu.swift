@@ -92,7 +92,7 @@ struct MenuBarMenu: View {
       )
     }
 
-    results += DesignDestination.allCases.compactMap { destination -> TraySearchResult? in
+    results += DesignDestination.trayCases.compactMap { destination -> TraySearchResult? in
       guard matchesSearch([destination.title, destination.shortTitle], query: query) else {
         return nil
       }

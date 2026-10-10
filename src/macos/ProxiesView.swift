@@ -130,28 +130,37 @@ struct ProxiesView: View {
           .contextMenu {
             if proxy.status == .running {
               Button("Stop", role: .destructive) { requestStop(proxy) }
+                .help("Stop this local proxy. Apps using it will lose this connection.")
                 .disabled(
                   model.isBusy || startAllInProgress || model.serviceOperations[proxy.id] != nil
                 )
               Button("Restart") { model.restartProxy(id: proxy.id) }
+                .help("Restart this local proxy. Active connections may be interrupted briefly.")
                 .disabled(
                   model.isBusy || startAllInProgress || model.serviceOperations[proxy.id] != nil
                 )
               if proxy.port > 0 {
                 Button("Copy Address") {
                   let address = "http://127.0.0.1:\(proxy.port)"
-                  _ = NSPasteboard.general.clearContents()
-                  _ = NSPasteboard.general.setString(address, forType: .string)
+                  if model.pasteString(address) {
+                    model.announceOnly("Copied \(proxy.name) address.")
+                  } else {
+                    model.announceOnly("Couldn’t copy \(proxy.name) address.")
+                  }
                 }
+                .help("Copy this proxy’s local address.")
               }
               if model.proxyCanCopyAPIKey(proxy) {
                 Button("Copy API Key") { model.copyProxyAPIKey(id: proxy.id) }
+                  .help("Copy the proxy API key to the clipboard without displaying it.")
               }
               Button("Rotate API Key…") {
                 requestRotate(proxy)
               }
+              .help("Replace this proxy’s API key. Existing clients must use the new key.")
             } else {
               Button("Start") { model.setProxyEnabled(id: proxy.id, enabled: true) }
+                .help("Start this local proxy for compatible apps.")
                 .disabled(
                   model.isBusy || startAllInProgress || model.serviceOperations[proxy.id] != nil
                 )
@@ -226,6 +235,7 @@ struct ProxiesView: View {
           .frame(minWidth: 46)
         }
         .disabled(busy)
+        .help("Stop this local proxy. Apps using it will lose this connection.")
         .accessibilityLabel(busyRow ? "Stopping \(proxy.name)" : "Stop \(proxy.name)")
       } else {
         Button {
@@ -237,6 +247,7 @@ struct ProxiesView: View {
           .frame(minWidth: 46)
         }
         .disabled(busy)
+        .help("Start this local proxy for compatible apps.")
         .accessibilityLabel(busyRow ? "Starting \(proxy.name)" : "Start \(proxy.name)")
       }
     }

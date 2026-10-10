@@ -12,11 +12,10 @@ First native release. **The project is now AnyPick**: it was `hotplug` up to
 1.0.0. Commands use `anypick`, and the data directory is `~/.anypick`.
 
 ### Added
-- Native desktop apps from one Go engine (ADR 0020): a signed and notarized
-  universal macOS app (macOS 14+) with a System Settings-style window and a
-  menu-bar quick panel, and Linux (AppImage, deb, rpm) and Windows (MSI, NSIS)
-  installers. Each desktop payload is smoke-tested on its own OS before it is
-  staged.
+- Linux (AppImage, deb, rpm) and Windows (MSI, NSIS) desktop installers from
+  the shared Go engine (ADR 0020). Each desktop payload is smoke-tested on its
+  own OS before it is staged. The macOS desktop app remains deferred until
+  signing and notarization are configured.
 - Native CLI and terminal UI archives for macOS Intel/Apple Silicon, Linux
   x64/arm64 and Windows x64/arm64, with build provenance attestations and an
   SBOM attached to the release.

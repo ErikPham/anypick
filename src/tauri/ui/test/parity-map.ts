@@ -39,11 +39,16 @@ export const PARITY: ParityRow[] = [
   // ── Overview ───────────────────────────────────────────────────────────────
   { macos: 'overview.degraded-conditions', tauri: 'degraded-{x}', status: 'done' },
   { macos: 'overview.get-started', tauri: 'overview-get-started', status: 'done' },
+  { macos: 'overview.doctor', tauri: 'overview-doctor', status: 'done' },
   { macos: 'overview.app.{x}', tauri: 'overview.app.{x}', status: 'done' },
   // Three rows, then a way to the rest: the pane is a summary, and listing
   // every app made it a second Apps pane.
   { macos: 'overview.apps.see-all', tauri: 'overview.apps.see-all', status: 'done' },
   { macos: 'overview.review-attention', tauri: 'overview-attention', status: 'done' },
+  { macos: 'overview.run-doctor', tauri: 'overview.run-doctor', status: 'done' },
+  { macos: 'overview.doctor-error', tauri: 'overview.doctor-error', status: 'done' },
+  { macos: 'overview.doctor-summary', tauri: 'overview.doctor-summary', status: 'done' },
+  { macos: 'overview.doctor-finding.{x}', tauri: 'overview.doctor-finding.{x}', status: 'done' },
   { macos: 'overview.services-summary', tauri: 'overview-services', status: 'done' },
   { macos: 'overview.activity.{x}', tauri: 'overview-activity-{x}', status: 'done' },
   { macos: 'overview.hide-onboarding', tauri: 'overview.hide-onboarding', status: 'done' },
@@ -144,6 +149,7 @@ export const PARITY: ParityRow[] = [
   // identifies its inputs instead. The Tauri sheet gives the button an id, and
   // its label says what it will do rather than what the sheet is called.
   { macos: 'account-flow.api-key', tauri: 'account-flow.api-key.input', status: 'done' },
+  { macos: 'account-flow.toggle-key-visibility', tauri: 'account-flow.api-key.reveal', status: 'done' },
   { macos: 'account-flow.credential-kind', tauri: 'account-flow.credential-kind.picker', status: 'done' },
   // Paste the provider's own auth file. Both sheets keep the document out of
   // the mutate line and send a temp-file path instead.
@@ -167,6 +173,7 @@ export const PARITY: ParityRow[] = [
   // than from a picker the user has to find first.
   { macos: 'gateway-flow.provider', tauri: 'gateway-flow.provider.picker', status: 'done' },
   { macos: 'gateway-flow.api-key', tauri: 'gateway-flow.api-key', status: 'done' },
+  { macos: 'gateway-flow.toggle-key-visibility', tauri: 'gateway-flow.api-key.reveal', status: 'done' },
   { macos: 'gateway-flow.account-id', tauri: 'gateway-flow.account-id', status: 'done' },
   { macos: 'gateway-flow.gateway-id', tauri: 'gateway-flow.gateway-id', status: 'done' },
   { macos: 'gateway-flow.region', tauri: 'gateway-flow.region.picker', status: 'done' },
@@ -227,6 +234,7 @@ export const PARITY: ParityRow[] = [
     reason: 'The engine failure arrives as a result frame in the notice banner. A per-row error slot would duplicate it.',
   },
   { macos: 'model-inspect.copy-curl', tauri: 'model-inspect.copy-curl', status: 'done' },
+  { macos: 'model-inspect.copy-{x}', tauri: 'model-inspect.copy-{x}', status: 'done' },
   { macos: 'published-models.copy.{x}', tauri: 'published-models.copy-{x}', status: 'done' },
 
   // ── Proxies ────────────────────────────────────────────────────────────────
@@ -281,31 +289,32 @@ export const PARITY: ParityRow[] = [
     reason: 'No engine field. macOS\'s own production model initialises `backups` empty and never populates it, so the row renders in neither app. The Tauri rows `backup-entry-<id>` are the import review, not this inventory.',
   },
   { macos: 'backups.inspection.{x}', tauri: 'backup-review', status: 'done' },
+  // Tauri keeps the reviewed file's commands in the same row menu; the
+  // engine does not publish the separate macOS backup inventory.
+  { macos: 'backups.more.{x}', tauri: 'backups.more-menu', status: 'done' },
   { macos: 'backup-create.account.{x}', tauri: 'backup-account-{x}', status: 'done' },
   { macos: 'backup-restore.account.{x}', tauri: 'backup-entry-{x}', status: 'done' },
 
   // ── Settings ───────────────────────────────────────────────────────────────
-  { macos: 'settings.tabs', tauri: 'settings-tabs', status: 'done' },
-  { macos: 'settings.open-proxies', tauri: 'settings.open-proxies', status: 'done' },
-  { macos: 'settings.review-backups', tauri: 'settings.review-backups', status: 'done' },
-  { macos: 'settings.getting-started', tauri: 'settings.getting-started', status: 'done' },
-  { macos: 'settings.run-doctor', tauri: 'settings-doctor', status: 'done' },
+  { macos: 'settings.pane', tauri: 'settings-pane', status: 'done' },
+  { macos: 'settings.open-at-login', tauri: 'setting-{x}', status: 'done' },
+  { macos: 'settings.start-enabled-proxies', tauri: 'setting-{x}', status: 'done' },
+  { macos: 'settings.show-usage', tauri: 'setting-{x}', status: 'done' },
   { macos: 'settings.quota-guard', tauri: 'setting-{x}', status: 'done' },
-  { macos: 'settings.create-codex-profiles', tauri: 'settings.create-codex-profiles', status: 'done' },
-  { macos: 'settings.version', tauri: 'settings-version', status: 'done' },
+  { macos: 'settings.show-getting-started', tauri: 'settings.show-getting-started', status: 'done' },
 
   // ── Menu bar ───────────────────────────────────────────────────────────────
   {
     macos: 'menu.open',
     tauri: '',
     status: 'skip',
-    reason: 'AppKit menu-bar command. The Tauri app has no app menu.',
+    reason: 'MenuBarExtra Quick Panel action. Tauri has a native application menu, not this separate AppKit panel.',
   },
   {
     macos: 'menu.quit',
     tauri: '',
     status: 'skip',
-    reason: 'AppKit menu-bar command. Quit lives in the system tray instead.',
+    reason: 'Quick Panel action. Tauri provides the platform Quit menu command, not a matching Quick Panel row.',
   },
 ];
 
@@ -318,8 +327,4 @@ export const PARITY: ParityRow[] = [
  */
 export const OUT_OF_SCOPE = new Map<string, string>([
   ['tray.', 'MenuBarExtra(.window) AppKit surface. Tauri ships a system tray, not this window.'],
-  [
-    'com_apple_',
-    'Identifiers SwiftUI and AppKit assign to their own surfaces, here the Settings scene window. The inventory reads any `let <name>Id = "literal"` binding, and an NSWindow identifier looks like an accessibility one. Not an AnyPick control and nothing to port.',
-  ],
 ]);

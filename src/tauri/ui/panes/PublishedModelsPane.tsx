@@ -419,7 +419,12 @@ function InspectDialog({
         <RowText title="Base URL" detail={base ? `${base}/v1` : 'The hub is not running'} />
         <RowActions>
           {base ? (
-            <CopyButton label="Copy base URL" value={`${base}/v1`} copy={service.copy} />
+            <CopyButton
+              label="Copy base URL"
+              testId={`model-inspect.copy-${'base-url'}`}
+              value={`${base}/v1`}
+              copy={service.copy}
+            />
           ) : null}
         </RowActions>
       </Row>
@@ -428,7 +433,12 @@ function InspectDialog({
         <RowText title="Chat URL" detail={chat || 'The hub is not running'} />
         <RowActions>
           {chat ? (
-            <CopyButton label="Copy chat URL" value={chat} copy={service.copy} />
+            <CopyButton
+              label="Copy chat URL"
+              testId={`model-inspect.copy-${'chat-url'}`}
+              value={chat}
+              copy={service.copy}
+            />
           ) : null}
         </RowActions>
       </Row>

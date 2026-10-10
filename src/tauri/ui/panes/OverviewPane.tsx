@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import type { Destination, Snapshot } from '../lib/contract';
+import type { DoctorFrame } from '../lib/wire';
 import {
   isOnboardingCoreComplete,
   onboardingFooter,
@@ -21,7 +22,7 @@ import { ProviderIcon } from '../shell/ProviderIcon';
 import { Symbol } from '../shell/Symbol';
 import { Button, Group, Pane, PaneActions, Row, RowActions, RowText, WarningGlyph } from '../ui/primitives';
 
-const ONBOARDING_KEY = 'anypick.onboardingDismissed';
+export const ONBOARDING_KEY = 'anypick.onboardingDismissed';
 
 /**
  * Overview: attention first, then the checklist, then a summary.
@@ -31,19 +32,28 @@ const ONBOARDING_KEY = 'anypick.onboardingDismissed';
  * fixed order, so the call to action never contradicts itself between
  * refreshes.
  *
- * It takes no service port: nothing on this pane mutates anything, so there is
- * nothing for it to ask the engine.
+ * Diagnostics are the one engine request on this pane; they are read-only and
+ * stay here so Settings remains a preferences pane.
  */
 export function OverviewPane({
   snapshot,
   onNavigate,
   onRefresh,
+  doctor,
+  doctorError,
+  onRunDoctor,
   busy,
 }: {
   snapshot: Snapshot;
   onNavigate?: (destination: Destination) => void;
   /** Ask the engine for a fresh snapshot. */
   onRefresh?: () => void;
+  /** Latest read-only installation diagnosis, if one has been run. */
+  doctor?: DoctorFrame | null;
+  /** Failure returned by the engine for the latest Doctor request. */
+  doctorError?: string | null;
+  /** Ask the engine to diagnose the local installation. */
+  onRunDoctor?: () => void;
   /** Any command in flight; the Refresh greys rather than spinning. */
   busy?: ReadonlySet<string>;
 }) {
@@ -127,6 +137,51 @@ export function OverviewPane({
           </Row>
         </Group>
       ) : null}
+
+      <Group
+        title="Installation Health"
+        footer="Doctor checks the installation without changing files."
+        testId="overview-doctor"
+      >
+        <Row>
+          <RowText
+            title="Check Installation"
+            detail={doctor
+              ? `Last check: ${doctor.status}. Run it again to refresh.`
+              : 'Run read-only checks for AnyPick’s local installation.'}
+          />
+          <RowActions>
+            <Button
+              testId="overview.run-doctor"
+              onClick={onRunDoctor}
+              disabled={(busy?.size ?? 0) > 0 || !onRunDoctor}
+            >
+              Run Doctor
+            </Button>
+          </RowActions>
+        </Row>
+        {doctorError ? (
+          <Row warning testId="overview.doctor-error">
+            <WarningGlyph />
+            <RowText title={doctorError} />
+          </Row>
+        ) : null}
+        {doctor?.findings.length === 0 ? (
+          <Row testId="overview.doctor-summary">
+            <RowText title="All checks passed." />
+          </Row>
+        ) : null}
+        {doctor?.findings.map((finding, index) => (
+          <Row key={`${finding.check}-${index}`} testId={`overview.doctor-finding.${finding.check}`}>
+            <RowText title={finding.check.replaceAll('-', ' ')} detail={finding.detail || finding.status} />
+            <RowActions>
+              <span className={`text-[12px] whitespace-nowrap ${finding.status === 'fail' ? 'text-red' : finding.status === 'warn' ? 'text-orange' : 'text-secondary'}`}>
+                {finding.status}
+              </span>
+            </RowActions>
+          </Row>
+        ))}
+      </Group>
 
       {onboardingDismissed ? null : (
       <Group

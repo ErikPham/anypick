@@ -466,6 +466,7 @@ export function AddAccountSheet({
                     label="Account / Gateway"
                     value={routing}
                     placeholder="<account_id>/<gateway_id>"
+                    help="Enter the Cloudflare account ID and AI Gateway name, separated by /."
                     onChange={setRouting}
                     testId="account-flow.cloudflare-routing.input"
                   />
@@ -480,6 +481,7 @@ export function AddAccountSheet({
               <Field
                 label={credentialKind?.label ?? 'API Key'}
                 value={secret}
+                help="Enter the credential issued by this provider."
                 onChange={setSecret}
                 type={revealSecret ? 'text' : 'password'}
                 testId="account-flow.api-key.input"
@@ -487,6 +489,7 @@ export function AddAccountSheet({
               <RowActions>
                 <Button
                   kind="secondary"
+                  ariaLabel={revealSecret ? 'Hide API Key' : 'Show API Key'}
                   testId="account-flow.api-key.reveal"
                   onClick={() => setRevealSecret((current) => !current)}
                 >
@@ -601,6 +604,7 @@ export function AddAccountSheet({
             label="Account Name"
             value={name}
             placeholder={activeMode === 'paste' ? 'Optional' : 'Personal'}
+            help="Choose a label that helps you recognize this saved login."
             onChange={setName}
             testId="account-flow.name"
           />

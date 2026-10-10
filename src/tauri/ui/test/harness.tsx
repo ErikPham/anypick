@@ -89,6 +89,12 @@ export class FakeBridge implements TrayBridge {
     });
   }
 
+  pushEvent(event: string): void {
+    act(() => {
+      for (const handler of this.listeners.get(event) ?? []) handler({ payload: '' });
+    });
+  }
+
   /** Decode every command the UI sent, in order. */
   commands(): Array<{ kind: string; payload: Record<string, unknown> | null }> {
     return this.sent.map((line) => {

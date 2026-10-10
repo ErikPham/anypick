@@ -296,6 +296,7 @@ struct PublishedModelsView: View {
             search = ""
             selectedVendor = "all"
           }
+          .help("Clear the search and show all published models.")
         }
       } else {
         DesignGroupedPane {
@@ -498,17 +499,13 @@ struct PublishedModelsView: View {
         )
         .fixedSize()
 
-        Button {
+        DesignIconButton(
+          symbol: "info.circle",
+          label: "Inspect \(item.modelID)",
+          identifier: "published-models.switch-inspect.\(item.modelID)"
+        ) {
           inspectingModel = item
-        } label: {
-          Image(systemName: "info.circle")
-            .font(.body)
-            .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .help("Inspect Model")
-        .accessibilityLabel("Inspect \(item.modelID)")
-        .accessibilityIdentifier("published-models.switch-inspect.\(item.modelID)")
       }
       .layoutPriority(1)
     }
@@ -592,24 +589,21 @@ struct PublishedModelsView: View {
           label: "Copy Model ID",
           identifier: "published-models.copy.\(item.modelID)"
         ) {
-          copyText(item.modelID)
-          copiedID = item.modelID
-          DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-            if copiedID == item.modelID { copiedID = nil }
+          if copyText(item.modelID) {
+            copiedID = item.modelID
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+              if copiedID == item.modelID { copiedID = nil }
+            }
           }
         }
 
-        Button {
+        DesignIconButton(
+          symbol: "info.circle",
+          label: "Inspect \(item.modelID)",
+          identifier: "published-models.inspect.\(item.modelID)"
+        ) {
           inspectingModel = item
-        } label: {
-          Image(systemName: "info.circle")
-            .font(.body)
-            .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
-        .help("Inspect Model")
-        .accessibilityLabel("Inspect \(item.modelID)")
-        .accessibilityIdentifier("published-models.inspect.\(item.modelID)")
       }
       .layoutPriority(1)
     }
@@ -629,16 +623,20 @@ struct PublishedModelsView: View {
                 }
               }
             }
+            .help("Route this model to \(cand.label).")
           }
         }
+        .help("Choose which provider handles requests for this model.")
         Divider()
       }
       Button("Copy Model ID") {
         copyText(item.modelID)
       }
+      .help("Copy this model’s identifier.")
       Button("Inspect Model…") {
         inspectingModel = item
       }
+      .help("View the model’s provider, account, and routing details.")
     }
     .accessibilityIdentifier("published-models.row.\(item.modelID)")
   }
@@ -675,10 +673,11 @@ struct PublishedModelsView: View {
     return ""
   }
 
-  private func copyText(_ string: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(string, forType: .string)
-    model.announceOnly("Copied to clipboard.")
+  @discardableResult
+  private func copyText(_ string: String) -> Bool {
+    let copied = model.pasteString(string)
+    model.announceOnly(copied ? "Copied to clipboard." : "Couldn’t copy to clipboard.")
+    return copied
   }
 
   @ViewBuilder
@@ -904,16 +903,19 @@ struct PublishedModelInspectSheet: View {
           }
 
           LabeledContent("Test in Terminal") {
+            let copied = copiedLabel == "curl"
             Button {
               copyToClipboard(curlExample, label: "curl")
             } label: {
               HStack(spacing: 4) {
-                Image(systemName: copiedLabel == "curl" ? "checkmark" : "doc.on.doc")
-                Text(copiedLabel == "curl" ? "Copied" : "Copy cURL Command")
+                DesignCopyGlyph(copied: copied)
+                Text("Copy cURL Command")
               }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help(copied ? "Copied cURL command" : "Copy cURL command")
+            .accessibilityLabel(copied ? "Copied cURL command" : "Copy cURL command")
             .accessibilityIdentifier("model-inspect.copy-curl")
           }
         } header: {
@@ -925,23 +927,22 @@ struct PublishedModelInspectSheet: View {
     }
   }
 
-  @ViewBuilder
   private func copyButton(for text: String, label: String) -> some View {
-    Button {
+    DesignCopyButton(
+      copied: copiedLabel == label,
+      label: "Copy \(label == "base-url" ? "Base URL" : "Chat URL")",
+      identifier: "model-inspect.copy-\(label)"
+    ) {
       copyToClipboard(text, label: label)
-    } label: {
-      Image(systemName: copiedLabel == label ? "checkmark" : "doc.on.doc")
-        .font(.caption)
-        .foregroundStyle(copiedLabel == label ? .green : .secondary)
-        .frame(width: 18, height: 18)
     }
-    .buttonStyle(.plain)
-    .help("Copy")
   }
 
   private func copyToClipboard(_ text: String, label: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
+    let copied = model.pasteString(text)
+    guard copied else {
+      model.announceOnly("Couldn’t copy to clipboard.")
+      return
+    }
     copiedLabel = label
     model.announceOnly("Copied to clipboard.")
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {

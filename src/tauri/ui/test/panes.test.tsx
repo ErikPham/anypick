@@ -648,6 +648,44 @@ describe('Proxy Hub pane', () => {
     );
   });
 
+  it('gives protected API-key copy the same working and confirmed icon phases', async () => {
+    const busy = new Set<string>();
+    const harness = mount(({ service, snapshot }) => {
+      vi.spyOn(service, 'mutate').mockImplementation(() => {
+        busy.add('copy-key-1');
+        return 'copy-key-1';
+      });
+      return <ProxyHubPane service={service} snapshot={snapshot} busy={busy} />;
+    });
+
+    await harness.user.click(screen.getByTestId('hub.copy-api-key-button'));
+    const working = screen.getByRole('button', { name: /Copy Proxy Hub API key.*Working/ });
+    expect(working).toBeDisabled();
+    expect(working).toHaveAttribute('aria-busy', 'true');
+
+    busy.delete('copy-key-1');
+    harness.rerender(
+      <ProxyHubPane
+        service={harness.service}
+        snapshot={harness.snapshot}
+        busy={busy}
+        copyKeyResult={{ requestId: 'copy-key-1', success: null }}
+      />,
+    );
+    expect(screen.getByRole('button', { name: /Copy Proxy Hub API key.*Working/ })).toBeDisabled();
+
+    harness.rerender(
+      <ProxyHubPane
+        service={harness.service}
+        snapshot={harness.snapshot}
+        busy={busy}
+        copyKeyResult={{ requestId: 'copy-key-1', success: true }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Copied' })).toHaveAttribute('title', 'Copied');
+  });
+
   it('keeps one trailing control on the service row and Restart in its menu', async () => {
     // macOS: `trailing: { hubLifecycleButton }` plus a `.contextMenu` holding
     // Restart Hub (`ProxyHubView.swift:28`, `:31`). This row carried a status

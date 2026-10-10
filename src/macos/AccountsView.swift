@@ -300,14 +300,18 @@ private struct AccountListRow: View {
     .contextMenu {
       if canMakeCurrent {
         Button("Switch to Account") { model.makeAccountCurrent(id: account.id) }
+          .help("Make this saved login current for compatible apps.")
           .disabled(model.isBusy)
       }
       if account.kind == .gateway {
         Button("Connect") { onConnect(account) }
+          .help("Connect this API gateway to AnyPick.")
           .disabled(model.isBusy || account.status == .unavailable)
       }
       Button("Show Details") { model.pendingAccountDetailID = account.id }
+        .help("View this account’s identity, usage, and connection details.")
       Button("Edit…") { onEdit(account) }
+        .help("Change this account’s name or saved configuration.")
       Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
         if account.kind == .gateway {
           model.testSavedGateway(id: account.id)
@@ -315,9 +319,11 @@ private struct AccountListRow: View {
           model.refreshAccount(id: account.id)
         }
       }
+      .help(account.kind == .gateway ? "Check whether this API gateway is reachable." : "Refresh the saved login from its provider.")
       .disabled(model.isBusy)
       Divider()
       Button("Remove…", role: .destructive) { onRemove(account) }
+        .help("Remove this saved login from AnyPick.")
     }
     .modifier(
       AccountRowAccessibilityActions(
@@ -457,6 +463,7 @@ struct AccountRowTrailing: View {
     .buttonStyle(.bordered)
     .controlSize(.small)
     .disabled(model.isBusy)
+    .help(account.kind == .saved ? "Make this saved login current for compatible apps." : "Connect to this saved API gateway.")
     .accessibilityIdentifier(
       account.kind == .saved ? "accounts.switch.\(account.id)" : "accounts.connect.\(account.id)"
     )
@@ -470,9 +477,14 @@ struct AccountRowTrailing: View {
   /// are the platform's. It offers the same commands as the row's context menu,
   /// minus the primary one that already has its own button.
   private var moreMenu: some View {
-    Menu {
+    DesignMoreActionsMenu(
+      label: "More actions for \(displayName)",
+      identifier: "accounts.more.\(account.id)"
+    ) {
       Button("Show Details") { model.pendingAccountDetailID = account.id }
+        .help("View this account’s identity, usage, and connection details.")
       Button("Edit…") { onEdit() }
+        .help("Change this account’s name or saved configuration.")
       Button(account.kind == .gateway ? "Test Connection" : "Refresh Login") {
         if account.kind == .gateway {
           model.testSavedGateway(id: account.id)
@@ -480,20 +492,15 @@ struct AccountRowTrailing: View {
           model.refreshAccount(id: account.id)
         }
       }
+      .help(account.kind == .gateway ? "Check whether this API gateway is reachable." : "Refresh the saved login from its provider.")
       .disabled(model.isBusy)
       Divider()
       Button("Remove…", role: .destructive) { onRemove() }
-    } label: {
-      Image(systemName: "ellipsis.circle")
-        .foregroundStyle(.secondary)
+        .help("Remove this saved login from AnyPick.")
     }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
     .fixedSize()
     .opacity(isHovered ? 1.0 : 0.0)
     .animation(.easeInOut(duration: 0.15), value: isHovered)
-    .accessibilityLabel("More actions for \(displayName)")
-    .accessibilityIdentifier("accounts.more.\(account.id)")
   }
 }
 

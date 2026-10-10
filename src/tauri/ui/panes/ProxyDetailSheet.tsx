@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Symbol } from '../shell/Symbol';
 
 import type { ProxyRow, Snapshot } from '../lib/contract';
@@ -25,6 +25,7 @@ import {
   RowActions,
   RowText,
   StatusLabel,
+  useCopyConfirmation,
   WarningRow,
 } from '../ui/primitives';
 
@@ -43,6 +44,7 @@ export function ProxyDetailSheet({
   snapshot,
   service,
   busy = new Set<string>(),
+  copyKeyResult = null,
   revision,
   result = null,
   onNavigate,
@@ -52,6 +54,7 @@ export function ProxyDetailSheet({
   snapshot: Snapshot;
   service: ServicePort;
   busy?: ReadonlySet<string>;
+  copyKeyResult?: { requestId: string; success: boolean | null } | null;
   revision: number;
   /** The engine's answer when the last answer belonged to this relay. */
   result?: { status: string; message: string } | null;
@@ -59,6 +62,21 @@ export function ProxyDetailSheet({
   onClose: () => void;
 }) {
   const [confirming, setConfirming] = useState<'stop' | 'rotate' | null>(null);
+  const [copyRequestId, setCopyRequestId] = useState<string | null>(null);
+  const copyConfirmation = useCopyConfirmation();
+  useEffect(() => {
+    if (!copyRequestId) return;
+    if (copyKeyResult?.requestId === copyRequestId) {
+      if (copyKeyResult.success === null) return;
+      copyConfirmation.report(copyKeyResult.success);
+      setCopyRequestId(null);
+      return;
+    }
+    if (!busy.has(copyRequestId)) {
+      copyConfirmation.report(false);
+      setCopyRequestId(null);
+    }
+  }, [busy, copyKeyResult, copyConfirmation.report, copyRequestId]);
 
   const status = proxyStatus(proxy);
   const port = proxyPort(proxy);
@@ -217,9 +235,14 @@ export function ProxyDetailSheet({
               <IconButton
                 label="Copy proxy API key"
                 testId="proxies.inspector.copy-key"
+                phase={copyConfirmation.phase}
+                confirmed={<Symbol name="checkmark" size={13} />}
+                disabled={!idle}
                 onClick={() => {
+                  if (!copyConfirmation.begin()) return;
                   const subject = proxyTokenSubject(proxy.id, proxy.providerId);
-                  if (subject) service.mutate('proxy-token', subject);
+                  if (subject) setCopyRequestId(service.mutate('proxy-token', subject));
+                  else copyConfirmation.report(false);
                 }}
               >
                 <Symbol name="doc.on.doc" size={15} />
@@ -260,6 +283,7 @@ export function ProxyDetailSheet({
             <button
               type="button"
               className="inline-flex cursor-default items-center gap-1 border-0 bg-transparent text-[12px] text-accent"
+              title="Open this proxy’s activity and logs"
               onClick={() => onNavigate?.('activity')}
             >
               View in Activity

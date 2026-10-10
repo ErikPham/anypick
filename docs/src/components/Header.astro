@@ -30,6 +30,7 @@ const { collection, showSidebar = true, appearance = "docs" } = Astro.props;
 const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
 const sections = await getSidebarSections(currentSlug, { collection });
 const showSections = sections.length >= 2;
+const starBadgeUrl = "https://img.shields.io/github/stars/outof0/anypick?style=flat&logo=github&label=stars";
 
 // The docs live under /docs, so the landing page needs a way in. When the
 // sidebar has enough top-level sections to derive its own nav, that wins.
@@ -59,10 +60,12 @@ const docsIsActive = currentSlug === "/docs" || currentSlug.startsWith("/docs/")
             href={config.github}
             target="_blank"
             rel="noopener"
-            aria-label="GitHub"
-            class="hidden rounded-lg p-2 text-[#98A2B3] transition-colors hover:bg-white/5 hover:text-[#F8FAFC] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A78BFA] sm:inline-flex"
+            aria-label="★ Star on GitHub"
+            class="header-star rounded-lg px-2 py-1.5 text-[#D6D9E0] no-underline transition-colors hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A78BFA]"
           >
-            <Icon name="ph:github-logo" class="h-4 w-4" />
+            <span class="header-star-short">★ Star</span>
+            <span class="header-star-long">★ Star on GitHub</span>
+            <img src={starBadgeUrl} alt="GitHub stars" width="72" height="20" />
           </a>
         )}
         <a
@@ -155,3 +158,39 @@ const docsIsActive = currentSlug === "/docs" || currentSlug.startsWith("/docs/")
     </div>
   </header>
 )}
+
+<style>
+  .header-star {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.73rem;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .header-star img {
+    display: block;
+    width: 72px;
+    height: 20px;
+  }
+
+  .header-star-short {
+    display: none;
+  }
+
+  @media (max-width: 40rem) {
+    .header-star {
+      gap: 0.25rem;
+      padding-inline: 0.35rem;
+    }
+
+    .header-star-long {
+      display: none;
+    }
+
+    .header-star-short {
+      display: inline;
+    }
+  }
+</style>

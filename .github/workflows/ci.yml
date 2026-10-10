@@ -343,7 +343,7 @@ jobs:
 
       - name: Check package-manager generators
         run: |
-          bash -n packaging/homebrew/render.sh packaging/homebrew/publish.sh
+          bash -n packaging/homebrew/render.sh packaging/homebrew/render-cask.sh packaging/homebrew/publish.sh
           bash -n packaging/winget/render.sh
           bash -n packaging/scoop/render.sh packaging/scoop/publish.sh
 

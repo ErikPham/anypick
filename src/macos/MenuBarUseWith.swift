@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// In-panel Use With (board 29). Instant-apply; not a Settings sheet.
+/// In-panel Use With (board 29). Instant-apply; stays in the Quick Panel.
 struct MenuBarUseWithSheet: View {
   @ObservedObject var model: MacOSDesignModel
   let appID: String

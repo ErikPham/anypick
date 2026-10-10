@@ -108,10 +108,10 @@ function mount(options: { lastLine?: string } = {}) {
 describe('a sheet taller than its window', () => {
   it('keeps the buttons reachable without scrolling the body', () => {
     // macOS pins the sheet's footer outside the scroll view. With everything
-    // scrolling, the Settings dialog's Done button sat below the fold on a short
-    // window — the control that closes the sheet was the one you had to hunt for.
+    // scrolling, a sheet's Done button could sit below the fold on a short
+    // window — the control that closes it was the one you had to hunt for.
     render(
-      <Dialog title="Settings" testId="sheet" actions={<Button>Done</Button>}>
+      <Dialog title="Transfer" testId="sheet" actions={<Button>Done</Button>}>
         <div style={{ height: '1200px' }}>tall</div>
       </Dialog>,
     );
@@ -142,6 +142,7 @@ describe('App shell', () => {
       'Proxies',
       'Activity',
       'Backups',
+      'Settings',
     ]);
   });
 
@@ -177,7 +178,29 @@ describe('App shell', () => {
 
     const summary = screen.getByTestId('sidebar-service-status');
     expect(getComputedStyle(summary).display).toBe('flex');
-    expect(getComputedStyle(screen.getByTestId('sidebar-settings')).justifyContent).toBe('flex-start');
+    const sidebarSettings = screen.getByTestId('sidebar-settings');
+    expect(sidebarSettings.closest('[data-testid="sidebar-navigation"]')).toBe(sidebar);
+    expect(sidebarSettings.closest('nav')).not.toBeNull();
+    await user.click(sidebarSettings);
+    const settingsPane = await screen.findByTestId('settings-pane');
+    expect(settingsPane.closest('main')).toBe(main);
+    expect(sidebarSettings).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('settings-startup')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-usage')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-getting-started')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show Checklist' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Open Proxies|Manage Backups|Check Now/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('toolbar-settings')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('sidebar-proxies'));
+    expect(screen.getByTestId('sidebar-proxies')).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByTestId('settings-pane')).not.toBeInTheDocument();
+
+    bridge.pushEvent('open-settings');
+    expect(await screen.findByTestId('settings-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-settings')).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('waits for a snapshot instead of rendering an empty window', () => {
@@ -492,6 +515,54 @@ describe('App shell', () => {
     await user.click(screen.getByRole('button', { name: 'Hide Getting Started' }));
     expect(screen.queryByTestId('overview-get-started')).not.toBeInTheDocument();
     expect(screen.getByTestId('overview')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('sidebar-settings'));
+    await user.click(await screen.findByRole('button', { name: 'Show Checklist' }));
+    expect(await screen.findByTestId('overview-get-started')).toBeInTheDocument();
+  });
+
+  it('runs Doctor from Overview and releases its request when the report arrives', async () => {
+    const { bridge, user, pending } = mount();
+    bridge.push('snapshot', snapshotFixture());
+    await screen.findByTestId('overview');
+
+    await user.click(screen.getByTestId('overview.run-doctor'));
+    expect(pending()).toBe(1);
+    const command = bridge.commands().find((entry) => entry.kind === 'doctor');
+    const requestId = command?.payload?.requestId;
+    expect(typeof requestId).toBe('string');
+
+    bridge.push('doctor', {
+      version: 1,
+      requestId,
+      status: 'degraded',
+      findings: [{ check: 'permissions', status: 'warn', detail: 'One file needs safer permissions.' }],
+    });
+
+    expect(await screen.findByText('One file needs safer permissions.')).toBeInTheDocument();
+    await waitFor(() => expect(pending()).toBe(0));
+  });
+
+  it('shows Doctor request failures on Overview', async () => {
+    const { bridge, user, pending } = mount();
+    bridge.push('snapshot', snapshotFixture());
+    await screen.findByTestId('overview');
+    await user.click(screen.getByTestId('overview.run-doctor'));
+    const command = bridge.commands().find((entry) => entry.kind === 'doctor');
+    const requestId = command?.payload?.requestId;
+    expect(typeof requestId).toBe('string');
+
+    bridge.push('result', {
+      version: 1,
+      requestId,
+      status: 'error',
+      message: 'Doctor could not read the local database.',
+    });
+
+    expect(await screen.findByTestId('overview.doctor-error')).toHaveTextContent(
+      'Doctor could not read the local database.',
+    );
+    await waitFor(() => expect(pending()).toBe(0));
   });
 
   it('ignores an answer to a request nobody is waiting for', async () => {

@@ -1,6 +1,9 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
+import { Symbol } from '../shell/Symbol';
+import { buttonTooltipText, IconButton } from './primitives';
+import { POPOVER_PANEL_CLASS } from './popover';
 import { usePopover } from './usePopover';
 
 /**
@@ -14,46 +17,59 @@ export function RowMenu({
   label,
   children,
   align = 'end',
+  clipboard,
   testId,
 }: {
   /** The accessible name. A menu with no name is a button that says "…". */
   label: string;
-  children: (close: () => void) => ReactNode;
+  children: (close: () => void, copy: (value: string, description: string) => void) => ReactNode;
   align?: 'start' | 'end';
+  /** Enables menu copy commands and their shared live announcement. */
+  clipboard?: (value: string) => Promise<boolean>;
   testId?: string;
 }) {
   const pop = usePopover(align);
+  const [announcement, setAnnouncement] = useState('');
+  const copy = (value: string, description: string) => {
+    pop.close();
+    void Promise.resolve(clipboard?.(value) ?? false).then(
+      (ok) => setAnnouncement(ok ? `Copied ${description}.` : `Couldn’t copy ${description}.`),
+      () => setAnnouncement(`Couldn’t copy ${description}.`),
+    );
+  };
 
   return (
     <div className="relative flex-none" ref={pop.root}>
-      <button
-        ref={pop.trigger}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={pop.open}
-        aria-controls={pop.open ? pop.panelId : undefined}
-        aria-label={label}
-        title={label}
-        data-testid={testId}
-        className="inline-flex size-[22px] cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 text-secondary hover:bg-hover"
+      <IconButton
+        buttonRef={pop.trigger}
+        label={label}
+        ariaHasPopup="menu"
+        ariaExpanded={pop.open}
+        ariaControls={pop.open ? pop.panelId : undefined}
+        testId={testId}
         onClick={() => pop.setOpen((current: boolean) => !current)}
       >
-        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
-          <circle cx="5.5" cy="12" r="1.6" fill="currentColor" />
-          <circle cx="12" cy="12" r="1.6" fill="currentColor" />
-          <circle cx="18.5" cy="12" r="1.6" fill="currentColor" />
-        </svg>
-      </button>
-      {pop.open && pop.placement
+        <Symbol name="ellipsis.circle" size={15} />
+      </IconButton>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="row-menu-copy-status">
+        {announcement}
+      </span>
+      {pop.open
         ? createPortal(
             <div
               ref={pop.panel}
               id={pop.panelId}
+              data-dialog-owner={pop.dialogOwner}
               role="menu"
-              style={{ top: pop.placement.top, left: pop.placement.left }}
-              className="fixed z-50 min-w-44 rounded-lg border border-separator-soft bg-canvas/95 backdrop-blur-md p-1 shadow-[0_8px_28px_rgb(0_0_0/0.28)]"
+              onKeyDown={pop.onPanelKeyDown}
+              style={{
+                top: pop.placement?.top ?? -10000,
+                left: pop.placement?.left ?? -10000,
+                visibility: pop.placement ? 'visible' : 'hidden',
+              }}
+              className={POPOVER_PANEL_CLASS}
             >
-              {children(pop.close)}
+              {children(pop.close, copy)}
             </div>,
             document.body,
           )
@@ -89,6 +105,7 @@ export function MenuItem({
       type="button"
       role="menuitem"
       data-testid={testId}
+      title={buttonTooltipText(children) || undefined}
       disabled={disabled}
       className={`block w-full cursor-default rounded-control border-0 bg-transparent px-2.5 py-1 text-left text-[12px] hover:not-disabled:bg-accent hover:not-disabled:text-white disabled:cursor-default disabled:opacity-50 ${
         destructive ? 'text-red hover:not-disabled:bg-red hover:not-disabled:text-white' : 'text-text'

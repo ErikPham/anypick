@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { isValidElement, useCallback, useEffect, useRef, useState, type AriaAttributes, type ReactNode, type Ref } from 'react';
 
 import { STATUS_LABEL, type DesignStatus } from '../lib/model';
 import { Symbol } from '../shell/Symbol';
@@ -42,17 +42,25 @@ export function CopyButton({
   disabled?: boolean;
   testId?: string;
 }) {
-  const { copied, report } = useCopyConfirmation();
+  const { phase, begin, report } = useCopyConfirmation();
+  const copyValue = async () => {
+    if (!begin()) return;
+    try {
+      report(await copy(value));
+    } catch {
+      // A host clipboard can reject instead of returning false. Keep the
+      // control honest and let the user retry from its idle state.
+      report(false);
+    }
+  };
   return (
     <IconButton
       label={label}
-      phase={copied ? 'confirmed' : 'idle'}
+      phase={phase}
       confirmed={<Symbol name="checkmark" size={13} />}
       disabled={disabled || value === ''}
       testId={testId}
-      onClick={() => {
-        void copy(value).then(report);
-      }}
+      onClick={() => void copyValue()}
     >
       <Symbol name="doc.on.doc" size={13} />
     </IconButton>
@@ -230,7 +238,7 @@ export function RowText({
     <div className="flex min-w-0 flex-1 flex-col gap-row-stack" data-testid={testId}>
       {title ? <div className="text-[13px] leading-[1.25] text-text">{title}</div> : null}
       {detail ? (
-        <div className="overflow-hidden text-[12px] leading-[1.3] text-ellipsis whitespace-nowrap text-secondary">
+        <div className="select-text overflow-hidden text-[12px] leading-[1.3] text-ellipsis whitespace-nowrap text-secondary">
           {detail}
         </div>
       ) : null}
@@ -313,6 +321,7 @@ export function Button({
   ariaLabel?: string;
   testId?: string;
 }) {
+  const tooltip = title ?? ariaLabel ?? buttonTooltipText(children);
   return (
     <button
       type="button"
@@ -321,7 +330,7 @@ export function Button({
       }`}
       onClick={onClick}
       disabled={disabled}
-      title={title}
+      title={tooltip || undefined}
       aria-label={ariaLabel}
       data-testid={testId}
     >
@@ -329,6 +338,14 @@ export function Button({
       {children ? <span>{children}</span> : null}
     </button>
   );
+}
+
+/** Text label for the browser tooltip when a call site has no more specific help. */
+export function buttonTooltipText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(buttonTooltipText).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  if (isValidElement<{ children?: ReactNode }>(node)) return buttonTooltipText(node.props.children);
+  return '';
 }
 
 /**
@@ -365,10 +382,12 @@ export const COPY_CONFIRMATION_MS = 1400;
  * would be lying to the one user who cannot select the text and read it back.
  */
 export function useCopyConfirmation(duration: number = COPY_CONFIRMATION_MS): {
-  copied: boolean;
+  phase: IconCommandPhase;
+  begin: () => boolean;
   report: (ok: boolean) => void;
 } {
-  const [copied, setCopied] = useState(false);
+  const [phase, setPhase] = useState<IconCommandPhase>('idle');
+  const pending = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -376,15 +395,30 @@ export function useCopyConfirmation(duration: number = COPY_CONFIRMATION_MS): {
     },
     []
   );
+  const begin = useCallback(() => {
+    if (pending.current) return false;
+    pending.current = true;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    setPhase('working');
+    return true;
+  }, []);
+  const report = useCallback((ok: boolean) => {
+    pending.current = false;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    setPhase(ok ? 'confirmed' : 'idle');
+    if (ok) {
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        setPhase('idle');
+      }, duration);
+    }
+  }, [duration]);
   return {
-    copied,
-    report: (ok: boolean) => {
-      if (timer.current !== null) clearTimeout(timer.current);
-      setCopied(ok);
-      if (ok) {
-        timer.current = setTimeout(() => setCopied(false), duration);
-      }
-    },
+    phase,
+    begin,
+    report,
   };
 }
 
@@ -405,6 +439,10 @@ export function IconButton({
   label,
   phase = 'idle',
   disabled = false,
+  ariaHasPopup,
+  ariaExpanded,
+  ariaControls,
+  buttonRef,
   testId,
 }: {
   children: ReactNode;
@@ -418,6 +456,10 @@ export function IconButton({
   label: string;
   phase?: IconCommandPhase;
   disabled?: boolean;
+  ariaHasPopup?: AriaAttributes['aria-haspopup'];
+  ariaExpanded?: boolean;
+  ariaControls?: string;
+  buttonRef?: Ref<HTMLButtonElement>;
   testId?: string;
 }) {
   const working = phase === 'working';
@@ -425,8 +467,11 @@ export function IconButton({
   const announced = landed ? CONFIRMED_LABEL : working ? `${label} — ${WORKING_LABEL}` : label;
   return (
     <button
+      ref={buttonRef}
       type="button"
-      className="inline-flex size-[22px] cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 text-secondary hover:not-disabled:bg-hover active:not-disabled:bg-active disabled:text-tertiary"
+      className={`inline-flex size-[22px] cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 hover:not-disabled:bg-hover active:not-disabled:bg-active disabled:text-tertiary ${
+        landed ? 'text-green' : 'text-secondary'
+      }`}
       onClick={onClick}
       // A second click while the first request is in flight lands on the same
       // single-flight slot, so the disabled state is the gate, not decoration.
@@ -434,6 +479,9 @@ export function IconButton({
       aria-label={announced}
       title={announced}
       aria-busy={working || undefined}
+      aria-haspopup={ariaHasPopup}
+      aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
       data-testid={testId}
     >
       {working ? (
@@ -529,6 +577,7 @@ export function Field({
   onChange,
   type = 'text',
   placeholder,
+  help,
   testId,
   className = '',
 }: {
@@ -537,6 +586,8 @@ export function Field({
   onChange: (value: string) => void;
   type?: 'text' | 'password';
   placeholder?: string;
+  /** Short guidance shown by the browser/webview when the field is hovered. */
+  help?: string;
   testId?: string;
   className?: string;
 }) {
@@ -548,6 +599,7 @@ export function Field({
         type={type}
         value={value}
         placeholder={placeholder}
+        title={help}
         onChange={(event) => onChange(event.target.value)}
         data-testid={testId}
       />
@@ -587,6 +639,7 @@ export function Select({
         className={SELECT}
         value={value}
         aria-label={ariaLabel}
+        title={ariaLabel ?? label}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         data-testid={testId}
@@ -708,6 +761,7 @@ export function Switch({
       } after:absolute after:top-0.5 after:left-0.5 after:size-[18px] after:rounded-full after:bg-white after:shadow-[0_1px_3px_rgb(0_0_0/0.25)] after:transition-transform after:duration-120`}
       aria-checked={checked}
       aria-label={label}
+      title={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
     />

@@ -11,7 +11,8 @@ import (
 	"testing"
 )
 
-// TestMain keeps the real OS credential store out of the test process.
+// TestMain keeps the real OS credential store and Antigravity's per-user
+// state out of the test process.
 //
 // Antigravity's keychain item is machine-global: unlike every other credential
 // this package reads, it is not scoped to a home directory a test can point at
@@ -21,9 +22,21 @@ import (
 // worst possible kind of test. Tests that mean to exercise the keyring opt back
 // in by replacing the hook themselves.
 func TestMain(m *testing.M) {
+	// Linux and Windows put Antigravity state under XDG_CONFIG_HOME and APPDATA,
+	// which can point outside the fake HOME passed to a provider. Clearing these
+	// makes the production path resolver fall back to that provider's home.
+	for _, key := range []string{
+		"XDG_CONFIG_HOME", "APPDATA", "ANTIGRAVITY_USER_DATA_DIR",
+		"GEMINI_CONFIG_DIR", "GEMINI_CLI_HOME", "GEMINI_API_KEY",
+		"GOOGLE_API_KEY", "GEMINI_OAUTH_SOURCE",
+	} {
+		_ = os.Setenv(key, "")
+	}
 	antigravityKeyringExec = func(args ...string) (string, error) {
 		return "", exec.ErrNotFound
 	}
+	AntigravityKeyringProbe = func() bool { return false }
+	AntigravityKeyringRead = func() *geminiAntigravityFile { return nil }
 	// Restore tests use a fake provider environment; never mutate the
 	// developer's real Keychain from the package test binary.
 	AntigravityKeyringPut = func(*geminiAntigravityFile) error { return nil }

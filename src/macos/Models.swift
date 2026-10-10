@@ -893,13 +893,17 @@ class MacOSDesignModel: ObservableObject {
     return true
   }
 
-  func copyCodexProfileLaunchCommand(name: String) {
+  @discardableResult
+  func copyCodexProfileLaunchCommand(name: String) -> Bool {
     guard let profile = codexProfiles.first(where: { $0.name == name }),
       !profile.launchCommand.isEmpty
-    else { return }
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(profile.launchCommand, forType: .string)
+    else { return false }
+    guard pasteString(profile.launchCommand) else {
+      announceOnly("Couldn’t copy launch command.")
+      return false
+    }
     showFeedback("Launch command copied. Paste it into Terminal to start this Codex profile.", kind: .success)
+    return true
   }
 
   func removeApp(appID: String) {
@@ -1616,13 +1620,7 @@ class MacOSDesignModel: ObservableObject {
     doctorError = nil
     doctorReport = DesignDoctorReport(
       status: "ok",
-      findings: [
-        DesignDoctorFinding(
-          check: "service",
-          status: "ok",
-          detail: "The settings preview is using fixture data."
-        )
-      ]
+      findings: []
     )
   }
 

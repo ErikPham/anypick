@@ -32,11 +32,14 @@ struct MainWindow: View {
         // suggestion), and it fits beside Cancel on one row where
         // "Manage with AnyPick" would take a row of its own.
         Button("Replace", action: model.confirmPendingTakeover)
+          .help("Back up this file, then replace it with AnyPick’s configuration.")
         Button("Cancel", role: .cancel, action: model.dismissFeedback)
+          .help("Keep the current file and dismiss this warning.")
       } else {
         // A lone dismissal is the default action, not a cancel role: the role
         // is what would bind Escape instead of Return to the only button.
         Button("OK", action: model.dismissFeedback)
+          .help("Dismiss this message.")
       }
     } message: {
       Text(model.feedback?.message ?? "")
@@ -207,6 +210,7 @@ struct MainWindow: View {
     case .proxies: ProxiesView(model: model)
     case .activity: ActivityView(model: model)
     case .backups: BackupsView(model: model)
+    case .settings: SettingsView(model: model)
     }
   }
 

@@ -86,7 +86,7 @@ function writeFingerprints(known: Set<string>): void {
 export function planAutomaticCodexProfileSync(snapshot: Snapshot, busy: boolean): string[] {
   if (!codexAutoProfilesEnabled() || busy) return [];
   const accountSourceIDs = snapshot.codexProfileSources
-    .filter((source) => source.kind === 'account')
+    .filter(isReadyForAutomaticCodexProfile)
     .map((source) => source.sourceId);
   if (accountSourceIDs.length === 0) return [];
   const profilesBySource = new Set(snapshot.codexProfiles.map((profile) => profile.sourceId));
@@ -108,4 +108,17 @@ export function planAutomaticCodexProfileSync(snapshot: Snapshot, busy: boolean)
   const batch = candidates.slice(0, 64);
   for (const sourceID of batch) attempted.add(codexAutoProfileFingerprint(sourceID));
   return batch;
+}
+
+/**
+ * Codex's own account can use Codex's default model selection. Other account
+ * providers need a discovered model to write a usable profile. An empty
+ * cached catalog means discovery has not completed (or is unavailable), so
+ * leave the source eligible for a later snapshot instead of reporting a
+ * launch-time mutation error.
+ */
+function isReadyForAutomaticCodexProfile(source: Snapshot['codexProfileSources'][number]): boolean {
+  if (source.kind !== 'account') return false;
+  if (source.sourceId.startsWith('account/codex/')) return true;
+  return source.models.some((model) => model.trim().length > 0);
 }

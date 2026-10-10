@@ -66,26 +66,27 @@ struct BackupsView: View {
                 }
                 .controlSize(.small)
                 .buttonStyle(.bordered)
+                .help("Open this saved backup and review the accounts it contains.")
 
-                Menu {
+                DesignMoreActionsMenu(
+                  label: "More backup options",
+                  identifier: "backups.more.\(backup.id)"
+                ) {
                   Button("Review Backup…") {
                     backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
                   }
+                  .help("Review the accounts in this backup before importing.")
                   Button("Copy File Path") {
                     copyLocation(backup.location)
                   }
+                  .help("Copy the backup’s full file path.")
                   Divider()
                   Button("Forget Review…", role: .destructive) {
                     requestForget(backup)
                   }
-                } label: {
-                  Image(systemName: "ellipsis.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                  .help("Forget this review and discard its staged copy.")
                 }
-                .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("More backup options")
 
                 Image(systemName: "chevron.right")
                   .font(.system(size: 12, weight: .medium))
@@ -112,13 +113,16 @@ struct BackupsView: View {
               Button("Review Backup…") {
                 backupPresentation = BackupPresentation(id: backup.id, importedPackage: false)
               }
+              .help("Review the accounts in this backup before importing.")
               Button("Copy File Path") {
                 copyLocation(backup.location)
               }
+              .help("Copy the backup’s full file path.")
               Divider()
               Button("Forget Review…", role: .destructive) {
                 requestForget(backup)
               }
+              .help("Forget this review and discard its staged copy.")
             }
             .accessibilityIdentifier("backups.inventory.\(backup.id)")
           }
@@ -162,8 +166,11 @@ struct BackupsView: View {
   }
 
   private func copyLocation(_ location: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(location, forType: .string)
+    if model.pasteString(location) {
+      model.announceOnly("Copied backup file path.")
+    } else {
+      model.announceOnly("Couldn’t copy backup file path.")
+    }
   }
 
   private func requestForget(_ backup: DesignBackup) {
@@ -284,6 +291,7 @@ struct BackupsView: View {
     Section {
       LabeledContent {
         Button(actionTitle, action: action)
+          .help(message)
       } label: {
         Label {
           VStack(alignment: .leading, spacing: 2) {

@@ -218,11 +218,15 @@ published on GitHub Releases. Do not add per-change entries to it.
 
 ### Cutting a release
 
-Release is a single manually dispatched GitHub Actions workflow. Land a clean
-`main`, open **Actions → Release → Run workflow**, and select `main`. There is
-no version field to type: the version is calculated from Conventional Commits
-since the previous tag — a breaking change bumps major, `feat` bumps minor,
-and `fix` / `perf` bumps patch.
+Prepare the version in a reviewed PR, then publish the merged commit with the
+manually dispatched GitHub Actions workflow. Before opening the version PR,
+run `make plan-release` against the current release history: a breaking change
+bumps major, `feat` bumps minor, and `fix` / `perf` bumps patch. If it reports
+`mode=none`, there is no user-facing release to cut. Use the planned version in
+`make set-version VERSION=x.y.z`, add one short summary under that version in
+`CHANGELOG.md`, and commit the synchronized version files. The release workflow
+checks that the version is stable, newer than the latest tag, and has a
+changelog section; it does not edit `main`.
 
 `VERSION` at the repository root is canonical. Five other places ship the same
 number and must agree with it: `MARKETING_VERSION` in the Xcode project,
@@ -242,13 +246,15 @@ Adding a version source means adding it to `secondarySources` in
 otherwise.
 
 The workflow is safe to rerun after a partial external failure: an existing
-tag or published version is verified and reused rather than recreated. The
-default `all` scope publishes macOS, Linux and Windows artifacts after their
-build check and the per-OS installer-payload smoke (`packaging/smoke/`); the
-GUI is not launched on hosted runners. `macos-only` is available for a
-deliberately narrowed run. npm and external package-manager pushes are opt-in
-inputs (or repository variables) so a missing tap credential cannot silently
-turn a release into a partial publish.
+tag or published version is verified and reused rather than recreated. Its
+default `all` scope publishes the macOS app, Linux and Windows desktop
+installers, all CLI archives, and the npm launcher. The macOS app uses an
+ad-hoc code signature in CI and is not notarized. `cli-only` skips desktop
+installers. Linux and Windows installer payloads are smoke-tested on their
+own OS (`packaging/smoke/`); the GUI is not launched on hosted runners. npm,
+Homebrew and Scoop publishing default to enabled and can be disabled in the
+workflow inputs. WinGet manifests are attached for manual submission when
+Windows desktop artifacts are built.
 
 ## Code of conduct
 

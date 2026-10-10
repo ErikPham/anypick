@@ -70,6 +70,25 @@ describe('an icon command owns its whole state matrix', () => {
     expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
+  it('disables a pending copy and returns to idle if the host rejects it', async () => {
+    const user = userEvent.setup();
+    let rejectCopy!: (error: Error) => void;
+    const copy = () => new Promise<boolean>((_resolve, reject) => { rejectCopy = reject; });
+    render(<CopyButton value="secret-token" label="Copy proxy API key" copy={copy} />);
+
+    await user.click(screen.getByRole('button', { name: 'Copy proxy API key' }));
+    const working = screen.getByRole('button', { name: /Copy proxy API key.*Working/ });
+    expect(working).toBeDisabled();
+    expect(working).toHaveAttribute('aria-busy', 'true');
+    expect(working.querySelector('.spinner')).not.toBeNull();
+
+    rejectCopy(new Error('clipboard unavailable'));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copy proxy API key' })).toBeEnabled();
+    });
+    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
+  });
+
   it('does not confirm a clipboard the host refused', async () => {
     // Every address in this app is also selectable text, so a refusal is not
     // worth interrupting for. Claiming it copied would be a lie told to the
@@ -153,39 +172,37 @@ describe('a copy command is spelled exactly once', () => {
     expect(paneFiles.length).toBeGreaterThan(10);
   });
 
-  it('keeps service.copy inside CopyButton', () => {
-    // Two menu commands call the clipboard directly, and the exemption is
-    // written rather than inferred. A menu item has no glyph to swap and the
-    // menu closes on select, so there is nowhere for a confirmation to live;
-    // macOS's row menus answer the same way. Every other copy goes through
-    // CopyButton, which owns the help tag, the swap and the one timer.
-    const DIRECT_COPY_ALLOWED = new Map([
-      ['panes/ProxiesPane.tsx', 'row-menu "Copy Address"; a menu item has no inline state'],
-      ['panes/BackupsPane.tsx', 'row-menu "Copy File Path"; a menu item has no inline state'],
+  it('keeps clipboard actions inside shared controls', () => {
+    // Menu copy has no inline glyph after its panel closes, so RowMenu owns its
+    // live announcement. Every other copy uses CopyButton and its phase state.
+    const MENU_COPY_ALLOWED = new Map([
+      ['panes/ProxiesPane.tsx', 'row-menu "Copy Address"'],
+      ['panes/BackupsPane.tsx', 'row-menu "Copy File Path"'],
     ]);
 
     const offenders: string[] = [];
     for (const name of paneFiles) {
       const text = readFileSync(join(uiDir, name), 'utf8');
-      if (/service\.copy\(/.test(text) && !DIRECT_COPY_ALLOWED.has(name)) {
+      if (/service\.copy\(/.test(text)) {
         offenders.push(name);
       }
+      if (/clipboard=\{service\.copy\}/.test(text) && !MENU_COPY_ALLOWED.has(name)) offenders.push(name);
     }
     expect(
       offenders,
-      `${offenders.join(', ')} calls service.copy directly. Use CopyButton: it owns the help tag, the glyph swap and the one timer, and eight call sites that each kept their own said nothing at all.`
+      `${offenders.join(', ')} reaches the clipboard outside CopyButton or RowMenu.`
     ).toEqual([]);
 
     // A bare exemption is how a gap becomes permanent without anyone
     // deciding, so an entry that no longer has a direct call must be deleted
     // rather than left to look like permission.
-    const stillNeeded = [...DIRECT_COPY_ALLOWED.keys()].filter((name) =>
-      /service\.copy\(/.test(readFileSync(join(uiDir, name), 'utf8'))
+    const stillNeeded = [...MENU_COPY_ALLOWED.keys()].filter((name) =>
+      /clipboard=\{service\.copy\}/.test(readFileSync(join(uiDir, name), 'utf8'))
     );
-    const dead = [...DIRECT_COPY_ALLOWED.keys()].filter((k) => !stillNeeded.includes(k));
+    const dead = [...MENU_COPY_ALLOWED.keys()].filter((k) => !stillNeeded.includes(k));
     expect(
       dead,
-      `${dead.join(', ')} no longer calls service.copy directly; delete the exemption rather than leave it reading as permission`
+      `${dead.join(', ')} no longer uses RowMenu clipboard feedback; delete the exemption rather than leave it reading as permission`
     ).toEqual([]);
   });
 

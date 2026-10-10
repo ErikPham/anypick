@@ -9,6 +9,19 @@ enum AnyPickAppIcon {
     NSApp.applicationIconImage = dockImage()
   }
 
+  /// A small, monochrome template mark for the menu bar extra. macOS applies
+  /// the right appearance and contrast for the current menu bar background.
+  static func menuBarImage() -> NSImage {
+    let size = NSSize(width: 18, height: 18)
+    let image = NSImage(size: size, flipped: false) { rect in
+      drawMark(in: rect, color: .black)
+      return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = "AnyPick"
+    return image
+  }
+
   private static func dockImage() -> NSImage {
     let source =
       NSImage(named: "AppIcon")
@@ -50,45 +63,50 @@ enum AnyPickAppIcon {
         starting: NSColor(red: 139 / 255, green: 92 / 255, blue: 246 / 255, alpha: 1),
         ending: NSColor(red: 109 / 255, green: 40 / 255, blue: 217 / 255, alpha: 1)
       )?.draw(in: background, angle: -45)
-
-      let scale = size * 0.75 / 64
-      let offset = size * 0.125
-      func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
-        NSPoint(x: offset + x * scale, y: offset + y * scale)
-      }
-      func circle(_ x: CGFloat, _ y: CGFloat, _ radius: CGFloat) -> NSRect {
-        NSRect(
-          x: offset + (x - radius) * scale,
-          y: offset + (y - radius) * scale,
-          width: radius * 2 * scale,
-          height: radius * 2 * scale
-        )
-      }
-      let branches = NSBezierPath()
-      branches.move(to: point(14, 14))
-      branches.line(to: point(23, 14))
-      branches.line(to: point(36, 24))
-      branches.move(to: point(14, 32))
-      branches.line(to: point(29, 32))
-      branches.move(to: point(14, 50))
-      branches.line(to: point(23, 50))
-      branches.line(to: point(36, 40))
-      branches.move(to: point(30, 14))
-      branches.line(to: point(50, 32))
-      branches.line(to: point(30, 50))
-      branches.lineWidth = 7.5 * scale
-      branches.lineCapStyle = .round
-      branches.lineJoinStyle = .round
-      NSColor.white.setFill()
-      NSColor.white.setStroke()
-      branches.stroke()
-      for (x, y, radius) in [(10, 14, 5.6), (10, 32, 5.6), (10, 50, 5.6)] {
-        NSBezierPath(ovalIn: circle(CGFloat(x), CGFloat(y), CGFloat(radius))).fill()
-      }
+      drawMark(
+        in: NSRect(x: size * 0.125, y: size * 0.125, width: size * 0.75, height: size * 0.75),
+        color: .white
+      )
       return true
     }
     image.accessibilityDescription = "AnyPick"
     return image
+  }
+
+  private static func drawMark(in rect: NSRect, color: NSColor) {
+    let scale = rect.width / 64
+    func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+      NSPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
+    }
+    func circle(_ x: CGFloat, _ y: CGFloat, _ radius: CGFloat) -> NSRect {
+      NSRect(
+        x: rect.minX + (x - radius) * scale,
+        y: rect.minY + (y - radius) * scale,
+        width: radius * 2 * scale,
+        height: radius * 2 * scale
+      )
+    }
+    let branches = NSBezierPath()
+    branches.move(to: point(14, 14))
+    branches.line(to: point(23, 14))
+    branches.line(to: point(36, 24))
+    branches.move(to: point(14, 32))
+    branches.line(to: point(29, 32))
+    branches.move(to: point(14, 50))
+    branches.line(to: point(23, 50))
+    branches.line(to: point(36, 40))
+    branches.move(to: point(30, 14))
+    branches.line(to: point(50, 32))
+    branches.line(to: point(30, 50))
+    branches.lineWidth = 7.5 * scale
+    branches.lineCapStyle = .round
+    branches.lineJoinStyle = .round
+    color.setFill()
+    color.setStroke()
+    branches.stroke()
+    for (x, y, radius) in [(10, 14, 5.6), (10, 32, 5.6), (10, 50, 5.6)] {
+      NSBezierPath(ovalIn: circle(CGFloat(x), CGFloat(y), CGFloat(radius))).fill()
+    }
   }
 }
 

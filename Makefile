@@ -236,7 +236,9 @@ test-macos-ui: ## Drive the onboarding, tray first-run, and add-account flows (X
 
 verify-macos: build-macos go-toolchain ## Build, then assert ADR 0020 on the built bundle
 	@derived="$${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData}"; \
-	app="$$(find "$$derived" -path '*/Build/Products/Debug/AnyPick.app' -print -quit)"; \
+	app="$$(find "$$derived" -type f -path '*/Build/Products/Debug/AnyPick.app/Contents/MacOS/AnyPick' \
+	  -exec stat -f '%m %N' {} + | sort -nr | head -n 1 | sed 's/^[0-9]* //')"; \
+	app="$${app%/Contents/MacOS/AnyPick}"; \
 	test -n "$$app" || { echo "no AnyPick.app under $$derived"; exit 1; }; \
 	cd $(GO_DIR) && $(GO) run ./cmd/anypick-artifact node-free "$$app"
 
@@ -250,7 +252,9 @@ MACOS_DEV_APP := $(HOME)/Applications/AnyPick Dev.app
 
 run-macos-dev: build-macos ## Build, install as "AnyPick Dev", and run it on fixture data
 	@built="$$(find $${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData} \
-	  -path '*/Build/Products/Debug/AnyPick.app' -print -quit)"; \
+	  -type f -path '*/Build/Products/Debug/AnyPick.app/Contents/MacOS/AnyPick' \
+	  -exec stat -f '%m %N' {} + | sort -nr | head -n 1 | sed 's/^[0-9]* //')"; \
+	built="$${built%/Contents/MacOS/AnyPick}"; \
 	test -n "$$built" || { echo "no AnyPick.app built; run make build-macos first"; exit 1; }; \
 	rm -rf "$(MACOS_DEV_APP)"; \
 	cp -R "$$built" "$(MACOS_DEV_APP)"; \
@@ -273,7 +277,9 @@ install-macos: ## Build Release, replace the installed app, restart it (keeps th
 	@$(MAKE) --no-print-directory build-macos CONFIGURATION=Release
 	@set -e; \
 	built="$$(find $${DERIVED_DATA_DIR:-$$HOME/Library/Developer/Xcode/DerivedData} \
-	  -path '*/Build/Products/Release/AnyPick.app' -print -quit)"; \
+	  -type f -path '*/Build/Products/Release/AnyPick.app/Contents/MacOS/AnyPick' \
+	  -exec stat -f '%m %N' {} + | sort -nr | head -n 1 | sed 's/^[0-9]* //')"; \
+	built="$${built%/Contents/MacOS/AnyPick}"; \
 	test -n "$$built" || { echo "no Release AnyPick.app built"; exit 1; }; \
 	if [ -d "$(MACOS_INSTALLED_APP)" ]; then \
 	  backup="$$HOME/Library/Application Support/anypick-installed-backup/AnyPick-$$(date +%Y%m%d-%H%M%S).app"; \

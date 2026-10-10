@@ -10,6 +10,7 @@ enum DesignDestination: String, CaseIterable, Identifiable, Hashable {
   case proxies
   case activity
   case backups
+  case settings
 
   var id: String { rawValue }
 
@@ -22,6 +23,7 @@ enum DesignDestination: String, CaseIterable, Identifiable, Hashable {
     case .proxies: "Proxies"
     case .activity: "Activity"
     case .backups: "Account Backups"
+    case .settings: "Settings"
     }
   }
 
@@ -32,6 +34,7 @@ enum DesignDestination: String, CaseIterable, Identifiable, Hashable {
     case .proxyHub: "Proxy Hub"
     case .proxies: "Proxies"
     case .backups: "Backups"
+    case .settings: "Settings"
     default: title
     }
   }
@@ -45,7 +48,14 @@ enum DesignDestination: String, CaseIterable, Identifiable, Hashable {
     case .proxies: "server.rack"
     case .activity: "list.bullet"
     case .backups: "externaldrive.fill.badge.timemachine"
+    case .settings: "gearshape"
     }
+  }
+
+  /// Destinations the Quick Panel can search. Settings stays in the main
+  /// sidebar and Go menu; the tray keeps its own compact navigation surface.
+  static var trayCases: [DesignDestination] {
+    allCases.filter { $0 != .settings }
   }
 
 }

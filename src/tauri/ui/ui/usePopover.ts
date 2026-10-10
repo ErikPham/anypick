@@ -1,9 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 const GAP = 6;
-/** Only used for the first measurement, before the panel has been laid out. */
-const ESTIMATED_HEIGHT = 132;
-const ESTIMATED_WIDTH = 190;
 
 /**
  * The mechanics every popover in this app needs, once.
@@ -21,7 +18,7 @@ const ESTIMATED_WIDTH = 190;
  * resize or a scroll — the last because a scrolled panel would otherwise stay
  * pinned to a trigger that has moved out from under it.
  */
-export function usePopover(align: 'start' | 'end' = 'end') {
+export function usePopover(align: 'start' | 'end' = 'end', initialFocus: 'first' | 'selected' = 'first') {
   const [open, setOpen] = useState(false);
   // Where the panel goes, measured from the trigger. `null` until opened, so a
   // closed popover has no positioned node to pay for.
@@ -31,7 +28,7 @@ export function usePopover(align: 'start' | 'end' = 'end') {
   const panel = useRef<HTMLDivElement>(null);
   const panelId = useId();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) {
       setPlacement(null);
       return;
@@ -39,8 +36,8 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     const place = () => {
       const box = trigger.current?.getBoundingClientRect();
       if (!box) return;
-      const height = panel.current?.offsetHeight || ESTIMATED_HEIGHT;
-      const width = panel.current?.offsetWidth || ESTIMATED_WIDTH;
+      const height = panel.current?.offsetHeight ?? 0;
+      const width = panel.current?.offsetWidth ?? 0;
       const below = box.bottom + GAP + height <= window.innerHeight;
       setPlacement({
         top: below ? box.bottom + GAP : Math.max(GAP, box.top - GAP - height),
@@ -64,21 +61,58 @@ export function usePopover(align: 'start' | 'end' = 'end') {
       const target = event.target as Node;
       if (!root.current?.contains(target) && !panel.current?.contains(target)) setOpen(false);
     };
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target as Node;
+      if (!root.current?.contains(target) && !panel.current?.contains(target)) setOpen(false);
+    };
     const dismiss = () => setOpen(false);
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('focusin', onFocusIn);
     window.addEventListener('resize', dismiss);
     window.addEventListener('scroll', dismiss, true);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('focusin', onFocusIn);
       window.removeEventListener('resize', dismiss);
       window.removeEventListener('scroll', dismiss, true);
     };
-    // `place` is intentionally not a dependency: re-measuring on every render
-    // would move the panel under the pointer while it is being read.
+    // `place` is intentionally not a dependency: measuring after the panel has
+    // mounted gives its real size, and measuring on every render would move it
+    // under the pointer while it is being read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, align]);
+
+  useEffect(() => {
+    if (!open || !placement) return;
+    const items = panel.current?.querySelectorAll<HTMLElement>(
+      '[role="menuitem"]:not(:disabled), [role="option"]:not(:disabled)',
+    );
+    if (!items?.length) return;
+    const selected = initialFocus === 'selected'
+      ? panel.current?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+      : null;
+    (selected ?? items[0]).focus();
+  }, [open, placement, initialFocus]);
+
+  const onPanelKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(
+      panel.current?.querySelectorAll<HTMLElement>(
+        '[role="menuitem"]:not(:disabled), [role="option"]:not(:disabled)',
+      ) ?? [],
+    );
+    if (items.length === 0) return;
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    let next = index;
+    if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    else if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+    else next = (index <= 0 ? items.length : index) - 1;
+    event.preventDefault();
+    items[next].focus();
+  };
 
   return {
     open,
@@ -88,6 +122,8 @@ export function usePopover(align: 'start' | 'end' = 'end') {
     root,
     trigger,
     panel,
+    dialogOwner: root.current?.closest<HTMLElement>('[role="dialog"]')?.id,
+    onPanelKeyDown,
     /** Closes and returns focus, the way a platform menu does. */
     close: () => {
       setOpen(false);

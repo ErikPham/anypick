@@ -45,7 +45,7 @@ import {
   Switch,
   WarningGlyph,
 } from '../ui/primitives';
-import { RowMenu } from '../ui/RowMenu';
+import { MenuDivider, MenuItem, RowMenu } from '../ui/RowMenu';
 import { ProviderIcon } from '../shell/ProviderIcon';
 import type { AppEntry } from '../lib/app-entry';
 import { appIssue, appModelConfig, appSubtitle } from '../lib/app-entry';
@@ -664,28 +664,19 @@ function CodexProfileRow({
         <RowMenu label={`Actions for ${profile.name}`} testId={`codex-profile.more.${profile.name}`}>
           {(close) => (
             <>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] hover:bg-hover"
-                onClick={() => {
+              <MenuItem onSelect={() => {
                   close();
                   onEdit();
-                }}
-              >
+                }}>
                 Edit Profile…
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] text-red hover:bg-hover"
-                onClick={() => {
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem destructive onSelect={() => {
                   close();
                   onRemove();
-                }}
-              >
+                }}>
                 Remove Profile…
-              </button>
+              </MenuItem>
             </>
           )}
         </RowMenu>

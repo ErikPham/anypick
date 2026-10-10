@@ -74,7 +74,8 @@ export type BackupPreviewFrame = {
 };
 
 export type DoctorFrame = {
-  ok: boolean;
+  requestId: string;
+  status: string;
   findings: Array<{ check: string; status: string; detail: string }>;
 };
 
@@ -242,7 +243,8 @@ export function decodeFrame(line: string): ServiceFrame | null {
       return {
         kind,
         report: {
-          ok: payload.ok === true,
+          requestId: str(payload.requestId),
+          status: str(payload.status),
           findings: Array.isArray(payload.findings)
             ? payload.findings.filter(record).map((finding) => ({
                 check: str(finding.check),

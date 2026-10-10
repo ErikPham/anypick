@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 
 import { resolveBridge, type BridgeEvent, type TrayBridge } from './lib/bridge';
 import { planAutomaticCodexProfileSync } from './lib/codex-auto-profiles';
-import type { Destination, Snapshot } from './lib/contract';
+import type { AppDestination, Destination, Snapshot } from './lib/contract';
 import { createService, type ServiceHandle, type ServicePort } from './lib/service';
 import {
   decodeFrame,
@@ -21,12 +21,13 @@ import {
   BackupsPane,
   ConfirmDialog,
   OverviewPane,
+  ONBOARDING_KEY,
   ProxiesPane,
   ProxyHubPane,
   PublishedModelsPane,
 } from './panes';
 
-import { SettingsSheet } from './panes/SettingsSheet';
+import { SettingsPane } from './panes/SettingsPane';
 import type { AccountFlowResult } from './panes/AddAccountSheet';
 import type { GatewayFlowResult } from './panes/AddGatewaySheet';
 import type { ModelRolesResult } from './panes/AppRouteSheet';
@@ -38,6 +39,7 @@ import { Sidebar } from './shell/Sidebar';
 import { Toolbar } from './shell/Toolbar';
 
 type ServiceState = 'starting' | 'connected' | 'stopped' | 'error';
+type CopyKeyResult = { requestId: string; success: boolean | null };
 
 /** Destinations whose list is long enough to earn a search field. */
 const SEARCHABLE: ReadonlySet<Destination> = new Set<Destination>([
@@ -65,20 +67,17 @@ export function App({
   if (!bridgeRef.current) bridgeRef.current = resolveBridge();
   const bridge = bridgeRef.current;
 
-  const [destination, setDestination] = useState<Destination>('overview');
+  const [destination, setDestination] = useState<AppDestination>('overview');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [state, setState] = useState<ServiceState>('starting');
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [copyKeyResult, setCopyKeyResult] = useState<CopyKeyResult | null>(null);
   const [query, setQuery] = useState('');
   const [takeover, setTakeover] = useState<{ actionId: string; message: string } | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // Settings → Show Getting Started has to un-hide the Overview checklist, and
-  // the checklist reads localStorage once on mount. Bumping a key re-reads it
-  // rather than making the two panes share a preference object.
-  const [gettingStartedKey, setGettingStartedKey] = useState(0);
   const [logs, setLogs] = useState<Readonly<Record<string, LogsFrame>>>({});
   const [backupPreview, setBackupPreview] = useState<BackupPreviewFrame | null>(null);
   const [doctor, setDoctor] = useState<DoctorFrame | null>(null);
+  const [doctorError, setDoctorError] = useState<string | null>(null);
   // A replayed last_service_line can be older than a frame that already
   // arrived. Action ids are scoped to a revision, so an older snapshot must
   // not replace the one the window is acting on.
@@ -161,11 +160,13 @@ export function App({
         return;
       }
       if (frame.kind === 'doctor') {
-        // The report carries no request id, so there is nothing to settle.
-        // A healthy run is silent; findings are what the user asked for.
+        const requestId = frame.report.requestId;
+        if (service.lookup(requestId)?.kind !== 'doctor') return;
+        service.settle(requestId);
         setDoctor(frame.report);
-        if (frame.report.ok) {
-          setNotice({ kind: 'info', text: 'Doctor finished. Nothing needs attention.', suggestions: [] });
+        setDoctorError(null);
+        if (frame.report.status === 'ok') {
+          setNotice({ kind: 'info', text: 'All checks passed. Nothing needs attention.', suggestions: [] });
         }
         return;
       }
@@ -188,10 +189,15 @@ export function App({
           return;
         }
         if (result.status === 'success' && flight?.kind === 'mutate' && flight.operation === 'proxy-token') {
+          const requestId = result.requestId;
+          // The engine has returned the key, but the clipboard promise is the
+          // last step. Keep the icon busy until that write itself resolves.
+          setCopyKeyResult({ requestId, success: null });
           const key = typeof result.payload?.apiKey === 'string' ? result.payload.apiKey : '';
           // The secret goes to the clipboard only. The notice names the
           // action, never the key (ADR 0006).
           if (!key) {
+            setCopyKeyResult({ requestId, success: false });
             setNotice({ kind: 'error', text: result.message || 'Couldn’t copy API key.', suggestions: [] });
             return;
           }
@@ -199,19 +205,38 @@ export function App({
           // and reading the property would throw inside this event callback
           // with no error boundary above it. Test setup always stubs a
           // clipboard, so no test can catch the unguarded form.
-          const clipboard = navigator.clipboard;
+          let clipboard: Clipboard | undefined;
+          try {
+            clipboard = navigator.clipboard;
+          } catch {
+            clipboard = undefined;
+          }
           if (!clipboard) {
+            setCopyKeyResult({ requestId, success: false });
             setNotice({ kind: 'error', text: 'Couldn’t copy API key.', suggestions: [] });
             return;
           }
-          void clipboard.writeText(key).then(
-            () => setNotice({ kind: 'info', text: 'Copied API key.', suggestions: [] }),
-            () => setNotice({ kind: 'error', text: 'Couldn’t copy API key.', suggestions: [] }),
+          void Promise.resolve().then(() => clipboard.writeText(key)).then(
+            () => {
+              setCopyKeyResult({ requestId, success: true });
+              setNotice({ kind: 'info', text: 'Copied API key.', suggestions: [] });
+            },
+            () => {
+              setCopyKeyResult({ requestId, success: false });
+              setNotice({ kind: 'error', text: 'Couldn’t copy API key.', suggestions: [] });
+            },
           );
           return;
         }
+        if (flight?.kind === 'mutate' && flight.operation === 'proxy-token') {
+          setCopyKeyResult({ requestId: result.requestId, success: false });
+        }
         if (result.status === 'success' && flight?.kind === 'doctor') {
           setNotice({ kind: 'info', text: result.message || 'Doctor finished.', suggestions: [] });
+          return;
+        }
+        if (flight?.kind === 'doctor') {
+          setDoctorError(result.message || 'Doctor could not complete the check.');
           return;
         }
         if (flight?.kind === 'mutate' && HUB_ROW_OPERATIONS.has(flight.operation)) {
@@ -259,7 +284,12 @@ export function App({
         return;
       }
       if (frame.kind === 'protocol-error') {
+        const flight = frame.requestId ? service.lookup(frame.requestId) : undefined;
         if (frame.requestId) service.settle(frame.requestId);
+        if (flight?.kind === 'doctor') {
+          setDoctorError(frame.message);
+          return;
+        }
         setNotice({ kind: 'error', text: frame.message, suggestions: [], code: frame.code });
       }
     },
@@ -323,6 +353,16 @@ export function App({
         setNotice({ kind: 'error', text: errorText(error) });
       });
 
+    void bridge
+      .listen('open-settings', () => setDestination('settings'))
+      .then((off) => {
+        if (cancelled) off();
+        else unlisten.push(off);
+      })
+      .catch((error: unknown) => {
+        setNotice({ kind: 'error', text: errorText(error) });
+      });
+
     return () => {
       cancelled = true;
       for (const off of unlisten) off();
@@ -362,6 +402,8 @@ export function App({
     ? 'Published Models'
     : selectedApp
     ? selectedApp.client
+    : destination === 'settings'
+    ? 'Settings'
     : DestinationLabel[destination];
 
   const activeBack = publishedModelsOpen
@@ -407,13 +449,12 @@ export function App({
         onSelect={setDestination}
         state={state}
         runningCount={runningCount}
-        onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="flex min-h-0 min-w-0 flex-col bg-canvas">
         <Toolbar
           title={activeTitle}
           onBack={activeBack}
-          searchable={(SEARCHABLE.has(destination) && !selectedApp) || publishedModelsOpen}
+          searchable={((destination !== 'settings' && SEARCHABLE.has(destination)) && !selectedApp) || publishedModelsOpen}
           query={query}
           onQuery={setQuery}
           onRefresh={() => service.port.refresh()}
@@ -440,39 +481,46 @@ export function App({
           ) : null}
           {snapshot ? (
             <>
-              <DestinationPane
-                destination={destination}
-                snapshot={snapshot}
-                query={query}
-                service={service.port}
-                busy={busy}
-                logs={logs}
-                backupPreview={backupPreview}
-                onNavigate={setDestination}
-                onClearQuery={() => setQuery('')}
-                publishedModelsOpen={publishedModelsOpen}
-                onOpenPublishedModels={openPublishedModels}
-                selectedAppId={selectedAppId}
-                onSelectApp={setSelectedAppId}
-                accountFlowResult={accountFlowResult}
-                onClearFlowResult={() => setAccountFlowResult(null)}
-                gatewayFlowResult={gatewayFlowResult}
-                modelRolesResult={modelRolesResult}
-                hubRowResult={hubRowResult}
-                gettingStartedKey={gettingStartedKey}
-              />
-              {settingsOpen ? (
-                <SettingsSheet
+              {destination === 'settings' ? (
+                <SettingsPane
                   settings={snapshot.settings}
-                  snapshot={snapshot}
                   service={service.port}
                   busy={busy.size > 0}
-                  report={doctor}
-                  onClose={() => setSettingsOpen(false)}
-                  onNavigate={setDestination}
-                  onShowGettingStarted={() => setGettingStartedKey((n) => n + 1)}
+                  onShowGettingStarted={() => {
+                    globalThis.localStorage?.removeItem(ONBOARDING_KEY);
+                    setDestination('overview');
+                  }}
                 />
-              ) : null}
+              ) : (
+                <DestinationPane
+                  destination={destination}
+                  snapshot={snapshot}
+                  query={query}
+                  service={service.port}
+                  busy={busy}
+                  copyKeyResult={copyKeyResult}
+                  logs={logs}
+                  backupPreview={backupPreview}
+                  onNavigate={setDestination}
+                  onClearQuery={() => setQuery('')}
+                  publishedModelsOpen={publishedModelsOpen}
+                  onOpenPublishedModels={openPublishedModels}
+                  selectedAppId={selectedAppId}
+                  onSelectApp={setSelectedAppId}
+                  accountFlowResult={accountFlowResult}
+                  onClearFlowResult={() => setAccountFlowResult(null)}
+                  gatewayFlowResult={gatewayFlowResult}
+                  modelRolesResult={modelRolesResult}
+                  hubRowResult={hubRowResult}
+                  doctor={doctor}
+                  doctorError={doctorError}
+                  onRunDoctor={() => {
+                    setDoctor(null);
+                    setDoctorError(null);
+                    service.port.requestDoctor();
+                  }}
+                />
+              )}
             </>
           ) : state === 'error' || state === 'stopped' ? (
             // macOS gives a service that will not load its own state with a
@@ -550,6 +598,7 @@ function DestinationPane({
   query,
   service,
   busy,
+  copyKeyResult,
   logs,
   backupPreview,
   onNavigate,
@@ -563,13 +612,16 @@ function DestinationPane({
   gatewayFlowResult,
   modelRolesResult,
   hubRowResult,
-  gettingStartedKey,
+  doctor,
+  doctorError,
+  onRunDoctor,
 }: {
   destination: Destination;
   snapshot: Snapshot;
   query: string;
   service: ServicePort;
   busy: ReadonlySet<string>;
+  copyKeyResult: CopyKeyResult | null;
   logs: Readonly<Record<string, LogsFrame>>;
   backupPreview: BackupPreviewFrame | null;
   onNavigate: (destination: Destination) => void;
@@ -583,16 +635,20 @@ function DestinationPane({
   gatewayFlowResult: GatewayFlowResult | null;
   modelRolesResult: ModelRolesResult | null;
   hubRowResult: HubRowResult | null;
-  gettingStartedKey: number;
+  doctor: DoctorFrame | null;
+  doctorError: string | null;
+  onRunDoctor: () => void;
 }) {
   switch (destination) {
     case 'overview':
       return (
         <OverviewPane
-          key={`overview-${gettingStartedKey}`}
           snapshot={snapshot}
           onNavigate={onNavigate}
           onRefresh={() => service.refresh()}
+          doctor={doctor}
+          doctorError={doctorError}
+          onRunDoctor={onRunDoctor}
           busy={busy}
         />
       );
@@ -637,6 +693,7 @@ function DestinationPane({
           snapshot={snapshot}
           query={query}
           busy={busy}
+          copyKeyResult={copyKeyResult}
           hubRowResult={hubRowResult}
           onNavigate={onNavigate}
           onOpenModels={onOpenPublishedModels}
@@ -658,6 +715,7 @@ function DestinationPane({
           snapshot={snapshot}
           query={query}
           busy={busy}
+          copyKeyResult={copyKeyResult}
           onNavigate={onNavigate}
           onOpenModels={onOpenPublishedModels}
           onClearQuery={onClearQuery}
