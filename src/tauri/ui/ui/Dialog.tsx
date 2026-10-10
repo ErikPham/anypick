@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 
 /**
  * A modal dialog, the webview's stand-in for SwiftUI's
@@ -40,16 +40,30 @@ export function Dialog({
   width?: 'default' | 'form' | 'inspector';
 }) {
   const body = useRef<HTMLDivElement>(null);
+  const dialogId = useId();
+  const cancelAction = useRef(onCancel);
+  cancelAction.current = onCancel;
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
     const root = body.current;
     if (!root) return;
 
-    const focusable = (): HTMLElement[] =>
-      [...root.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]')].filter(
+    const focusable = (): HTMLElement[] => {
+      const selector = 'button, input, select, textarea, [tabindex]';
+      const inside = Array.from(root.querySelectorAll<HTMLElement>(selector));
+      const ordered = inside.flatMap((node) => {
+        const panelId = node.getAttribute('aria-controls');
+        const panel = panelId ? document.getElementById(panelId) : null;
+        const panelItems = panel?.getAttribute('data-dialog-owner') === dialogId
+          ? Array.from(panel.querySelectorAll<HTMLElement>(selector))
+          : [];
+        return [node, ...panelItems];
+      });
+      return [...new Set(ordered)].filter(
         (node) => !node.hasAttribute('disabled') && node.tabIndex !== -1,
       );
+    };
 
     // Focus the first control so a keyboard user starts inside the sheet. The
     // dialog's own heading is not focusable, so this never lands on the title.
@@ -58,28 +72,31 @@ export function Dialog({
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        const target = event.target as Element | null;
+        if (target?.closest('[data-dialog-owner]')?.getAttribute('data-dialog-owner') === dialogId) return;
         event.stopPropagation();
-        onCancel?.();
+        cancelAction.current?.();
         return;
       }
       if (event.key !== 'Tab') return;
       const nodes = focusable();
       if (nodes.length === 0) return;
-      const edge = event.shiftKey ? nodes[0] : nodes[nodes.length - 1];
-      if (document.activeElement === edge) {
-        event.preventDefault();
-        (event.shiftKey ? nodes[nodes.length - 1] : nodes[0]).focus();
-      }
+      const index = nodes.indexOf(document.activeElement as HTMLElement);
+      const next = index < 0
+        ? event.shiftKey ? nodes.length - 1 : 0
+        : (index + (event.shiftKey ? -1 : 1) + nodes.length) % nodes.length;
+      event.preventDefault();
+      nodes[next].focus();
     };
 
-    root.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown);
     return () => {
-      root.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keydown', onKeyDown);
       // Hand focus back where it was, or the click that opened the sheet
       // leaves focus on a detached node and the next Tab starts at the top.
       previouslyFocused?.focus?.();
     };
-  }, [onCancel]);
+  }, [dialogId]);
 
   return (
     <div
@@ -92,6 +109,7 @@ export function Dialog({
     >
       <div
         ref={body}
+        id={dialogId}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -102,10 +120,8 @@ export function Dialog({
          * The title and the buttons are pinned; only the body scrolls.
          *
          * A SwiftUI sheet pins both — the footer is outside the scroll view — and
-         * it matters most where this sheet is tallest: the Settings dialog is
-         * longer than a short window, so with everything scrolling the Done
-         * button sat below the fold and the user had to scroll to find the
-         * control that closes the sheet they opened.
+         * it matters when a sheet is taller than its window: pinning the
+         * actions keeps the way out visible while the form itself scrolls.
          */
         className={`flex max-h-full flex-col overflow-hidden rounded-xl border border-separator-soft bg-canvas px-5 py-4 shadow-[0_16px_48px_rgba(0,0,0,0.36)] ${
           width === 'inspector' ? 'w-full max-w-[520px]' : width === 'form' ? 'w-full max-w-[460px]' : 'w-full max-w-[380px]'

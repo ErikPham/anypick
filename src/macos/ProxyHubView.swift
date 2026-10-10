@@ -31,6 +31,7 @@ struct ProxyHubView: View {
         .contextMenu {
           if model.proxyHubEnabled {
             Button("Restart Hub") { model.restartProxy(id: "hub") }
+              .help("Restart Proxy Hub. Apps using it may briefly lose their connection.")
               .disabled(model.isBusy || model.serviceOperations["hub"] != nil)
           }
         }
@@ -72,15 +73,12 @@ struct ProxyHubView: View {
                 identifier: "hub.copy-api-key",
                 action: { model.copyProxyAPIKey(id: "hub") }
               )
-              Button {
-                requestRotate()
-              } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-              }
-              .buttonStyle(.borderless)
-              .help("Rotate Proxy Hub API Key")
-              .accessibilityLabel("Rotate Proxy Hub API Key")
-              .accessibilityIdentifier("hub.rotate-api-key")
+              DesignIconButton(
+                symbol: "arrow.triangle.2.circlepath",
+                label: "Rotate Proxy Hub API Key",
+                identifier: "hub.rotate-api-key",
+                action: requestRotate
+              )
             }
           }
         }
@@ -188,6 +186,7 @@ struct ProxyHubView: View {
         if !model.hubSources.contains(where: { !$0.rotates }) {
           LabeledContent {
             Button("Open Accounts & APIs") { model.destination = .accounts }
+              .help("Add or connect accounts that Proxy Hub can serve.")
           } label: {
             VStack(alignment: .leading, spacing: 2) {
               Text("Add a Compatible Account")
@@ -258,6 +257,7 @@ struct ProxyHubView: View {
           .frame(minWidth: 46)
         }
         .disabled(busy)
+        .help("Stop Proxy Hub. Apps routed through it will lose their connection.")
         .accessibilityLabel(working ? "Stopping Proxy Hub" : "Stop Proxy Hub")
       } else {
         Button {
@@ -269,6 +269,7 @@ struct ProxyHubView: View {
           .frame(minWidth: 46)
         }
         .disabled(busy)
+        .help("Start Proxy Hub to provide one local endpoint for its published models.")
         .accessibilityLabel(working ? "Starting Proxy Hub" : "Start Proxy Hub")
       }
     }

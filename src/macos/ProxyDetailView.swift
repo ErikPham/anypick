@@ -123,15 +123,12 @@ struct ProxyDetailView: View {
                     action: { model.copyProxyAPIKey(id: proxy.id) }
                   )
                   if proxy.status == .running {
-                    Button {
-                      requestRotate()
-                    } label: {
-                      Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Rotate API Key")
-                    .accessibilityLabel("Rotate API Key")
-                    .accessibilityIdentifier("proxies.inspector.rotate-key")
+                    DesignIconButton(
+                      symbol: "arrow.triangle.2.circlepath",
+                      label: "Rotate API Key",
+                      identifier: "proxies.inspector.rotate-key",
+                      action: requestRotate
+                    )
                   }
                 }
               }
@@ -151,6 +148,7 @@ struct ProxyDetailView: View {
                 }
               }
               .buttonStyle(.plain)
+              .help("Open Activity to read this proxy’s recent events and logs.")
               .foregroundStyle(Color.accentColor)
             }
           } header: {
@@ -268,6 +266,7 @@ struct ProxyDetailView: View {
           if busyRow { ProgressView().controlSize(.small) } else { Text("Stop") }
         }
         .disabled(busy)
+        .help("Stop this local proxy. Apps using it will lose this connection.")
         .accessibilityLabel(busyRow ? "Stopping \(proxy.name)" : "Stop \(proxy.name)")
       } else {
         Button {
@@ -276,6 +275,7 @@ struct ProxyDetailView: View {
           if busyRow { ProgressView().controlSize(.small) } else { Text("Start") }
         }
         .disabled(busy)
+        .help("Start this local proxy for compatible apps.")
         .accessibilityLabel(busyRow ? "Starting \(proxy.name)" : "Start \(proxy.name)")
       }
     }

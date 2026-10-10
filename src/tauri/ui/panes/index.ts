@@ -1,4 +1,4 @@
-export { OverviewPane } from './OverviewPane';
+export { OverviewPane, ONBOARDING_KEY } from './OverviewPane';
 export { AppsPane } from './AppsPane';
 export { AccountsPane } from './AccountsPane';
 export { ProxyHubPane } from './ProxyHubPane';

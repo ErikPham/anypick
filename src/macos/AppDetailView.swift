@@ -149,11 +149,13 @@ struct AppDetailView: View {
               Button(isAppRouteConfigured(app) ? "Change…" : "Connect…") { showingRoutes = true }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help(isAppRouteConfigured(app) ? "Choose a different saved account or route for this app." : "Choose a saved login or gateway for this app.")
                 .disabled(model.isBusy || app.routeOptions.isEmpty)
               if isAppManagedByAnyPick(app) {
                 Button("Disconnect…", role: .destructive) { requestReset() }
                   .buttonStyle(.bordered)
                   .controlSize(.small)
+                  .help("Stop managing this app with AnyPick and restore its previous connection.")
                   .disabled(model.isBusy)
                   .accessibilityIdentifier("app.connection.disconnect")
               }
@@ -179,6 +181,7 @@ struct AppDetailView: View {
               Button("Manage…") { showingModels = true }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Choose the models this app uses for each role.")
                 .disabled(!app.modelEditingAvailable || model.isBusy)
             }
             .accessibilityIdentifier("app.models.manage")
@@ -226,6 +229,7 @@ struct AppDetailView: View {
                 _ = model.createMissingCodexProfiles(
                   sourceIDs: missingCodexProfileSources.map(\.sourceID))
               }
+              .help("Create a separate Codex CLI profile for each compatible saved account.")
               .disabled(model.isBusy)
               .accessibilityIdentifier("codex-profile.create-missing")
             }
@@ -271,6 +275,7 @@ struct AppDetailView: View {
       if appID == "codex" {
         ToolbarItem(placement: .primaryAction) {
           Button("Add Profile", systemImage: "plus", action: addCodexProfile)
+            .help("Create a named Codex CLI profile with separate model settings.")
             .disabled(model.isBusy || model.codexProfileSources.isEmpty)
             .accessibilityIdentifier("codex-profile.add")
         }
@@ -304,38 +309,30 @@ struct AppDetailView: View {
           .lineLimit(1)
       }
       Spacer(minLength: 8)
-      Button {
+      DesignCopyButton(
+        copied: copiedCodexProfileID == profile.id,
+        label: "Copy launch command for \(profile.name)",
+        identifier: "codex-profile.copy.\(profile.name)"
+      ) {
         copyCodexProfileCommand(profile)
-      } label: {
-        Image(systemName: copiedCodexProfileID == profile.id ? "checkmark" : "doc.on.doc")
       }
-      .buttonStyle(.borderless)
-      .controlSize(.small)
       .disabled(model.isBusy || profile.launchCommand.isEmpty)
-      .help(copiedCodexProfileID == profile.id ? "Copied launch command" : "Copy launch command")
-      .accessibilityLabel(
-        copiedCodexProfileID == profile.id
-          ? "Launch command copied for \(profile.name)"
-          : "Copy launch command for \(profile.name)"
-      )
-      .accessibilityIdentifier("codex-profile.copy.\(profile.name)")
 
-      Menu {
+      DesignMoreActionsMenu(
+        label: "Actions for \(profile.name)",
+        identifier: "codex-profile.more.\(profile.name)",
+        isDisabled: model.isBusy
+      ) {
         Button("Edit Profile…", systemImage: "slider.horizontal.3") {
           editingCodexProfile = profile
           showingCodexProfileSheet = true
         }
+        .help("Change this profile’s name, account, or model settings.")
         Button("Remove Profile…", systemImage: "trash", role: .destructive) {
           requestProfileRemoval(profile.name)
         }
-      } label: {
-        Image(systemName: "ellipsis")
+        .help("Remove this Codex CLI profile from AnyPick.")
       }
-      .menuStyle(.borderlessButton)
-      .menuIndicator(.hidden)
-      .accessibilityLabel("Actions for \(profile.name)")
-      .accessibilityIdentifier("codex-profile.more.\(profile.name)")
-      .disabled(model.isBusy)
     }
     .accessibilityIdentifier("codex-profile.row.\(profile.name)")
   }
@@ -365,7 +362,7 @@ struct AppDetailView: View {
 
   private func copyCodexProfileCommand(_ profile: DesignCodexProfile) {
     guard !profile.launchCommand.isEmpty else { return }
-    model.copyCodexProfileLaunchCommand(name: profile.name)
+    guard model.copyCodexProfileLaunchCommand(name: profile.name) else { return }
     copiedCodexProfileID = profile.id
     copyFeedbackTask?.cancel()
     copyFeedbackTask = Task { @MainActor in

@@ -5,7 +5,7 @@ import { exportBackup, forgetBackup, importBackup } from '../lib/desktop-actions
 import type { ServicePort } from '../lib/service';
 import type { BackupPreviewFrame } from '../lib/wire';
 import { Button, Group, Pane, PaneActions, Row, RowActions, RowText, WarningRow } from '../ui/primitives';
-import { RowMenu } from '../ui/RowMenu';
+import { MenuDivider, MenuItem, RowMenu } from '../ui/RowMenu';
 import { CreateBackupSheet, RestoreBackupSheet } from './BackupSheets';
 
 export function BackupsPane({
@@ -97,44 +97,29 @@ export function BackupsPane({
               <Button kind="secondary" onClick={() => setReviewOpen(true)}>
                 Review
               </Button>
-              <RowMenu label="More backup options" testId="backups.more-menu">
-                {(close) => (
+              <RowMenu label="More backup options" clipboard={service.copy} testId="backups.more-menu">
+                {(close, copy) => (
                   <>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] hover:bg-hover"
-                      onClick={() => {
+                    <MenuItem onSelect={() => {
                         close();
                         setReviewOpen(true);
-                      }}
-                    >
+                      }}>
                       Review Backup…
-                    </button>
+                    </MenuItem>
                     {lastReviewedPath ? (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] hover:bg-hover"
-                        onClick={() => {
-                          close();
-                          void service.copy(lastReviewedPath);
-                        }}
-                      >
+                      <MenuItem onSelect={() => {
+                          copy(lastReviewedPath, 'backup file path');
+                        }}>
                         Copy File Path
-                      </button>
+                      </MenuItem>
                     ) : null}
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] text-red hover:bg-hover"
-                      onClick={() => {
+                    <MenuDivider />
+                    <MenuItem destructive onSelect={() => {
                         close();
                         if (preview.inspectionId) handleDiscard(preview.inspectionId);
-                      }}
-                    >
+                      }}>
                       Forget Review…
-                    </button>
+                    </MenuItem>
                   </>
                 )}
               </RowMenu>

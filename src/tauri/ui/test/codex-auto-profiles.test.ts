@@ -48,6 +48,25 @@ describe('automatic codex profiles', () => {
     expect(planAutomaticCodexProfileSync(snapshot, false)).toEqual([]);
   });
 
+  it('waits for a non-Codex model catalog before creating its profile', () => {
+    const unavailable = snapshotWith([
+      { sourceId: 'account/zai/work', kind: 'account', label: 'Work', detail: '', selected: true, models: [] },
+    ]);
+    expect(planAutomaticCodexProfileSync(unavailable, false)).toEqual([]);
+
+    const available = snapshotWith([
+      {
+        sourceId: 'account/zai/work',
+        kind: 'account',
+        label: 'Work',
+        detail: '',
+        selected: true,
+        models: ['glm-5'],
+      },
+    ]);
+    expect(planAutomaticCodexProfileSync(available, false)).toEqual(['account/zai/work']);
+  });
+
   it('baselines existing profiles when turned on, then creates only the new ones', () => {
     setAutomaticCodexProfileCreation(false, []);
     const before = snapshotWith([

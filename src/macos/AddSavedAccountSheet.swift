@@ -241,6 +241,14 @@ struct AddSavedAccountSheet: View {
     return "Add Login"
   }
 
+  private var primaryHelp: String {
+    if isDetecting || isVerifying { return "Wait for the account check to finish." }
+    if sourceMode == .paste, replaceExisting { return "Replace this saved account with the pasted auth file." }
+    if sourceMode == .paste { return "Save the auth file without changing this Mac’s login." }
+    if isKeyInputMode { return "Save this API key for supported apps to use through AnyPick." }
+    return "Save this provider login for compatible apps."
+  }
+
   private var autoDetectionKey: String {
     "\(sourceMode.rawValue):\(provider):\(localSourceID)"
   }
@@ -252,6 +260,7 @@ struct AddSavedAccountSheet: View {
       primaryTitle: primaryTitle,
       primaryDisabled: !canSubmit || model.isBusy || awaitingSaveResult,
       primaryIdentifier: "account-flow.save",
+      primaryHelp: primaryHelp,
       onCancel: cancelAndDismiss,
       onPrimary: submit
     ) {
@@ -265,12 +274,14 @@ struct AddSavedAccountSheet: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .help("Choose how AnyPick gets this login.")
             .accessibilityIdentifier("account-flow.source")
           }
 
           LabeledContent("Provider") {
             DesignProviderPicker(options: providers, selection: $provider)
               .fixedSize()
+              .help("Choose the provider for this saved login.")
               .accessibilityIdentifier("account-flow.provider")
           }
 
@@ -314,6 +325,7 @@ struct AddSavedAccountSheet: View {
             prompt: Text(sourceMode == .paste ? "Optional" : "Personal")
           )
             .focused($nameFocused)
+            .help("Choose a label that helps you recognize this login.")
             .accessibilityIdentifier("account-flow.name")
           loginErrorContent
         } footer: {
@@ -532,11 +544,13 @@ struct AddSavedAccountSheet: View {
               Button("Use Account on This Mac", action: useCurrentLoginFallback)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Use this Mac’s detected login instead of browser sign-in.")
             }
             if !credentialKinds.isEmpty {
               Button("Use API Key", action: useCredentialFallback)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Switch to the API-key form for this provider.")
             }
           }
           .padding(.leading, 24)
@@ -661,6 +675,7 @@ struct AddSavedAccountSheet: View {
           }
         }
         .accessibilityIdentifier("account-flow.credential-kind")
+        .help("Choose which credential type to save for this provider.")
         .onChange(of: credentialKind) { _, _ in credentialProfile = "" }
       }
       if availableProfiles.count > 1 {
@@ -670,6 +685,7 @@ struct AddSavedAccountSheet: View {
           }
         }
         .accessibilityIdentifier("account-flow.credential-profile")
+        .help("Choose the provider profile this credential belongs to.")
       }
       if isCloudflareProvider {
         // The gateway base URL embeds the Cloudflare account id, so no fixed
@@ -678,6 +694,7 @@ struct AddSavedAccountSheet: View {
         LabeledContent("Account / Gateway") {
           TextField("<account_id>/<gateway_id>", text: $cloudflareRouting)
             .labelsHidden()
+            .help("Enter the Cloudflare account ID and AI Gateway name, separated by /.")
             .accessibilityIdentifier("account-flow.cloudflare-routing")
         }
         Text(
@@ -698,16 +715,16 @@ struct AddSavedAccountSheet: View {
             }
           }
           .labelsHidden()
+          .help("Enter the credential issued by this provider.")
           .accessibilityIdentifier("account-flow.api-key")
 
-          Button {
+          DesignIconButton(
+            symbol: revealSecret ? "eye.slash" : "eye",
+            label: revealSecret ? "Hide API Key" : "Show API Key",
+            identifier: "account-flow.toggle-key-visibility"
+          ) {
             revealSecret.toggle()
-          } label: {
-            Image(systemName: revealSecret ? "eye.slash" : "eye")
-              .foregroundStyle(.secondary)
           }
-          .buttonStyle(.borderless)
-          .accessibilityLabel(revealSecret ? "Hide API Key" : "Show API Key")
         }
       }
       if isZaiProvider {
@@ -751,17 +768,14 @@ struct AddSavedAccountSheet: View {
         .accessibilityIdentifier("account-flow.detect")
       }
       if showsSignOutMenu {
-        Menu {
+        DesignMoreActionsMenu(
+          label: "Account actions",
+          identifier: "account-flow.clear",
+          isDisabled: model.isBusy
+        ) {
           Button("Sign Out on This Mac", role: .destructive) { requestSignOut() }
-        } label: {
-          Image(systemName: "ellipsis.circle")
+            .help("Back up and remove this provider’s login from this Mac.")
         }
-        .menuStyle(.borderedButton)
-        .menuIndicator(.hidden)
-        .controlSize(.small)
-        .disabled(model.isBusy)
-        .accessibilityLabel("Account actions")
-        .accessibilityIdentifier("account-flow.clear")
       }
     }
   }

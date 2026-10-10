@@ -165,6 +165,24 @@ describe('frame decoding', () => {
     expect(decoded.preview.inspectionId).toBe('insp-9');
     expect(decoded.preview.entries[0]?.disposition).toBe('create');
   });
+
+  it('decodes the installation check status sent by the engine', () => {
+    const decoded = decodeFrame(
+      frame('doctor', {
+        version: 1,
+        requestId: 'check-1',
+        status: 'degraded',
+        findings: [
+          { check: 'permissions', status: 'warn', detail: 'One file needs safer permissions.' },
+          { check: 'database', status: 'ok', detail: '' },
+        ],
+      }),
+    );
+    if (decoded?.kind !== 'doctor') throw new Error('expected a doctor frame');
+    expect(decoded.report.requestId).toBe('check-1');
+    expect(decoded.report.status).toBe('degraded');
+    expect(decoded.report.findings).toHaveLength(2);
+  });
 });
 
 describe('frame matching', () => {

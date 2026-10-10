@@ -1,12 +1,29 @@
 <Aside type="caution" title="Release channels">
-The GitHub Release is the canonical source for signed native artifacts. The CLI
-is published there as checksum-listed archives, and through the thin npm
-launcher (`npm install --global anypick`, Node 18+), which downloads the
-matching native CLI from GitHub Releases on first run. From 1.1.0 that package
-replaces the old JavaScript `anypick@1.0.x` on npm. The native macOS, Linux and
-Windows assets are linked from the latest release. Build from this repository
-when you are testing unreleased changes.
+GitHub Releases are the canonical source for checksum-listed CLI archives for
+macOS, Linux and Windows, plus the universal macOS `.dmg`/`.zip`, Linux desktop
+installers, and Windows installers. The macOS app is not notarized; on first
+launch, right-click `AnyPick.app` and choose **Open**, or choose **Open Anyway**
+under **System Settings → Privacy & Security**. You can also run
+`xattr -dr com.apple.quarantine /Applications/AnyPick.app`. The thin npm
+launcher (`npm install --global anypick`, Node 18+) downloads and verifies the
+matching native CLI on first run. From 1.1.0 it replaces the old JavaScript
+`anypick@1.0.x` on npm. Build from this repository when you are testing
+unreleased changes.
 </Aside>
+
+Install the CLI or macOS app with Homebrew:
+
+```bash
+brew install outof0/tap/anypick
+brew install --cask outof0/tap/anypick
+```
+
+Install the Windows CLI with Scoop:
+
+```powershell
+scoop bucket add outof0 https://github.com/outof0/scoop-bucket
+scoop install anypick
+```
 
 For the native macOS source target (macOS 14+, Xcode, and Go required):
 

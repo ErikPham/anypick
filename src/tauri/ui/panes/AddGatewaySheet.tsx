@@ -192,7 +192,11 @@ export function AddGatewaySheet({
         </>
       }
     >
-      <Group title="Gateway" testId="gateway-flow.gateway">
+      <Group
+        title="Gateway"
+        footer="Choose a provider to show only the fields it needs. This name is how the gateway appears in Accounts & APIs."
+        testId="gateway-flow.gateway"
+      >
         <Row>
           <RowText title="Provider" detail={provider?.detail} />
           <RowActions>
@@ -201,6 +205,7 @@ export function AddGatewaySheet({
             <MenuSelect
               label=""
               ariaLabel="Gateway provider"
+              title="Choose the service that issued this gateway’s credentials."
               value={providerId}
               testId="gateway-flow.provider.picker"
               onChange={setProviderId}
@@ -216,6 +221,7 @@ export function AddGatewaySheet({
           <Field
             label="Name"
             value={name}
+            help="A short label to recognize this gateway in Accounts & APIs."
             onChange={(value) => {
               setName(value);
               setNameTouched(true);
@@ -231,6 +237,7 @@ export function AddGatewaySheet({
             <Field
               label="API Key"
               value={apiKey}
+              help="Enter the API key issued by this provider."
               onChange={setApiKey}
               type={revealKey ? 'text' : 'password'}
               testId="gateway-flow.api-key"
@@ -265,6 +272,7 @@ export function AddGatewaySheet({
             <Field
               label="Account ID"
               value={accountId}
+              help="Enter the account ID from this provider’s dashboard."
               onChange={setAccountId}
               testId="gateway-flow.account-id"
             />
@@ -273,7 +281,13 @@ export function AddGatewaySheet({
 
         {provider?.requiresGatewayId ? (
           <Row>
-            <Field label="Gateway ID" value={gatewayId} onChange={setGatewayId} testId="gateway-flow.gateway-id" />
+            <Field
+              label="Gateway ID"
+              value={gatewayId}
+              help="Enter the AI Gateway ID or name shown by this provider."
+              onChange={setGatewayId}
+              testId="gateway-flow.gateway-id"
+            />
           </Row>
         ) : null}
 
@@ -305,6 +319,7 @@ export function AddGatewaySheet({
             <Field
               label="Endpoint"
               value={endpoint}
+              help="Enter the provider’s base URL, including https:// and any required path."
               onChange={setEndpoint}
               testId="gateway-flow.endpoint.input"
             />

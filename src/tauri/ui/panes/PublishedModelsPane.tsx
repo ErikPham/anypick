@@ -17,6 +17,7 @@ import type { ServicePort } from '../lib/service';
 import { Dialog } from '../ui/Dialog';
 import {
   Button,
+  CopyButton,
   EmptyState,
   Group,
   IconButton,
@@ -286,13 +287,12 @@ function ModelRow({
             ]}
           />
         ) : null}
-        <IconButton
+        <CopyButton
           label={`Copy model id for ${identity.cleanName}`}
           testId={`published-models.copy-${model.id}`}
-          onClick={() => void service.copy(model.id)}
-        >
-          <CopyGlyph />
-        </IconButton>
+          value={model.id}
+          copy={service.copy}
+        />
         <IconButton
           label={`Inspect ${identity.cleanName}`}
           testId={`published-models.inspect-${model.id}`}
@@ -419,9 +419,12 @@ function InspectDialog({
         <RowText title="Base URL" detail={base ? `${base}/v1` : 'The hub is not running'} />
         <RowActions>
           {base ? (
-            <IconButton label="Copy base URL" onClick={() => void service.copy(`${base}/v1`)}>
-              <CopyGlyph />
-            </IconButton>
+            <CopyButton
+              label="Copy base URL"
+              testId={`model-inspect.copy-${'base-url'}`}
+              value={`${base}/v1`}
+              copy={service.copy}
+            />
           ) : null}
         </RowActions>
       </Row>
@@ -430,9 +433,12 @@ function InspectDialog({
         <RowText title="Chat URL" detail={chat || 'The hub is not running'} />
         <RowActions>
           {chat ? (
-            <IconButton label="Copy chat URL" onClick={() => void service.copy(chat)}>
-              <CopyGlyph />
-            </IconButton>
+            <CopyButton
+              label="Copy chat URL"
+              testId={`model-inspect.copy-${'chat-url'}`}
+              value={chat}
+              copy={service.copy}
+            />
           ) : null}
         </RowActions>
       </Row>
@@ -440,14 +446,12 @@ function InspectDialog({
       <Row testId="model-inspect.copy-curl">
         <RowText title="Test in Terminal" detail="OpenAI-compatible" />
         <RowActions>
-          <Button
-            kind="secondary"
+          <CopyButton
+            label="Copy cURL command"
             testId="published-models.copy-curl"
-            disabled={!chat}
-            onClick={() => void service.copy(curlTemplate(chat, model.id))}
-          >
-            Copy cURL
-          </Button>
+            value={curlTemplate(chat, model.id)}
+            copy={service.copy}
+          />
         </RowActions>
       </Row>
     </Dialog>
@@ -466,18 +470,4 @@ function curlTemplate(chatUrl: string, modelId: string): string {
     '  -H "Content-Type: application/json" \\',
     `  -d '{"model":"${modelId}","messages":[{"role":"user","content":"hi"}]}'`,
   ].join('\n');
-}
-
-function CopyGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" focusable="false">
-      <path
-        d="M8 8h11v12H8z M5 16H4V4h12v1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }

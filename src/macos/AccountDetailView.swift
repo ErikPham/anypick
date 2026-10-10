@@ -95,6 +95,7 @@ struct AccountDetailView: View {
                   }
                   .buttonStyle(.bordered)
                   .controlSize(.small)
+                  .help("Temporarily use this saved login on this Mac so AnyPick can read its quota.")
                   .disabled(model.isBusy)
                 }
               }

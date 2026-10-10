@@ -10,8 +10,8 @@
 AnyPick connects the AI accounts and API keys you already have to the coding
 apps you use. Pick a login for each app; AnyPick writes the app's config and,
 when the app and the provider speak different protocols, runs a local
-translator for it. Native desktop app on macOS, Linux and Windows, plus a CLI
-and terminal UI.
+translator for it. Native desktop apps for macOS, Linux and Windows, plus a
+CLI and terminal UI.
 
 <p align="center">
   <a href="https://github.com/outof0/anypick/releases/latest"><b>Download</b></a>
@@ -31,11 +31,12 @@ Works with **11 coding apps** (Claude Code, OpenAI Codex, Gemini CLI, OpenCode a
 
 Download from [GitHub Releases](https://github.com/outof0/anypick/releases/latest):
 
-| Platform | Desktop app | Requirements |
+| Platform | Install | Requirements |
 | --- | --- | --- |
-| macOS | `.dmg` (universal, signed and notarized) | macOS 14+ |
-| Windows | `.msi` or NSIS `.exe` installer | x64 |
-| Linux | `.AppImage`, `.deb` or `.rpm` | x64 |
+| macOS desktop | `.dmg`/`.zip` or Homebrew cask | macOS 14+; not notarized |
+| Windows desktop | `.msi` or NSIS `.exe` installer | x64 |
+| Linux desktop | `.AppImage`, `.deb` or `.rpm` | x64 |
+| CLI | npm, Homebrew, Scoop, or GitHub archive | npm needs Node 18+ |
 
 The CLI and terminal UI, on any of those platforms:
 
@@ -49,20 +50,39 @@ checksum-verified native CLI from GitHub Releases into `~/.cache/anypick`. The
 same CLI archives (macOS Intel/Apple Silicon, Linux x64/arm64, Windows
 x64/arm64) are attached to every release if you prefer to install by hand.
 
+Install the CLI or desktop app with Homebrew, or the CLI with Scoop:
+
+```bash
+brew install outof0/tap/anypick
+brew install --cask outof0/tap/anypick
+scoop bucket add outof0 https://github.com/outof0/scoop-bucket
+scoop install anypick
+```
+
+The macOS app is not notarized. On first launch, right-click `AnyPick.app` and
+choose **Open**, or go to **System Settings → Privacy & Security → Open Anyway**.
+You can also clear its quarantine flag with:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AnyPick.app
+```
+
 > [!NOTE]
 > **Breaking change in 1.1.0 for npm users.** `anypick` on npm used to be the
 > 1.0.0 JavaScript CLI. From 1.1.0 it launches the
 > native CLI, which does not run third-party plugins (ADR 0021). Pin
 > `anypick@1.0.0` if you still need the old package.
 
-Homebrew and Scoop: planned, see [Roadmap](#roadmap).
+Homebrew and Scoop metadata is published to the configured `outof0` tap and
+bucket as part of the default release. See [Release channels](#release-channels).
 
 ### Uninstall and rollback
 
 - **npm CLI**: `npm uninstall --global anypick`, then delete the downloaded
   binary cache (`~/.cache/anypick` on macOS/Linux,
   `%LOCALAPPDATA%\\AnyPick` on Windows).
-- **macOS app**: quit AnyPick and move `AnyPick.app` to the Trash. Local data
+- **macOS app**: `brew uninstall --cask outof0/tap/anypick`, or quit AnyPick
+  and move `AnyPick.app` to the Trash. Local data
   stays in `~/.anypick`; delete that directory only if you also mean to remove
   every saved account, proxy state, and activity entry.
 - **Windows/Linux installers**: uninstall through Settings → Apps (MSI/NSIS) or
@@ -71,16 +91,19 @@ Homebrew and Scoop: planned, see [Roadmap](#roadmap).
   app and CLI are self-contained; `~/.anypick` data is forward-compatible, and
   account backups (readable JSON) are the supported way to move credentials.
 
-## Roadmap
+## Release channels
 
-Target versions, not dates:
+The default `all` release builds macOS, Linux and Windows desktop apps, all six
+CLI archives, and the npm launcher. It also updates the configured Homebrew and
+Scoop repositories. `cli-only` narrows the artifacts to CLI archives.
 
-- **v1.1.1: Homebrew.** A tap at `outof0/homebrew-anypick` with a cask for the
-  signed DMG and a formula for the CLI, published by the release workflow
-  (`publish-homebrew`). Once it exists: `brew install --cask outof0/anypick/anypick`.
-- **Later: Scoop, then WinGet.** The release workflow already generates both
-  manifests; they ship once the Scoop bucket exists and the WinGet manifest is
-  accepted into `microsoft/winget-pkgs`.
+- **Homebrew:** CI updates [`outof0/homebrew-tap`](https://github.com/outof0/homebrew-tap)
+  with the CLI formula and macOS app cask. Use `brew install outof0/tap/anypick`
+  for the CLI or `brew install --cask outof0/tap/anypick` for the app.
+- **Scoop:** CI updates [`outof0/scoop-bucket`](https://github.com/outof0/scoop-bucket)
+  with the Windows CLI manifest.
+- **WinGet:** the release workflow generates the Windows desktop manifest;
+  submit it to `microsoft/winget-pkgs` and wait for acceptance.
 
 ## Supported
 
@@ -296,22 +319,24 @@ conflicts that can make a spawned worker take a different network path.
 
 ## Current platform status
 
-Releases are produced by the signed GitHub Actions workflow. A public release is
-only download-ready after the required signing/notarization and target-OS smoke
-gates pass; package-manager channels are opt-in deployment targets.
+Releases are produced by the GitHub Actions workflow after the selected scope's
+verification and target-OS smoke gates pass. The default `all` scope includes
+the macOS app, Linux and Windows installers, CLI archives and npm launcher.
+The macOS app uses an ad-hoc code signature in CI and is not notarized;
+first-launch approval steps are listed above.
 
 - The macOS 14+ SwiftUI target and bundled universal Go-helper build exist in
-  source and are signed/notarized in the macOS release job.
-- The Tauri Linux/Windows apps build installers in the default all-platform
-  release path. Before staging, `packaging/smoke/` extracts each Linux
-  deb/AppImage/rpm and the Windows MSI and runs the bundled Go helper
+  source and ship as a universal `.dmg` and `.zip` in `all` releases.
+- The Tauri Linux/Windows apps build installers in the default `all` scope.
+  Before staging, `packaging/smoke/` extracts
+  each Linux deb/AppImage/rpm and the Windows MSI and runs the bundled Go helper
   (`--version` + `providers`) in a throwaway HOME. The GUI is not launched.
 - The CLI release job builds macOS Intel/Apple Silicon, Linux x64/arm64, and
   Windows x64/arm64 archives. `npm/anypick` selects only those archives.
-- Homebrew, WinGet and Scoop are external repositories. Their generated
-  manifests are attached to each release; publishing them requires the
-  corresponding repository secret/variable and is deliberately opt-in. WinGet
-  additionally requires a submission to `microsoft/winget-pkgs`.
+- Homebrew and Scoop publish to their external repositories during the default
+  release. The release also attaches WinGet manifests when Windows desktop is
+  included; WinGet requires a PR to
+  `microsoft/winget-pkgs`.
 
 ## Documentation
 

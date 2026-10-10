@@ -81,6 +81,7 @@ struct AddGatewaySheet: View {
       primaryTitle: "Add Gateway",
       primaryDisabled: !canSave || model.isBusy,
       primaryIdentifier: "gateway-flow.save",
+      primaryHelp: "Save this gateway with the provider details shown below.",
       onCancel: { dismiss() },
       onPrimary: save
     ) {
@@ -105,6 +106,7 @@ struct AddGatewaySheet: View {
                   accessibilityIdentifier: "gateway-flow.provider",
                   groupsProviders: true
                 )
+                .help("Choose the service that issued this gateway’s credentials.")
               }
             }
             LabeledContent("Name") {
@@ -114,8 +116,14 @@ struct AddGatewaySheet: View {
               )
               .labelsHidden()
               .focused($focusedField, equals: .name)
+              .help("A short label to recognize this gateway in Accounts & APIs.")
               .accessibilityIdentifier("gateway-flow.name")
             }
+          } footer: {
+            Text(
+              "Choose a provider to show only the fields it needs. "
+                + "This name is how the gateway appears in Accounts & APIs."
+            )
           }
 
           Section {
@@ -131,16 +139,16 @@ struct AddGatewaySheet: View {
                   }
                   .labelsHidden()
                   .focused($focusedField, equals: .apiKey)
+                  .help("Enter the API key issued by this provider.")
                   .accessibilityIdentifier("gateway-flow.api-key")
 
-                  Button {
+                  DesignIconButton(
+                    symbol: revealKey ? "eye.slash" : "eye",
+                    label: revealKey ? "Hide API Key" : "Show API Key",
+                    identifier: "gateway-flow.toggle-key-visibility"
+                  ) {
                     revealKey.toggle()
-                  } label: {
-                    Image(systemName: revealKey ? "eye.slash" : "eye")
-                      .foregroundStyle(.secondary)
                   }
-                  .buttonStyle(.borderless)
-                  .accessibilityLabel(revealKey ? "Hide API Key" : "Show API Key")
                 }
               }
             } else {
@@ -163,6 +171,7 @@ struct AddGatewaySheet: View {
                   .accessibilityIdentifier("gateway-flow.account-id")
                   .textContentType(.none)
                   .autocorrectionDisabled()
+                  .help("Enter the account ID shown in this provider’s dashboard.")
               }
             }
             if selectedProvider?.requiresGatewayId == true {
@@ -170,6 +179,7 @@ struct AddGatewaySheet: View {
                 TextField("", text: $gatewayID, prompt: Text("default"))
                   .labelsHidden()
                   .accessibilityIdentifier("gateway-flow.gateway-id")
+                  .help("Enter the AI Gateway ID or name shown by this provider.")
               }
             }
             if isAPIKeyAccount, !regionChoices.isEmpty {
@@ -187,6 +197,7 @@ struct AddGatewaySheet: View {
                 }
                 .labelsHidden()
                 .accessibilityIdentifier("gateway-flow.region")
+                .help("Choose the region where this provider account is configured.")
               }
             } else if providerSuppliesEndpoint {
               LabeledContent(
@@ -198,6 +209,7 @@ struct AddGatewaySheet: View {
                 TextField("", text: $endpoint, prompt: Text("https://gateway.example/v1"))
                   .labelsHidden()
                   .focused($focusedField, equals: .endpoint)
+                  .help("Enter the provider’s base URL, including https:// and any required path.")
                   .accessibilityIdentifier("gateway-flow.endpoint")
               }
             }
@@ -256,6 +268,7 @@ struct AddGatewaySheet: View {
         Button("Test Connection", action: {})
           .buttonStyle(.bordered)
           .controlSize(.small)
+          .help("The connection test is already running.")
           .disabled(true)
       }
       .accessibilityIdentifier("gateway-flow.testing")
@@ -266,6 +279,7 @@ struct AddGatewaySheet: View {
         Button("Test Again", action: testConnection)
           .buttonStyle(.bordered)
           .controlSize(.small)
+          .help("Test again using the current provider details.")
       }
       .accessibilityIdentifier("gateway-flow.available")
     case .unavailable:
@@ -275,12 +289,14 @@ struct AddGatewaySheet: View {
         Button("Try Again", action: testConnection)
           .buttonStyle(.bordered)
           .controlSize(.small)
+          .help("Retry the connection test using the current details.")
       }
       .accessibilityIdentifier("gateway-flow.unavailable")
     case .untested:
       Button("Test Connection", action: testConnection)
         .buttonStyle(.bordered)
         .controlSize(.small)
+        .help("Check whether this gateway can connect with the current details.")
         .disabled(
           !gatewayConnectionTestEnabled(
             requiresApiKey: requiresApiKey, apiKey: apiKey, isBusy: model.isBusy,

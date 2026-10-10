@@ -1,20 +1,21 @@
 name: Release
 
-# A release is: plan the version, stage every in-scope artifact, verify and
-# sign them, and only then commit the version, push the tag, and publish the
-# GitHub Release (ADR 0020). Nothing public moves before all green.
+# The version is prepared in a reviewed PR and merged to main before this
+# workflow runs. CI builds that exact commit, creates its tag, and publishes
+# GitHub Releases as the canonical source before optional registry updates.
 #
 # GitHub Releases are the canonical source. The same run also prepares package
 # manager metadata for Homebrew, WinGet and Scoop, and can publish the thin npm
 # adapter through npm trusted publishing when that channel is enabled.
 #
-# release-scope=all (the default) publishes the signed macOS app, the staged
-# Tauri Linux/Windows installers and the cross-platform CLI archives. Each
-# desktop payload is smoke-tested on its own OS before staging: the Linux deb/
+# release-scope=all (the default) publishes the macOS app, Tauri Linux/Windows
+# installers, cross-platform CLI archives, and the npm launcher. The app uses
+# an ad-hoc code signature and is not notarized. Each desktop payload is
+# smoke-tested on its own OS before staging: the Linux deb/
 # AppImage/rpm and the Windows MSI are extracted, and the bundled Go helper must
 # answer with the planned version. The GUI itself is not launched (no display on
 # a hosted runner), so this is an installer-payload gate, not a UI test.
-# release-scope=macos-only narrows a release to macOS plus the CLI archives.
+# `cli-only` publishes only the CLI archives.
 on:
   workflow_dispatch:
     inputs:
@@ -23,26 +24,25 @@ on:
         required: false
         default: "all"
         type: choice
-        options: [macos-only, all]
+        options: [cli-only, all]
       publish-npm:
         description: "Publish the thin npm launcher (requires npm trusted publishing)"
         required: false
-        default: false
+        default: true
         type: boolean
       publish-homebrew:
         description: "Update the configured external Homebrew tap"
         required: false
-        default: false
+        default: true
         type: boolean
       publish-scoop:
         description: "Update the configured external Scoop bucket"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release
@@ -50,15 +50,15 @@ concurrency:
 
 jobs:
   plan:
-    name: Plan the version
+    name: Validate release version
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      mode: ${{ steps.plan.outputs.mode }}
       version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
       sha: ${{ steps.sha.outputs.sha }}
+      state: ${{ steps.plan.outputs.state }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,51 +74,107 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
 
-      # anypick-release plan reads Conventional Commits since the current tag
-      # and prints mode/bump/version/tag. "none" stops the run before anything
-      # external changes; "resume" reuses an existing tag so a rerun after a
-      # partial failure does not invent a second version.
-      - name: Plan version from Conventional Commits
+      - name: Validate the merged release version and tag
         id: plan
-        run: cd src/go && go run ./cmd/anypick-release plan | tee "$GITHUB_OUTPUT"
-
-      - name: Stop when there is nothing to release
-        if: steps.plan.outputs.mode == 'none'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SCOPE: ${{ inputs.release-scope }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
         run: |
-          echo "::notice::No feat, fix or perf commit since ${{ steps.plan.outputs.tag }}; nothing to release."
-          exit 0
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test -z "$(git status --porcelain)"
+          test "$REPOSITORY_VISIBILITY" = public || {
+            echo "::error::The repository must be public to publish a public release."
+            exit 1
+          }
+          make check-release
+          version="$(tr -d '\r\n' < VERSION)"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "::error::VERSION must be a stable x.y.z version."
+            exit 1
+          }
+          grep -Fqx "## ${version}" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md must contain a short summary for ${version}."
+            exit 1
+          }
+          tag="v${version}"
+          if git show-ref --tags --verify --quiet "refs/tags/${tag}"; then
+            sha="$(git rev-list -n 1 "$tag")"
+            if gh release view "$tag" --json isDraft >/dev/null 2>&1; then
+              if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft)" == "true" ]]; then
+                state=draft
+                draft_scope="$(gh release view "$tag" --json body --jq .body | sed -n 's/.*<!-- anypick-release-scope=\([^ ]*\) -->.*/\1/p')"
+                draft_asset_count="$(gh release view "$tag" --json assets --jq '.assets | length')"
+                if [[ -z "$draft_scope" && "$draft_asset_count" == 0 ]]; then
+                  echo "::notice::Draft has no assets or scope marker; adopting release-scope=${RELEASE_SCOPE}."
+                elif [[ "$draft_scope" != "$RELEASE_SCOPE" ]]; then
+                  echo "::error::Draft ${tag} was created with release-scope=${draft_scope:-unknown}; resume with that same scope."
+                  exit 1
+                fi
+              else
+                state=published
+              fi
+            else
+              state=tagged
+            fi
+          else
+            latest_tag="$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n 1)"
+            if [[ -n "$latest_tag" ]]; then
+              latest_version="${latest_tag#v}"
+              newest="$(printf '%s\n%s\n' "$latest_version" "$version" | sort -V | tail -n 1)"
+              if [[ "$newest" != "$version" || "$latest_version" == "$version" ]]; then
+                echo "::error::VERSION ${version} must be newer than the latest release ${latest_tag}. Merge a version update PR first."
+                exit 1
+              fi
+            fi
+            sha="$(git rev-parse HEAD)"
+            state=new
+          fi
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "sha=${sha}"
+            echo "state=${state}"
+          } | tee -a "$GITHUB_OUTPUT"
 
       - name: Record the staged SHA
         id: sha
-        run: echo "sha=$(git rev-parse HEAD)" | tee "$GITHUB_OUTPUT"
+        run: echo "sha=${{ steps.plan.outputs.sha }}" | tee "$GITHUB_OUTPUT"
 
-  # The same gates CI runs on every push (`make review`: static checks plus
-  # the Go suite), rerun on the exact commit being released. Builds start in
-  # parallel so a release is not slower, but nothing is tagged, uploaded or
-  # published unless this job passed.
+  # The local Go gates (`make ci`: review, staticcheck and the race suite) run
+  # again on the exact commit being released. Platform builds start in
+  # parallel, but nothing is tagged, uploaded or published unless this job
+  # passes.
   verify:
     name: Gates on the release commit
     needs: plan
-    if: needs.plan.outputs.mode != 'none'
+    if: needs.plan.outputs.state != 'published'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.sha }}
 
       - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
         with:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
 
-      - name: make review
-        run: make review
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+
+      - name: make ci
+        run: make ci
 
   build-cli:
     name: Build the cross-platform CLI archives
     needs: plan
-    if: needs.plan.outputs.mode != 'none'
+    if: needs.plan.outputs.state != 'published'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -132,11 +188,12 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
 
-      - name: Apply the planned version (staged, not pushed)
-        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
-
       - name: Verify release version sources
-        run: make check-release
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          make check-release
+          test "$(tr -d '\r\n' < VERSION)" = "$RELEASE_VERSION"
 
       - name: Build and archive every supported CLI target
         env:
@@ -184,7 +241,7 @@ jobs:
   build-linux:
     name: Verify and stage the Linux app
     needs: plan
-    if: needs.plan.outputs.mode != 'none' && inputs.release-scope == 'all'
+    if: needs.plan.outputs.state != 'published' && inputs.release-scope != 'cli-only'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -227,13 +284,12 @@ jobs:
           shared-key: anypick-tauri-release
           cache-on-failure: true
 
-      - name: Apply the planned version (staged, not pushed)
-        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
-
-      - name: Reject unexpected version edits
+      - name: Verify release version sources
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
-          test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
+          make check-release
+          test "$(tr -d '\r\n' < VERSION)" = "$RELEASE_VERSION"
 
       # ── verification gate: nothing is staged until this is green ──
       - name: Cross-language check
@@ -291,7 +347,7 @@ jobs:
   build-windows:
     name: Verify and stage the Windows app
     needs: plan
-    if: needs.plan.outputs.mode != 'none' && inputs.release-scope == 'all'
+    if: needs.plan.outputs.state != 'published' && inputs.release-scope != 'cli-only'
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
@@ -323,13 +379,12 @@ jobs:
           shared-key: anypick-tauri-release-windows
           cache-on-failure: true
 
-      - name: Apply the planned version (staged, not pushed)
-        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
-
-      - name: Reject unexpected version edits
+      - name: Verify release version sources
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
-          test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
+          make check-release
+          test "$(tr -d '\r\n' < VERSION)" = "$RELEASE_VERSION"
 
       - name: Cross-language check
         run: make check
@@ -385,14 +440,13 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Sign, notarize and stage the macOS app
+    name: Build and stage the macOS app
     needs: plan
-    if: needs.plan.outputs.mode != 'none'
+    if: needs.plan.outputs.state != 'published' && inputs.release-scope == 'all'
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -404,63 +458,22 @@ jobs:
           go-version: '1.26'
           cache-dependency-path: src/go/go.sum
 
-      - name: Apply the planned version (staged, not pushed)
-        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
-
-      # ADR 0020: a public macOS artifact is Developer ID signed, notarized
-      # and stapled. An unsigned build must never reach the Release — fail
-      # here with the fix instead of shipping CODE_SIGNING_ALLOWED=NO.
-      - name: Require macOS signing material
+      - name: Verify release version sources
         env:
-          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
-          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          missing=0
-          for v in APPLE_DEVELOPER_ID_APPLICATION APPLE_CERT_P12_BASE64 APPLE_CERT_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
-            if [ -z "${!v:-}" ]; then echo "::error::$v is not configured."; missing=1; fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "::error::macOS signing/notarization secrets are required for a public release (ADR 0020). Configure them, or narrow the release scope — do not ship unsigned."
-            exit 1
-          fi
+          make check-release
+          test "$(tr -d '\r\n' < VERSION)" = "$RELEASE_VERSION"
 
-      # codesign finds the Developer ID identity only after the certificate
-      # and private key are imported into a keychain on this runner.
-      - name: Import the Developer ID certificate
+      - name: Build and apply an ad-hoc code signature
         env:
-          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          keychain="$RUNNER_TEMP/anypick-signing.keychain-db"
-          printf '%s' "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/anypick-cert.p12"
-          security create-keychain -p "$APPLE_CERT_PASSWORD" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$APPLE_CERT_PASSWORD" "$keychain"
-          security import "$RUNNER_TEMP/anypick-cert.p12" -k "$keychain" \
-            -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
-          # Word splitting is the point: one argument per existing keychain path.
-          # shellcheck disable=SC2046
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '" ')
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_CERT_PASSWORD" "$keychain"
-          rm "$RUNNER_TEMP/anypick-cert.p12"
-
-      - name: Build, sign, notarize and staple the universal app
-        env:
-          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-        run: |
-          src/macos/scripts/release-sign-notarize.sh \
-            --version "${{ needs.plan.outputs.version }}"
+          src/macos/scripts/release-build.sh --version "$RELEASE_VERSION"
 
       - name: Verify the bundle has no Node runtime (ADR 0020)
         run: |
-          app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/AnyPick.app' -print -quit)"
+          app="$RUNNER_TEMP/anypick-macos-derived/Build/Products/Release/AnyPick.app"
           test -n "$app"
           test -x "$app/Contents/Helpers/anypick-core"
           src/macos/scripts/check-node-free-app.sh "$app"
@@ -469,9 +482,9 @@ jobs:
           hdiutil create -volname AnyPick -srcfolder "$app" -ov -format UDZO \
             "$RUNNER_TEMP/AnyPick-macos-universal.dmg"
 
-      - name: Smoke-test the signed artifact on a clean account
+      - name: Smoke-test the macOS artifact on a clean account
         run: |
-          app="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/AnyPick.app' -print -quit)"
+          app="$RUNNER_TEMP/anypick-macos-derived/Build/Products/Release/AnyPick.app"
           src/macos/scripts/smoke-installed-artifact.sh "$app" "${{ needs.plan.outputs.version }}"
           src/macos/scripts/smoke-app-service.sh "$app"
 
@@ -483,106 +496,77 @@ jobs:
             ${{ runner.temp }}/AnyPick-macos-universal.dmg
           if-no-files-found: error
 
-  publish:
-    name: Tag, release and deploy
+  publish-release:
+    name: Create the canonical GitHub Release
     needs: [plan, verify, build-cli, build-linux, build-windows, build-macos]
-    # Skipped platform builds (out-of-scope inputs) do not block: only the
-    # in-scope builds must be green. The CLI archives are always built because
-    # they power npm and Homebrew even when a desktop scope is narrowed.
-    if: always() && needs.plan.outputs.mode != 'none' && needs.verify.result == 'success' && needs.build-cli.result == 'success' && needs.build-macos.result == 'success' && (inputs.release-scope != 'all' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success'))
+    if: >-
+      always() && needs.plan.result == 'success' && (
+        needs.plan.outputs.state == 'published' || (
+          needs.verify.result == 'success' &&
+          needs.build-cli.result == 'success' &&
+          (inputs.release-scope == 'cli-only' || (needs.build-linux.result == 'success' && needs.build-windows.result == 'success')) &&
+          (inputs.release-scope != 'all' || needs.build-macos.result == 'success')
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment:
-      name: production
-      url: https://anypick.dev
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
+      - name: Reuse the already published release without rewriting its assets
+        if: needs.plan.outputs.state == 'published'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for target in darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 windows-arm64; do
+            extension=tar.gz
+            [[ "$target" == windows-* ]] && extension=zip
+            asset="anypick-${RELEASE_TAG#v}-${target}.${extension}"
+            grep -Fxq "$asset" <<<"$assets" || {
+              echo "::error::Published release is missing $asset; refusing to rewrite a public release."
+              exit 1
+            }
+          done
+          grep -Fxq SHA256SUMS.txt <<<"$assets"
+          grep -Fxq anypick-sbom.spdx.json <<<"$assets"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.plan.outputs.state != 'published'
         with:
           fetch-depth: 0
           ref: ${{ needs.plan.outputs.sha }}
 
-      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
-        with:
-          go-version: '1.26'
-          cache-dependency-path: src/go/go.sum
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.17.1'
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          version: 9.12.0
-
-      - name: Validate release infrastructure
-        env:
-          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          test "$REPOSITORY_VISIBILITY" = public || {
-            echo 'The repository must be public to publish a public release.'
-            exit 1
-          }
-          test -n "${CLOUDFLARE_ACCOUNT_ID:-}" || {
-            echo 'CLOUDFLARE_ACCOUNT_ID is not configured.'
-            exit 1
-          }
-          test -n "${CLOUDFLARE_API_TOKEN:-}" || {
-            echo 'CLOUDFLARE_API_TOKEN is not configured.'
-            exit 1
-          }
-          cd docs && pnpm install --frozen-lockfile && pnpm exec wrangler whoami
-
-      - name: Validate requested package-manager scope
-        if: (inputs.publish-scoop || vars.SCOOP_PUBLISH_ENABLED == 'true') && inputs.release-scope != 'all'
-        run: |
-          echo "::error::Scoop publishing requires release-scope=all so the Windows CLI and MSI are present."
-          exit 1
-
-      - name: Apply the planned version
-        run: cd src/go && go run ./cmd/anypick-release set "${{ needs.plan.outputs.version }}"
-
-      - name: Reject unexpected version edits
-        run: |
-          unexpected="$(git diff --name-only | grep -Ev '^(VERSION|npm/anypick/package.json|src/tauri/app/(Cargo.toml|Cargo.lock|tauri.conf.json)|src/macos/AnyPick.xcodeproj/project.pbxproj)$' || true)"
-          test -z "$unexpected" || { echo "Unexpected release edits:"; echo "$unexpected"; exit 1; }
-
-      - name: Docs typecheck, lint and build
-        working-directory: docs
-        run: |
-          pnpm typecheck
-          pnpm lint:docs
-          pnpm build
-          pnpm exec wrangler types "${RUNNER_TEMP}/anypick-pages-env.d.ts"
-
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.plan.outputs.state != 'published'
         with:
           name: anypick-cli
           path: ${{ runner.temp }}/anypick-stage
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: needs.build-linux.result == 'success'
+        if: needs.plan.outputs.state != 'published' && inputs.release-scope != 'cli-only'
         with:
           name: anypick-linux
           path: ${{ runner.temp }}/anypick-stage
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: needs.build-windows.result == 'success'
+        if: needs.plan.outputs.state != 'published' && inputs.release-scope != 'cli-only'
         with:
           name: anypick-windows
           path: ${{ runner.temp }}/anypick-stage
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: needs.plan.outputs.state != 'published' && inputs.release-scope == 'all'
         with:
           name: anypick-macos
           path: ${{ runner.temp }}/anypick-stage
 
-      - name: Render package-manager metadata
+      - name: Render package-manager manifests for manual submission
+        if: needs.plan.outputs.state != 'published'
         env:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
@@ -592,153 +576,246 @@ jobs:
           base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           (cd "$stage" && sha256sum -- *) > "$RUNNER_TEMP/anypick-input-sums.txt"
           mkdir -p "$RUNNER_TEMP/package-manifests/winget" "$RUNNER_TEMP/package-manifests/scoop"
+          bash packaging/scoop/render.sh "$RELEASE_VERSION" "$base" \
+            "$RUNNER_TEMP/anypick-input-sums.txt" "$RUNNER_TEMP/package-manifests/scoop"
           if [[ -f "$stage/AnyPick-${RELEASE_VERSION}-windows-x64.msi" ]]; then
             bash packaging/winget/render.sh "$RELEASE_VERSION" "$base" \
               "$RUNNER_TEMP/anypick-input-sums.txt" "$RUNNER_TEMP/package-manifests/winget"
-            bash packaging/scoop/render.sh "$RELEASE_VERSION" "$base" \
-              "$RUNNER_TEMP/anypick-input-sums.txt" "$RUNNER_TEMP/package-manifests/scoop"
-          else
-            echo "Windows desktop scope is disabled; skipping WinGet and Scoop manifests."
           fi
-          # `A && B || true` also swallowed a failing zip, publishing a release
-          # without its manifests. Skip only when there is nothing to zip.
-          if find "$RUNNER_TEMP/package-manifests" -type f -print -quit | grep -q .; then
-            (cd "$RUNNER_TEMP/package-manifests" && zip -qr "$stage/AnyPick-package-manager-manifests.zip" .)
-          fi
+          (cd "$RUNNER_TEMP/package-manifests" && zip -qr "$stage/AnyPick-package-manager-manifests.zip" .)
 
-      # Every in-scope platform is staged and green at this point (macOS
-      # always; Linux/Windows only under release-scope=all). Only now does
-      # anything public move: version commit, tag, Release, assets.
-      - name: Commit version and push tag
+      - name: Resolve and pin the release tag
+        if: needs.plan.outputs.state != 'published'
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_SHA: ${{ needs.plan.outputs.sha }}
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          version_files=(
-            VERSION
-            npm/anypick/package.json
-            src/tauri/app/Cargo.toml
-            src/tauri/app/Cargo.lock
-            src/tauri/app/tauri.conf.json
-            src/macos/AnyPick.xcodeproj/project.pbxproj
-          )
-          if ! git diff --quiet -- "${version_files[@]}"; then
-            git add "${version_files[@]}"
-            git diff --cached --check
-            git commit -m "chore(release): ${RELEASE_TAG}"
-            git push origin HEAD:main
-          fi
-          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
-            echo "${RELEASE_TAG} already exists; reusing it."
+          set -euo pipefail
+          if git show-ref --tags --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA" || {
+              echo "::error::${RELEASE_TAG} points to a different commit; refusing to move a tag."
+              exit 1
+            }
           else
-            git tag --annotate "$RELEASE_TAG" --message "AnyPick ${RELEASE_VERSION}"
+            git tag --annotate "$RELEASE_TAG" --message "AnyPick ${RELEASE_VERSION}" "$RELEASE_SHA"
             git push origin "refs/tags/${RELEASE_TAG}"
           fi
 
-      # changelogithub is fetched on demand rather than added to docs/, because
-      # a new devDependency also needs a lockfile update and this tool runs once
-      # per release.
-      - name: Create or update the GitHub Release
+      - name: Create a draft with generated release notes
+        if: needs.plan.outputs.state != 'published'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || {
+              echo "::error::Refusing to overwrite a published release."
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "AnyPick ${RELEASE_VERSION}" --generate-notes
+          fi
+
+      - name: Pin the selected release scope in the draft
+        if: needs.plan.outputs.state != 'published'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_SCOPE: ${{ inputs.release-scope }}
+        run: |
+          set -euo pipefail
+          body_file="$RUNNER_TEMP/release-body.md"
+          gh release view "$RELEASE_TAG" --json body --jq .body > "$body_file"
+          marker="<!-- anypick-release-scope=${RELEASE_SCOPE} -->"
+          if ! grep -Fq '<!-- anypick-release-scope=' "$body_file"; then
+            printf '\n\n%s\n' "$marker" >> "$body_file"
+            gh release edit "$RELEASE_TAG" --notes-file "$body_file"
+          else
+            grep -Fq "$marker" "$body_file" || {
+              echo "::error::Draft release scope differs from this run."
+              exit 1
+            }
+          fi
+
+      - name: Add the release summary from CHANGELOG when present
+        if: needs.plan.outputs.state != 'published'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: |
-          npx --yes changelogithub@14.0.0 --github "$GITHUB_REPOSITORY" --to "$RELEASE_TAG"
-
-          # changelogithub builds notes from commit subjects and never reads
-          # CHANGELOG.md, so operator-written highlights — the npm launcher's
-          # breaking-change note in particular — never reach the release page.
-          # Append the CHANGELOG section for this version under a Highlights
-          # heading.
           version="${RELEASE_TAG#v}"
-          section=$(awk -v ver="$version" '
+          section="$(awk -v ver="$version" '
             $0 == "## " ver { seen = 1; next }
             seen && /^## / { exit }
             seen { print }
-          ' CHANGELOG.md)
-          [ -n "$section" ] || exit 0
-
+          ' CHANGELOG.md)"
+          [[ -n "$section" ]] || exit 0
           body_file="$RUNNER_TEMP/release-body.md"
           gh release view "$RELEASE_TAG" --json body --jq .body > "$body_file"
-          {
-            echo ""
-            echo "## Highlights (from CHANGELOG.md)"
-            echo ""
-            printf '%s\n' "$section"
-          } >> "$body_file"
-          gh release edit "$RELEASE_TAG" --notes-file "$body_file"
-
-      - name: Attach staged artifacts with checksums
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          shopt -s nullglob
-          assets=("$RUNNER_TEMP"/anypick-stage/*)
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "::error::no staged artifacts to publish"
-            exit 1
+          if ! grep -Fq '## Highlights (from CHANGELOG.md)' "$body_file"; then
+            {
+              echo ""
+              echo "## Highlights (from CHANGELOG.md)"
+              echo ""
+              printf '%s\n' "$section"
+            } >> "$body_file"
+            gh release edit "$RELEASE_TAG" --notes-file "$body_file"
           fi
-          (cd "$RUNNER_TEMP/anypick-stage" && sha256sum -- *) > "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
-          gh release upload "$RELEASE_TAG" "${assets[@]}" "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt" --clobber
-
-      # npm's trusted publisher uses GitHub's OIDC identity; no long-lived
-      # npm token is stored in the repository. The package is only the thin
-      # launcher in npm/anypick — native bundles remain Node-free.
-      - name: Publish the npm launcher
-        if: inputs.publish-npm || vars.NPM_PUBLISH_ENABLED == 'true'
-        run: |
-          npm install --global npm@11.5.1
-          npm --version
-          npm publish --access public --provenance
-        working-directory: npm/anypick
-
-      - name: Publish the Homebrew tap
-        if: inputs.publish-homebrew || vars.HOMEBREW_PUBLISH_ENABLED == 'true'
-        env:
-          HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          packaging/homebrew/publish.sh "$RELEASE_VERSION" "$base" \
-            "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
-
-      - name: Publish the Scoop bucket
-        if: (inputs.publish-scoop || vars.SCOOP_PUBLISH_ENABLED == 'true') && inputs.release-scope == 'all'
-        env:
-          SCOOP_BUCKET_REPOSITORY: ${{ vars.SCOOP_BUCKET_REPOSITORY }}
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          packaging/scoop/publish.sh "$RELEASE_VERSION" "$base" \
-            "$RUNNER_TEMP/anypick-stage/SHA256SUMS.txt"
 
       - name: Generate the release SBOM
+        if: needs.plan.outputs.state != 'published'
         uses: anchore/sbom-action@aa0e114b2e19480f157109b9922bda359bd98b90 # v0.20.8
         with:
           path: ${{ runner.temp }}/anypick-stage
           format: spdx-json
           output-file: ${{ runner.temp }}/anypick-stage/anypick-sbom.spdx.json
 
-      - name: Attach the SBOM
+      - name: Write checksums for every release asset
+        if: needs.plan.outputs.state != 'published'
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/anypick-stage"
+          (
+            cd "$stage"
+            for file in *; do
+              [[ "$file" == SHA256SUMS.txt ]] || sha256sum -- "$file"
+            done
+          ) > "$stage/SHA256SUMS.txt"
+          test -s "$stage/SHA256SUMS.txt"
+
+      - name: Upload assets to the draft release
+        if: needs.plan.outputs.state != 'published'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/anypick-stage/anypick-sbom.spdx.json" --clobber
+        run: |
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          shopt -s nullglob
+          assets=("$RUNNER_TEMP/anypick-stage"/*)
+          test "${#assets[@]}" -gt 0
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
       - name: Attest the release artifacts
+        if: needs.plan.outputs.state != 'published'
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: ${{ runner.temp }}/anypick-stage/*
 
-      - name: Deploy the docs
+      - name: Publish the GitHub Release after all assets are ready
+        if: needs.plan.outputs.state != 'published'
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: cd docs && pnpm run deploy
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+
+  publish-npm:
+    name: Publish the npm launcher
+    needs: [plan, publish-release]
+    if: inputs.publish-npm && needs.publish-release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://www.npmjs.com/package/anypick
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.17.1'
+
+      - name: Test and publish with npm trusted publishing
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        working-directory: npm/anypick
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.5.1
+          npm test
+          mkdir -p "$RUNNER_TEMP/npm-package"
+          local_integrity="$(npm pack --json --pack-destination "$RUNNER_TEMP/npm-package" | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.stdout.write(JSON.parse(s)[0].integrity))')"
+          remote_integrity="$(npm view "anypick@${RELEASE_VERSION}" dist.integrity 2>/dev/null || true)"
+          if [[ -n "$remote_integrity" ]]; then
+            [[ "$remote_integrity" == "$local_integrity" ]] || {
+              echo "::error::npm already has anypick@${RELEASE_VERSION} with different contents."
+              exit 1
+            }
+            echo "npm already contains the identical anypick@${RELEASE_VERSION}; skipping publish."
+          else
+            npm publish --access public --provenance
+          fi
+
+  publish-homebrew:
+    name: Update the Homebrew tap
+    needs: [plan, publish-release]
+    if: inputs.publish-homebrew && needs.publish-release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - name: Download release assets and publish the formula and cask
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_SCOPE: ${{ inputs.release-scope }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/homebrew-assets"
+          mkdir -p "$assets"
+          gh release download "$RELEASE_TAG" --dir "$assets" \
+            --pattern "anypick-${RELEASE_VERSION}-darwin-*.tar.gz" \
+            --pattern "anypick-${RELEASE_VERSION}-linux-*.tar.gz"
+          if [[ "$RELEASE_SCOPE" == all ]]; then
+            gh release download "$RELEASE_TAG" --dir "$assets" \
+              --pattern "AnyPick-macos-universal.zip"
+          fi
+          (cd "$assets" && sha256sum -- *) > "$RUNNER_TEMP/homebrew-sums.txt"
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          packaging/homebrew/publish.sh "$RELEASE_VERSION" "$base" "$RUNNER_TEMP/homebrew-sums.txt"
+
+  publish-scoop:
+    name: Update the Scoop CLI bucket
+    needs: [plan, publish-release]
+    if: inputs.publish-scoop && needs.publish-release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+
+      - name: Download Windows CLI assets and publish the manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SCOOP_BUCKET_REPOSITORY: ${{ vars.SCOOP_BUCKET_REPOSITORY }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/scoop-assets"
+          mkdir -p "$assets"
+          gh release download "$RELEASE_TAG" --dir "$assets" \
+            --pattern "anypick-${RELEASE_VERSION}-windows-*.zip"
+          (cd "$assets" && sha256sum -- *) > "$RUNNER_TEMP/scoop-sums.txt"
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          packaging/scoop/publish.sh "$RELEASE_VERSION" "$base" "$RUNNER_TEMP/scoop-sums.txt"

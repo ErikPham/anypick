@@ -1265,6 +1265,13 @@ final class AnyPickTests: XCTestCase {
 
   // MARK: - Brand marks render full color
 
+  func testMenuBarIconUsesTheMonochromeTemplateProductMark() {
+    let image = AnyPickAppIcon.menuBarImage()
+
+    XCTAssertTrue(image.isTemplate)
+    XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
+  }
+
   func testChromaticMarksRenderOriginal() {    for file in [
       "claude-mark-orange.svg", "deepseek.svg", "doubao.svg", "gemini-icon-2025.svg",
       "hunyuan.svg", "mimo.svg", "minimax.svg", "mistral.svg", "modelscope.svg",
@@ -2758,6 +2765,40 @@ final class AnyPickTests: XCTestCase {
   }
 
   @MainActor
+  func testAutomaticCodexProfileSyncWaitsForAnAccountModelCatalog() async throws {
+    useIsolatedAppPreferences()
+    defer { restoreAppPreferences() }
+    let (store, model, box) = makeProductionHarness()
+    store.consume(
+      Data((try codexAccountSourceFrame(
+        sourceID: "account/zai/work", models: [], revision: 1
+      ) + "\n").utf8))
+    await waitUntil(store.codexProfileSources.contains { $0.sourceId == "account/zai/work" })
+    XCTAssertEqual(syncCommandCount(in: box.lines), 0)
+
+    store.consume(
+      Data((try codexAccountSourceFrame(
+        sourceID: "account/zai/work", models: ["glm-5"], revision: 2
+      ) + "\n").utf8))
+    await waitUntil(store.codexProfileSources.first?.models == ["glm-5"])
+    await waitUntil(model.codexProfileSources.first?.models == ["glm-5"])
+    XCTAssertTrue(AppPreferences.codexAutoProfilesEnabled)
+    XCTAssertTrue(model.isBusy)
+    await waitUntil(syncCommandCount(in: box.lines) == 1)
+    let payload = try XCTUnwrap(mutatePayload(in: box.lines, operation: "codex-profile-sync"))
+    let requestID = try XCTUnwrap(payload["requestId"] as? String)
+    store.consume(
+      Data(
+        (try frame(
+          "result",
+          [
+            "version": 1, "requestId": requestID, "status": "success",
+            "message": "Created 1 Codex profile.",
+          ]) + "\n").utf8))
+    await waitUntil(store.busyRequestId == nil)
+  }
+
+  @MainActor
   func testBackupSelectionMatchesTheFileLimit() {
     func accounts(_ count: Int) -> [DesignAccount] {
       (0..<count).map { index in
@@ -2833,9 +2874,13 @@ final class AnyPickTests: XCTestCase {
     }.count
   }
 
-  private func codexAccountSourceFrame() throws -> String {
+  private func codexAccountSourceFrame(
+    sourceID: String = "account/codex/work",
+    models: [String] = ["gpt-5"],
+    revision: Int = 1
+  ) throws -> String {
     try frame("snapshot", [
-      "revision": 1,
+      "revision": revision,
       "proxyCount": 0,
       "routes": [],
       "actions": [],
@@ -2843,12 +2888,12 @@ final class AnyPickTests: XCTestCase {
       "proxies": [],
       "accounts": [],
       "codexProfileSources": [[
-        "sourceId": "account/codex/work",
+        "sourceId": sourceID,
         "kind": "account",
         "label": "Work",
         "detail": "",
         "selected": true,
-        "models": ["gpt-5"],
+        "models": models,
       ]],
       "codexProfiles": [],
       "gateways": [],

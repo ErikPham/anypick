@@ -359,7 +359,7 @@ export type Snapshot = {
   degradedConditions: DegradedCondition[];
 };
 
-/** Destinations mirror the macOS app's sidebar (`macos/DesignTypes.swift`). */
+/** Engine-backed pane destinations. The shell-only Settings route is separate. */
 export const DESTINATIONS = [
   'overview',
   'apps',
@@ -371,6 +371,9 @@ export const DESTINATIONS = [
 ] as const;
 
 export type Destination = (typeof DESTINATIONS)[number];
+
+/** UI destinations include Settings, which has no engine-owned data route. */
+export type AppDestination = Destination | 'settings';
 
 export function isDestination(value: string): value is Destination {
   return (DESTINATIONS as readonly string[]).includes(value);

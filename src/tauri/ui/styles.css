@@ -140,12 +140,24 @@
   }
 
   button:focus-visible {
-    outline: none;
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  /* The system honours Reduce Motion. Nothing here animates but the spinner. */
+  /* A progress indicator is information, not decoration, so Reduce Motion
+     slows it rather than removing it: a frozen circle says "stalled", which
+     is the one thing this control must never say.
+
+     This rule also had nothing to act on. `@keyframes spin` was declared
+     below and `.spinner` never named it, so the global "Connecting to the
+     AnyPick service…" spinner stood still, and the reduced-motion override
+     set a duration on an animation that did not exist. */
+  .spinner {
+    animation: spin 0.7s linear infinite;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .spinner {
       animation-duration: 2.4s;

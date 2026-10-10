@@ -97,13 +97,15 @@ jobs:
       - name: Test
         working-directory: src/go
         run: |
-          set -o pipefail
+          # GitHub runs bash with -e, which aborts on the failing pipeline
+          # before the grep below can report anything.
+          set +e
           go test ./... -count=1 2>&1 | tee /tmp/go-test.log
-          rc=$?
+          rc=${PIPESTATUS[0]}
           echo "::group::failing tests"
-          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
-          exit $rc
+          exit "$rc"
 
       - name: Race test
         working-directory: src/go
@@ -140,13 +142,13 @@ jobs:
         working-directory: src/go
         shell: bash
         run: |
-          set -o pipefail
+          set +e
           go test ./... -count=1 2>&1 | tee /tmp/go-test.log
-          rc=$?
+          rc=${PIPESTATUS[0]}
           echo "::group::failing tests"
-          grep -E '^\s*--- FAIL|^\s*FAIL\s|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
+          grep -E -- '--- FAIL|^FAIL|panic:' /tmp/go-test.log | head -40 | sed 's/^/::error:: /'
           echo "::endgroup::"
-          exit $rc
+          exit "$rc"
 
   tauri:
     name: Tauri app / Linux check & UI build
@@ -341,7 +343,7 @@ jobs:
 
       - name: Check package-manager generators
         run: |
-          bash -n packaging/homebrew/render.sh packaging/homebrew/publish.sh
+          bash -n packaging/homebrew/render.sh packaging/homebrew/render-cask.sh packaging/homebrew/publish.sh
           bash -n packaging/winget/render.sh
           bash -n packaging/scoop/render.sh packaging/scoop/publish.sh
 

@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom';
 
 import { ProviderIcon } from '../shell/ProviderIcon';
+import { POPOVER_PANEL_CLASS } from './popover';
 import { usePopover } from './usePopover';
 
 /**
@@ -23,6 +24,7 @@ export function MenuSelect({
   onChange,
   options,
   ariaLabel,
+  title,
   disabled = false,
   testId,
 }: {
@@ -38,10 +40,12 @@ export function MenuSelect({
   }>;
   /** Overrides the visible label as the accessible name. */
   ariaLabel?: string;
+  /** More specific hover help than the default "Choose …" hint. */
+  title?: string;
   disabled?: boolean;
   testId?: string;
 }) {
-  const pop = usePopover('start');
+  const pop = usePopover('start', 'selected');
   const selected = options.find((option) => option.value === value);
 
   return (
@@ -56,6 +60,7 @@ export function MenuSelect({
           aria-haspopup="listbox"
           aria-controls={pop.open ? pop.panelId : undefined}
           aria-label={ariaLabel}
+          title={title ?? (ariaLabel ? `Choose ${ariaLabel}` : `Choose ${label}`)}
           disabled={disabled}
           data-testid={testId}
           className="flex min-h-control min-w-40 max-w-55 cursor-default items-center justify-between gap-2 rounded-control border border-control-border bg-control px-2 text-left text-[12px] text-text disabled:cursor-default disabled:opacity-50"
@@ -64,15 +69,21 @@ export function MenuSelect({
           <span className="truncate">{selected?.label ?? ''}</span>
           <Chevron />
         </button>
-        {pop.open && pop.placement
+        {pop.open
           ? createPortal(
               <div
                 ref={pop.panel}
                 id={pop.panelId}
+                data-dialog-owner={pop.dialogOwner}
                 role="listbox"
                 aria-label={ariaLabel}
-                style={{ top: pop.placement.top, left: pop.placement.left }}
-                className="fixed z-50 max-h-72 min-w-44 overflow-y-auto rounded-lg border border-separator-soft bg-canvas py-1 shadow-[0_8px_28px_rgb(0_0_0/0.28)]"
+                onKeyDown={pop.onPanelKeyDown}
+                style={{
+                  top: pop.placement?.top ?? -10000,
+                  left: pop.placement?.left ?? -10000,
+                  visibility: pop.placement ? 'visible' : 'hidden',
+                }}
+                className={POPOVER_PANEL_CLASS}
               >
                 {options.map((option) => (
                   <Option
@@ -116,8 +127,11 @@ function Option({
       role="option"
       aria-selected={selected}
       data-value={value}
+      title={label}
       onClick={onSelect}
-      className="flex w-full cursor-default items-center gap-2 border-0 bg-transparent px-2 py-1 text-left text-[12px] text-text hover:bg-hover"
+      className={`flex w-full cursor-default items-center gap-2 border-0 bg-transparent px-2 py-1 text-left text-[12px] text-text hover:bg-hover ${
+        selected ? 'bg-active' : ''
+      }`}
     >
       {/* The checkmark column is always reserved, so items do not jump sideways
           when the selection changes. */}

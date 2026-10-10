@@ -14,67 +14,6 @@ extension View {
   }
 }
 
-/// SwiftUI's own identifier for the window its `Settings { }` scene creates.
-/// Its title is the selected pane's name ("General", "Diagnostics"), so the
-/// window cannot be found by title and neither this name nor the identifier is
-/// visible to `make check-paths`.
-let settingsWindowIdentifier = "com_apple_SwiftUI_Settings_window"
-
-@MainActor
-func isDesignSettingsWindow(_ window: NSWindow) -> Bool {
-  window.identifier?.rawValue == settingsWindowIdentifier
-}
-
-@MainActor
-func openDesignSettings() {
-  if NSApp.activationPolicy() != .regular {
-    NSApp.setActivationPolicy(.regular)
-  }
-  if let existing = NSApp.windows.first(where: isDesignSettingsWindow) {
-    existing.makeKeyAndOrderFront(nil)
-    NSApp.activate(ignoringOtherApps: true)
-    return
-  }
-  // `sendAction(showSettingsWindow:)` returns without opening anything while the
-  // Settings scene is unrealized, which is the state during launch, and it is
-  // the state the tray item runs in too. Dumping the app's windows with the
-  // fixture flag on showed Settings absent; the same dump after the ⌘, command
-  // showed it present. So the command is sent as a real key event, and the
-  // window is then ordered front once it exists.
-  //
-  // AppEntry.swift routes its own "Settings…" item through SettingsLink for the
-  // same reason.
-  if let event = NSEvent.keyEvent(
-    with: .keyDown,
-    location: .zero,
-    modifierFlags: .command,
-    timestamp: 0,
-    windowNumber: 0,
-    context: nil,
-    characters: ",",
-    charactersIgnoringModifiers: ",",
-    isARepeat: false,
-    keyCode: 43  // kVK_ANSI_Comma
-  ) {
-    NSApp.sendEvent(event)
-  }
-  orderFrontSettingsWhenReady()
-}
-
-@MainActor
-private func orderFrontSettingsWhenReady(attemptsRemaining: Int = 60) {
-  if let window = NSApp.windows.first(where: isDesignSettingsWindow) {
-    window.makeKeyAndOrderFront(nil)
-    window.orderFrontRegardless()
-    NSApp.activate(ignoringOtherApps: true)
-    return
-  }
-  guard attemptsRemaining > 0 else { return }
-  DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
-    orderFrontSettingsWhenReady(attemptsRemaining: attemptsRemaining - 1)
-  }
-}
-
 extension DesignApp {
   /// Copy shown when an app has no working login; `nil` keeps the row clean.
   var issue: String? {
@@ -323,33 +262,119 @@ struct DesignEmptyState: View {
     } actions: {
       if let actionTitle, let action {
         Button(actionTitle, action: action)
+          .help(message)
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 }
 
-/// A row-level copy command.
+/// A row-level copy command with one brief success state everywhere.
 ///
-/// The glyph never changes — only its colour — so nothing in the row moves when
-/// the copy lands. Swapping `doc.on.doc` for a checkmark, or the title "Copy"
-/// for "Copied", changes the control's width and shoves every control to its
-/// left, which is the jump this replaces.
+/// The copy glyph stays fixed so the action column does not move when the
+/// pasteboard write succeeds; tint and the accessible label carry the feedback.
 struct DesignCopyButton: View {
   let copied: Bool
   let label: String
   let identifier: String
   let action: () -> Void
 
+  private var copiedDescription: String {
+    label.hasPrefix("Copy ")
+      ? "Copied \(label.dropFirst("Copy ".count))"
+      : "Copied"
+  }
+
   var body: some View {
     Button(action: action) {
-      Image(systemName: "doc.on.doc")
-        .foregroundStyle(copied ? .green : .secondary)
+      DesignCopyGlyph(copied: copied)
     }
     .buttonStyle(.borderless)
-    .help(copied ? "Copied" : label)
-    .accessibilityLabel(copied ? "Copied" : label)
+    .controlSize(.small)
+    .help(copied ? copiedDescription : label)
+    .accessibilityLabel(copied ? copiedDescription : label)
     .accessibilityIdentifier(identifier)
+  }
+}
+
+struct DesignCopyGlyph: View {
+  let copied: Bool
+
+  var body: some View {
+    Image(systemName: "doc.on.doc")
+      .foregroundStyle(copied ? .green : .secondary)
+  }
+}
+
+/// A borderless SF Symbol button for a secondary row action.
+struct DesignIconButton: View {
+  let symbol: String
+  let label: String
+  let identifier: String
+  let isDisabled: Bool
+  let action: () -> Void
+
+  init(
+    symbol: String,
+    label: String,
+    identifier: String,
+    isDisabled: Bool = false,
+    action: @escaping () -> Void
+  ) {
+    self.symbol = symbol
+    self.label = label
+    self.identifier = identifier
+    self.isDisabled = isDisabled
+    self.action = action
+  }
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .foregroundStyle(.secondary)
+    }
+    .buttonStyle(.borderless)
+    .controlSize(.small)
+    .help(label)
+    .accessibilityLabel(label)
+    .accessibilityIdentifier(identifier)
+    .disabled(isDisabled)
+  }
+}
+
+/// Standard ellipsis menu trigger for row-level secondary actions.
+struct DesignMoreActionsMenu<Content: View>: View {
+  let label: String
+  let identifier: String
+  let isDisabled: Bool
+  @ViewBuilder private var content: () -> Content
+
+  init(
+    label: String,
+    identifier: String,
+    isDisabled: Bool = false,
+    @ViewBuilder content: @escaping () -> Content
+  ) {
+    self.label = label
+    self.identifier = identifier
+    self.isDisabled = isDisabled
+    self.content = content
+  }
+
+  var body: some View {
+    Menu {
+      content()
+    } label: {
+      Image(systemName: "ellipsis")
+        .accessibilityHidden(true)
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .controlSize(.small)
+    .help(label)
+    .accessibilityLabel(label)
+    .accessibilityIdentifier(identifier)
+    .disabled(isDisabled)
   }
 }
 
@@ -559,7 +584,7 @@ struct DesignToolbarSearch: NSViewRepresentable {
   }
 }
 
-/// AppKit push buttons — Settings sheets, not SwiftUI `.bordered`.
+/// AppKit push buttons for native sheet actions, not SwiftUI `.bordered`.
 ///
 /// A sheet's primary action sets `keyEquivalent` to Return, which makes AppKit
 /// treat it as the window's default button and draw the accent fill, the
@@ -568,6 +593,7 @@ struct DesignToolbarSearch: NSViewRepresentable {
 /// primary button from matching the system button beside it.
 struct DesignSheetButton: NSViewRepresentable {
   var title: String
+  var help: String? = nil
   var keyEquivalent: String = ""
   var enabled = true
   var destructive = false
@@ -587,6 +613,7 @@ struct DesignSheetButton: NSViewRepresentable {
     button.bezelStyle = .rounded
     button.controlSize = .regular
     button.setButtonType(.momentaryPushIn)
+    button.toolTip = help ?? title
     button.keyEquivalent = keyEquivalent
     button.isEnabled = enabled
     button.hasDestructiveAction = destructive
@@ -600,6 +627,7 @@ struct DesignSheetButton: NSViewRepresentable {
 
   func updateNSView(_ button: NSButton, context: Context) {
     button.title = title
+    button.toolTip = help ?? title
     button.keyEquivalent = keyEquivalent
     button.isEnabled = enabled
     button.hasDestructiveAction = destructive
@@ -628,6 +656,8 @@ struct DesignSheetHost<Content: View>: View {
   var primaryRole: ButtonRole? = nil
   var showsCancel = true
   var cancelTitle = "Cancel"
+  var primaryHelp: String? = nil
+  var cancelHelp: String? = nil
   var onCancel: () -> Void
   var onPrimary: () -> Void
   @ViewBuilder var content: () -> Content
@@ -665,6 +695,7 @@ struct DesignSheetHost<Content: View>: View {
         if showsCancel {
           DesignSheetButton(
             title: cancelTitle,
+            help: cancelHelp ?? "Close this sheet without saving changes.",
             keyEquivalent: "\u{1b}",
             identifier: "sheet.cancel",
             action: onCancel
@@ -673,6 +704,7 @@ struct DesignSheetHost<Content: View>: View {
         }
         DesignSheetButton(
           title: primaryTitle,
+          help: primaryHelp ?? primaryTitle,
           keyEquivalent: "\r",
           enabled: !primaryDisabled,
           destructive: primaryRole == .destructive,
@@ -796,9 +828,11 @@ private struct DesignConfirmationHost: ViewModifier {
       switch request.actions.count {
       case 0:
         Button("Cancel", role: .cancel, action: {})
+          .help("Dismiss this confirmation.")
       case 1:
         answerButton(request.actions[0])
         Button("Cancel", role: .cancel, action: {})
+          .help("Keep the current settings and close this confirmation.")
       default:
         // Three or more answers take one full-width row each. That is the
         // platform's own rule — measured on `_NSAlertPanel`, even "No / Yes /
@@ -808,6 +842,7 @@ private struct DesignConfirmationHost: ViewModifier {
         answerButton(request.actions[0])
         answerButton(request.actions[1])
         Button("Cancel", role: .cancel, action: {})
+          .help("Keep the current settings and close this confirmation.")
       }
     } message: { request in
       Text(request.message)
@@ -816,6 +851,7 @@ private struct DesignConfirmationHost: ViewModifier {
 
   private func answerButton(_ action: DesignConfirmation.Action) -> some View {
     Button(action.title, role: action.destructive ? .destructive : nil, action: action.perform)
+      .help(action.destructive ? "Confirm this change." : "Continue with this choice.")
       .modifier(DesignOptionalAccessibilityIdentifier(identifier: action.identifier))
   }
 }

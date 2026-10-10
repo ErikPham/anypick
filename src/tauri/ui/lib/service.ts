@@ -61,7 +61,7 @@ export interface ServicePort {
    */
   inFlight(): readonly InFlight[];
   /** Copy to the host clipboard. A host refusal is not a pane failure. */
-  copy(text: string): Promise<void>;
+  copy(text: string): Promise<boolean>;
   /**
    * Write pasted auth JSON to a private temp file. The mutate line carries
    * the path, never the document. The engine's command cap is 16 KiB.
@@ -220,13 +220,20 @@ export function createService(options: {
       });
     },
     async copy(text) {
-      if (!text) return;
+      // Reports whether the text reached the clipboard, so a caller can show a
+      // confirmation that is true. Returning void forced every call site to
+      // either claim success on a refused write or say nothing at all, and
+      // eight of them said nothing — including a key the user cannot select
+      // and read back.
+      if (!text) return false;
       try {
         await navigator.clipboard.writeText(text);
+        return true;
       } catch {
-        // A clipboard the host refuses is not a pane failure: every address and
-        // key in this app is also selectable text, so there is nothing to
-        // interrupt the user with.
+        // A clipboard the host refuses is not a pane failure: every address in
+        // this app is also selectable text, so there is nothing to interrupt
+        // the user with. The caller decides what to say about it.
+        return false;
       }
     },
     async zcodeContext() {

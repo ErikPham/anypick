@@ -10,7 +10,10 @@ import { SearchDialog } from "@/components/ui/search";
 import NimbusHead from "nimbus-docs/components/NimbusHead.astro";
 import type { BasePageProps } from "nimbus-docs/types";
 
-type Props = BasePageProps;
+type Props = BasePageProps & {
+  /** Exact title for the landing page, which should not gain Nimbus's site-name suffix. */
+  socialTitle?: string;
+};
 
 const {
   title,
@@ -22,6 +25,7 @@ const {
   head: pageHead = [],
   collection,
   entryId,
+  socialTitle,
 } = Astro.props;
 
 const lang = config.locale ?? "en";
@@ -39,6 +43,23 @@ const llmsIndexPath = collection
 const llmsUrl = Astro.site
   ? new URL(llmsIndexPath, Astro.site).href
   : llmsIndexPath;
+const canonicalUrl = Astro.site ? new URL(Astro.url.pathname, Astro.site).href : null;
+const socialImageUrl = socialImage
+  ? Astro.site
+    ? new URL(socialImage, Astro.site).href
+    : socialImage
+  : null;
+const socialStructuredData = socialTitle && canonicalUrl
+  ? JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      name: socialTitle,
+      ...(description ? { description } : {}),
+      url: canonicalUrl,
+      inLanguage: lang,
+      ...(socialImageUrl ? { image: socialImageUrl } : {}),
+    })
+  : null;
 ---
 
 <!doctype html>
@@ -86,17 +107,46 @@ const llmsUrl = Astro.site
       })();
     </script>
 
-    <NimbusHead
-      title={title}
-      description={description}
-      noindex={noindex}
-      markdownUrl={markdownUrl}
-      socialImage={socialImage}
-      lastUpdated={lastUpdated}
-      head={pageHead}
-      collection={collection}
-      entryId={entryId}
-    />
+    {socialTitle ? (
+      <>
+        <title>{socialTitle}</title>
+        <meta name="generator" content={Astro.generator} />
+        {description && <meta name="description" content={description} />}
+        {noindex && <meta name="robots" content="noindex" />}
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        {canonicalUrl && <link rel="canonical" href={canonicalUrl} />}
+        {Astro.site && <link rel="sitemap" href="/sitemap-index.xml" />}
+        <meta property="og:title" content={socialTitle} />
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content={config.title} />
+        <meta property="og:locale" content={lang} />
+        {description && <meta property="og:description" content={description} />}
+        {canonicalUrl && <meta property="og:url" content={canonicalUrl} />}
+        {socialImageUrl && <meta property="og:image" content={socialImageUrl} />}
+        {socialImageUrl && config.socialImageAlt && <meta property="og:image:alt" content={config.socialImageAlt} />}
+        {socialImageUrl && <meta property="og:image:width" content="1200" />}
+        {socialImageUrl && <meta property="og:image:height" content="630" />}
+        <meta name="twitter:card" content={socialImageUrl ? "summary_large_image" : "summary"} />
+        <meta name="twitter:title" content={socialTitle} />
+        {description && <meta name="twitter:description" content={description} />}
+        {socialImageUrl && <meta name="twitter:image" content={socialImageUrl} />}
+        {socialImageUrl && config.socialImageAlt && <meta name="twitter:image:alt" content={config.socialImageAlt} />}
+        {socialStructuredData && <script is:inline type="application/ld+json" set:html={socialStructuredData} />}
+        {pageHead.map(({ tag: Tag, attrs = {}, content }) => <Tag {...attrs}>{content}</Tag>)}
+      </>
+    ) : (
+      <NimbusHead
+        title={title}
+        description={description}
+        noindex={noindex}
+        markdownUrl={markdownUrl}
+        socialImage={socialImage}
+        lastUpdated={lastUpdated}
+        head={pageHead}
+        collection={collection}
+        entryId={entryId}
+      />
+    )}
   </head>
   <body class="min-h-screen bg-background text-foreground antialiased">
     <a

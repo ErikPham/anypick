@@ -295,7 +295,7 @@ The macOS app’s main window must look like an app Apple could ship:
   second app.
 - **Use** `NavigationSplitView`, `List` (`.sidebar`), `Form` (`.grouped`),
   `Section`, `Toggle`, `Picker`, `TextField`, `Button`, native `Toolbar`,
-  `Settings { }`, `ContentUnavailableView`. Platform-default fonts, spacing,
+  `ContentUnavailableView`. Platform-default fonts, spacing,
   colors, materials. Instant-apply toggles.
 - **Do not use** custom cards, rounded containers, gradients, chip strips,
   handmade sidebars, RGB tokens, `TraySpacing` / `QuickPanelMetrics`, or
@@ -304,9 +304,11 @@ The macOS app’s main window must look like an app Apple could ship:
   in `src/macos/README.md`). If SwiftUI cannot do a System Settings
   behavior, bridge AppKit (`NSAlert`, `NSOpenPanel`, `NSSavePanel`, `NSMenu`)
   instead of faking the control.
-- **Settings (⌘,) is a `Settings` scene**, not a main-sidebar destination.
-  Main sidebar: Overview, Apps, Accounts & APIs, Proxy Hub, Proxies,
-  Activity, Account Backups.
+- **Settings (⌘,) is a normal main-window destination** with a sidebar row in
+  both macOS and Tauri. It is one screen with separate grouped sections, not a
+  popup or tabs. On macOS, keep its content in a native grouped `Form` and route
+  the app-menu command to the same pane. Main destinations: Overview, Apps,
+  Accounts & APIs, Proxy Hub, Proxies, Activity, Account Backups, Settings.
 - **Preview the fixture, never a stale screenshot.** There is no
   `pnpm macos:design` — the root `package.json` was deleted with the JavaScript
   toolchain. Launch the app from Xcode with `ANYPICK_MACOS_FIXTURE` set in the

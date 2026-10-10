@@ -54,7 +54,7 @@ export function NoticeBanner({ notice, onDismiss }: { notice: Notice; onDismiss:
         className="-mt-1 -mr-0.5 flex-none cursor-default rounded-full border-0 bg-transparent p-1 text-tertiary hover:text-text"
         onClick={onDismiss}
         aria-label="Dismiss notification"
-        title="Dismiss"
+        title="Dismiss notification"
       >
         ×
       </button>

@@ -31,6 +31,7 @@ import {
 import type { ServicePort } from '../lib/service';
 import {
   Button,
+  CopyButton,
   CheckRow,
   Field,
   Group,
@@ -44,7 +45,7 @@ import {
   Switch,
   WarningGlyph,
 } from '../ui/primitives';
-import { RowMenu } from '../ui/RowMenu';
+import { MenuDivider, MenuItem, RowMenu } from '../ui/RowMenu';
 import { ProviderIcon } from '../shell/ProviderIcon';
 import type { AppEntry } from '../lib/app-entry';
 import { appIssue, appModelConfig, appSubtitle } from '../lib/app-entry';
@@ -642,7 +643,6 @@ function CodexProfileRow({
   onEdit: () => void;
   onRemove: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
   const provider = codexProfileProvider(profile.sourceId);
 
   return (
@@ -653,79 +653,30 @@ function CodexProfileRow({
       <ProviderIcon provider={provider} size={24} className="mr-1.5 flex-none" />
       <RowText title={profile.name} detail={codexProfileSummary(profile)} />
       <RowActions>
-        <button
-          type="button"
-          data-testid={`codex-profile.copy.${profile.name}`}
-          disabled={busy.size > 0 || !profile.launchCommand}
-          aria-label={
-            copied
-              ? `Launch command copied for ${profile.name}`
-              : `Copy launch command for ${profile.name}`
-          }
-          title={copied ? 'Copied launch command' : 'Copy launch command'}
-          className="inline-flex size-[26px] cursor-default items-center justify-center rounded-control bg-transparent text-secondary hover:bg-hover active:bg-black/5 dark:active:bg-white/10 disabled:opacity-40"
-          onClick={() => {
-            void service.copy(profile.launchCommand);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          }}
-        >
-          {copied ? (
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              className="text-green"
-              aria-hidden="true"
-            >
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          ) : (
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          )}
-        </button>
+        <CopyButton
+          value={profile.launchCommand}
+          label={`Copy launch command for ${profile.name}`}
+          copy={service.copy}
+          disabled={busy.size > 0}
+          testId={`codex-profile.copy.${profile.name}`}
+        />
 
         <RowMenu label={`Actions for ${profile.name}`} testId={`codex-profile.more.${profile.name}`}>
           {(close) => (
             <>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] hover:bg-hover"
-                onClick={() => {
+              <MenuItem onSelect={() => {
                   close();
                   onEdit();
-                }}
-              >
+                }}>
                 Edit Profile…
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] text-red hover:bg-hover"
-                onClick={() => {
+              </MenuItem>
+              <MenuDivider />
+              <MenuItem destructive onSelect={() => {
                   close();
                   onRemove();
-                }}
-              >
+                }}>
                 Remove Profile…
-              </button>
+              </MenuItem>
             </>
           )}
         </RowMenu>

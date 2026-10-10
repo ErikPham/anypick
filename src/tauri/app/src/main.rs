@@ -5,9 +5,50 @@ mod sidecar;
 
 use sidecar::{graceful_quit, send_ui_command, start_owned_sidecar, BridgeState, ServiceStatus};
 use std::io::{self, BufRead, Write};
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 
 const MAX_FIXTURE_LINE_BYTES: usize = 64 * 1024;
+const SETTINGS_MENU_ID: &str = "settings-menu";
+
+fn menu_with_settings<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
+
+    let menu = Menu::default(app)?;
+    let settings = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "Settings…")
+        .accelerator("CmdOrCtrl+,")
+        .build(app)?;
+    let items = menu.items()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS puts preferences in the application menu, directly after About
+        // and before Services, while the command selects the main-window pane.
+        let app_menu = items
+            .first()
+            .and_then(|item| item.as_submenu())
+            .expect("Tauri's default macOS menu starts with the application menu");
+        app_menu.insert(&settings, 2)?;
+        let separator = PredefinedMenuItem::separator(app)?;
+        app_menu.insert(&separator, 3)?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // On Windows and Linux, preferences conventionally live under Edit.
+        let edit_menu = items
+            .iter()
+            .filter_map(|item| item.as_submenu())
+            .find(|submenu| submenu.text().is_ok_and(|text| text == "Edit"))
+            .expect("Tauri's default menu includes an Edit menu");
+        let separator = PredefinedMenuItem::separator(app)?;
+        edit_menu.append(&separator)?;
+        edit_menu.append(&settings)?;
+    }
+
+    Ok(menu)
+}
 
 #[tauri::command]
 fn send_command(
@@ -331,6 +372,12 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .menu(menu_with_settings)
+        .on_menu_event(|app, event| {
+            if event.id() == SETTINGS_MENU_ID {
+                let _ = app.emit("open-settings", ());
+            }
+        })
         .manage(BridgeState::new())
         .manage(AuthPasteState::default())
         .invoke_handler(tauri::generate_handler![

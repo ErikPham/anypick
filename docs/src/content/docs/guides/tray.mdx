@@ -15,10 +15,11 @@ state: each launches, handshakes with, supervises and shuts down the bundled Go
 service, then renders what that service sends it (ADR 0019 §1).
 
 <Aside type="caution" title="Install from the release channel">
-The GitHub Release is the canonical download source for the signed macOS app
-and the Tauri installers. Homebrew Cask is available when the configured
-external tap is published. Do not copy an unsigned Xcode build to another
-machine and call it a supported release.
+GitHub Releases carry the macOS `.dmg`/`.zip`, Linux and Windows installers,
+and CLI archives. The macOS app is not notarized. On first launch, right-click
+`AnyPick.app` and choose **Open**, or go to **System Settings → Privacy &
+Security → Open Anyway**. You can also run
+`xattr -dr com.apple.quarantine /Applications/AnyPick.app`.
 </Aside>
 
 ## The app owns its service
@@ -61,7 +62,7 @@ destinations:
 
 | Destination | Purpose |
 | --- | --- |
-| **Overview** | Setup progress, attention, and service summary |
+| **Overview** | Setup progress, installation diagnostics, attention, and service summary |
 | **Apps** | Current client routes and source selection |
 | **Accounts & APIs** | Saved native logins and API gateways |
 | **Proxy Hub** | Unified local endpoint, sources, models, and lifecycle |
@@ -69,8 +70,10 @@ destinations:
 | **Activity** | Recent events and bounded live logs |
 | **Account Backups** | Export, inspect, import, and restore saved accounts |
 
-App-wide options live in the native **Settings** scene (<kbd>⌘,</kbd>), not in
-the main sidebar. Current panes cover General, Usage, Proxies, and Security.
+App-wide options live in **Settings** (<kbd>⌘,</kbd>), a normal destination in
+the main sidebar. The grouped pane contains startup and usage preferences; it
+also has an action to show the Getting Started checklist again. Installation
+diagnostics are available from Overview.
 
 In **Accounts & APIs → Add Login**, a provider may expose a provider-owned
 browser sign-in. AnyPick launches that method and then verifies and saves the

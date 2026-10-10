@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
-# Update a separately owned homebrew-* tap after a GitHub Release exists.
-# This is opt-in in the release workflow because the tap repository and token
-# are deployment configuration, not source code in AnyPick.
+# Update the separately owned Homebrew tap after a GitHub Release exists.
 
 set -euo pipefail
 
@@ -23,11 +21,18 @@ trap 'rm -rf "$checkout"' EXIT
 auth_header="AUTHORIZATION: bearer ${HOMEBREW_TAP_TOKEN}"
 git -c http.extraheader="$auth_header" clone --depth=1 "https://github.com/${tap_repository}.git" "$checkout/tap"
 bash "$(dirname "$0")/render.sh" "$version" "$release_base" "$sums" "$checkout/tap"
+cask_asset="AnyPick-macos-universal.zip"
+if awk -v asset="$cask_asset" '$2 == asset || $2 == "*" asset { found = 1 } END { exit !found }' "$sums"; then
+  bash "$(dirname "$0")/render-cask.sh" "$version" "$release_base" "$sums" "$checkout/tap"
+fi
 
 cd "$checkout/tap"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git add Formula/anypick.rb Casks/anypick.rb
+git add Formula/anypick.rb
+if [[ -f Casks/anypick.rb ]]; then
+  git add Casks/anypick.rb
+fi
 if git diff --cached --quiet; then
   echo "Homebrew tap already contains AnyPick ${version}."
 else

@@ -176,6 +176,7 @@ export function AccountRowGrid({
             type="button"
             className="flex size-full cursor-default items-center justify-center border-0 bg-transparent p-0 text-tertiary hover:bg-hover"
             aria-label={`Show details for ${row.label}`}
+            title={`Show details for ${row.label}`}
             data-testid={`accounts.detail-${row.id}`}
             onClick={onDetails}
           >

@@ -27,7 +27,7 @@ import {
   RowActions,
   RowText,
 } from '../ui/primitives';
-import { RowMenu } from '../ui/RowMenu';
+import { MenuDivider, MenuItem, RowMenu } from '../ui/RowMenu';
 import { ProviderIcon } from '../shell/ProviderIcon';
 import {
   appEntries,
@@ -299,15 +299,15 @@ function AppListRow({
             {(close) => (
               <>
                 <MenuItem
-                  label="Change Connection…"
                   testId="app.connection.change-menu"
                   onSelect={() => {
                     close();
                     onChangeConnection();
                   }}
-                />
+                >
+                  Change Connection…
+                </MenuItem>
                 <MenuItem
-                  label="Refresh Models"
                   testId="apps-refresh-menu"
                   disabled={busy.size > 0 || !refresh}
                   onSelect={() => {
@@ -315,9 +315,11 @@ function AppListRow({
                     setRefreshOpen((current) => !current);
                     if (refresh) service.mutate(refresh.operation, refresh.extra);
                   }}
-                />
+                >
+                  Refresh Models
+                </MenuItem>
+                <MenuDivider />
                 <MenuItem
-                  label="Disconnect from AnyPick"
                   testId="app.disconnect-menu"
                   destructive
                   disabled={busy.size > 0 || !app.managed}
@@ -325,9 +327,10 @@ function AppListRow({
                     close();
                     onReset();
                   }}
-                />
+                >
+                  Disconnect from AnyPick
+                </MenuItem>
                 <MenuItem
-                  label="Remove App"
                   testId="app.remove-menu"
                   destructive
                   disabled={busy.size > 0}
@@ -335,7 +338,9 @@ function AppListRow({
                     close();
                     onRemove();
                   }}
-                />
+                >
+                  Remove App
+                </MenuItem>
               </>
             )}
           </RowMenu>
@@ -365,35 +370,6 @@ function AppListRow({
         </Row>
       ) : null}
     </>
-  );
-}
-
-function MenuItem({
-  label,
-  onSelect,
-  destructive = false,
-  disabled = false,
-  testId,
-}: {
-  label: string;
-  onSelect: () => void;
-  destructive?: boolean;
-  disabled?: boolean;
-  testId?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      data-testid={testId}
-      disabled={disabled}
-      className={`flex w-full cursor-default items-center gap-2 rounded-control bg-transparent px-2 py-1 text-left text-[12px] disabled:cursor-default disabled:opacity-40 ${
-        destructive ? 'text-red' : 'text-text'
-      } hover:not-disabled:bg-hover`}
-      onClick={onSelect}
-    >
-      {label}
-    </button>
   );
 }
 

@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react';
+import { isValidElement, useCallback, useEffect, useRef, useState, type AriaAttributes, type ReactNode, type Ref } from 'react';
 
 import { STATUS_LABEL, type DesignStatus } from '../lib/model';
+import { Symbol } from '../shell/Symbol';
 
 /**
  * The System Settings building blocks, ported from `macos/SharedUI.swift`.
@@ -12,6 +13,59 @@ import { STATUS_LABEL, type DesignStatus } from '../lib/model';
  * A pane composes these; it does not style a row itself. That rule is what
  * keeps a Linux pane looking like a Settings pane instead of a web page.
  */
+
+/**
+ * A command that puts text on the clipboard, and the one place a copy
+ * confirms itself.
+ *
+ * Eight of these reported nothing at all, and one swapped its own glyph by
+ * hand, so "did it land" had no owner. Making that a component rather than a
+ * prop means a pane cannot grow a fourth spelling, and `IconButton` already
+ * guarantees the help tag, the `aria-busy` and the fixed box.
+ *
+ * A refused clipboard write shows nothing and reports nothing, because every
+ * address here is also selectable text and nothing was interrupted. An API key
+ * is not selectable, which is why the key copies go through the engine and
+ * answer with a notice instead of coming through here.
+ */
+export function CopyButton({
+  value,
+  label,
+  copy,
+  disabled = false,
+  testId,
+}: {
+  value: string;
+  /** The help tag, and what the confirmation announces. */
+  label: string;
+  copy: (text: string) => Promise<boolean>;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  const { phase, begin, report } = useCopyConfirmation();
+  const copyValue = async () => {
+    if (!begin()) return;
+    try {
+      report(await copy(value));
+    } catch {
+      // A host clipboard can reject instead of returning false. Keep the
+      // control honest and let the user retry from its idle state.
+      report(false);
+    }
+  };
+  return (
+    <IconButton
+      label={label}
+      phase={phase}
+      confirmed={<Symbol name="checkmark" size={13} />}
+      disabled={disabled || value === ''}
+      testId={testId}
+      onClick={() => void copyValue()}
+    >
+      <Symbol name="doc.on.doc" size={13} />
+    </IconButton>
+  );
+}
 
 export function Pane({
   title,
@@ -184,7 +238,7 @@ export function RowText({
     <div className="flex min-w-0 flex-1 flex-col gap-row-stack" data-testid={testId}>
       {title ? <div className="text-[13px] leading-[1.25] text-text">{title}</div> : null}
       {detail ? (
-        <div className="overflow-hidden text-[12px] leading-[1.3] text-ellipsis whitespace-nowrap text-secondary">
+        <div className="select-text overflow-hidden text-[12px] leading-[1.3] text-ellipsis whitespace-nowrap text-secondary">
           {detail}
         </div>
       ) : null}
@@ -267,6 +321,7 @@ export function Button({
   ariaLabel?: string;
   testId?: string;
 }) {
+  const tooltip = title ?? ariaLabel ?? buttonTooltipText(children);
   return (
     <button
       type="button"
@@ -275,7 +330,7 @@ export function Button({
       }`}
       onClick={onClick}
       disabled={disabled}
-      title={title}
+      title={tooltip || undefined}
       aria-label={ariaLabel}
       data-testid={testId}
     >
@@ -285,30 +340,160 @@ export function Button({
   );
 }
 
+/** Text label for the browser tooltip when a call site has no more specific help. */
+export function buttonTooltipText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(buttonTooltipText).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  if (isValidElement<{ children?: ReactNode }>(node)) return buttonTooltipText(node.props.children);
+  return '';
+}
+
+/**
+ * What an icon-only command is doing right now.
+ *
+ * One union rather than a pair of booleans. Eight copy commands in this app
+ * reported nothing at all and one swapped its own glyph by hand, so "did it
+ * land" and "is it in flight" were two unrelated facts that a call site could
+ * disagree with itself about. Three cases cannot disagree.
+ */
+export type IconCommandPhase = 'idle' | 'working' | 'confirmed';
+
+/** The help tag and the accessible name while `phase` is `confirmed`. */
+export const CONFIRMED_LABEL = 'Copied';
+
+/** The help tag and the accessible name while `phase` is `working`. */
+export const WORKING_LABEL = 'Working';
+
+/**
+ * How long a copy confirmation stays on screen. The macOS control holds the
+ * same 1.4s on `DesignIconButton.confirmationDuration`, so the two apps stop
+ * at the same beat rather than drifting apart a second at a time.
+ */
+export const COPY_CONFIRMATION_MS = 1400;
+
+/**
+ * The transient "it landed" state of a copy command, and the single timer
+ * every copy in the app shares.
+ *
+ * Eight copy commands reported nothing at all, and adding a confirmation to
+ * each would have meant eight copies of the same pair of lines. The refusal
+ * case matters as much as the success case: `service.copy` reports whether the
+ * text reached the clipboard, and a control that confirmed a refused write
+ * would be lying to the one user who cannot select the text and read it back.
+ */
+export function useCopyConfirmation(duration: number = COPY_CONFIRMATION_MS): {
+  phase: IconCommandPhase;
+  begin: () => boolean;
+  report: (ok: boolean) => void;
+} {
+  const [phase, setPhase] = useState<IconCommandPhase>('idle');
+  const pending = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    []
+  );
+  const begin = useCallback(() => {
+    if (pending.current) return false;
+    pending.current = true;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    setPhase('working');
+    return true;
+  }, []);
+  const report = useCallback((ok: boolean) => {
+    pending.current = false;
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    setPhase(ok ? 'confirmed' : 'idle');
+    if (ok) {
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        setPhase('idle');
+      }, duration);
+    }
+  }, [duration]);
+  return {
+    phase,
+    begin,
+    report,
+  };
+}
+
+/**
+ * An icon-only command, and the one place its state is drawn.
+ *
+ * macOS reaches for an `NSButton` here so AppKit paints the hover, the press
+ * and the disabled bezel. A web button already paints all three from CSS, so
+ * the parity problem was never the control kind — it was that eight call
+ * sites drew nothing for `confirmed` and one drew it by hand. A fixed
+ * `size-[22px]` box also makes the phase swap free: unlike the macOS control,
+ * no canvas is needed, because the box never changes size.
+ */
 export function IconButton({
   children,
+  confirmed,
   onClick,
   label,
+  phase = 'idle',
   disabled = false,
+  ariaHasPopup,
+  ariaExpanded,
+  ariaControls,
+  buttonRef,
   testId,
 }: {
   children: ReactNode;
+  /** Drawn instead of `children` while `phase` is `confirmed`. */
+  confirmed?: ReactNode;
   onClick?: () => void;
+  /**
+   * The help tag and the accessible name. Required, so an unnamed icon-only
+   * control is a type error rather than something a review has to catch.
+   */
   label: string;
+  phase?: IconCommandPhase;
   disabled?: boolean;
+  ariaHasPopup?: AriaAttributes['aria-haspopup'];
+  ariaExpanded?: boolean;
+  ariaControls?: string;
+  buttonRef?: Ref<HTMLButtonElement>;
   testId?: string;
 }) {
+  const working = phase === 'working';
+  const landed = phase === 'confirmed' && confirmed !== undefined;
+  const announced = landed ? CONFIRMED_LABEL : working ? `${label} — ${WORKING_LABEL}` : label;
   return (
     <button
+      ref={buttonRef}
       type="button"
-      className="inline-flex size-[22px] cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 text-secondary hover:not-disabled:bg-hover disabled:text-tertiary"
+      className={`inline-flex size-[22px] cursor-default items-center justify-center rounded-full border-0 bg-transparent p-0 hover:not-disabled:bg-hover active:not-disabled:bg-active disabled:text-tertiary ${
+        landed ? 'text-green' : 'text-secondary'
+      }`}
       onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
+      // A second click while the first request is in flight lands on the same
+      // single-flight slot, so the disabled state is the gate, not decoration.
+      disabled={disabled || working}
+      aria-label={announced}
+      title={announced}
+      aria-busy={working || undefined}
+      aria-haspopup={ariaHasPopup}
+      aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
       data-testid={testId}
     >
-      {children}
+      {working ? (
+        <span
+          className="spinner size-[13px] rounded-full border-2 border-current border-t-transparent"
+          aria-hidden="true"
+        />
+      ) : landed ? (
+        confirmed
+      ) : (
+        children
+      )}
     </button>
   );
 }
@@ -392,6 +577,7 @@ export function Field({
   onChange,
   type = 'text',
   placeholder,
+  help,
   testId,
   className = '',
 }: {
@@ -400,6 +586,8 @@ export function Field({
   onChange: (value: string) => void;
   type?: 'text' | 'password';
   placeholder?: string;
+  /** Short guidance shown by the browser/webview when the field is hovered. */
+  help?: string;
   testId?: string;
   className?: string;
 }) {
@@ -411,6 +599,7 @@ export function Field({
         type={type}
         value={value}
         placeholder={placeholder}
+        title={help}
         onChange={(event) => onChange(event.target.value)}
         data-testid={testId}
       />
@@ -450,6 +639,7 @@ export function Select({
         className={SELECT}
         value={value}
         aria-label={ariaLabel}
+        title={ariaLabel ?? label}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         data-testid={testId}
@@ -571,6 +761,7 @@ export function Switch({
       } after:absolute after:top-0.5 after:left-0.5 after:size-[18px] after:rounded-full after:bg-white after:shadow-[0_1px_3px_rgb(0_0_0/0.25)] after:transition-transform after:duration-120`}
       aria-checked={checked}
       aria-label={label}
+      title={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
     />

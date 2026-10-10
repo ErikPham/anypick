@@ -11,8 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "fixture:line": "vite-node scripts/fixture-line.mts",
-    "screenshot": "vite-node scripts/screenshot.mts"
+    "fixture:line": "vite-node --config vitest.config.ts scripts/fixture-line.mts",
+    "screenshot": "vite-node --config vitest.config.ts scripts/screenshot.mts",
+    "probe": "vite-node --config vitest.config.ts scripts/state-probe.mts"
   },
   "dependencies": {
     "react": "^19.2.0",
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
     "jsdom": "^25.0.1",
+    "playwright": "^1.64.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0",

@@ -284,14 +284,21 @@ struct ActivityView: View {
     .listRowInsets(rowInsets)
     .contextMenu {
       Button("Copy Message") {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(item.title, forType: .string)
+        if model.pasteString(item.title) {
+          model.announceOnly("Copied activity message.")
+        } else {
+          model.announceOnly("Couldn’t copy activity message.")
+        }
       }
+      .help("Copy only the activity message.")
       Button("Copy Full Details") {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(
-          "\(item.day) \(item.time): \(item.title) - \(item.detail)", forType: .string)
+        if model.pasteString("\(item.day) \(item.time): \(item.title) - \(item.detail)") {
+          model.announceOnly("Copied activity details.")
+        } else {
+          model.announceOnly("Couldn’t copy activity details.")
+        }
       }
+      .help("Copy the timestamp, message, and details.")
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(activityAccessibilityLabel(for: item))
@@ -400,6 +407,7 @@ struct ActivityView: View {
     LabeledContent {
       if let actionTitle, let action {
         Button(actionTitle, action: action)
+          .help(actionTitle)
       }
     } label: {
       Label {

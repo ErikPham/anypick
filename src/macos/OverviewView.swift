@@ -87,6 +87,7 @@ struct OverviewView: View {
             Button(attention.actionTitle, action: attention.action)
               .buttonStyle(.bordered)
               .controlSize(.small)
+              .help(attention.message)
           } label: {
             Label {
               VStack(alignment: .leading, spacing: 2) {
@@ -102,6 +103,65 @@ struct OverviewView: View {
           }
         }
         .accessibilityIdentifier("overview.review-attention")
+      }
+
+      Section {
+        LabeledContent {
+          Button(model.doctorIsRunning ? "Checking…" : "Run Doctor") {
+            model.runDoctor()
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .disabled(model.isBusy || model.doctorIsRunning)
+          .accessibilityIdentifier("overview.run-doctor")
+        } label: {
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Check Installation")
+              .fontWeight(.medium)
+            Text("Run read-only checks for AnyPick's local installation.")
+              .font(.subheadline)
+              .foregroundStyle(.secondary)
+          }
+        }
+
+        if let error = model.doctorError {
+          Label(error, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.red)
+            .font(.subheadline)
+            .accessibilityIdentifier("overview.doctor-error")
+        }
+
+        if let report = model.doctorReport {
+          if report.findings.isEmpty {
+            Label("All checks passed.", systemImage: "checkmark.circle.fill")
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("overview.doctor-summary")
+          } else {
+            ForEach(report.findings) { finding in
+              LabeledContent {
+                Text(finding.status.capitalized)
+                  .font(.subheadline)
+                  .foregroundStyle(doctorColor(finding.status))
+              } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(finding.check.replacingOccurrences(of: "-", with: " ").capitalized)
+                    .fontWeight(.medium)
+                  if let detail = finding.detail, !detail.isEmpty {
+                    Text(detail)
+                      .font(.subheadline)
+                      .foregroundStyle(.secondary)
+                  }
+                }
+              }
+              .accessibilityIdentifier("overview.doctor-finding.\(finding.check)")
+            }
+          }
+        }
+      } header: {
+        Text("Installation Health")
+          .accessibilityIdentifier("overview.doctor")
+      } footer: {
+        Text("Doctor checks the installation without changing files.")
       }
 
       if model.shouldShowOnboarding {
@@ -153,6 +213,7 @@ struct OverviewView: View {
           Button("Hide Getting Started") { model.dismissOnboarding() }
             .font(.subheadline)
             .foregroundStyle(.secondary)
+            .help("Hide this checklist from Overview. You can show it again in Settings.")
             .accessibilityIdentifier("overview.hide-onboarding")
         } header: {
           // Identify the header only: an identifier on the Section would
@@ -216,6 +277,7 @@ struct OverviewView: View {
             Text("Choose a login for each app before it can run.")
           }
         }
+            .help("Open the full list of configured apps.")
       }
 
       Section {
@@ -293,10 +355,9 @@ struct OverviewView: View {
       }
     }
     .onChange(of: model.isOnboardingCoreComplete) { _, done in
-      // Dismiss as soon as the three core steps are done, however the
-      // checklist was shown. (showGettingStarted is only pinned explicitly
-      // from Settings, and a completed core means there is nothing to show.)
-      if done {
+      // A checklist explicitly reopened from Settings stays visible even when
+      // the core steps are complete; the user chose to see it again.
+      if done && !model.showGettingStarted {
         model.dismissOnboarding()
       }
     }
@@ -307,6 +368,14 @@ struct OverviewView: View {
       return "Proxy Hub is optional — you can hide this list."
     }
     return "Save a login, then point an app at it. Proxy Hub is optional."
+  }
+
+  private func doctorColor(_ status: String) -> Color {
+    switch status {
+    case "fail": .red
+    case "warn": .orange
+    default: .secondary
+    }
   }
 
   private func connectionSummary(_ app: DesignApp) -> String {
@@ -380,6 +449,7 @@ struct OverviewView: View {
         Button(actionTitle, action: action)
           .buttonStyle(.bordered)
           .controlSize(.small)
+          .help(detail)
       }
     } label: {
       Label {

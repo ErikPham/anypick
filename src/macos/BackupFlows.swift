@@ -80,6 +80,7 @@ struct CreateBackupSheet: View {
                   selectedAccountIDs = Set(savedAccounts.prefix(selectionLimit).map(\.id))
                 }
               }
+              .help(selectedAccountIDs.count == savedAccounts.count ? "Clear the account selection." : "Select every saved account for this backup.")
               .buttonStyle(.plain)
               .font(.caption)
               .foregroundStyle(Color.accentColor)
@@ -193,6 +194,7 @@ struct RestoreBackupSheet: View {
                     selectedAccountIDs = Set(available.map(\.id))
                   }
                 }
+                .help(selectedAccountIDs.count == available.count ? "Clear the account selection." : "Select every account in this backup.")
                 .buttonStyle(.plain)
                 .font(.caption)
                 .foregroundStyle(Color.accentColor)

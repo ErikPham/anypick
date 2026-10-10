@@ -37,6 +37,7 @@ export function SegmentedControl({
           type="button"
           disabled={disabled}
           aria-pressed={value === option.value}
+          title={option.label}
           className={`min-h-[22px] flex-1 cursor-default border-0 px-3 py-0.5 text-[12px] whitespace-nowrap rounded-[5px] transition-all duration-100 ease-out disabled:cursor-default ${
             value === option.value
               ? 'bg-white dark:bg-[#636366] text-black dark:text-white font-medium shadow-[0_1px_2.5px_rgba(0,0,0,0.18)]'

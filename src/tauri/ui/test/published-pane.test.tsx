@@ -28,7 +28,7 @@ function serviceFor(onCopy?: (text: string) => void): ServicePort {
   bridges.push(bridge);
   bridge.lastLine = null;
   const port = createService({ bridge }).port;
-  return onCopy ? { ...port, copy: async (text: string) => onCopy(text) } : port;
+  return onCopy ? { ...port, copy: async (text: string) => { onCopy(text); return true; } } : port;
 }
 
 const twoModels: HubPublishedModel[] = [

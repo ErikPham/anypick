@@ -32,12 +32,11 @@ final class AnyPickUITests: XCTestCase {
     }
   }
 
-  private func launch(fixture: String, flow: String? = nil, tray: String? = nil, openSettings: Bool = false) -> XCUIApplication {
+  private func launch(fixture: String, flow: String? = nil, tray: String? = nil) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchEnvironment["ANYPICK_MACOS_FIXTURE"] = fixture
     if let flow { app.launchEnvironment["ANYPICK_MACOS_FLOW"] = flow }
     if let tray { app.launchEnvironment["ANYPICK_MACOS_TRAY"] = tray }
-    if openSettings { app.launchEnvironment["ANYPICK_UITEST_OPEN_SETTINGS"] = "1" }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     hideOtherApps()
@@ -229,12 +228,10 @@ final class AnyPickUITests: XCTestCase {
     app.terminate()
   }
 
-  // Settings smoke (QA): one run covers tabs, one control per pane, and the
-  // About version string that General and the app menu both read from the bundle.
-  func testSettingsPanesAndAboutVersion() {
-    // Open path is fixture-only (ANYPICK_UITEST_OPEN_SETTINGS → openDesignSettings).
-    // ⌘, is the only route that reaches the Settings scene; content asserts stay.
-    let app = launch(fixture: "ready", openSettings: true)
+  // Settings is a grouped preferences pane with a shortcut to reopen the
+  // Overview checklist. Diagnostics and other status facts stay on Overview.
+  func testSettingsPaneContainsPreferencesAndReopensGettingStarted() {
+    let app = launch(fixture: "ready")
     let welcome = app.sheets.containing(
       NSPredicate(format: "label == %@", "Welcome to AnyPick")
     ).firstMatch
@@ -242,102 +239,56 @@ final class AnyPickUITests: XCTestCase {
       dismissWelcome(app)
     }
 
-    // Match the identifier SwiftUI gives the scene, not the title. The window
-    // is titled after the selected pane ("Diagnostics"), so looking up
-    // "Settings" never matched and this case failed on every run.
-    let settingsWindow = app.windows
-      .matching(
+    // The application menu and sidebar both route to the same main-window pane.
+    let sidebarSettings = element(app, "sidebar.settings")
+    waitFor(sidebarSettings, "sidebar.settings")
+    sidebarSettings.click()
+
+    let settingsPane = element(app, "settings.pane")
+    waitFor(settingsPane, "settings pane")
+    XCTAssertFalse(element(app, "settings.tabs").exists, "Settings should not contain tabs")
+    XCTAssertFalse(
+      app.windows.matching(
         NSPredicate(format: "identifier == %@", "com_apple_SwiftUI_Settings_window")
-      ).firstMatch
-    waitFor(settingsWindow, "Settings window")
-    let tabs = element(app, "settings.tabs")
-    // Waiting on the sidebar is also the proof the window rendered: a bare
-    // exists-check on the window fires before the first paint on a slow run.
-    waitFor(tabs, "Settings sidebar (settings.tabs)")
+      ).firstMatch.exists,
+      "Settings should remain in the main window")
 
-    let expectedTabs = ["General", "Usage", "Proxies", "Security", "Diagnostics"]
-    for name in expectedTabs {
-      XCTAssertTrue(
-        tabs.staticTexts[name].firstMatch.exists || tabs.buttons[name].firstMatch.exists
-          || app.outlines.staticTexts[name].firstMatch.exists
-          || app.tables.staticTexts[name].firstMatch.exists,
-        "Settings sidebar missing \(name)")
-    }
-
-    func selectTab(_ name: String) {
-      let candidates: [XCUIElement] = [
-        tabs.staticTexts[name].firstMatch,
-        tabs.buttons[name].firstMatch,
-        app.outlines.staticTexts[name].firstMatch,
-        app.tables.cells.staticTexts[name].firstMatch,
-        app.tables.staticTexts[name].firstMatch,
-      ]
-      let hit = candidates.first { $0.exists }
-      XCTAssertNotNil(hit, "no sidebar control for \(name)")
-      hit?.click()
-      // Navigation title lands on the Settings window.
-      waitFor(app.staticTexts[name].firstMatch, "\(name) navigation title")
-    }
-
-    // General is selected first, before its content is asserted. The pane is
-    // @AppStorage-backed, so the window reopens on whichever pane ran last and
-    // a General control is absent until the tab is chosen.
-    selectTab("General")
-    waitFor(element(app, "settings.getting-started"), "settings.getting-started")
-    attachScreenshot("settings-general")
-    let version = element(app, "settings.version")
-    waitFor(version, "settings.version")
-    let short = marketingVersion(of: app)
-    XCTAssertEqual(
-      version.label.isEmpty ? (version.value as? String ?? "") : version.label,
-      "Version \(short)",
-      "General About must match CFBundleShortVersionString")
-
-    selectTab("Usage")
+    waitFor(element(app, "settings.open-at-login"), "settings.open-at-login")
+    waitFor(element(app, "settings.start-enabled-proxies"), "settings.start-enabled-proxies")
+    waitFor(element(app, "settings.show-usage"), "settings.show-usage")
     waitFor(element(app, "settings.quota-guard"), "settings.quota-guard")
+    waitFor(element(app, "settings.show-getting-started"), "settings.show-getting-started")
+    XCTAssertFalse(app.buttons["Open Proxies…"].firstMatch.exists)
+    XCTAssertFalse(app.buttons["Manage Backups…"].firstMatch.exists)
+    XCTAssertFalse(app.buttons["Check Now"].firstMatch.exists)
+    XCTAssertFalse(app.staticTexts["Credentials"].firstMatch.exists)
+    XCTAssertFalse(app.staticTexts["Connections"].firstMatch.exists)
+    XCTAssertFalse(app.staticTexts["Encryption"].firstMatch.exists)
+    attachScreenshot("settings-pane")
 
-    selectTab("Proxies")
-    waitFor(element(app, "settings.open-proxies"), "settings.open-proxies")
+    element(app, "settings.show-getting-started").click()
+    waitFor(element(app, "overview.get-started"), "Getting Started checklist reopened")
 
-    selectTab("Security")
-    waitFor(app.staticTexts["Hide Tokens"].firstMatch, "Hide Tokens row")
-    waitFor(app.staticTexts["Local Access Only"].firstMatch, "Local Access Only row")
-    waitFor(app.staticTexts["Account Backups"].firstMatch, "Account Backups row")
-    attachScreenshot("settings-security")
-
-    selectTab("Diagnostics")
-    waitFor(element(app, "settings.run-doctor"), "settings.run-doctor")
-
-    // Menu About AnyPick shows the same marketing version (no build number).
-    let aboutItem = app.menuItems["About AnyPick"].firstMatch
-    waitFor(aboutItem, "About AnyPick menu item")
-    aboutItem.click()
-    let about = app.dialogs.firstMatch.exists ? app.dialogs.firstMatch : app.windows.matching(
-      NSPredicate(format: "title CONTAINS %@", "AnyPick")
-    ).element(boundBy: 0)
-    // Standard about panel surfaces the marketing version as static text.
-    let versionInAbout = about.staticTexts.matching(
-      NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", short, short)
-    ).firstMatch
-    waitFor(versionInAbout, "About panel version \(short)")
-    attachScreenshot("settings-about-panel")
+    element(app, "sidebar.proxies").click()
+    waitFor(element(app, "sidebar.proxies"), "Proxies sidebar destination")
+    app.typeKey(",", modifierFlags: .command)
+    waitFor(element(app, "settings.pane"), "Settings from the app menu")
     app.terminate()
   }
 
-  /// CFBundleShortVersionString of the app under test — the same source General
-  /// and About AnyPick read. Stays free of a hardcoded 1.1.0 until set-version.
-  private func marketingVersion(of _: XCUIApplication) -> String {
-    // Same bundle id hideOtherApps filters on; XCUIApplication.bundleID is not
-    // available on every macOS XCTest SDK this project builds against.
-    let productBundleID = "dev.anypick.app"
-    let matches = NSWorkspace.shared.runningApplications.filter {
-      $0.bundleIdentifier == productBundleID
+  func testOverviewRunsInstallationDoctor() {
+    let app = launch(fixture: "ready")
+    let welcome = app.sheets.containing(
+      NSPredicate(format: "label == %@", "Welcome to AnyPick")
+    ).firstMatch
+    if welcome.waitForExistence(timeout: 2) {
+      dismissWelcome(app)
     }
-    XCTAssertFalse(matches.isEmpty, "no running app for bundle \(productBundleID)")
-    let url = matches[0].bundleURL
-    XCTAssertNotNil(url, "running app has no bundleURL")
-    let short = Bundle(url: url!)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-    XCTAssertNotNil(short.flatMap { $0.isEmpty ? nil : $0 }, "CFBundleShortVersionString missing")
-    return short!
+
+    let runDoctor = element(app, "overview.run-doctor")
+    waitFor(runDoctor, "Overview Doctor action")
+    runDoctor.click()
+    waitFor(element(app, "overview.doctor-summary"), "Doctor report")
+    app.terminate()
   }
 }

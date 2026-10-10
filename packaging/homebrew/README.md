@@ -1,22 +1,25 @@
 # Homebrew distribution
 
-The release workflow renders an AnyPick formula and macOS cask into a separate
-tap repository. Configure these repository settings before selecting the
-`publish-homebrew` release input:
+The release workflow publishes the CLI formula and the macOS app cask to
+`outof0/homebrew-tap`. Configure these repository settings before running a
+release:
 
-- `HOMEBREW_TAP_REPOSITORY` variable, normally `outof0/homebrew-tap`;
-- `HOMEBREW_TAP_TOKEN` secret with permission to push that repository;
-- `HOMEBREW_PUBLISH_ENABLED=true` if releases should publish the tap without a
-  manual workflow input.
+- `HOMEBREW_TAP_REPOSITORY=outof0/homebrew-tap`;
+- `HOMEBREW_TAP_TOKEN` with permission to push that repository.
 
-Users then install either the Go CLI or the native app:
+Users install the CLI or desktop app from the same tap:
 
 ```bash
-brew tap outof0/tap
 brew install outof0/tap/anypick
 brew install --cask outof0/tap/anypick
 ```
 
-The tap must be a public repository named `homebrew-*`. The formula uses the
-released CLI archives for macOS and Linux; the cask installs the signed,
-notarized universal `AnyPick.app` archive.
+The formula installs the portable Go CLI for macOS and Linux. The cask installs
+the universal macOS app from the GitHub Release. The app is not notarized, so
+macOS may block its first launch. Right-click `AnyPick.app` and choose **Open**,
+or go to **System Settings → Privacy & Security → Open Anyway**. You can also
+remove the quarantine flag with:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AnyPick.app
+```

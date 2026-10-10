@@ -283,7 +283,8 @@ Apply the universal list, plus the list for every area the diff touches.
       `List` (.sidebar), `Section`, `Toggle`, `Picker`, platform fonts and
       spacing. No cards, gradients, chip strips, RGB tokens, or CSS padding.
       If SwiftUI cannot do it, bridge AppKit — do not fake the control.
-- [ ] `Settings` is a `Settings` scene, not a sidebar destination.
+- [ ] `Settings` is a grouped Form at its normal sidebar destination; the
+      app-menu command and ⌘, route to that same pane.
 - [ ] The menu-bar extra stays `MenuBarMenu.swift` (Pencil node `m0s8el`) with
       complete start/stop/restart actions.
 - [ ] The bundle stays Node-free: both `check-node-free-app.sh` and

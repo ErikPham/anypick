@@ -40,6 +40,7 @@ export function ProxiesPane({
   snapshot,
   query = '',
   busy = new Set<string>(),
+  copyKeyResult = null,
   onNavigate,
   onOpenModels,
   onClearQuery,
@@ -50,6 +51,8 @@ export function ProxiesPane({
   query?: string;
   /** Requests the engine has not answered; the engine is single-flight. */
   busy?: ReadonlySet<string>;
+  /** Completion of a protected API-key copy request. */
+  copyKeyResult?: { requestId: string; success: boolean | null } | null;
   /**
    * The engine's last answer per relay, when it belonged to that relay.
    *
@@ -214,6 +217,7 @@ export function ProxiesPane({
               snapshot={snapshot}
               service={service}
               busy={busy}
+              copyKeyResult={copyKeyResult}
               revision={snapshot.revision}
               result={proxyResults[inspected.id] ?? null}
               onNavigate={onNavigate}
@@ -337,8 +341,8 @@ function ProxyRowView({
       />
       <RowActions>
         {showMenu ? (
-          <RowMenu label={`Actions for ${name}`} testId={`proxies.more-${proxy.id}`}>
-            {(close) => (
+          <RowMenu label={`Actions for ${name}`} clipboard={service.copy} testId={`proxies.more-${proxy.id}`}>
+            {(close, copy) => (
               <>
                 {hasRestart ? (
                   <MenuItem
@@ -356,8 +360,7 @@ function ProxyRowView({
                   <MenuItem
                     testId={`proxies.inspector.copy-${proxy.id}`}
                     onSelect={() => {
-                      close();
-                      void service.copy(proxy.address ?? '');
+                      copy(proxy.address ?? '', `${name} address`);
                     }}
                   >
                     Copy Address

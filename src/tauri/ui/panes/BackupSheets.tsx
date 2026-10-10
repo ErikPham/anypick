@@ -100,6 +100,7 @@ export function CreateBackupSheet({
               <button
                 type="button"
                 className="cursor-default bg-transparent text-[11px] font-medium text-accent hover:underline"
+                title={selected.length === accounts.length ? 'Deselect all saved accounts' : 'Select all saved accounts'}
                 onClick={toggleAll}
               >
                 {selected.length === accounts.length ? 'Deselect All' : 'Select All'}
@@ -350,6 +351,7 @@ export function RestoreBackupSheet({
                   <button
                     type="button"
                     className="cursor-default bg-transparent text-[11px] font-medium text-accent hover:underline"
+                    title={selectedEntries.length === entries.length ? 'Deselect all backup accounts' : 'Select all backup accounts'}
                     onClick={toggleAll}
                   >
                     {selectedEntries.length === entries.length ? 'Deselect All' : 'Select All'}

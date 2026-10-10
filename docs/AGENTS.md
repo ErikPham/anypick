@@ -91,9 +91,9 @@ claims that had to be walked back.
   and globbing `docs/**` is what puts pages at `/docs/*` while leaving `/` free
   for the landing page. Files still live in `src/content/docs/`.
 - `site` and `github` in `astro.config.ts` are set to the production values
-  (`https://anypick.dev`, `https://github.com/outof0/anypick`), and the release
-  workflow deploys the built site. They drive canonical URLs, OG images,
-  robots.txt, the sitemap, and every header/footer link.
+  (`https://anypick.dev`, `https://github.com/outof0/anypick`), and the docs
+  deployment workflow deploys the built site. They drive canonical URLs, OG
+  images, robots.txt, the sitemap, and every header/footer link.
 - Deploys are Cloudflare Pages Direct Uploads via `wrangler.jsonc`
   (`pages_build_output_dir = "./dist"`), so `pnpm build` must run first —
   `predeploy` chains `astro check && astro build` for exactly that reason.

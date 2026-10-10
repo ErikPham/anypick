@@ -1506,7 +1506,16 @@ final class ProductionDesignModel: MacOSDesignModel {
     guard AppPreferences.codexAutoProfilesEnabled, store.snapshotReady, !isBusy else { return }
 
     let accountSourceIDs = store.codexProfileSources
-      .filter { $0.kind == "account" }
+      .filter { source in
+        guard source.kind == "account" else { return false }
+        // Codex's own account can use Codex's default model. Other account
+        // providers need a discovered model before a profile can be saved.
+        // An empty cached catalog is still loading or unavailable; leave the
+        // source eligible for a later snapshot instead of surfacing a launch
+        // error for background work.
+        if source.sourceId.hasPrefix("account/codex/") { return true }
+        return source.models.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      }
       .map(\.sourceId)
     guard !accountSourceIDs.isEmpty else { return }
 

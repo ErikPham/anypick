@@ -16,7 +16,6 @@
  *   node scripts/screenshot.mts --update   # accept the current pixels
  */
 
-import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
@@ -24,6 +23,7 @@ import { extname, dirname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DESTINATIONS } from '../lib/contract';
+import { emitFixtureLine } from './fixture-wire';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
@@ -95,11 +95,11 @@ const OPEN_VIEWS: Array<{
     waitsFor: '[role="dialog"]',
   },
   {
-    name: 'dialog-settings',
-    destination: 'overview',
-    pane: 'overview',
-    open: ['sidebar-settings'],
-    waitsFor: '[role="dialog"]',
+    name: 'settings',
+    destination: 'settings',
+    pane: 'settings-pane',
+    open: [],
+    waitsFor: '[data-testid="settings-pane"]',
   },
   {
     name: 'published-models',
@@ -322,40 +322,6 @@ async function serve(root: string): Promise<string> {
   if (address === null || typeof address === 'string') throw new Error('server did not bind a port');
   server.unref();
   return `http://127.0.0.1:${address.port}`;
-}
-
-/**
- * The snapshot frame, emitted in the exact wire form the Go service sends.
- *
- * `rich` widens the data. The default fixture publishes one client and one
- * gateway provider, so every sheet that branches on them can only be seen in
- * its empty branch — and a sheet that renders correctly with nothing in it
- * proves nothing about what it renders when there *is* something.
- */
-function emitFixtureLine(rich = false): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const bin = join(uiRoot, 'node_modules', '.bin', 'vite-node');
-    const args = [bin, 'scripts/fixture-line.mts', ...(rich ? ['--rich'] : [])];
-    const child = spawn(process.execPath, args, {
-      cwd: uiRoot,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      out += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      err += chunk.toString();
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      // The child's stderr is the only place the real reason appears, so it is
-      // surfaced rather than dropped. "exited 1" on its own is unfixable.
-      if (code !== 0) reject(new Error(`fixture-line exited ${code}: ${err.trim()}`));
-      else resolve(out.trim());
-    });
-  });
 }
 
 await main();

@@ -70,6 +70,12 @@ const SYMBOL_PATHS: Record<string, string> = {
   'trash': 'M4 7h16 M9 7V4h6v3 M6 7l1 14h10l1-14',
   'eye': 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   'doc.text': 'M6 3h8l4 4v14H6z M14 3v4h4 M9 12h6 M9 16h6',
+  // The copy pair. Both live in one table so a copy command and its
+  // confirmation can never drift into two different hand-drawn marks, and so
+  // the widths match: `IconButton` holds a fixed box, so a swap costs nothing.
+  'doc.on.doc':
+    'M9 3h6l4 4v9 M15 3v4h4 M9 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8 M15 3h4 M20 15v6 M17 18l3 3 3-3',
+  'checkmark': 'M20 6 9 17l-4-4',
 
   // Provider marks. One silhouette per provider, so two unbundled rows never
   // collapse into the same glyph — the reason macOS keeps a fallback *table*

@@ -2,12 +2,13 @@
 
 This is one of two native front ends. The other is the macOS app in
 `src/macos/` (SwiftUI); this one is Tauri 2 + React and targets Linux and
-Windows (ADR 0020). The release workflow defaults to the all-platform scope:
-these apps build AppImage/deb/rpm, MSI and NSIS artifacts, and each payload is
+Windows (ADR 0020). The release workflow defaults to `desktop-no-macos`: it
+builds AppImage/deb/rpm, MSI and NSIS artifacts, and each payload is
 smoke-tested on its own OS (`packaging/smoke/`) before it can reach a GitHub
-Release. `macos-only` remains available for a narrowed release. The GUI itself
-is not launched on a hosted runner; the smoke gate extracts the installer and
-runs the bundled Go helper.
+Release. `cli-only` omits desktop installers; `all` also includes the signed
+macOS app after Apple signing is configured. The GUI itself is not launched on
+a hosted runner; the smoke gate extracts the installer and runs the bundled Go
+helper.
 
 **This app owns no AnyPick state and never reads credentials.** It launches,
 handshakes with, supervises and shuts down the bundled Go service, then renders
@@ -79,8 +80,16 @@ where it can be tested without a webview.
 
 Structural, metric, and state parity: the same destinations in the same order,
 the same rows with the same labels, the same states, the same flows, and the
-same metrics in `ui/system-settings.css` with a named Swift counterpart beside
+same metrics in `ui/styles.css` with a named Swift counterpart beside
 each one.
+
+Settings is a regular sidebar destination and renders as one page with separate
+groups for startup and usage preferences. It contains no links to other panes
+or read-only status summaries; feature management stays in the related sidebar
+destination. Codex profiles are managed with the Codex app in Apps. The sidebar
+and native app-menu Settings… command route to that same page. It is a
+shell-only destination, so the engine contract remains the seven data-backed
+panes.
 
 It is **not** a pixel-exact image diff, and this port will not claim one. macOS
 is SwiftUI on AppKit; this is a webview (WebKitGTK on Linux, WebView2 on
@@ -95,6 +104,67 @@ the definition of "every feature ported" as a machine check rather than a
 claim. `make screenshots-tauri-ui` renders each destination and dialog to
 `.screenshots/` for a human to look at; it needs Playwright, so it is not a
 gate.
+
+The screenshot and browser-probe scripts load `vitest.config.ts` and build the
+wire frame from `test/fixture.ts` in-process. They do not start the Vite
+dev-service or read the developer's AnyPick data. `npm run probe` measures
+hover, press, copy, loading, reduced-motion, and disabled states in Chromium.
+
+`make check-parity` deliberately checks that a control *exists*, not how it
+behaves, so state parity has its own gates in
+`test/command-state.test.tsx`.
+
+### An icon command owns its state
+
+macOS reaches for an `NSButton` in `DesignIconButton` so AppKit paints the
+hover, the press and the disabled bezel. A web button already paints all three
+from CSS, so the control kind was never the parity gap. The state was: eight
+copy commands reported nothing at all, and one swapped its own glyph inline.
+
+`IconButton` therefore carries a `phase` of `idle`, `working` or `confirmed`, and
+`CopyButton` makes a copy a component rather than a prop, so a pane cannot grow
+a second spelling. Both draw through `Symbol`, which is the only place a path
+lives.
+
+- A copy reports whether the text reached the clipboard. `CopyButton` shows the
+  working state while the host writes, then confirms only a successful write.
+  Copyable row details remain selectable if the host refuses the write.
+- A `working` command sets `aria-busy` and is disabled, so a second click cannot
+  land on the same single-flight slot.
+- A protected API-key copy uses the same icon phases while the engine retrieves
+  the key and the host writes it. The key itself never enters the snapshot.
+- Row-menu copies go through `RowMenu` and announce success or refusal after the
+  menu closes. The allowed menu-copy rows are listed in the state test.
+
+Custom menus and provider pickers move focus into their panel, support arrow and
+Home/End navigation, close on Escape or focus leaving the panel, and return
+focus to the trigger. Dialog focus trapping includes portaled picker options.
+
+**A refresh greys; it does not spin.** The engine single-flights a mutation, so
+a refresh disables while its own request is in flight and that disabled state is
+the feedback. Spinning it would need a per-command in-flight slot with its own
+confirm path, for a state the HIG reserves spinners for background work. macOS
+made the same call; see `macos/README.md`.
+
+Three regressions here are invisible to a rendered test, because jsdom never
+loads `styles.css` and never fires a hover. `test/command-state.test.tsx` reads
+the source for all three, the same way `test/colour-tokens.test.ts` does:
+a `.spinner` that never named its `@keyframes`, a copy glyph drawn by hand, and
+an icon-only control with no name.
+
+### Button help and in-form guidance
+
+Shared buttons expose a `title` tooltip, using their accessible label when a
+call site does not provide more specific wording. Icon buttons, row-menu items,
+provider pickers, segmented choices, and switches keep descriptive help text.
+Override the default when an action depends on its row or current state. Keep
+tooltip text to a short, specific action description.
+
+Put required instructions in the interface too: use a group footer for a
+workflow explanation and a field's `help` for a short format hint. Hover text is
+supplemental; it must not be the only place to learn a required value, warning,
+or next step. Keep labels and help short and specific, with an independent
+accessible name for every control.
 
 ### The parity map is the work list
 

@@ -127,10 +127,10 @@ describe('frame decoding stays aligned with the engine', () => {
   });
 });
 
-describe('sidebar stays the macOS information architecture', () => {
-  it('has the seven System Settings destinations, in order', () => {
-    // macos/DesignTypes.swift DesignDestination.allCases. The order is the
-    // sidebar order, so it is part of the contract, not incidental.
+describe('engine-backed pane destinations', () => {
+  it('keeps the seven data routes in their protocol order', () => {
+    // Settings is a shell-only route; this list mirrors only the destinations
+    // the engine snapshot and operations understand.
     expect([...DESTINATIONS]).toEqual([
       'overview',
       'apps',

@@ -373,7 +373,7 @@ export function hubSourceChange(input: {
 
 export const SETTING_ROWS = [
   { key: 'launchAtLogin', operation: 'setting-launch-at-login', label: 'Open at Login' },
-  { key: 'showQuota', operation: 'setting-show-quota', label: 'Show Quota' },
-  { key: 'startEnabledProxies', operation: 'setting-auto-start-proxies', label: 'Start Proxies at Launch' },
-  { key: 'quotaGuardEnabled', operation: 'setting-quota-guard', label: 'Warn Before Low Quota' },
+  { key: 'showQuota', operation: 'setting-show-quota', label: 'Show Usage Remaining' },
+  { key: 'startEnabledProxies', operation: 'setting-auto-start-proxies', label: 'Start Enabled Proxies at Launch' },
+  { key: 'quotaGuardEnabled', operation: 'setting-quota-guard', label: 'Skip Accounts That Reach Their Usage Limit' },
 ] as const;
