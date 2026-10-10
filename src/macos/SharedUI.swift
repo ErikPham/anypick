@@ -35,18 +35,32 @@ func openDesignSettings() {
     NSApp.activate(ignoringOtherApps: true)
     return
   }
+  // `sendAction(showSettingsWindow:)` returns without opening anything while the
+  // Settings scene is unrealized, which is the state during launch, and it is
+  // the state the tray item runs in too. Dumping the app's windows with the
+  // fixture flag on showed Settings absent; the same dump after the ⌘, command
+  // showed it present. So the command is sent as a real key event, and the
+  // window is then ordered front once it exists.
+  //
+  // AppEntry.swift routes its own "Settings…" item through SettingsLink for the
+  // same reason.
+  if let event = NSEvent.keyEvent(
+    with: .keyDown,
+    location: .zero,
+    modifierFlags: .command,
+    timestamp: 0,
+    windowNumber: 0,
+    context: nil,
+    characters: ",",
+    charactersIgnoringModifiers: ",",
+    isARepeat: false,
+    keyCode: 43  // kVK_ANSI_Comma
+  ) {
+    NSApp.sendEvent(event)
+  }
   orderFrontSettingsWhenReady()
 }
 
-/// `sendAction(showSettingsWindow:)` returns without opening anything while the
-/// Settings scene has not been realized, and retrying it never helps: it was
-/// measured, not assumed. Dumping the app's windows with this fixture flag on
-/// showed Settings absent, and the same dump after the ⌘, menu command showed
-/// it present, so the scene is reached only through the command it installs.
-///
-/// The command is sent as a real key event rather than another sendAction,
-/// because a synthetic action is exactly what fails here. AppEntry.swift
-/// routes its own "Settings…" item through SettingsLink for the same reason.
 @MainActor
 private func orderFrontSettingsWhenReady(attemptsRemaining: Int = 60) {
   if let window = NSApp.windows.first(where: isDesignSettingsWindow) {
@@ -59,28 +73,6 @@ private func orderFrontSettingsWhenReady(attemptsRemaining: Int = 60) {
   DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
     orderFrontSettingsWhenReady(attemptsRemaining: attemptsRemaining - 1)
   }
-}
-
-/// Opens the Settings scene the way the menu does. Kept separate from
-/// `openDesignSettings` so the tray item and the fixture can both reach it.
-@MainActor
-func openSettingsSceneViaCommand() {
-  guard !NSApp.windows.contains(where: isDesignSettingsWindow) else { return }
-  if let event = NSEvent.keyEvent(
-    with: .keyDown,
-    location: .zero,
-    modifierFlags: .command,
-    timestamp: 0,
-    windowNumber: 0,
-    context: nil,
-    characters: ",",
-    charactersIgnoringModifiers: ",",
-    isARepeat: false,
-    keyCode: 43
-  ) {
-    NSApp.sendEvent(event)
-  }
-  orderFrontSettingsWhenReady()
 }
 
 extension DesignApp {

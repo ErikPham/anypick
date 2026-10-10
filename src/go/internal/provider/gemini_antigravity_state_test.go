@@ -65,11 +65,18 @@ func antigravityTopic(sentinel string, encoded []byte) []byte {
 
 func writeAntigravityState(t *testing.T, home, sentinel string, encoded []byte) string {
 	t.Helper()
-	dir := filepath.Join(home, "Library", "Application Support", "Antigravity", "User", "globalStorage")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Write where the provider looks on this OS. The paths are resolved by
+	// antigravityStateDatabasePaths, so a hardcoded macOS directory left every
+	// Antigravity case writing a fixture the code never read on Linux, and they
+	// failed there while passing on the developer's Mac.
+	paths := antigravityStateDatabasePaths(home)
+	if len(paths) == 0 {
+		t.Fatalf("no Antigravity state database path resolved for %s", home)
+	}
+	path := paths[0]
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "state.vscdb")
 	// OpenForeign stats before opening (so a probe can never create a file in
 	// another product's directory), so the test must lay the file down first.
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

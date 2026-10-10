@@ -91,7 +91,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
 
     if isFixture {
       if ProcessInfo.processInfo.environment["ANYPICK_UITEST_OPEN_SETTINGS"] == "1" {
-        DispatchQueue.main.async { openSettingsSceneViaCommand() }
+        DispatchQueue.main.async { openDesignSettings() }
       }
       if ProcessInfo.processInfo.environment["ANYPICK_MACOS_RENDER_PATH"] != nil {
         // Settle delay for layout-accurate captures (slow first paint would
@@ -205,7 +205,7 @@ final class AnyPickAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc private func openSettingsFromTray(_ sender: NSMenuItem) {
-    openSettingsSceneViaCommand()
+    openDesignSettings()
   }
 
   @objc private func quitAnyPickFromTray(_ sender: NSMenuItem) {

@@ -69,6 +69,31 @@ func seedGeminiLive(t *testing.T, dir, email, refreshToken string) string {
 // internal/provider guards its own test binary in TestMain. This is a different
 // test binary, so it needs its own guard, and the seam is exported so it can
 // install one.
+// seedAntigravityLive writes the Antigravity mirror the provider mirrors into
+// the OS credential store. Without it the switch has nothing to mirror and the
+// keyring seam is never reached.
+func seedAntigravityLive(t *testing.T, dir, email, refreshToken string) string {
+	t.Helper()
+	path := filepath.Join(dir, "antigravity_oauth.json")
+	data, err := json.Marshal(map[string]any{
+		"email":         email,
+		"refresh_token": refreshToken,
+		"access_token":  "antigravity-access-" + email,
+		"token_type":    "Bearer",
+		"expiry_date":   time.Now().Add(time.Hour).UnixMilli(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func guardAntigravityKeyring(t *testing.T) func() bool {
 	t.Helper()
 	previous := provider.AntigravityKeyringPut
@@ -109,11 +134,20 @@ func TestUseSwitchesGeminiAccountsAndRestoresOAuthSnapshot(t *testing.T) {
 	keyringConsulted := guardAntigravityKeyring(t)
 	ctx := context.Background()
 
+	// The mirror is only written when the Antigravity credential exists to
+	// mirror. Backup skips it otherwise (backupAntigravityAlternate returns on a
+	// missing state credential), so without this the switch restored a snapshot
+	// with no antigravity_oauth.json and never reached the keyring seam. That
+	// held on a developer machine with a real Antigravity login and failed on a
+	// clean one, which is what CI runs.
+	seedAntigravityLive(t, geminiDir, "first@example.com", "antigravity-first")
+
 	seedGeminiLive(t, geminiDir, "first@example.com", "refresh-first")
 	if _, err := svc.Save(ctx, "gemini", "first", false); err != nil {
 		t.Fatal(err)
 	}
 	seedGeminiLive(t, geminiDir, "second@example.com", "refresh-second")
+	seedAntigravityLive(t, geminiDir, "second@example.com", "antigravity-second")
 	if _, err := svc.Save(ctx, "gemini", "second", false); err != nil {
 		t.Fatal(err)
 	}

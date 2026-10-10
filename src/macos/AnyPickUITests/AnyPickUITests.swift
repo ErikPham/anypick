@@ -233,7 +233,7 @@ final class AnyPickUITests: XCTestCase {
   // About version string that General and the app menu both read from the bundle.
   func testSettingsPanesAndAboutVersion() {
     // Open path is fixture-only (ANYPICK_UITEST_OPEN_SETTINGS → openDesignSettings).
-    // Menu/⌘, against SwiftUI Settings { } is flaky under XCUITest; content asserts stay.
+    // ⌘, is the only route that reaches the Settings scene; content asserts stay.
     let app = launch(fixture: "ready", openSettings: true)
     let welcome = app.sheets.containing(
       NSPredicate(format: "label == %@", "Welcome to AnyPick")
@@ -250,13 +250,9 @@ final class AnyPickUITests: XCTestCase {
         NSPredicate(format: "identifier == %@", "com_apple_SwiftUI_Settings_window")
       ).firstMatch
     waitFor(settingsWindow, "Settings window")
-    // A pane control is the proof the window is really there and rendering.
-    // Without it a future no-op in the open path can hide behind a window that
-    // exists but never laid out.
-    XCTAssertTrue(
-      element(app, "settings.tabs").exists,
-      "Settings window opened with no sidebar content")
     let tabs = element(app, "settings.tabs")
+    // Waiting on the sidebar is also the proof the window rendered: a bare
+    // exists-check on the window fires before the first paint on a slow run.
     waitFor(tabs, "Settings sidebar (settings.tabs)")
 
     let expectedTabs = ["General", "Usage", "Proxies", "Security", "Diagnostics"]
