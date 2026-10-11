@@ -1,29 +1,20 @@
 package provider
 
-// Regression tests for Windows path validation (QA). Windows-only inputs are
-// skipped elsewhere because backslash and "C:" are ordinary filename bytes there.
+// Regression tests for Windows path validation (QA). Every case runs on
+// every OS.
 
 import (
-	"path/filepath"
-	"runtime"
 	"testing"
 )
 
-var _ = filepath.Join
-
-type pvCase struct {
-	in          string
-	windowsOnly bool
-}
-
-var pvReject = []pvCase{
-	{`\x`, true},
-	{`C:\x`, true},
-	{`C:x`, true},
-	{`..\x`, true},
-	{`\\server\share\x`, true},
-	{`x\..\..\y`, true},
-	{`x/../..`, false},
+var pvReject = []string{
+	`\x`,
+	`C:\x`,
+	`C:x`,
+	`..\x`,
+	`\\server\share\x`,
+	`x\..\..\y`,
+	`x/../..`,
 }
 
 const pvAccept = "a/b.txt"
@@ -37,13 +28,10 @@ func TestPathValidationSinglePasteFile(t *testing.T) {
 	if singlePasteFile(pvAccept) {
 		t.Errorf("singlePasteFile accepted nested %q", pvAccept)
 	}
-	for _, c := range pvReject {
-		if c.windowsOnly && runtime.GOOS != "windows" {
-			continue
-		}
-		t.Run(c.in, func(t *testing.T) {
-			if singlePasteFile(c.in) {
-				t.Errorf("singlePasteFile accepted %q", c.in)
+	for _, in := range pvReject {
+		t.Run(in, func(t *testing.T) {
+			if singlePasteFile(in) {
+				t.Errorf("singlePasteFile accepted %q", in)
 			}
 		})
 	}

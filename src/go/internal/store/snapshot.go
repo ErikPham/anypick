@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
@@ -30,7 +29,7 @@ func stagedFilePath(stagingRoot, relKey string) (string, error) {
 	abs := filepath.Join(stagingRoot, normalized)
 	rel, err := filepath.Rel(stagingRoot, abs)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", refusedImportPath(relKey)
+		return "", refusedImportPath(relKey, safepath.ErrNotLocal)
 	}
 	return abs, nil
 }
@@ -39,7 +38,7 @@ func stagedFilePath(stagingRoot, relKey string) (string, error) {
 // import or restore key; stagedFilePath keeps the folder check as a backstop.
 func validateImportFileKey(key string) error {
 	if err := safepath.ValidateKey(key); err != nil {
-		return refusedImportPath(key)
+		return refusedImportPath(key, err)
 	}
 	if strings.Contains(key, "\\") && strings.Contains(key, "/") {
 		return anyerr.Newf("Import file path mixes path separators: "+key+".", "IMPORT_FORMAT")
@@ -48,8 +47,9 @@ func validateImportFileKey(key string) error {
 }
 
 // refusedImportPath is the user-facing copy for a refused import key.
-func refusedImportPath(key string) error {
-	return anyerr.Newf("Can't use "+strconv.Quote(key)+". It points outside AnyPick's folder, so nothing was imported.", "IMPORT_FORMAT")
+func refusedImportPath(key string, cause error) error {
+	return anyerr.Newf(safepath.ImportRefusalMessage(key, cause), "IMPORT_FORMAT",
+		anyerr.WithDetails(map[string]any{"reason": "unsafe-path"}))
 }
 
 // IngestSnapshotDir replaces this account's BLOB rows with the directory

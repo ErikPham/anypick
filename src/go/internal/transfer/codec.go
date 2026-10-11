@@ -11,6 +11,7 @@ package transfer
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -61,7 +62,7 @@ func importLimit(format string, args ...interface{}) error {
 // time and keeps the folder check as a second layer.
 func ValidateImportFileKey(key string) error {
 	if err := safepath.ValidateKey(key); err != nil {
-		return refusedImportPath(key)
+		return refusedImportPath(key, err)
 	}
 	if strings.Contains(key, `\`) && strings.Contains(key, "/") {
 		return importFormat("Import file path mixes path separators: %s.", key)
@@ -69,9 +70,26 @@ func ValidateImportFileKey(key string) error {
 	return nil
 }
 
+// ReasonUnsafePath is the protocol reason for an import or restore key the
+// path validator refused. It is carried in the error's Details["reason"].
+const ReasonUnsafePath = "unsafe-path"
+
 // refusedImportPath is the user-facing copy for a refused import key.
-func refusedImportPath(key string) error {
-	return importFormat("Can't use %q. It points outside AnyPick's folder, so nothing was imported.", key)
+func refusedImportPath(key string, cause error) error {
+	return anyerr.Newf(
+		safepath.ImportRefusalMessage(key, cause),
+		"IMPORT_FORMAT", anyerr.WithExitCode(anyerr.ImportFormat), anyerr.WithMutated(false),
+		anyerr.WithDetails(map[string]any{"reason": ReasonUnsafePath}))
+}
+
+// IsUnsafePath reports whether err is a refused import or restore key.
+func IsUnsafePath(err error) bool {
+	var ae *anyerr.Error
+	if !errors.As(err, &ae) || ae.Details == nil {
+		return false
+	}
+	reason, _ := ae.Details["reason"].(string)
+	return reason == ReasonUnsafePath
 }
 
 // normalizeKey converts backslashes to slashes then cleans the result.
@@ -97,7 +115,7 @@ func StagedFilePath(stagingRoot, relKey string) (string, error) {
 	}
 	rel, rerr := filepath.Rel(rootAbs, abs)
 	if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", refusedImportPath(relKey)
+		return "", refusedImportPath(relKey, safepath.ErrNotLocal)
 	}
 	return abs, nil
 }
@@ -313,9 +331,6 @@ func decodeFiles(files map[string]json.RawMessage) (map[string]string, error) {
 	var seen []string
 	total := 0
 	for _, key := range keys {
-		if key == "" {
-			return nil, importFormat("Import file map contains an invalid key.")
-		}
 		if err := ValidateImportFileKey(key); err != nil {
 			return nil, err
 		}
