@@ -72,7 +72,7 @@ func TestFetcherOffline(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	url := srv.URL
 	srv.Close()
-	f := &GitHubFetcher{HTTP: http.DefaultClient, BaseURL: url}
+	f := &GitHubFetcher{HTTP: DefaultHTTPClient(), BaseURL: url}
 	_, _, _, err := f.Latest(context.Background(), "")
 	var off *ErrOffline
 	if !errors.As(err, &off) {
@@ -164,19 +164,41 @@ func TestFetcherFeedURLHookClosed(t *testing.T) {
 	}
 }
 
+func testChecksumTransport(t *testing.T, srv *httptest.Server) *Transport {
+	t.Helper()
+	u := srv.URL
+	// httptest URL is http://127.0.0.1:port — use TLS servers in allowlist tests.
+	// For plain httptest used by legacy AttachChecksums cases, inject a Transport
+	// that allows the loopback host and relaxes scheme via a custom client that
+	// still runs CheckRedirect host checks... Production requires https; tests
+	// that need the allowlist path use NewTLSServer (see download_test.go).
+	// Here we only need a working GET to the test server: inject HTTP client and
+	// put the server host on the allowlist, and rewrite Validate via https URLs
+	// on TLS servers below.
+	host := strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	return &Transport{AllowedHosts: []string{host}, HTTP: srv.Client()}
+}
+
 func TestAttachChecksums(t *testing.T) {
 	goodBody := strings.Repeat("ab", 32) + "  file.bin\n"
 	t.Run("200", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(goodBody))
 		}))
 		defer srv.Close()
+		tr := testChecksumTransport(t, srv)
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin", URL: "https://github.com/x/file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
 		}}
-		out, err := AttachChecksums(context.Background(), srv.Client(), rel)
+		out, err := AttachChecksums(context.Background(), tr, rel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -191,70 +213,117 @@ func TestAttachChecksums(t *testing.T) {
 		}
 	})
 	t.Run("404", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 		}))
 		defer srv.Close()
+		tr := testChecksumTransport(t, srv)
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
 		}}
-		if _, err := AttachChecksums(context.Background(), srv.Client(), rel); err == nil {
+		if _, err := AttachChecksums(context.Background(), tr, rel); err == nil {
 			t.Fatal("404 must fail")
 		}
 	})
 	t.Run("500", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(500)
 		}))
 		defer srv.Close()
+		tr := testChecksumTransport(t, srv)
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
 		}}
-		if _, err := AttachChecksums(context.Background(), srv.Client(), rel); err == nil {
+		if _, err := AttachChecksums(context.Background(), tr, rel); err == nil {
 			t.Fatal("500 must fail")
 		}
 	})
 	t.Run("unparseable body", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("not-a-sums-file\n"))
 		}))
 		defer srv.Close()
+		tr := testChecksumTransport(t, srv)
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
 		}}
-		if _, err := AttachChecksums(context.Background(), srv.Client(), rel); err == nil {
+		if _, err := AttachChecksums(context.Background(), tr, rel); err == nil {
 			t.Fatal("unparseable must fail")
 		}
 	})
 	t.Run("offline", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		u := srv.URL
+		host := strings.TrimPrefix(u, "https://")
+		if i := strings.IndexByte(host, '/'); i >= 0 {
+			host = host[:i]
+		}
+		if i := strings.IndexByte(host, ':'); i >= 0 {
+			host = host[:i]
+		}
+		client := srv.Client()
 		srv.Close()
+		tr := &Transport{AllowedHosts: []string{host}, HTTP: client}
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: u},
 		}}
-		_, err := AttachChecksums(context.Background(), http.DefaultClient, rel)
+		_, err := AttachChecksums(context.Background(), tr, rel)
 		var off *ErrOffline
 		if !errors.As(err, &off) {
 			t.Fatalf("want ErrOffline, got %v", err)
 		}
 	})
-	t.Run("missing entry", func(t *testing.T) {
-		body := strings.Repeat("cd", 32) + "  other.bin\n"
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(body))
+	t.Run("non-allowlisted URL refused without request", func(t *testing.T) {
+		var hits int
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits++
+			w.WriteHeader(200)
 		}))
 		defer srv.Close()
+		tr := &Transport{} // production allowlist — 127.0.0.1 not included
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
 		}}
-		if _, err := AttachChecksums(context.Background(), srv.Client(), rel); err == nil {
-			t.Fatal("missing entry for file.bin must fail closed")
+		_, err := AttachChecksums(context.Background(), tr, rel)
+		if err == nil {
+			t.Fatal("non-allowlisted URL must be refused")
+		}
+		var denied *ErrDeniedDownloadURL
+		if !errors.As(err, &denied) {
+			t.Fatalf("want ErrDeniedDownloadURL, got %v", err)
+		}
+		if hits != 0 {
+			t.Fatalf("must not make a request, hits=%d", hits)
+		}
+	})
+	t.Run("applies hashes without requiring every asset", func(t *testing.T) {
+		// SUMS only covers file.bin; other.bin is left empty — AttachChecksums
+		// must still succeed (RequireChecksums is scoped to the install asset).
+		body := strings.Repeat("ab", 32) + "  file.bin\n"
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		defer srv.Close()
+		tr := testChecksumTransport(t, srv)
+		rel := Release{Assets: []Asset{
+			{Name: "file.bin"},
+			{Name: "other.bin"},
+			{Name: "SHA256SUMS.txt", URL: srv.URL},
+		}}
+		out, err := AttachChecksums(context.Background(), tr, rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Assets[0].SHA256 != strings.Repeat("ab", 32) {
+			t.Fatalf("file.bin hash %q", out.Assets[0].SHA256)
+		}
+		if out.Assets[1].SHA256 != "" {
+			t.Fatalf("other.bin should remain empty, got %q", out.Assets[1].SHA256)
 		}
 	})
 }

@@ -100,9 +100,13 @@ func TestCopyLintNoBannedWords(t *testing.T) {
 		RelaunchProxiesConfirm(1),
 		RelaunchProxiesConfirm(2),
 		ChannelUpdateAction(ChannelWinget, "1.1.0").Lead,
+		ChannelUpdateAction(ChannelBrew, "1.1.0").Lead,
+		ChannelUpdateAction(ChannelScoop, "1.1.0").Lead,
+		ChannelUpdateAction(ChannelNPM, "1.1.0").Lead,
 		ChannelUpdateAction(ChannelDeb, "1.1.0").Lead,
 		ChannelUpdateAction(ChannelRPM, "1.1.0").Lead,
 		ChannelUpdateAction(ChannelMSI, "1.1.0").Lead,
+		ChannelUpdateAction(ChannelUnknown, "1.1.0").Lead,
 	}
 	for _, s := range samples {
 		lower := strings.ToLower(s)

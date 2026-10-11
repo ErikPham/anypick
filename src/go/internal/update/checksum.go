@@ -13,6 +13,7 @@ import (
 // ParseSHA256SUMS parses a standard GNU coreutils SHA256SUMS file:
 // "<hex>  <filename>" or "<hex> *<filename>" (binary mode). Lines that are
 // blank or start with '#' are ignored. Returns a map of name → lowercase hex.
+// Accepts uppercase hex and CRLF line endings.
 //
 // Fail-closed: duplicate filenames and names containing "..", "/" or "\" are
 // rejected. No basename trimming.
@@ -63,7 +64,7 @@ func ParseSHA256SUMS(r io.Reader) (map[string]string, error) {
 }
 
 // ApplyChecksums fills Asset.SHA256 from a parsed SUMS map (matched by Name).
-// It does not error; call RequireChecksums for fail-closed coverage.
+// It does not error; call RequireChecksums for the asset being installed.
 func ApplyChecksums(assets []Asset, sums map[string]string) []Asset {
 	out := make([]Asset, len(assets))
 	copy(out, assets)
@@ -75,18 +76,26 @@ func ApplyChecksums(assets []Asset, sums map[string]string) []Asset {
 	return out
 }
 
-// RequireChecksums fails closed when any installable asset lacks a non-empty
-// SHA-256. SHA256SUMS.txt itself is exempt. Empty hash strings fail.
-func RequireChecksums(assets []Asset) error {
+// RequireChecksums fails closed when the asset named installName lacks a
+// non-empty SHA-256. Other release assets may omit checksums without blocking
+// the update. SHA256SUMS.txt is not an installable asset.
+func RequireChecksums(assets []Asset, installName string) error {
+	if strings.TrimSpace(installName) == "" {
+		return fmt.Errorf("missing install asset name")
+	}
+	if installName == "SHA256SUMS.txt" {
+		return fmt.Errorf("SHA256SUMS.txt is not an installable asset")
+	}
 	for _, a := range assets {
-		if a.Name == "SHA256SUMS.txt" {
+		if a.Name != installName {
 			continue
 		}
 		if strings.TrimSpace(a.SHA256) == "" {
-			return fmt.Errorf("missing SHA-256 for asset %q", a.Name)
+			return fmt.Errorf("missing SHA-256 for asset %q", installName)
 		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("asset %q not in release", installName)
 }
 
 // VerifyFileSHA256 hashes path and compares it to wantHex (case-insensitive).

@@ -75,3 +75,21 @@ func TestMaxVersion(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestParseIgnoresBuildMetadata(t *testing.T) {
+	va, err := ParseVersion("1.2.0+build.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vb, err := ParseVersion("1.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Compare(va, vb) != 0 {
+		t.Fatalf("build metadata must be ignored in compare: %q vs %q", va, vb)
+	}
+	newer, err := IsNewer("1.2.0+meta", "1.1.0")
+	if err != nil || !newer {
+		t.Fatalf("IsNewer with build meta: %v %v", newer, err)
+	}
+}

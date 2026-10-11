@@ -39,17 +39,21 @@ type Fetcher interface {
 }
 
 // GitHubFetcher talks to the GitHub Releases API.
+//
+// When HTTP is nil, the shared DefaultHTTPClient is used (allowlist + https +
+// CheckRedirect on every hop). The initial API URL (api.github.com) is not
+// subject to the download-host allowlist; only redirect hops are checked.
+// Tests inject their own HTTP client (typically httptest).
 type GitHubFetcher struct {
-	HTTP    *http.Client
-	BaseURL string // API base, e.g. https://api.github.com/repos/outof0/anypick
-	Env     Env
+	HTTP         *http.Client
+	BaseURL      string // API base, e.g. https://api.github.com/repos/outof0/anypick
+	Env          Env
+	AllowedHosts []string // redirect-hop allowlist; empty → DefaultAllowedDownloadHosts
 }
 
 func (f *GitHubFetcher) client() *http.Client {
-	if f.HTTP != nil {
-		return f.HTTP
-	}
-	return http.DefaultClient
+	tr := &Transport{AllowedHosts: f.AllowedHosts, HTTP: f.HTTP}
+	return tr.Client()
 }
 
 func (f *GitHubFetcher) base() string {
@@ -153,12 +157,13 @@ func etagOr(a, b string) string {
 }
 
 // AttachChecksums fetches SHA256SUMS.txt from the release assets (by name) and
-// fills Asset.SHA256. Fail-closed: missing SUMS file, non-200 / offline fetch,
-// unparseable body, duplicate entries, or any installable asset without a
-// non-empty hash returns an error. The caller must not proceed to install.
-func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Release, error) {
-	if client == nil {
-		client = http.DefaultClient
+// fills Asset.SHA256 via the shared allowlisted Transport (initial URL and
+// every redirect hop). Fail-closed: missing SUMS file, non-allowlisted URL
+// (no request is made), non-200 / offline fetch, or unparseable body returns
+// an error. Call RequireChecksums for the asset being installed before install.
+func AttachChecksums(ctx context.Context, tr *Transport, rel Release) (Release, error) {
+	if tr == nil {
+		tr = &Transport{}
 	}
 	var sumsURL string
 	for _, a := range rel.Assets {
@@ -170,14 +175,12 @@ func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Rel
 	if sumsURL == "" {
 		return rel, fmt.Errorf("SHA256SUMS.txt missing from release assets")
 	}
-	// Callers that download installable assets must also ValidateDownloadURL.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
+	resp, err := tr.Get(ctx, sumsURL)
 	if err != nil {
-		return rel, err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := client.Do(req)
-	if err != nil {
+		var denied *ErrDeniedDownloadURL
+		if errors.As(err, &denied) {
+			return rel, err
+		}
 		return rel, &ErrOffline{Err: err}
 	}
 	defer resp.Body.Close()
@@ -189,8 +192,5 @@ func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Rel
 		return rel, err
 	}
 	rel.Assets = ApplyChecksums(rel.Assets, sums)
-	if err := RequireChecksums(rel.Assets); err != nil {
-		return rel, err
-	}
 	return rel, nil
 }

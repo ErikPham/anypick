@@ -72,7 +72,7 @@ type Clock   interface{ Now() time.Time }
 | appimage / direct | self-update path |
 
 ## 3. Flows
-State machine: `idle→checking→{upToDate|availableDirect|availablePackageManager|offline|rateLimited|githubDown}`; `availableDirect→(Update Now)→notWritable | downloading→verifying→{badChecksum|ready}`; `ready→Relaunch→(success: new version up) | installFailed`. Check runs at launch + timer if `AutoCheck && now-LastChecked ≥ 24h`; manual check ignores throttle but still sends ETag. 304 → keep cached Release. Network errors/403/429 never panic: inline status row + backoff (respect `Retry-After`/`X-RateLimit-Reset`).
+State machine: `idle→checking→{upToDate|availableDirect|availablePackageManager|offline|rateLimited|githubDown}`; `availableDirect→(Update Now)→notWritable | downloading→verifying→{badChecksum|ready}`; `ready→Relaunch→(success: new version up) | installFailed`. Check runs at launch + timer if `AutoCheck && now-LastChecked ≥ 24h`; manual check ignores throttle but still sends ETag. 304 → keep cached Release. A 304 with no cached release triggers a second GitHub fetch without If-None-Match so the body can be evaluated (see `Checker.Check`). Network errors/403/429 never panic: inline status row + backoff (respect `Retry-After`/`X-RateLimit-Reset`).
 
 **Skip This Version (in scope):** hides menu item + background badge until a newer version; manual check still shows it. UI copy: `You skipped 1.2.0. You'll hear about the next version.`
 
@@ -92,7 +92,7 @@ State machine: `idle→checking→{upToDate|availableDirect|availablePackageMana
 Plugin needs: `plugins.updater.pubkey` (minisign) in tauri.conf.json, `bundle.createUpdaterArtifacts: true`, CI secrets `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`), `.sig` files, endpoint `latest.json`. **Blocked on OutOf0 key approval** — nothing generated in slice 1. Recommend Go SHA256SUMS as second gate before `downloadAndInstall`.
 
 ## 5. Security / Authenticity
-- TLS only, Go default roots; restrict download hosts to exact `github.com` and `objects.githubusercontent.com` (https only). Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries fail closed.
+- TLS only, Go default roots; restrict download hosts to exact `github.com`, `objects.githubusercontent.com`, and `release-assets.githubusercontent.com` (https only, no wildcards). `release-assets.githubusercontent.com` is required because GitHub 302-redirects real `browser_download_url` downloads there. The shared download client validates the initial URL and every redirect hop (https→http downgrades refused; redirect cap). Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries for the asset being installed fail closed; unrelated release assets without a checksum do not block the update.
 - **Same-release SHA-256 is integrity, not authenticity**: it verifies the file matches the release checksum, not who signed it. Accepted for macOS v1.1.1. Tauri minisign pending OutOf0 key approval.
 - Downgrade: refuse `latest ≤ current`; refuse tag/asset version mismatch; ignore drafts/prereleases; persist `HighestSeen` to resist rollback feeds.
 - Path safety on unzip; size cap vs `Asset.Size`; temp dirs 0700.
@@ -105,6 +105,8 @@ All no-op unless `ANYPICK_UPDATE_TESTING=1` (including in release builds):
 3. `ANYPICK_UPDATE_CLOCK=2026-10-12T00:00:00Z` (fixed) or `ANYPICK_UPDATE_CLOCK_OFFSET=25h`.
 4. `ANYPICK_UPDATE_FAULT=relaunch-fail|swap-fail|checksum-mismatch|download-stall`.
 5. `ANYPICK_UPDATE_CURRENT_VERSION=1.1.0` to fake the running version.
+
+Download allowlist: production uses the three hosts in §5 (injected on `Transport.AllowedHosts` / `GitHubFetcher.AllowedHosts`; empty → defaults). Tests inject loopback (`127.0.0.1`) for `httptest`. Opt-in live test: `ANYPICK_UPDATE_LIVE_TEST=1` downloads real v1.1.0 `SHA256SUMS.txt` through the production client (skipped otherwise so normal `go test` stays offline). CI may enable it on a schedule so a GitHub host move surfaces.
 
 ## 7. Phased PR slices
 1. Go `internal/update`: types, semver, fetcher (ETag/304/403/429), asset pick, SHA256SUMS verify, channel detect, clock, hooks + fake-server tests. *(this PR)*

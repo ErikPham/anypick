@@ -191,3 +191,17 @@ func TestDetectChannelWinget(t *testing.T) {
 		t.Fatalf("got %q", ch)
 	}
 }
+
+func TestIsCLIOnly(t *testing.T) {
+	if !IsCLIOnly(ChannelScoop) || !IsCLIOnly(ChannelNPM) {
+		t.Fatal("scoop and npm must be CLI-only")
+	}
+	for _, ch := range []InstallChannel{
+		ChannelDirect, ChannelBrew, ChannelNSIS, ChannelMSI, ChannelWinget,
+		ChannelDeb, ChannelRPM, ChannelAppImage, ChannelUnknown,
+	} {
+		if IsCLIOnly(ch) {
+			t.Fatalf("%s must not be CLI-only", ch)
+		}
+	}
+}

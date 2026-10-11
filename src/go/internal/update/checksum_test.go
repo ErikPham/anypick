@@ -45,6 +45,41 @@ func TestParseSHA256SUMSRejectsPathLikeNames(t *testing.T) {
 	}
 }
 
+func TestParseSHA256SUMSQuirks(t *testing.T) {
+	hexUpper := strings.ToUpper(strings.Repeat("ab", 32))
+	hexLower := strings.ToLower(hexUpper)
+	t.Run("binary marker", func(t *testing.T) {
+		body := hexLower + " *file.bin\n"
+		sums, err := ParseSHA256SUMS(strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sums["file.bin"] != hexLower {
+			t.Fatalf("%q", sums["file.bin"])
+		}
+	})
+	t.Run("CRLF", func(t *testing.T) {
+		body := hexLower + "  file.bin\r\n"
+		sums, err := ParseSHA256SUMS(strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sums["file.bin"] != hexLower {
+			t.Fatalf("%q", sums["file.bin"])
+		}
+	})
+	t.Run("uppercase hex", func(t *testing.T) {
+		body := hexUpper + "  file.bin\n"
+		sums, err := ParseSHA256SUMS(strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sums["file.bin"] != hexLower {
+			t.Fatalf("want lowercase stored, got %q", sums["file.bin"])
+		}
+	})
+}
+
 func TestVerifyFileSHA256MatchAndMismatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "blob")
@@ -84,21 +119,30 @@ func TestApplyChecksums(t *testing.T) {
 	}
 }
 
-func TestRequireChecksumsMissingEntry(t *testing.T) {
+func TestRequireChecksumsOnlyInstallAsset(t *testing.T) {
 	assets := []Asset{
 		{Name: "a.zip", SHA256: "aa"},
-		{Name: "b.zip"},
+		{Name: "b.zip"}, // missing — must not block when installing a.zip
 		{Name: "SHA256SUMS.txt"},
 	}
-	if err := RequireChecksums(assets); err == nil {
-		t.Fatal("missing entry must fail")
+	if err := RequireChecksums(assets, "a.zip"); err != nil {
+		t.Fatalf("unrelated missing entry must not block: %v", err)
+	}
+	if err := RequireChecksums(assets, "b.zip"); err == nil {
+		t.Fatal("missing hash for install asset must fail")
 	}
 	assets[1].SHA256 = "   "
-	if err := RequireChecksums(assets); err == nil {
+	if err := RequireChecksums(assets, "b.zip"); err == nil {
 		t.Fatal("empty hash must fail")
 	}
 	assets[1].SHA256 = "bb"
-	if err := RequireChecksums(assets); err != nil {
+	if err := RequireChecksums(assets, "b.zip"); err != nil {
 		t.Fatal(err)
+	}
+	if err := RequireChecksums(assets, "missing.zip"); err == nil {
+		t.Fatal("unknown install asset must fail")
+	}
+	if err := RequireChecksums(assets, "SHA256SUMS.txt"); err == nil {
+		t.Fatal("SUMS file is not installable")
 	}
 }
