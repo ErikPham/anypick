@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -26,6 +27,12 @@ func (e *ErrDeniedURL) Unwrap() error { return e.Err }
 // ErrDeniedDownloadURL is an alias kept for call sites that predate the
 // shared ErrDeniedURL name (downloads and API fetches use the same type).
 type ErrDeniedDownloadURL = ErrDeniedURL
+
+// ErrHostNotAllowed is returned (possibly wrapped) when the initial URL or a
+// redirect hop fails the host allowlist, the https-only check, or the redirect
+// cap. Match with errors.Is — never by error text. Callers must not treat it
+// as ErrOffline.
+var ErrHostNotAllowed = errors.New("host not allowed")
 
 // DefaultAllowedAPIHosts is the production allowlist for GitHub Releases
 // metadata fetches. Exact host match, https only, no wildcards.
@@ -53,10 +60,13 @@ var DefaultAllowedDownloadHosts = []string{
 //   - Download: NewDownloadTransport / DefaultAllowedDownloadHosts (the three
 //     GitHub download hosts).
 //
-// AllowedHosts defaults depend on Kind when nil/empty. Tests inject their own
-// hosts (e.g. "127.0.0.1") and typically set HTTP to an *http.Client whose
-// Transport trusts httptest.NewTLSServer. A caller-supplied HTTP client is
-// always wrapped: our CheckRedirect runs first on every hop, then theirs.
+// allowedHosts defaults depend on Kind when nil/empty. Tests in this package
+// inject their own hosts (e.g. "127.0.0.1") on the unexported field and
+// typically set HTTP to an *http.Client whose Transport trusts
+// httptest.NewTLSServer. A caller-supplied HTTP client is always wrapped: our
+// CheckRedirect runs first on every hop, then theirs. The caller's proxy,
+// dialer, and TLS settings are trusted; only host/https allowlist checks are
+// enforced by AnyPick.
 //
 // The initial URL is validated before the request; every redirect hop is
 // validated by CheckRedirect (host allowlist + https only, so an https→http
@@ -74,7 +84,7 @@ const (
 // AttachChecksums, and asset downloads — always with an explicit host list.
 type Transport struct {
 	Kind         TransportKind // KindAPI or KindDownload (default)
-	AllowedHosts []string
+	allowedHosts []string      // unexported; tests set same-package only
 	HTTP         *http.Client
 }
 
@@ -91,19 +101,19 @@ func NewAPITransport(env Env) *Transport {
 			}
 		}
 	}
-	return &Transport{Kind: KindAPI, AllowedHosts: hosts}
+	return &Transport{Kind: KindAPI, allowedHosts: hosts}
 }
 
 // NewDownloadTransport returns the production download client (three GitHub
 // hosts, https, CheckRedirect on every hop).
 func NewDownloadTransport() *Transport {
-	return &Transport{Kind: KindDownload, AllowedHosts: append([]string{}, DefaultAllowedDownloadHosts...)}
+	return &Transport{Kind: KindDownload, allowedHosts: append([]string{}, DefaultAllowedDownloadHosts...)}
 }
 
 func (t *Transport) hostSet() map[string]struct{} {
 	var hosts []string
-	if t != nil && len(t.AllowedHosts) > 0 {
-		hosts = t.AllowedHosts
+	if t != nil && len(t.allowedHosts) > 0 {
+		hosts = t.allowedHosts
 	} else if t != nil && t.Kind == KindAPI {
 		hosts = DefaultAllowedAPIHosts
 	} else {
@@ -126,11 +136,11 @@ func (t *Transport) ValidateURL(raw string) error {
 		return fmt.Errorf("parse download URL: %w", err)
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("download URL scheme %q not allowed (https only)", u.Scheme)
+		return fmt.Errorf("%w: download URL scheme %q (https only)", ErrHostNotAllowed, u.Scheme)
 	}
 	host := strings.ToLower(u.Hostname())
 	if _, ok := t.hostSet()[host]; !ok {
-		return fmt.Errorf("download host %q not allowed", host)
+		return fmt.Errorf("%w: download host %q", ErrHostNotAllowed, host)
 	}
 	return nil
 }
@@ -149,10 +159,10 @@ func ValidateAPIURL(raw string) error {
 // checkRedirect validates each redirect target and caps hop count.
 func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		return fmt.Errorf("%w: stopped after %d redirects", ErrHostNotAllowed, maxRedirects)
 	}
 	if req.URL == nil {
-		return fmt.Errorf("redirect missing URL")
+		return fmt.Errorf("%w: redirect missing URL", ErrHostNotAllowed)
 	}
 	return t.ValidateURL(req.URL.String())
 }
@@ -212,7 +222,14 @@ func (t *Transport) Get(ctx context.Context, rawURL string) (*http.Response, err
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	return t.Client().Do(req)
+	resp, err := t.Client().Do(req)
+	if err != nil {
+		if errors.Is(err, ErrHostNotAllowed) {
+			return nil, &ErrDeniedURL{Err: err}
+		}
+		return nil, err
+	}
+	return resp, nil
 }
 
 // DownloadAsset GETs an installable release asset through the download

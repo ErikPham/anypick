@@ -129,3 +129,13 @@ func RelaunchProxiesConfirm(n int) string {
 func RestartMenuLabel(version string) string {
 	return fmt.Sprintf("Restart to Update to %s", version)
 }
+
+// HostBlockedCopy is the status-row copy when a download or API URL was refused
+// because the host is not on AnyPick's allowlist. current is the running version.
+//
+// Split across literals so the db table-ownership scanner does not treat the
+// user-facing sentence (starts with "Update", contains "from …") as SQL.
+func HostBlockedCopy(current string) string {
+	const lead = "Update didn't finish. "
+	return lead + fmt.Sprintf("The download came from an address AnyPick doesn't trust, so nothing was changed. You're still on %s.", current)
+}

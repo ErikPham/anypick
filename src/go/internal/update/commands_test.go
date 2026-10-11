@@ -97,6 +97,7 @@ func TestCopyLintNoBannedWords(t *testing.T) {
 		ReadyAuthenticityLine,
 		MacOSReadyFootnote,
 		SkipVersionCopy("1.2.0"),
+		HostBlockedCopy("1.1.0"),
 		RelaunchProxiesConfirm(1),
 		RelaunchProxiesConfirm(2),
 		ChannelUpdateAction(ChannelWinget, "1.1.0").Lead,
@@ -122,5 +123,12 @@ func TestCopyLintNoBannedWords(t *testing.T) {
 				t.Fatalf("banned %q in %q", b, s)
 			}
 		}
+	}
+}
+
+func TestHostBlockedCopyExact(t *testing.T) {
+	want := "Update didn't finish. The download came from an address AnyPick doesn't trust, so nothing was changed. You're still on 1.1.0."
+	if got := HostBlockedCopy("1.1.0"); got != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }

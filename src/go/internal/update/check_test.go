@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -349,5 +350,51 @@ func TestCheckArm64AndUnknownManual(t *testing.T) {
 	})
 	if res2.State.Kind != StateAvailablePackageManager || res2.State.Action.Kind != ActionManual {
 		t.Fatalf("unknown: kind=%s action=%+v", res2.State.Kind, res2.State.Action)
+	}
+}
+
+func TestCheckHostBlocked(t *testing.T) {
+	c := &Checker{Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	c.Fetcher = &stubFetcher{err: &ErrDeniedURL{Err: fmt.Errorf("%w: download host %q", ErrHostNotAllowed, "evil.example")}}
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelDirect, Manual: true,
+	})
+	if res.State.Kind != StateHostBlocked {
+		t.Fatalf("kind=%s want hostBlocked", res.State.Kind)
+	}
+	if res.State.Kind == StateOffline {
+		t.Fatal("host block must never be offline")
+	}
+	if res.State.Retry {
+		t.Fatal("hostBlocked Retry must be false")
+	}
+	wantMsg := HostBlockedCopy("1.1.0")
+	if res.State.Message != wantMsg {
+		t.Fatalf("Message=%q want %q", res.State.Message, wantMsg)
+	}
+	if res.State.Action.Kind != ActionManual || res.State.Action.Lead != "View on GitHub" {
+		t.Fatalf("Action=%+v want View on GitHub", res.State.Action)
+	}
+	if res.State.Command != "https://github.com/outof0/anypick/releases" {
+		t.Fatalf("Command=%q", res.State.Command)
+	}
+}
+
+func TestCheckHostBlockedRewordedStillMaps(t *testing.T) {
+	// Mapping must use errors.Is, not error-text matching — a reworded message
+	// that still wraps ErrHostNotAllowed must land on hostBlocked.
+	c := &Checker{Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	c.Fetcher = &stubFetcher{err: fmt.Errorf("completely different wording about a shady CDN: %w", ErrHostNotAllowed)}
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelDirect, Manual: true,
+	})
+	if res.State.Kind != StateHostBlocked {
+		t.Fatalf("reworded ErrHostNotAllowed must map to hostBlocked, got %s", res.State.Kind)
+	}
+	if res.State.Retry {
+		t.Fatal("Retry must be false")
+	}
+	if res.State.Message != HostBlockedCopy("1.1.0") {
+		t.Fatalf("Message=%q", res.State.Message)
 	}
 }

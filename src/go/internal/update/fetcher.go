@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -45,8 +44,8 @@ type Fetcher interface {
 // client: a nil HTTP field uses NewAPITransport; a caller-supplied HTTP
 // client (tests) is always wrapped so the API allowlist still applies.
 //
-// Tests inject AllowedHosts (e.g. httptest loopback) and optionally HTTP for
-// TLS trust — not a raw unguarded client.
+// Tests inject allowedHosts (e.g. httptest loopback) on the unexported field
+// and optionally HTTP for TLS trust — not a raw unguarded client.
 //
 // When ANYPICK_UPDATE_TESTING=1 and ANYPICK_UPDATE_FEED_URL is set, that feed host is
 // added to the API allowlist; otherwise the feed URL is ignored and the
@@ -55,16 +54,16 @@ type GitHubFetcher struct {
 	HTTP         *http.Client // optional; always wrapped with API allowlist
 	BaseURL      string       // API base, e.g. https://api.github.com/repos/outof0/anypick
 	Env          Env
-	AllowedHosts []string // API allowlist override; empty → NewAPITransport(Env)
+	allowedHosts []string // unexported API allowlist override; empty → NewAPITransport(Env)
 }
 
-// apiTransport returns the allowlisted API Transport. Injected AllowedHosts
-// replace the default list (tests). Otherwise NewAPITransport(Env) applies
-// api.github.com plus an optional gated feed host. Injected HTTP is kept for
-// TLS/timeout but CheckRedirect is always ours (wrapping theirs).
+// apiTransport returns the allowlisted API Transport. Injected allowedHosts
+// replace the default list (tests, same package). Otherwise NewAPITransport(Env)
+// applies api.github.com plus an optional gated feed host. Injected HTTP is
+// kept for TLS/timeout but CheckRedirect is always ours (wrapping theirs).
 func (f *GitHubFetcher) apiTransport() *Transport {
-	if f != nil && len(f.AllowedHosts) > 0 {
-		return &Transport{Kind: KindAPI, AllowedHosts: f.AllowedHosts, HTTP: f.HTTP}
+	if f != nil && len(f.allowedHosts) > 0 {
+		return &Transport{Kind: KindAPI, allowedHosts: f.allowedHosts, HTTP: f.HTTP}
 	}
 	tr := NewAPITransport(f.env())
 	if f != nil && f.HTTP != nil {
@@ -134,8 +133,8 @@ func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, strin
 		if errors.As(err, &denied) {
 			return Release{}, "", false, err
 		}
-		// CheckRedirect failures surface as url.Error with our message; treat
-		// allowlist/redirect-cap text as denied rather than offline.
+		// CheckRedirect failures wrap ErrHostNotAllowed; treat as denied rather
+		// than offline (never match on error text).
 		if isDeniedRedirect(err) {
 			return Release{}, "", false, &ErrDeniedURL{Err: err}
 		}
@@ -190,14 +189,7 @@ func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, strin
 }
 
 func isDeniedRedirect(err error) bool {
-	var uerr *url.Error
-	if !errors.As(err, &uerr) || uerr.Err == nil {
-		return false
-	}
-	msg := uerr.Err.Error()
-	return strings.Contains(msg, "not allowed") ||
-		strings.Contains(msg, "https only") ||
-		strings.Contains(msg, "stopped after")
+	return errors.Is(err, ErrHostNotAllowed)
 }
 
 func etagOr(a, b string) string {
@@ -229,7 +221,7 @@ func AttachChecksums(ctx context.Context, tr *Transport, rel Release) (Release, 
 	resp, err := tr.Get(ctx, sumsURL)
 	if err != nil {
 		var denied *ErrDeniedURL
-		if errors.As(err, &denied) {
+		if errors.As(err, &denied) || errors.Is(err, ErrHostNotAllowed) {
 			return rel, err
 		}
 		return rel, &ErrOffline{Err: err}

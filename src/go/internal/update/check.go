@@ -35,7 +35,8 @@ type CheckResult struct {
 }
 
 // Check fetches (unless throttled), compares versions, and returns a state.
-// Network/rate-limit failures never panic; they become offline/rateLimited.
+// Network/rate-limit failures never panic; they become offline/rateLimited/
+// hostBlocked. Host-allowlist refusals are never classified as offline.
 func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 	clock := HookClock(c.Env, c.Clock)
 	now := clock.Now()
@@ -79,17 +80,7 @@ func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 
 	if err != nil {
 		st.LastChecked = now
-		switch {
-		case errors.Is(err, ErrRateLimited):
-			st.Kind = StateRateLimited
-			st.Err = err
-		case isOffline(err):
-			st.Kind = StateOffline
-			st.Err = err
-		default:
-			st.Kind = StateGitHubDown
-			st.Err = err
-		}
+		applyFetchError(&st, err)
 		return CheckResult{State: st, Settings: settings, Release: in.Cached}
 	}
 
@@ -105,17 +96,7 @@ func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 			}
 			if err2 != nil {
 				st.LastChecked = now
-				switch {
-				case errors.Is(err2, ErrRateLimited):
-					st.Kind = StateRateLimited
-					st.Err = err2
-				case isOffline(err2):
-					st.Kind = StateOffline
-					st.Err = err2
-				default:
-					st.Kind = StateGitHubDown
-					st.Err = err2
-				}
+				applyFetchError(&st, err2)
 				return CheckResult{State: st, Settings: settings}
 			}
 			if notMod2 {
@@ -226,4 +207,28 @@ func (c *Checker) evaluate(settings UpdateSettings, current string, ch InstallCh
 func isOffline(err error) bool {
 	var off *ErrOffline
 	return errors.As(err, &off)
+}
+
+// applyFetchError maps a fetcher error onto st. Host-allowlist refusals become
+// StateHostBlocked (never offline), with Retry=false and a View on GitHub
+// action. Matching uses errors.Is(ErrHostNotAllowed), not error text.
+func applyFetchError(st *UpdateState, err error) {
+	st.Err = err
+	switch {
+	case errors.Is(err, ErrRateLimited):
+		st.Kind = StateRateLimited
+		st.Retry = true
+	case errors.Is(err, ErrHostNotAllowed):
+		st.Kind = StateHostBlocked
+		st.Retry = false
+		st.Message = HostBlockedCopy(st.Current)
+		st.Action = UpdateAction{Kind: ActionManual, Lead: "View on GitHub"}
+		st.Command = "https://github.com/outof0/anypick/releases"
+	case isOffline(err):
+		st.Kind = StateOffline
+		st.Retry = true
+	default:
+		st.Kind = StateGitHubDown
+		st.Retry = true
+	}
 }

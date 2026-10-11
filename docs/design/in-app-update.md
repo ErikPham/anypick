@@ -34,7 +34,7 @@ type UpdateState struct {
   Command string; Action UpdateAction; Progress float64; Err error; LastChecked time.Time
 }
 // StateKind: idle checking upToDate availableDirect availablePackageManager notWritable
-//   downloading verifying ready offline rateLimited githubDown badChecksum installFailed
+//   downloading verifying ready offline rateLimited githubDown hostBlocked badChecksum installFailed
 type ActionKind string // "selfUpdate"|"command"|"downloadAsset"|"manual"
 type UpdateAction struct {
   Kind ActionKind
@@ -72,7 +72,7 @@ type Clock   interface{ Now() time.Time }
 | appimage / direct | self-update path |
 
 ## 3. Flows
-State machine: `idle→checking→{upToDate|availableDirect|availablePackageManager|offline|rateLimited|githubDown}`; `availableDirect→(Update Now)→notWritable | downloading→verifying→{badChecksum|ready}`; `ready→Relaunch→(success: new version up) | installFailed`. Check runs at launch + timer if `AutoCheck && now-LastChecked ≥ 24h`; manual check ignores throttle but still sends ETag. 304 → keep cached Release. A 304 with no cached release triggers a second GitHub fetch without If-None-Match so the body can be evaluated (see `Checker.Check`). Network errors/403/429 never panic: inline status row + backoff (respect `Retry-After`/`X-RateLimit-Reset`).
+State machine: `idle→checking→{upToDate|availableDirect|availablePackageManager|offline|rateLimited|githubDown|hostBlocked}`; `availableDirect→(Update Now)→notWritable | downloading→verifying→{badChecksum|ready}`; `ready→Relaunch→(success: new version up) | installFailed`. Check runs at launch + timer if `AutoCheck && now-LastChecked ≥ 24h`; manual check ignores throttle but still sends ETag. 304 → keep cached Release. A 304 with no cached release triggers a second GitHub fetch without If-None-Match so the body can be evaluated (see `Checker.Check`). Network errors/403/429 never panic: inline status row + backoff (respect `Retry-After`/`X-RateLimit-Reset`). Allowlist refusals (`ErrHostNotAllowed`) map to `hostBlocked` (never `offline`): Retry=false, **View on GitHub**, copy `Update didn't finish. The download came from an address AnyPick doesn't trust, so nothing was changed. You're still on <current>.`
 
 **Skip This Version (in scope):** hides menu item + background badge until a newer version; manual check still shows it. UI copy: `You skipped 1.2.0. You'll hear about the next version.`
 
@@ -95,6 +95,7 @@ Plugin needs: `plugins.updater.pubkey` (minisign) in tauri.conf.json, `bundle.cr
 - TLS only, Go default roots. **Two dedicated HTTP clients, two host lists — no unrestricted fallback:**
   - **API client** (`NewAPITransport` / `GitHubFetcher.apiTransport`): exact host `api.github.com` only, https only. Validates the first URL and every redirect hop (`CheckRedirect`, same redirect cap of 5). Used solely for Releases metadata (`/releases/latest`). A caller-supplied `http.Client` (tests) is always wrapped so the allowlist still runs first; there is no path that uses `http.DefaultClient` or a bare `http.Client` for the fetch. GitHub renamed-repo 301s that stay on `api.github.com` (e.g. `/repos/…/releases/latest` → `/repositories/<id>/releases/latest`) are followed.
   - **Download client** (`NewDownloadTransport`): exact hosts `github.com`, `objects.githubusercontent.com`, and `release-assets.githubusercontent.com` (https only, no wildcards). `release-assets.githubusercontent.com` is required because GitHub 302-redirects real `browser_download_url` downloads there. Validates the initial URL and every redirect hop (https→http downgrades refused; redirect cap 5). Used for `AttachChecksums`, `DownloadAsset`, and other asset bytes.
+- A caller-supplied `Transport` (its proxy, dialer, and TLS settings) is trusted; AnyPick still enforces the host allowlist and https-only checks on every hop.
 - Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries for the asset being installed fail closed; unrelated release assets without a checksum do not block the update.
 - **Same-release SHA-256 is integrity, not authenticity**: it verifies the file matches the release checksum, not who signed it. Accepted for macOS v1.1.1. Tauri minisign pending OutOf0 key approval.
 - Downgrade: refuse `latest ≤ current`; refuse tag/asset version mismatch; ignore drafts/prereleases; persist `HighestSeen` to resist rollback feeds.
@@ -109,7 +110,7 @@ All no-op unless `ANYPICK_UPDATE_TESTING=1` (exactly `"1"`, including in release
 4. `ANYPICK_UPDATE_FAULT=relaunch-fail|swap-fail|checksum-mismatch|download-stall`.
 5. `ANYPICK_UPDATE_CURRENT_VERSION=1.1.0` to fake the running version.
 
-Allowlists: production API = `api.github.com`; production download = the three hosts in §5. Tests inject loopback hosts on `Transport.AllowedHosts` / `GitHubFetcher.AllowedHosts` for `httptest` (and optionally an `HTTP` client for TLS trust); the allowlist `CheckRedirect` is always wrapped around any injected client. Opt-in live tests: `ANYPICK_UPDATE_LIVE_TEST=1` downloads real v1.1.0 `SHA256SUMS.txt` through the download client and fetches `/releases/latest` through the API client (skipped otherwise so normal `go test` stays offline). CI may enable them on a schedule so a GitHub host move surfaces. Production files under `internal/update` are grepped in tests for unguarded `http.Get` / `http.DefaultClient` / bare `http.Client{`.
+Allowlists: production API = `api.github.com`; production download = the three hosts in §5. Host lists live on unexported `Transport.allowedHosts` / `GitHubFetcher.allowedHosts` (no exported field or setter). Same-package tests inject loopback hosts for `httptest` (and optionally an `HTTP` client for TLS trust); the allowlist `CheckRedirect` is always wrapped around any injected client. Refusals return typed `ErrHostNotAllowed` (match with `errors.Is` / `errors.As`, never by text) and surface as `hostBlocked`. Opt-in live tests: `ANYPICK_UPDATE_LIVE_TEST=1` downloads real v1.1.0 `SHA256SUMS.txt` through the download client and fetches `/releases/latest` through the API client (skipped otherwise so normal `go test` stays offline). CI may enable them on a schedule so a GitHub host move surfaces. Production files under `internal/update` are grepped in tests for unguarded `http.Get` / `http.DefaultClient` / bare `http.Client{`.
 
 ## 7. Phased PR slices
 1. Go `internal/update`: types, semver, fetcher (ETag/304/403/429), asset pick, SHA256SUMS verify, channel detect, clock, hooks + fake-server tests. *(this PR)*

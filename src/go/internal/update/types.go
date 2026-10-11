@@ -43,6 +43,7 @@ const (
 	StateOffline                 StateKind = "offline"
 	StateRateLimited             StateKind = "rateLimited"
 	StateGitHubDown              StateKind = "githubDown"
+	StateHostBlocked             StateKind = "hostBlocked"
 	StateBadChecksum             StateKind = "badChecksum"
 	StateInstallFailed           StateKind = "installFailed"
 )
@@ -108,4 +109,6 @@ type UpdateState struct {
 	Err         error
 	LastChecked time.Time
 	SkippedHint string // set when a manual check surfaces a skipped version
+	Message     string // UI status-row copy for error-like states (e.g. hostBlocked)
+	Retry       bool   // UI Retry control; false for hostBlocked
 }

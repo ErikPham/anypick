@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,7 @@ func testTransport(t *testing.T, srv *httptest.Server) *Transport {
 	}
 	return &Transport{
 		Kind:         KindDownload,
-		AllowedHosts: []string{u.Hostname()},
+		allowedHosts: []string{u.Hostname()},
 		HTTP:         srv.Client(),
 	}
 }
@@ -114,7 +115,7 @@ func TestRedirectToOtherHostRefused(t *testing.T) {
 
 	tr := &Transport{
 		Kind:         KindDownload,
-		AllowedHosts: []string{"127.0.0.1"},
+		allowedHosts: []string{"127.0.0.1"},
 		HTTP:         multiTLSClient(good, evil),
 	}
 	_, err := tr.Get(context.Background(), good.URL+"/start")
@@ -255,7 +256,7 @@ func TestCheckRedirectAlwaysWrapsCaller(t *testing.T) {
 	}
 	tr := &Transport{
 		Kind:         KindDownload,
-		AllowedHosts: []string{"127.0.0.1"},
+		allowedHosts: []string{"127.0.0.1"},
 		HTTP:         permissive,
 	}
 	_, err := tr.Get(context.Background(), good.URL+"/start")
@@ -271,7 +272,7 @@ func TestCheckRedirectAlwaysWrapsCaller(t *testing.T) {
 	apiPermissive.CheckRedirect = func(req *http.Request, via []*http.Request) error { return nil }
 	apiTr := &Transport{
 		Kind:         KindAPI,
-		AllowedHosts: []string{"127.0.0.1"},
+		allowedHosts: []string{"127.0.0.1"},
 		HTTP:         apiPermissive,
 	}
 	_, err = apiTr.Get(context.Background(), good.URL+"/start")
@@ -399,4 +400,60 @@ func mustReq(t *testing.T, raw string) *http.Request {
 		t.Fatal(err)
 	}
 	return req
+}
+
+func TestAllowedHostsNotExported(t *testing.T) {
+	// Fail if Transport or GitHubFetcher expose any exported field or setter
+	// that can replace the host allowlists.
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(Transport{}),
+		reflect.TypeOf(GitHubFetcher{}),
+	} {
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			if f.PkgPath != "" {
+				continue // unexported
+			}
+			name := strings.ToLower(f.Name)
+			if strings.Contains(name, "allowedhost") ||
+				strings.Contains(name, "allowlist") ||
+				strings.Contains(name, "hostlist") ||
+				name == "hosts" {
+				t.Errorf("%s exported field %s can replace host lists", typ.Name(), f.Name)
+			}
+		}
+		ptr := reflect.PointerTo(typ)
+		for i := 0; i < ptr.NumMethod(); i++ {
+			m := ptr.Method(i)
+			name := strings.ToLower(m.Name)
+			if strings.Contains(name, "allowedhost") ||
+				strings.Contains(name, "allowlist") ||
+				(strings.HasPrefix(name, "set") && strings.Contains(name, "host")) {
+				t.Errorf("%s exported method %s can replace host lists", typ.Name(), m.Name)
+			}
+		}
+	}
+}
+
+func TestErrHostNotAllowedIsTyped(t *testing.T) {
+	err := ValidateDownloadURL("https://evil.example/x.zip")
+	if !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("want ErrHostNotAllowed, got %v", err)
+	}
+	// Rewording the wrapped message must still match via errors.Is.
+	wrapped := fmt.Errorf("totally reworded refusal: %w", ErrHostNotAllowed)
+	if !errors.Is(wrapped, ErrHostNotAllowed) {
+		t.Fatal("reworded wrap must still be ErrHostNotAllowed")
+	}
+	denied := &ErrDeniedURL{Err: fmt.Errorf("different words about a bad host: %w", ErrHostNotAllowed)}
+	if !errors.Is(denied, ErrHostNotAllowed) {
+		t.Fatal("ErrDeniedURL chain must still unwrap to ErrHostNotAllowed")
+	}
+}
+
+func TestValidateURLSchemeIsHostNotAllowed(t *testing.T) {
+	err := ValidateDownloadURL("http://github.com/x")
+	if !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("https-only refusal must be ErrHostNotAllowed, got %v", err)
+	}
 }

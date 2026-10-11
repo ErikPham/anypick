@@ -28,7 +28,7 @@ func testAPIFetcher(t *testing.T, srv *httptest.Server, env Env) *GitHubFetcher 
 		HTTP:         srv.Client(),
 		BaseURL:      srv.URL,
 		Env:          env,
-		AllowedHosts: []string{u.Hostname()},
+		allowedHosts: []string{u.Hostname()},
 	}
 }
 
@@ -95,7 +95,7 @@ func TestFetcherOffline(t *testing.T) {
 	host, _ := url.Parse(u)
 	client := srv.Client()
 	srv.Close()
-	f := &GitHubFetcher{HTTP: client, BaseURL: u, AllowedHosts: []string{host.Hostname()}}
+	f := &GitHubFetcher{HTTP: client, BaseURL: u, allowedHosts: []string{host.Hostname()}}
 	_, _, _, err := f.Latest(context.Background(), "")
 	var off *ErrOffline
 	if !errors.As(err, &off) {
@@ -160,7 +160,7 @@ func TestFetcherFeedURLHook(t *testing.T) {
 	}))
 	defer srv.Close()
 	env := MapEnv{EnvTesting: "1", EnvFeedURL: srv.URL}
-	// No AllowedHosts: NewAPITransport must add the feed host when gate is open.
+	// No allowedHosts: NewAPITransport must add the feed host when gate is open.
 	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: "https://api.github.com/repos/outof0/anypick", Env: env}
 	rel, _, _, err := f.Latest(context.Background(), "")
 	if err != nil || rel.Version != "1.1.0" {
@@ -231,7 +231,7 @@ func TestAPIClientRefusesHTTP(t *testing.T) {
 	}))
 	defer srv.Close()
 	u, _ := url.Parse(srv.URL)
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL, AllowedHosts: []string{u.Hostname()}}
+	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL, allowedHosts: []string{u.Hostname()}}
 	_, _, _, err := f.Latest(context.Background(), "")
 	if err == nil {
 		t.Fatal("http scheme must be refused")
@@ -259,7 +259,7 @@ func TestAPIClientRefusesRedirectOffAPI(t *testing.T) {
 	f := &GitHubFetcher{
 		HTTP:         multiTLSClient(good, evil),
 		BaseURL:      good.URL,
-		AllowedHosts: []string{"127.0.0.1"},
+		allowedHosts: []string{"127.0.0.1"},
 	}
 	_, _, _, err := f.Latest(context.Background(), "")
 	if err == nil {
@@ -317,7 +317,7 @@ func TestAPIClientConstructorNoUnguarded(t *testing.T) {
 	}
 	// Injected client with nil CheckRedirect still gets ours.
 	bare := &http.Client{}
-	tr2 := &Transport{Kind: KindAPI, AllowedHosts: DefaultAllowedAPIHosts, HTTP: bare}
+	tr2 := &Transport{Kind: KindAPI, allowedHosts: DefaultAllowedAPIHosts, HTTP: bare}
 	c2 := tr2.Client()
 	if c2.CheckRedirect == nil {
 		t.Fatal("injected bare client must be wrapped with CheckRedirect")
@@ -339,7 +339,7 @@ func testChecksumTransport(t *testing.T, srv *httptest.Server) *Transport {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Transport{Kind: KindDownload, AllowedHosts: []string{u.Hostname()}, HTTP: srv.Client()}
+	return &Transport{Kind: KindDownload, allowedHosts: []string{u.Hostname()}, HTTP: srv.Client()}
 }
 
 func TestAttachChecksums(t *testing.T) {
@@ -417,7 +417,7 @@ func TestAttachChecksums(t *testing.T) {
 		host, _ := url.Parse(u)
 		client := srv.Client()
 		srv.Close()
-		tr := &Transport{Kind: KindDownload, AllowedHosts: []string{host.Hostname()}, HTTP: client}
+		tr := &Transport{Kind: KindDownload, allowedHosts: []string{host.Hostname()}, HTTP: client}
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: u},
