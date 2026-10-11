@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
+	"github.com/outof0/anypick/go/internal/safepath"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
@@ -55,34 +56,23 @@ func importLimit(format string, args ...interface{}) error {
 		anyerr.WithExitCode(anyerr.ImportLimit), anyerr.WithMutated(false))
 }
 
-// ValidateImportFileKey rejects empty/NUL/absolute/mixed-separator/traversal
-// keys purely, before any staging root exists. Also called at write time as
-// defense-in-depth.
+// ValidateImportFileKey applies the shared path-key rules (safepath) purely,
+// before any staging root exists. StagedFilePath calls it again at write
+// time and keeps the folder check as a second layer.
 func ValidateImportFileKey(key string) error {
-	if key == "" || strings.ContainsRune(key, '\x00') {
-		return importFormat("Invalid import file path: %q.", key)
-	}
-	if filepath.IsAbs(key) {
-		return importFormat("Import file path must be relative: %s.", key)
-	}
-	// Windows-style absolute paths on every host; IsAbs only knows this platform.
-	if driveAbs.MatchString(key) || strings.HasPrefix(key, `\\`) {
-		return importFormat("Import file path must be relative: %s.", key)
+	if err := safepath.ValidateKey(key); err != nil {
+		return refusedImportPath(key)
 	}
 	if strings.Contains(key, `\`) && strings.Contains(key, "/") {
 		return importFormat("Import file path mixes path separators: %s.", key)
 	}
-	normalized := normalizeKey(key)
-	if normalized == "." || normalized == ".." ||
-		strings.HasPrefix(normalized, "../") ||
-		strings.Contains(normalized, "/../") ||
-		strings.HasSuffix(normalized, "/..") {
-		return importFormat("Import file path escapes the staging root: %s.", key)
-	}
 	return nil
 }
 
-var driveAbs = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+// refusedImportPath is the user-facing copy for a refused import key.
+func refusedImportPath(key string) error {
+	return importFormat("Can't use %q. It points outside AnyPick's folder, so nothing was imported.", key)
+}
 
 // normalizeKey converts backslashes to slashes then cleans the result.
 func normalizeKey(key string) string {
@@ -107,7 +97,7 @@ func StagedFilePath(stagingRoot, relKey string) (string, error) {
 	}
 	rel, rerr := filepath.Rel(rootAbs, abs)
 	if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", importFormat("Import file path escapes the staging root: %s.", relKey)
+		return "", refusedImportPath(relKey)
 	}
 	return abs, nil
 }
