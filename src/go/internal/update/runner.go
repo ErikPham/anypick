@@ -11,6 +11,11 @@ import (
 	"strings"
 )
 
+// maxDownloadBytes is the hard ceiling on an update asset download. Declared
+// sizes above this are refused up front. When Asset.Size is 0 or unknown the
+// same ceiling still bounds the body so a missing size cannot fill the disk.
+var maxDownloadBytes int64 = 512 << 20 // 512 MiB
+
 // Runner drives one check or one download for a shell and reports every
 // intermediate state through Emit. It is the bridge behind
 // `anypick update check --json` and `anypick update download --json`.
@@ -161,15 +166,21 @@ func (r *Runner) fetchTo(ctx context.Context, tr *Transport, asset Asset, dest s
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: HTTP %d", asset.Name, resp.StatusCode)
 	}
+	if asset.Size > maxDownloadBytes {
+		return fmt.Errorf("download %s declared size %d exceeds the %d-byte limit",
+			asset.Name, asset.Size, maxDownloadBytes)
+	}
 	f, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	var body io.Reader = resp.Body
+	// Always bound the body: declared size when known, else the hard maximum.
+	limit := maxDownloadBytes
 	if asset.Size > 0 {
-		body = io.LimitReader(resp.Body, asset.Size+1)
+		limit = asset.Size
 	}
+	body := io.LimitReader(resp.Body, limit+1)
 	buf := make([]byte, 64<<10)
 	var written int64
 	lastStep := -1
@@ -180,10 +191,13 @@ func (r *Runner) fetchTo(ctx context.Context, tr *Transport, asset Asset, dest s
 				return werr
 			}
 			written += int64(n)
-			if asset.Size > 0 {
-				if written > asset.Size {
+			if written > limit {
+				if asset.Size > 0 {
 					return fmt.Errorf("download %s exceeds its declared size", asset.Name)
 				}
+				return fmt.Errorf("download %s exceeds the %d-byte limit", asset.Name, maxDownloadBytes)
+			}
+			if asset.Size > 0 {
 				st.Progress = float64(written) / float64(asset.Size)
 				if step := int(st.Progress * 20); step != lastStep {
 					lastStep = step

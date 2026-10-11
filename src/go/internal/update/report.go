@@ -47,7 +47,7 @@ const (
 	copyOffline     = "Couldn't reach GitHub. Check your connection and try again."
 	copyRateLimited = "GitHub is limiting update checks right now. Try again in a little while."
 	copyGitHubDown  = "GitHub didn't return a usable release. Try again later."
-	copyNotWritable = "AnyPick can't replace itself in this folder. Download the update in your browser instead."
+	copyNotWritable = "AnyPick can't save the download to its cache folder. Download the update in your browser instead."
 	copyInstallFail = "Update didn't finish, so nothing was changed."
 	copyDownloading = "Downloading the update…"
 	copyVerifying   = "Checking the download against the release checksum…"

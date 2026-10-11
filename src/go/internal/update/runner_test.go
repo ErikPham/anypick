@@ -220,3 +220,45 @@ func TestStatusLineIsOneCompactJSONLine(t *testing.T) {
 		t.Fatalf("not one line: %q", b.String())
 	}
 }
+
+func TestRunnerUnknownSizeHardCap(t *testing.T) {
+	old := maxDownloadBytes
+	maxDownloadBytes = 32
+	t.Cleanup(func() { maxDownloadBytes = old })
+
+	payload := []byte("0123456789abcdef0123456789abcdefXXXX") // 36 bytes > 32
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.2.0", "assets": []map[string]any{
+				// size 0 / omitted → hard maximum must still apply
+				{"name": "AnyPick-macos-universal.zip", "browser_download_url": srv.URL + "/z", "size": 0},
+				{"name": "SHA256SUMS.txt", "browser_download_url": srv.URL + "/s", "size": 1},
+			}})
+		case "/s":
+			fmt.Fprintf(w, "%s  AnyPick-macos-universal.zip\n", HashBytes(payload))
+		case "/z":
+			_, _ = w.Write(payload)
+		}
+	}))
+	defer srv.Close()
+	r, _ := testRunner(t, srv, MapEnv{})
+	d := r.Download(context.Background(), "1.1.0", ChannelDirect)
+	if d.Kind == "ready" {
+		t.Fatalf("unknown-size download above hard cap accepted: %+v", d)
+	}
+	if _, err := os.Stat(filepath.Join(r.CacheDir, "1.2.0", "AnyPick-macos-universal.zip")); !os.IsNotExist(err) {
+		t.Fatalf("oversized unknown-size download must be deleted, err=%v", err)
+	}
+}
+
+func TestNotWritableCopyIsDownloadOnly(t *testing.T) {
+	d := NewStatusDTO(UpdateState{Kind: StateNotWritable, Current: "1.1.0", Latest: "1.1.1", Channel: ChannelDirect}, "darwin")
+	if !strings.Contains(d.Message, "cache folder") {
+		t.Fatalf("notWritable message still install-oriented: %q", d.Message)
+	}
+	if strings.Contains(d.Message, "replace itself") {
+		t.Fatalf("notWritable message must not mention install replace: %q", d.Message)
+	}
+}

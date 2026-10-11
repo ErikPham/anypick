@@ -125,7 +125,12 @@ enum UpdateCoreBridge {
         await onStatus(status)
       }
       process.waitUntilExit()
-      return last ?? .bridgeFailure(current: current)
+      // A non-zero exit (or no final state) must not leave the pane stuck on
+      // an intermediate "downloading" line — surface bridgeFailure instead.
+      if process.terminationStatus != 0 || last == nil {
+        return .bridgeFailure(current: current)
+      }
+      return last!
     } catch {
       return .bridgeFailure(current: current)
     }
@@ -417,7 +422,7 @@ enum UpdateStatusFixtures {
     "badChecksum": ###"{"schema":1,"kind":"badChecksum","current":"1.1.0","latest":"1.1.1","notes":"## What's new\n- Settings \u003e Updates checks GitHub Releases for you.\n- Fixed the Add App… button lining up with the cards.\n","channel":"direct","releaseURL":"https://github.com/outof0/anypick/releases/tag/v1.1.1","progress":0,"message":"Update didn't finish. The download didn't match the release checksum, so it was deleted and nothing was changed. You're still on 1.1.0.","retry":true}"###,
     "hostBlocked": ###"{"schema":1,"kind":"hostBlocked","current":"1.1.0","latest":"1.1.1","notes":"## What's new\n- Settings \u003e Updates checks GitHub Releases for you.\n- Fixed the Add App… button lining up with the cards.\n","channel":"direct","actionKind":"manual","lead":"View on GitHub","releaseURL":"https://github.com/outof0/anypick/releases/tag/v1.1.1","progress":0,"message":"Update didn't finish. The download came from an address AnyPick doesn't trust, so nothing was changed. You're still on 1.1.0.","retry":false}"###,
     "rateLimited": ###"{"schema":1,"kind":"rateLimited","current":"1.1.0","channel":"direct","releaseURL":"https://github.com/outof0/anypick/releases","progress":0,"message":"GitHub is limiting update checks right now. Try again in a little while.","retry":true}"###,
-    "notWritable": ###"{"schema":1,"kind":"notWritable","current":"1.1.0","latest":"1.1.1","notes":"## What's new\n- Settings \u003e Updates checks GitHub Releases for you.\n- Fixed the Add App… button lining up with the cards.\n","channel":"direct","releaseURL":"https://github.com/outof0/anypick/releases/tag/v1.1.1","progress":0,"message":"AnyPick can't replace itself in this folder. Download the update in your browser instead.","retry":false}"###,
+    "notWritable": ###"{"schema":1,"kind":"notWritable","current":"1.1.0","latest":"1.1.1","notes":"## What's new\n- Settings \u003e Updates checks GitHub Releases for you.\n- Fixed the Add App… button lining up with the cards.\n","channel":"direct","releaseURL":"https://github.com/outof0/anypick/releases/tag/v1.1.1","progress":0,"message":"AnyPick can't save the download to its cache folder. Download the update in your browser instead.","retry":false}"###,
   ]
 
   static func status(_ kind: String) -> UpdateStatusDTO? {
