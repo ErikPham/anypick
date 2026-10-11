@@ -38,9 +38,6 @@ type CheckResult struct {
 // Network/rate-limit failures never panic; they become offline/rateLimited.
 func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 	clock := HookClock(c.Env, c.Clock)
-	if clock == nil {
-		clock = RealClock{}
-	}
 	now := clock.Now()
 	settings := in.Settings.Normalize()
 	current := in.Current

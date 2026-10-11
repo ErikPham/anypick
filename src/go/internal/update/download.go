@@ -232,7 +232,7 @@ func ValidateAssetName(name string) error {
 		return fmt.Errorf("empty asset name")
 	}
 	if strings.Contains(name, "..") {
-		return fmt.Errorf("asset name %q contains ..", name)
+		return fmt.Errorf("asset name %q contains a parent-directory segment", name)
 	}
 	if strings.ContainsAny(name, "/\\") {
 		return fmt.Errorf("asset name %q contains path separator", name)
