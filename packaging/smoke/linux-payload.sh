@@ -74,7 +74,7 @@ for rpm in "$stage"/*.rpm; do
   dir="$work/rpm"
   mkdir -p "$dir"
   if command -v rpm2archive >/dev/null; then
-    ( cd "$dir" && rpm2archive -n "$rpm" | tar -xz )
+    ( cd "$dir" && rpm2archive -n "$rpm" | tar -x )
   elif command -v rpm2cpio >/dev/null && command -v cpio >/dev/null; then
     ( cd "$dir" && rpm2cpio "$rpm" | cpio -idm --quiet )
   else
