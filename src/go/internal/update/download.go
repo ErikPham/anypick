@@ -34,30 +34,32 @@ type ErrDeniedDownloadURL = ErrDeniedURL
 // as ErrOffline.
 var ErrHostNotAllowed = errors.New("host not allowed")
 
-// DefaultAllowedAPIHosts is the production allowlist for GitHub Releases
-// metadata fetches. Exact host match, https only, no wildcards.
-var DefaultAllowedAPIHosts = []string{
-	"api.github.com",
+// defaultAPIHosts returns a fresh copy of the production allowlist for GitHub
+// Releases metadata fetches. Exact host match, https only, no wildcards.
+func defaultAPIHosts() []string {
+	return []string{"api.github.com"}
 }
 
-// DefaultAllowedDownloadHosts is the production allowlist for release asset
-// downloads. Exact host match, https only, no wildcards.
+// defaultDownloadHosts returns a fresh copy of the production allowlist for
+// release asset downloads. Exact host match, https only, no wildcards.
 //
 // release-assets.githubusercontent.com is included because GitHub 302-redirects
 // real browser_download_url responses from github.com there (verified against
 // v1.1.0 SHA256SUMS.txt). Without it every real download is refused.
-var DefaultAllowedDownloadHosts = []string{
-	"github.com",
-	"objects.githubusercontent.com",
-	"release-assets.githubusercontent.com",
+func defaultDownloadHosts() []string {
+	return []string{
+		"github.com",
+		"objects.githubusercontent.com",
+		"release-assets.githubusercontent.com",
+	}
 }
 
 // Transport is an allowlisted HTTPS client. Two production configurations
 // exist — never mix them:
 //
-//   - API:     NewAPITransport / DefaultAllowedAPIHosts (api.github.com only;
+//   - API:     NewAPITransport / defaultAPIHosts (api.github.com only;
 //     test-feed host may be added when ANYPICK_UPDATE_TESTING=1).
-//   - Download: NewDownloadTransport / DefaultAllowedDownloadHosts (the three
+//   - Download: NewDownloadTransport / defaultDownloadHosts (the three
 //     GitHub download hosts).
 //
 // allowedHosts defaults depend on Kind when nil/empty. Tests in this package
@@ -93,7 +95,7 @@ type Transport struct {
 // ANYPICK_UPDATE_FEED_URL set, that feed host is added to the allowlist; otherwise
 // the feed URL is ignored.
 func NewAPITransport(env Env) *Transport {
-	hosts := append([]string{}, DefaultAllowedAPIHosts...)
+	hosts := defaultAPIHosts()
 	if feed := HookFeedURL(env); feed != "" {
 		if u, err := url.Parse(feed); err == nil {
 			if h := strings.ToLower(u.Hostname()); h != "" {
@@ -107,7 +109,7 @@ func NewAPITransport(env Env) *Transport {
 // NewDownloadTransport returns the production download client (three GitHub
 // hosts, https, CheckRedirect on every hop).
 func NewDownloadTransport() *Transport {
-	return &Transport{Kind: KindDownload, allowedHosts: append([]string{}, DefaultAllowedDownloadHosts...)}
+	return &Transport{Kind: KindDownload, allowedHosts: defaultDownloadHosts()}
 }
 
 func (t *Transport) hostSet() map[string]struct{} {
@@ -115,9 +117,9 @@ func (t *Transport) hostSet() map[string]struct{} {
 	if t != nil && len(t.allowedHosts) > 0 {
 		hosts = t.allowedHosts
 	} else if t != nil && t.Kind == KindAPI {
-		hosts = DefaultAllowedAPIHosts
+		hosts = defaultAPIHosts()
 	} else {
-		hosts = DefaultAllowedDownloadHosts
+		hosts = defaultDownloadHosts()
 	}
 	out := make(map[string]struct{}, len(hosts))
 	for _, h := range hosts {

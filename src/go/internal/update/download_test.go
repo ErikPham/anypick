@@ -5,11 +5,15 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -122,8 +126,8 @@ func TestRedirectToOtherHostRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("redirect to other host must be refused")
 	}
-	if !strings.Contains(err.Error(), "not allowed") {
-		t.Fatalf("want allowlist refusal, got %v", err)
+	if !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("want ErrHostNotAllowed, got %v", err)
 	}
 	if evilHits != 0 {
 		t.Fatalf("evil host must receive ZERO requests, got %d", evilHits)
@@ -433,6 +437,91 @@ func TestAllowedHostsNotExported(t *testing.T) {
 			}
 		}
 	}
+
+	// Package-level: no exported var may hold a host list ([]string). Error
+	// sentinels (Err*) stay allowed; a re-exported DefaultAllowed* var must fail.
+	assertNoExportedHostListVars(t)
+}
+
+func assertNoExportedHostListVars(t *testing.T) {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		filename := filepath.Join(dir, name)
+		file, err := parser.ParseFile(fset, filename, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, ident := range vs.Names {
+					if !ident.IsExported() {
+						continue
+					}
+					if isStringSliceVar(vs, i) || looksLikeHostListName(ident.Name) {
+						t.Errorf("%s: exported package var %s can hold/replace host lists", name, ident.Name)
+					}
+				}
+			}
+		}
+	}
+}
+
+func looksLikeHostListName(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "allowedhost") ||
+		strings.Contains(lower, "allowlist") ||
+		strings.Contains(lower, "hostlist") ||
+		(strings.Contains(lower, "host") && strings.Contains(lower, "default"))
+}
+
+// isStringSliceVar reports whether the i-th name in vs is typed or initialized
+// as []string (the shape of a host allowlist).
+func isStringSliceVar(vs *ast.ValueSpec, i int) bool {
+	if vs.Type != nil && isStringSliceType(vs.Type) {
+		return true
+	}
+	if i < len(vs.Values) && isStringSliceComposite(vs.Values[i]) {
+		return true
+	}
+	if len(vs.Values) == 1 && isStringSliceComposite(vs.Values[0]) {
+		return true
+	}
+	return false
+}
+
+func isStringSliceType(expr ast.Expr) bool {
+	arr, ok := expr.(*ast.ArrayType)
+	if !ok || arr.Len != nil {
+		return false
+	}
+	id, ok := arr.Elt.(*ast.Ident)
+	return ok && id.Name == "string"
+}
+
+func isStringSliceComposite(expr ast.Expr) bool {
+	comp, ok := expr.(*ast.CompositeLit)
+	return ok && isStringSliceType(comp.Type)
 }
 
 func TestErrHostNotAllowedIsTyped(t *testing.T) {

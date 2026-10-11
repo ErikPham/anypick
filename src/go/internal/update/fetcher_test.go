@@ -317,7 +317,7 @@ func TestAPIClientConstructorNoUnguarded(t *testing.T) {
 	}
 	// Injected client with nil CheckRedirect still gets ours.
 	bare := &http.Client{}
-	tr2 := &Transport{Kind: KindAPI, allowedHosts: DefaultAllowedAPIHosts, HTTP: bare}
+	tr2 := &Transport{Kind: KindAPI, allowedHosts: defaultAPIHosts(), HTTP: bare}
 	c2 := tr2.Client()
 	if c2.CheckRedirect == nil {
 		t.Fatal("injected bare client must be wrapped with CheckRedirect")
