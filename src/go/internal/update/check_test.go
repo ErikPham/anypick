@@ -13,10 +13,32 @@ type stubFetcher struct {
 	notModified bool
 	err         error
 	calls       int
+	lastETag    string
+	// sequence: if non-nil, each Latest call pops the next response.
+	seq []stubFetchResp
+}
+
+type stubFetchResp struct {
+	rel         Release
+	etag        string
+	notModified bool
+	err         error
 }
 
 func (s *stubFetcher) Latest(ctx context.Context, etag string) (Release, string, bool, error) {
 	s.calls++
+	s.lastETag = etag
+	if len(s.seq) > 0 {
+		r := s.seq[0]
+		s.seq = s.seq[1:]
+		if r.err != nil {
+			return Release{}, r.etag, false, r.err
+		}
+		if r.notModified {
+			return Release{}, etag, true, nil
+		}
+		return r.rel, r.etag, false, nil
+	}
 	if s.err != nil {
 		return Release{}, s.etag, false, s.err
 	}
@@ -46,6 +68,9 @@ func TestCheckUpgradeDirect(t *testing.T) {
 	}
 	if res.State.Asset == nil || res.State.Asset.Name != "AnyPick-macos-universal.zip" {
 		t.Fatalf("asset %+v", res.State.Asset)
+	}
+	if res.State.Action.Kind != ActionSelfUpdate {
+		t.Fatalf("action %+v", res.State.Action)
 	}
 }
 
@@ -131,7 +156,6 @@ func TestCheckThrottle(t *testing.T) {
 		t.Fatalf("kind=%s", res.State.Kind)
 	}
 
-	// Manual bypasses throttle.
 	res2 := c.Check(context.Background(), CheckInput{
 		Current: "1.1.0", Settings: s, Channel: ChannelDirect, Manual: true, Cached: cached,
 	})
@@ -157,6 +181,20 @@ func TestCheckThrottleExpires(t *testing.T) {
 	}
 }
 
+func TestCheckLastCheckedInFutureCountsAsExpired(t *testing.T) {
+	f := &stubFetcher{rel: Release{Tag: "v1.2.0", Version: "1.2.0", Assets: []Asset{{Name: "AnyPick-macos-universal.zip"}}}}
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: now}, GOOS: "darwin", GOARCH: "arm64"}
+	s := DefaultSettings()
+	s.LastChecked = now.Add(2 * time.Hour) // clock rollback: LastChecked in the future
+	_ = c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: s, Channel: ChannelDirect, Manual: false,
+	})
+	if f.calls != 1 {
+		t.Fatalf("future LastChecked must count as expired, calls=%d", f.calls)
+	}
+}
+
 func TestCheckRateLimitedAndOffline(t *testing.T) {
 	c := &Checker{Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
 	c.Fetcher = &stubFetcher{err: ErrRateLimited}
@@ -176,6 +214,32 @@ func TestCheckRateLimitedAndOffline(t *testing.T) {
 	}
 }
 
+func TestCheck5xxGitHubDown(t *testing.T) {
+	f := &stubFetcher{err: errors.New("github releases: HTTP 502: bad gateway")}
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelDirect, Manual: true,
+	})
+	if res.State.Kind != StateGitHubDown {
+		t.Fatalf("kind=%s", res.State.Kind)
+	}
+}
+
+func TestCheckUnparseableTagNeverAvailable(t *testing.T) {
+	// Fetcher returns error for bad tag; check surfaces githubDown, never available*.
+	f := &stubFetcher{err: errors.New(`release tag "nope": "nope" is not major.minor.patch`)}
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelDirect, Manual: true,
+	})
+	if res.State.Kind == StateAvailableDirect || res.State.Kind == StateAvailablePackageManager {
+		t.Fatalf("unparseable must never be available, got %s", res.State.Kind)
+	}
+	if res.State.Kind != StateGitHubDown {
+		t.Fatalf("kind=%s", res.State.Kind)
+	}
+}
+
 func TestCheckPackageManager(t *testing.T) {
 	f := &stubFetcher{rel: Release{Tag: "v1.2.0", Version: "1.2.0", Assets: []Asset{
 		{Name: "AnyPick_1.2.0_amd64.deb"},
@@ -190,6 +254,9 @@ func TestCheckPackageManager(t *testing.T) {
 	if res.State.Command != "sudo apt install ./AnyPick_1.2.0_amd64.deb" {
 		t.Fatalf("cmd=%q", res.State.Command)
 	}
+	if res.State.Action.Kind != ActionDownloadAsset || res.State.Action.DownloadAsset != "AnyPick_1.2.0_amd64.deb" {
+		t.Fatalf("action %+v", res.State.Action)
+	}
 }
 
 func TestCheckETag304UsesCache(t *testing.T) {
@@ -203,5 +270,84 @@ func TestCheckETag304UsesCache(t *testing.T) {
 	})
 	if res.State.Kind != StateAvailableDirect {
 		t.Fatalf("kind=%s", res.State.Kind)
+	}
+	if f.lastETag != `"same"` {
+		t.Fatalf("etag not re-sent: %q", f.lastETag)
+	}
+}
+
+func TestCheckETagSavedAndResent(t *testing.T) {
+	f := &stubFetcher{
+		rel:  Release{Tag: "v1.2.0", Version: "1.2.0", Assets: []Asset{{Name: "AnyPick-macos-universal.zip"}}},
+		etag: `"new-etag"`,
+	}
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	s := DefaultSettings()
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: s, Channel: ChannelDirect, Manual: true,
+	})
+	if res.Settings.ETag != `"new-etag"` {
+		t.Fatalf("etag not saved: %q", res.Settings.ETag)
+	}
+	f.notModified = true
+	s2 := res.Settings
+	_ = c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: s2, Channel: ChannelDirect, Manual: true,
+		Cached: &f.rel,
+	})
+	if f.lastETag != `"new-etag"` {
+		t.Fatalf("saved etag not re-sent: %q", f.lastETag)
+	}
+}
+
+func TestCheck304WithoutCacheRefetches(t *testing.T) {
+	f := &stubFetcher{
+		seq: []stubFetchResp{
+			{notModified: true, etag: `"e"`},
+			{rel: Release{Tag: "v1.2.0", Version: "1.2.0", Assets: []Asset{{Name: "AnyPick-macos-universal.zip"}}}, etag: `"e2"`},
+		},
+	}
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "darwin", GOARCH: "arm64"}
+	s := DefaultSettings()
+	s.ETag = `"e"`
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: s, Channel: ChannelDirect, Manual: true, Cached: nil,
+	})
+	if res.State.Kind == StateUpToDate {
+		t.Fatal("304 with no cache must NOT report upToDate")
+	}
+	if res.State.Kind != StateAvailableDirect {
+		t.Fatalf("kind=%s err=%v", res.State.Kind, res.State.Err)
+	}
+	if f.calls != 2 {
+		t.Fatalf("want refetch without etag, calls=%d", f.calls)
+	}
+	if f.lastETag != "" {
+		t.Fatalf("refetch must omit If-None-Match, got %q", f.lastETag)
+	}
+}
+
+func TestCheckArm64AndUnknownManual(t *testing.T) {
+	rel := Release{Tag: "v1.2.0", Version: "1.2.0", HTMLURL: "https://github.com/outof0/anypick/releases/tag/v1.2.0", Assets: []Asset{
+		{Name: "anypick-1.2.0-linux-arm64.tar.gz"},
+	}}
+	f := &stubFetcher{rel: rel}
+	c := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "linux", GOARCH: "arm64"}
+	res := c.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelDirect, Manual: true,
+	})
+	if res.State.Kind != StateAvailablePackageManager {
+		t.Fatalf("kind=%s", res.State.Kind)
+	}
+	if res.State.Action.Kind != ActionManual {
+		t.Fatalf("action %+v", res.State.Action)
+	}
+
+	c2 := &Checker{Fetcher: f, Clock: FixedClock{T: time.Now()}, GOOS: "linux", GOARCH: "amd64"}
+	res2 := c2.Check(context.Background(), CheckInput{
+		Current: "1.1.0", Settings: DefaultSettings(), Channel: ChannelUnknown, Manual: true,
+	})
+	if res2.State.Kind != StateAvailablePackageManager || res2.State.Action.Kind != ActionManual {
+		t.Fatalf("unknown: kind=%s action=%+v", res2.State.Kind, res2.State.Action)
 	}
 }

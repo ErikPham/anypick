@@ -179,3 +179,15 @@ func TestDetectChannelHookOverride(t *testing.T) {
 		t.Fatalf("hook should win, got %q", ch)
 	}
 }
+
+func TestDetectChannelWinget(t *testing.T) {
+	env := MapEnv{"LOCALAPPDATA": `C:\Users\dev\AppData\Local`}
+	fs := &memFS{env: env}
+	ch := DetectChannel(DetectOpts{
+		Exe:  `C:\Users\dev\AppData\Local\Microsoft\WinGet\Packages\AnyPick\AnyPick.exe`,
+		GOOS: "windows", FS: fs, Env: env,
+	})
+	if ch != ChannelWinget {
+		t.Fatalf("got %q", ch)
+	}
+}

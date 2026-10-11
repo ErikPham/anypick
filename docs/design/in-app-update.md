@@ -29,9 +29,24 @@ type UpdateSettings struct {
   ETag string
   HighestSeen string // persist highest-seen version to resist rollback feeds
 }
-type UpdateState struct { Kind StateKind; Current, Latest string; Notes string; Command string /*pm only*/; Progress float64; Err error; LastChecked time.Time }
+type UpdateState struct {
+  Kind StateKind; Current, Latest string; Notes string
+  Command string; Action UpdateAction; Progress float64; Err error; LastChecked time.Time
+}
 // StateKind: idle checking upToDate availableDirect availablePackageManager notWritable
 //   downloading verifying ready offline rateLimited githubDown badChecksum installFailed
+type ActionKind string // "selfUpdate"|"command"|"downloadAsset"|"manual"
+type UpdateAction struct {
+  Kind ActionKind
+  Command string       // pasteable only (no prose, no trailing period); set for command + deb/rpm
+  DownloadAsset string // asset file name for downloadAsset (UI: Download .<ext>)
+  Lead string          // locked Design lead copy
+}
+// Channel mapping:
+//   selfUpdate: direct, nsis, appimage
+//   command: brew, scoop, npm, winget (Command e.g. `winget upgrade AnyPick`)
+//   downloadAsset: deb, rpm (DownloadAsset + Command), msi (DownloadAsset .msi only)
+//   manual: unknown / arm64 desktop (link to release)
 type Fetcher interface{ Latest(ctx, etag string) (Release, newETag string, notModified bool, err error) }
 type Clock   interface{ Now() time.Time }
 ```
@@ -50,7 +65,7 @@ type Clock   interface{ Now() time.Time }
 | scoop | `scoop update anypick` (CLI only) |
 | npm | `npm install -g anypick@latest` (CLI only) |
 | deb | Manual reinstall. Show **Download .deb** + exact `sudo apt install ./AnyPick_<v>_amd64.deb`. Never say "repo". |
-| rpm | Manual reinstall. Show **Download .rpm** + exact `sudo dnf install ./AnyPick-<v>.x86_64.rpm`. Never say "repo". |
+| rpm | Manual reinstall. Show **Download .rpm** + exact `sudo dnf install ./AnyPick-<v>-1.x86_64.rpm`. Never say "repo". |
 | winget | `winget upgrade AnyPick` or download link |
 | msi | package manager / download link (not self-update) |
 | nsis | self-update (per-user setup.exe) |
@@ -61,7 +76,7 @@ State machine: `idle→checking→{upToDate|availableDirect|availablePackageMana
 
 **Skip This Version (in scope):** hides menu item + background badge until a newer version; manual check still shows it. UI copy: `You skipped 1.2.0. You'll hear about the next version.`
 
-**Toggle renamed "Download updates automatically":** downloads+verifies in background, installs on next **QUIT**, never relaunch when idle. Menu bar item `Restart to Update to <v>`. Relaunch confirms if proxies serving: `Restarting stops N running proxies. Connected apps reconnect when AnyPick starts again.`
+**Toggle renamed "Download updates automatically":** downloads+verifies in background, installs on next **QUIT**, never relaunch when idle. Menu bar item `Restart to Update to <v>`. Relaunch confirms if proxies serving (n>0 only; n==0 → no confirm): n=1 uses singular `proxy`; n>1 keeps `proxies`. Copy: `Restarting stops N running proxy|proxies. Connected apps reconnect when AnyPick starts again.`
 
 **macOS (direct):** 1) download `AnyPick-macos-universal.zip` to `~/Library/Caches/AnyPick/update/<ver>/`; 2) SHA256 vs SHA256SUMS → mismatch = delete, badChecksum, nothing changed; 3) `ditto -x -k` to staging, `codesign --verify --deep --strict` + check `CFBundleShortVersionString == ver` and bundle id; 4) preflight writability — if not writable → notWritable with "Download in browser" + "Reveal in Finder", **never an admin prompt**; 5) ready → user clicks Relaunch (or AutoDownload waits for quit); 6) helper swap + rollback as previously designed.
 
@@ -77,7 +92,7 @@ State machine: `idle→checking→{upToDate|availableDirect|availablePackageMana
 Plugin needs: `plugins.updater.pubkey` (minisign) in tauri.conf.json, `bundle.createUpdaterArtifacts: true`, CI secrets `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`), `.sig` files, endpoint `latest.json`. **Blocked on OutOf0 key approval** — nothing generated in slice 1. Recommend Go SHA256SUMS as second gate before `downloadAndInstall`.
 
 ## 5. Security / Authenticity
-- TLS only, Go default roots; restrict download hosts to `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`.
+- TLS only, Go default roots; restrict download hosts to exact `github.com` and `objects.githubusercontent.com` (https only). Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries fail closed.
 - **Same-release SHA-256 is integrity, not authenticity**: it verifies the file matches the release checksum, not who signed it. Accepted for macOS v1.1.1. Tauri minisign pending OutOf0 key approval.
 - Downgrade: refuse `latest ≤ current`; refuse tag/asset version mismatch; ignore drafts/prereleases; persist `HighestSeen` to resist rollback feeds.
 - Path safety on unzip; size cap vs `Asset.Size`; temp dirs 0700.

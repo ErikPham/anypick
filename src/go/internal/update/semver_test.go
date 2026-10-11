@@ -13,6 +13,7 @@ func TestParseAndCompare(t *testing.T) {
 		{"patch newer", "1.2.1", "1.2.0", 1},
 		{"minor newer", "1.3.0", "1.2.9", 1},
 		{"major newer", "2.0.0", "1.9.9", 1},
+		{"minor 1.10 > 1.9", "1.10.0", "1.9.0", 1},
 		{"older", "1.1.0", "1.2.0", -1},
 		{"stable > prerelease", "1.2.0", "1.2.0-rc.1", 1},
 		{"prerelease < stable", "1.2.0-rc.1", "1.2.0", -1},

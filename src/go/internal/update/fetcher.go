@@ -127,6 +127,9 @@ func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, strin
 	}
 	assets := make([]Asset, 0, len(raw.Assets))
 	for _, a := range raw.Assets {
+		if err := ValidateAssetName(a.Name); err != nil {
+			return Release{}, "", false, fmt.Errorf("release asset: %w", err)
+		}
 		assets = append(assets, Asset{Name: a.Name, URL: a.BrowserDownloadURL, Size: a.Size})
 	}
 	rel := Release{
@@ -150,7 +153,9 @@ func etagOr(a, b string) string {
 }
 
 // AttachChecksums fetches SHA256SUMS.txt from the release assets (by name) and
-// fills Asset.SHA256. Missing SUMS is not fatal — assets stay without hashes.
+// fills Asset.SHA256. Fail-closed: missing SUMS file, non-200 / offline fetch,
+// unparseable body, duplicate entries, or any installable asset without a
+// non-empty hash returns an error. The caller must not proceed to install.
 func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Release, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -163,8 +168,9 @@ func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Rel
 		}
 	}
 	if sumsURL == "" {
-		return rel, nil
+		return rel, fmt.Errorf("SHA256SUMS.txt missing from release assets")
 	}
+	// Callers that download installable assets must also ValidateDownloadURL.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
 	if err != nil {
 		return rel, err
@@ -183,5 +189,8 @@ func AttachChecksums(ctx context.Context, client *http.Client, rel Release) (Rel
 		return rel, err
 	}
 	rel.Assets = ApplyChecksums(rel.Assets, sums)
+	if err := RequireChecksums(rel.Assets); err != nil {
+		return rel, err
+	}
 	return rel, nil
 }

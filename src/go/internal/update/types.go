@@ -100,7 +100,8 @@ type UpdateState struct {
 	Current     string
 	Latest      string
 	Notes       string
-	Command     string // package-manager command, when Kind is availablePackageManager
+	Command     string       // pasteable command from Action, when set
+	Action      UpdateAction // typed channel guidance (selfUpdate/command/downloadAsset/manual)
 	Channel     InstallChannel
 	Asset       *Asset
 	Progress    float64

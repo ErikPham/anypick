@@ -12,7 +12,10 @@ import (
 
 // ParseSHA256SUMS parses a standard GNU coreutils SHA256SUMS file:
 // "<hex>  <filename>" or "<hex> *<filename>" (binary mode). Lines that are
-// blank or start with '#' are ignored. Returns a map of basename → lowercase hex.
+// blank or start with '#' are ignored. Returns a map of name → lowercase hex.
+//
+// Fail-closed: duplicate filenames and names containing "..", "/" or "\" are
+// rejected. No basename trimming.
 func ParseSHA256SUMS(r io.Reader) (map[string]string, error) {
 	out := make(map[string]string)
 	sc := bufio.NewScanner(r)
@@ -44,11 +47,14 @@ func ParseSHA256SUMS(r io.Reader) (map[string]string, error) {
 		if name == "" {
 			return nil, fmt.Errorf("SHA256SUMS line %d: empty filename", lineNo)
 		}
-		// Basename only — release assets are flat.
-		if i := strings.LastIndexAny(name, "/\\"); i >= 0 {
-			name = name[i+1:]
+		if err := ValidateAssetName(name); err != nil {
+			return nil, fmt.Errorf("SHA256SUMS line %d: %w", lineNo, err)
 		}
-		out[name] = strings.ToLower(hexPart)
+		lower := strings.ToLower(hexPart)
+		if _, exists := out[name]; exists {
+			return nil, fmt.Errorf("SHA256SUMS line %d: duplicate entry for %q", lineNo, name)
+		}
+		out[name] = lower
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -57,6 +63,7 @@ func ParseSHA256SUMS(r io.Reader) (map[string]string, error) {
 }
 
 // ApplyChecksums fills Asset.SHA256 from a parsed SUMS map (matched by Name).
+// It does not error; call RequireChecksums for fail-closed coverage.
 func ApplyChecksums(assets []Asset, sums map[string]string) []Asset {
 	out := make([]Asset, len(assets))
 	copy(out, assets)
@@ -68,8 +75,23 @@ func ApplyChecksums(assets []Asset, sums map[string]string) []Asset {
 	return out
 }
 
+// RequireChecksums fails closed when any installable asset lacks a non-empty
+// SHA-256. SHA256SUMS.txt itself is exempt. Empty hash strings fail.
+func RequireChecksums(assets []Asset) error {
+	for _, a := range assets {
+		if a.Name == "SHA256SUMS.txt" {
+			continue
+		}
+		if strings.TrimSpace(a.SHA256) == "" {
+			return fmt.Errorf("missing SHA-256 for asset %q", a.Name)
+		}
+	}
+	return nil
+}
+
 // VerifyFileSHA256 hashes path and compares it to wantHex (case-insensitive).
 // A mismatch returns an error whose text is suitable for StateBadChecksum.
+// On mismatch the caller must leave the install untouched (delete staging only).
 func VerifyFileSHA256(path, wantHex string) error {
 	wantHex = strings.ToLower(strings.TrimSpace(wantHex))
 	if wantHex == "" {

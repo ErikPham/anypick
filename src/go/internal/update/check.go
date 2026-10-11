@@ -55,10 +55,11 @@ func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 		LastChecked: settings.LastChecked,
 	}
 
-	// Throttle automatic checks.
+	// Throttle automatic checks. A LastChecked in the future (clock rollback)
+	// counts as expired so we refetch rather than trusting a skewed clock.
 	if !in.Manual && settings.AutoCheck && !settings.LastChecked.IsZero() {
-		if now.Sub(settings.LastChecked) < CheckThrottle {
-			// Return prior conclusion without hitting the network.
+		elapsed := now.Sub(settings.LastChecked)
+		if elapsed >= 0 && elapsed < CheckThrottle {
 			return c.concludeFromCached(in, settings, current, now)
 		}
 	}
@@ -99,9 +100,34 @@ func (c *Checker) Check(ctx context.Context, in CheckInput) CheckResult {
 	if notModified {
 		release = in.Cached
 		if release == nil {
-			st.Kind = StateUpToDate
-			st.LastChecked = now
-			return CheckResult{State: st, Settings: settings}
+			// 304 with no cached release must NOT report upToDate. Refetch
+			// without If-None-Match so we have a body to evaluate.
+			rel2, newETag2, notMod2, err2 := c.Fetcher.Latest(ctx, "")
+			if newETag2 != "" {
+				settings.ETag = newETag2
+			}
+			if err2 != nil {
+				st.LastChecked = now
+				switch {
+				case errors.Is(err2, ErrRateLimited):
+					st.Kind = StateRateLimited
+					st.Err = err2
+				case isOffline(err2):
+					st.Kind = StateOffline
+					st.Err = err2
+				default:
+					st.Kind = StateGitHubDown
+					st.Err = err2
+				}
+				return CheckResult{State: st, Settings: settings}
+			}
+			if notMod2 {
+				st.Kind = StateGitHubDown
+				st.Err = errors.New("304 with empty cache and empty body")
+				st.LastChecked = now
+				return CheckResult{State: st, Settings: settings}
+			}
+			release = &rel2
 		}
 	} else {
 		release = &rel
@@ -169,22 +195,33 @@ func (c *Checker) evaluate(settings UpdateSettings, current string, ch InstallCh
 		}
 	}
 
+	action := ChannelUpdateAction(ch, release.Version)
 	asset, assetErr := PickAsset(*release, c.GOOS, c.GOARCH, ch)
 	if IsPackageManager(ch) || IsCLIOnly(ch) {
 		st.Kind = StateAvailablePackageManager
-		st.Command = PackageManagerCommand(ch, release.Version)
+		st.Action = action
+		st.Command = action.Command
 		if assetErr == nil {
 			st.Asset = &asset
+			if action.DownloadAsset == "" && action.Kind == ActionDownloadAsset {
+				st.Action.DownloadAsset = asset.Name
+			}
 		}
 		return CheckResult{State: st, Settings: settings, Release: release}
 	}
 	if assetErr != nil {
 		// arm64 desktop / unknown: manual download fallback.
 		st.Kind = StateAvailablePackageManager
+		manualAction := UpdateAction{
+			Kind: ActionManual,
+			Lead: "Download the latest release from GitHub:",
+		}
+		st.Action = manualAction
 		st.Command = ManualDownloadURL(*release, Asset{})
 		return CheckResult{State: st, Settings: settings, Release: release}
 	}
 	st.Kind = StateAvailableDirect
+	st.Action = UpdateAction{Kind: ActionSelfUpdate}
 	st.Asset = &asset
 	return CheckResult{State: st, Settings: settings, Release: release}
 }
