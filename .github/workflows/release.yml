@@ -593,6 +593,8 @@ jobs:
           RELEASE_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git show-ref --tags --verify --quiet "refs/tags/${RELEASE_TAG}"; then
             test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA" || {
               echo "::error::${RELEASE_TAG} points to a different commit; refusing to move a tag."
