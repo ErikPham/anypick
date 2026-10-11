@@ -18,7 +18,7 @@ sums="$3"
 checkout="$(mktemp -d "${RUNNER_TEMP:-/tmp}/anypick-homebrew.XXXXXX")"
 trap 'rm -rf "$checkout"' EXIT
 
-auth_header="AUTHORIZATION: bearer ${HOMEBREW_TAP_TOKEN}"
+auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | base64 | tr -d '\n')"
 git -c http.extraheader="$auth_header" clone --depth=1 "https://github.com/${tap_repository}.git" "$checkout/tap"
 bash "$(dirname "$0")/render.sh" "$version" "$release_base" "$sums" "$checkout/tap"
 cask_asset="AnyPick-macos-universal.zip"
