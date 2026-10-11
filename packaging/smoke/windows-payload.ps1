@@ -21,13 +21,13 @@ function Invoke-HelperSmoke {
   if (-not (Test-Path $Helper)) {
     throw "$Label payload has no anypick-core.exe helper"
   }
-  $home = Join-Path $work "home-$Label"
-  New-Item -ItemType Directory -Path $home -Force | Out-Null
+  $smokeHome = Join-Path $work "home-$Label"
+  New-Item -ItemType Directory -Path $smokeHome -Force | Out-Null
   # os.UserHomeDir reads USERPROFILE on Windows; HOME alone would leave the
   # helper pointed at the runner's real profile.
-  $env:USERPROFILE = $home
-  $env:HOME = $home
-  $env:ANYPICK_HOME = Join-Path $home '.anypick'
+  $env:USERPROFILE = $smokeHome
+  $env:HOME = $smokeHome
+  $env:ANYPICK_HOME = Join-Path $smokeHome '.anypick'
   $out = ("$(& $Helper --version)").Trim()
   if ($out -ne "anypick-go $Version") {
     throw "$Label helper reports '$out', want 'anypick-go $Version'"
