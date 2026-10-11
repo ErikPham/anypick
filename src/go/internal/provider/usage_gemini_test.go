@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,7 +27,9 @@ type codeAssistQuotaServer struct {
 	project       string
 	buckets       []map[string]interface{}
 	summaryGroups []map[string]interface{}
-	status        int
+	status        int // applies to every endpoint when non-zero
+	summaryStatus int // overrides status for retrieveUserQuotaSummary
+	quotaStatus   int // overrides status for retrieveUserQuota
 }
 
 func (s *codeAssistQuotaServer) start(t *testing.T) *httptest.Server {
@@ -47,8 +50,12 @@ func (s *codeAssistQuotaServer) start(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "retrieveUserQuotaSummary"):
 			s.summaryCalls++
 			_ = json.NewDecoder(r.Body).Decode(&s.quotaBody)
-			if s.status != 0 {
-				w.WriteHeader(s.status)
+			code := s.summaryStatus
+			if code == 0 {
+				code = s.status
+			}
+			if code != 0 {
+				w.WriteHeader(code)
 				return
 			}
 			if len(s.summaryGroups) > 0 {
@@ -60,8 +67,12 @@ func (s *codeAssistQuotaServer) start(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "retrieveUserQuota"):
 			s.quotaCalls++
 			_ = json.NewDecoder(r.Body).Decode(&s.quotaBody)
-			if s.status != 0 {
-				w.WriteHeader(s.status)
+			code := s.quotaStatus
+			if code == 0 {
+				code = s.status
+			}
+			if code != 0 {
+				w.WriteHeader(code)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"buckets": s.buckets})
@@ -377,5 +388,94 @@ func TestParseGeminiQuotaSummaryEmptyFallsThrough(t *testing.T) {
 	usage, err := parseGeminiQuotaSummary([]byte(`{"groups":[]}`))
 	if err != nil || usage != nil {
 		t.Fatalf("usage = %+v err=%v", usage, err)
+	}
+}
+
+func TestGeminiLiveUsageFallsBackWhenSummary5xx(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	writeGeminiCLICredential(t, home, "cli-access", "cli-refresh", time.Now().Add(time.Hour))
+
+	server := &codeAssistQuotaServer{
+		project:       "projects/123",
+		summaryStatus: http.StatusBadGateway,
+		buckets: []map[string]interface{}{
+			{"modelId": "models/gemini-2.5-pro", "remainingFraction": 0.42},
+		},
+	}
+	server.start(t)
+
+	usage, err := newGemini(home).LiveUsage(context.Background())
+	if err != nil {
+		t.Fatalf("LiveUsage: %v", err)
+	}
+	if usage == nil || len(usage.Windows) != 1 || usage.Windows[0].RemainingPercent != 42 {
+		t.Fatalf("windows = %+v, want legacy fallback", usage)
+	}
+	if server.summaryCalls != 1 || server.quotaCalls != 1 {
+		t.Fatalf("summary=%d quota=%d, want both (fallback)", server.summaryCalls, server.quotaCalls)
+	}
+}
+
+func TestGeminiLiveUsageSkipsFallbackOnSummaryAuth(t *testing.T) {
+	t.Setenv("GEMINI_CONFIG_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("ANTIGRAVITY_USER_DATA_DIR", "")
+	home := t.TempDir()
+	writeGeminiCLICredential(t, home, "cli-access", "cli-refresh", time.Now().Add(time.Hour))
+
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			server := &codeAssistQuotaServer{
+				project:       "projects/123",
+				summaryStatus: code,
+				buckets: []map[string]interface{}{
+					{"modelId": "models/gemini-2.5-pro", "remainingFraction": 0.42},
+				},
+			}
+			server.start(t)
+
+			usage, err := newGemini(home).LiveUsage(context.Background())
+			if err == nil {
+				t.Fatal("auth summary failure must be reported")
+			}
+			if usage != nil {
+				t.Fatalf("usage = %+v", usage)
+			}
+			var he *geminiCodeAssistHTTPError
+			if !errors.As(err, &he) || he.Status != code {
+				t.Fatalf("err = %v, want code assist HTTP %d", err, code)
+			}
+			if server.summaryCalls != 1 || server.quotaCalls != 0 {
+				t.Fatalf("summary=%d quota=%d, want no legacy fallback",
+					server.summaryCalls, server.quotaCalls)
+			}
+		})
+	}
+}
+
+func TestParseGeminiQuotaSummaryAcceptsStringFraction(t *testing.T) {
+	usage, err := parseGeminiQuotaSummary([]byte(`{
+		"groups": [{
+			"displayName": "Claude and GPT models",
+			"buckets": [{
+				"bucketId": "3p-weekly",
+				"displayName": "Weekly Limit Remaining",
+				"window": "weekly",
+				"remainingFraction": "0.48",
+				"resetTime": "2026-10-16T15:00:00Z"
+			}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseGeminiQuotaSummary: %v", err)
+	}
+	if usage == nil || len(usage.Windows) != 1 {
+		t.Fatalf("windows = %+v", usage)
+	}
+	if usage.Windows[0].RemainingPercent != 48 {
+		t.Fatalf("string fraction = %+v", usage.Windows[0])
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -90,6 +91,10 @@ func antigravityUsageCredentials(payload *geminiAntigravityFile) *geminiOAuthCre
 // asks for its quota. Antigravity's own UI reads retrieveUserQuotaSummary
 // (groups × weekly/5h). retrieveUserQuota is the per-model fallback used by
 // gemini-cli and older payloads — it does not expose the two windows.
+//
+// Auth failures (401/403) from the summary endpoint are returned immediately:
+// the same token will fail the legacy call too. Other summary errors still
+// fall back, and the summary error is kept when the legacy call also fails.
 func fetchGeminiCodeAssistUsage(ctx context.Context, base, token, ideType, userAgent string) (*LiveUsage, error) {
 	base = strings.TrimSuffix(base, "/")
 	project, err := geminiLoadCodeAssistProject(ctx, base, token, ideType, userAgent)
@@ -97,19 +102,40 @@ func fetchGeminiCodeAssistUsage(ctx context.Context, base, token, ideType, userA
 		return nil, err
 	}
 	payload := map[string]string{"project": project}
-	if raw, err := geminiCodeAssistPost(
+	summaryRaw, summaryErr := geminiCodeAssistPost(
 		ctx, base+"/v1internal:retrieveUserQuotaSummary", token, userAgent, payload,
-	); err == nil {
-		if usage, perr := parseGeminiQuotaSummary(raw); perr == nil && usage != nil {
+	)
+	if summaryErr == nil {
+		if usage, perr := parseGeminiQuotaSummary(summaryRaw); perr == nil && usage != nil {
 			return usage, nil
 		}
+	} else if geminiCodeAssistAuthError(summaryErr) {
+		return nil, summaryErr
 	}
 	raw, err := geminiCodeAssistPost(
 		ctx, base+"/v1internal:retrieveUserQuota", token, userAgent, payload)
 	if err != nil {
+		if summaryErr != nil {
+			return nil, fmt.Errorf("%w (summary: %v)", err, summaryErr)
+		}
 		return nil, err
 	}
 	return parseGeminiQuota(raw)
+}
+
+// geminiCodeAssistHTTPError is a non-2xx Code Assist response. Status is the
+// only field that crosses into logs/UI — never the vendor body.
+type geminiCodeAssistHTTPError struct {
+	Status int
+}
+
+func (e *geminiCodeAssistHTTPError) Error() string {
+	return fmt.Sprintf("code assist HTTP %d", e.Status)
+}
+
+func geminiCodeAssistAuthError(err error) bool {
+	var he *geminiCodeAssistHTTPError
+	return errors.As(err, &he) && (he.Status == http.StatusUnauthorized || he.Status == http.StatusForbidden)
 }
 
 func geminiLoadCodeAssistProject(ctx context.Context, base, token, ideType, userAgent string) (string, error) {
@@ -152,7 +178,7 @@ func geminiCodeAssistPost(ctx context.Context, endpoint, token, userAgent string
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// A vendor error body can echo request material; only the status
 		// crosses into an error.
-		return nil, fmt.Errorf("code assist HTTP %d", resp.StatusCode)
+		return nil, &geminiCodeAssistHTTPError{Status: resp.StatusCode}
 	}
 	return raw, nil
 }
