@@ -6,15 +6,17 @@
 // carry no volume name, drive-letter prefix ("C:\x", "C:x") or UNC prefix;
 // and have no ".." segment, with both '/' and '\' treated as separators.
 //
-// Windows-only rules, enforced through filepath.IsLocal when running on
-// Windows: reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9),
-// trailing dots or spaces, and ":" outside a drive-letter prefix. Those are
-// not rejected off Windows in this commit.
+// Windows-only rules: reserved device names (CON, PRN, AUX, NUL, COM1-9,
+// LPT1-9, and COM/LPT with superscript 1-3) are refused by an explicit
+// per-segment check; trailing dots or spaces and ":" outside a drive-letter
+// prefix are refused through filepath.IsLocal. Those are not rejected off
+// Windows.
 package safepath
 
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -24,9 +26,22 @@ var (
 	ErrEmpty = errors.New("path is empty")
 	// ErrBadName is returned for a key containing a control character.
 	ErrBadName = errors.New("path contains a control character")
+	// ErrReserved is returned for a Windows reserved device name.
+	ErrReserved = errors.New("path uses a Windows reserved device name")
 	// ErrNotLocal is returned for a key that is not a plain relative path.
 	ErrNotLocal = errors.New("path is not a local relative path")
 )
+
+// windowsReservedDeviceNames are compared case-insensitively to the base
+// name of each path segment (text before the first '.', trailing spaces
+// trimmed). Superscript forms match Windows device aliases.
+var windowsReservedDeviceNames = []string{
+	"CON", "PRN", "AUX", "NUL",
+	"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+	"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+	"COM¹", "COM²", "COM³",
+	"LPT¹", "LPT²", "LPT³",
+}
 
 // ValidateKey reports whether key is a non-empty relative path that stays
 // inside the directory it is joined to. Both '/' and '\' count as
@@ -53,6 +68,9 @@ func ValidateKey(key string) error {
 		if seg == ".." {
 			return ErrNotLocal
 		}
+		if runtime.GOOS == "windows" && isWindowsReserved(seg) {
+			return ErrReserved
+		}
 	}
 	if !filepath.IsLocal(key) || !filepath.IsLocal(strings.ReplaceAll(key, `\`, "/")) {
 		return ErrNotLocal
@@ -75,14 +93,36 @@ func isSep(r rune) bool { return r == '/' || r == '\\' }
 
 func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 
+// isWindowsReserved reports whether seg is a Windows reserved device name,
+// with or without an extension. The check itself is OS-independent so tests
+// can exercise it on every platform; ValidateKey only calls it on Windows.
+func isWindowsReserved(seg string) bool {
+	base := seg
+	if i := strings.IndexByte(seg, '.'); i >= 0 {
+		base = seg[:i]
+	}
+	base = strings.TrimRight(base, " ")
+	if base == "" {
+		return false
+	}
+	for _, name := range windowsReservedDeviceNames {
+		if strings.EqualFold(base, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // ImportRefusalMessage is the user-facing copy for an import or restore key
 // that ValidateKey refused with err. Empty and control-character keys get a
-// message that does not echo the key.
+// message that does not echo the key. Reserved device names use plain quotes.
 func ImportRefusalMessage(key string, err error) string {
 	switch {
 	case errors.Is(err, ErrEmpty) || errors.Is(err, ErrBadName) || key == "":
 		// No raw value: the key may be empty or hold unprintable bytes.
 		return "Can't use this file. It contains an entry with no usable name, so nothing was imported."
+	case errors.Is(err, ErrReserved):
+		return `Can't use "` + key + `". Windows reserves that name, so nothing was imported.`
 	default:
 		return "Can't use " + strconv.Quote(key) + ". It points outside AnyPick's folder, so nothing was imported."
 	}
