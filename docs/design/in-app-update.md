@@ -92,21 +92,24 @@ State machine: `idle→checking→{upToDate|availableDirect|availablePackageMana
 Plugin needs: `plugins.updater.pubkey` (minisign) in tauri.conf.json, `bundle.createUpdaterArtifacts: true`, CI secrets `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`), `.sig` files, endpoint `latest.json`. **Blocked on OutOf0 key approval** — nothing generated in slice 1. Recommend Go SHA256SUMS as second gate before `downloadAndInstall`.
 
 ## 5. Security / Authenticity
-- TLS only, Go default roots; restrict download hosts to exact `github.com`, `objects.githubusercontent.com`, and `release-assets.githubusercontent.com` (https only, no wildcards). `release-assets.githubusercontent.com` is required because GitHub 302-redirects real `browser_download_url` downloads there. The shared download client validates the initial URL and every redirect hop (https→http downgrades refused; redirect cap). Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries for the asset being installed fail closed; unrelated release assets without a checksum do not block the update.
+- TLS only, Go default roots. **Two dedicated HTTP clients, two host lists — no unrestricted fallback:**
+  - **API client** (`NewAPITransport` / `GitHubFetcher.apiTransport`): exact host `api.github.com` only, https only. Validates the first URL and every redirect hop (`CheckRedirect`, same redirect cap of 5). Used solely for Releases metadata (`/releases/latest`). A caller-supplied `http.Client` (tests) is always wrapped so the allowlist still runs first; there is no path that uses `http.DefaultClient` or a bare `http.Client` for the fetch. GitHub renamed-repo 301s that stay on `api.github.com` (e.g. `/repos/…/releases/latest` → `/repositories/<id>/releases/latest`) are followed.
+  - **Download client** (`NewDownloadTransport`): exact hosts `github.com`, `objects.githubusercontent.com`, and `release-assets.githubusercontent.com` (https only, no wildcards). `release-assets.githubusercontent.com` is required because GitHub 302-redirects real `browser_download_url` downloads there. Validates the initial URL and every redirect hop (https→http downgrades refused; redirect cap 5). Used for `AttachChecksums`, `DownloadAsset`, and other asset bytes.
+- Asset names containing `..`, `/`, or `\` are rejected (no basename trimming). Missing/duplicate/empty SHA256SUMS entries for the asset being installed fail closed; unrelated release assets without a checksum do not block the update.
 - **Same-release SHA-256 is integrity, not authenticity**: it verifies the file matches the release checksum, not who signed it. Accepted for macOS v1.1.1. Tauri minisign pending OutOf0 key approval.
 - Downgrade: refuse `latest ≤ current`; refuse tag/asset version mismatch; ignore drafts/prereleases; persist `HighestSeen` to resist rollback feeds.
 - Path safety on unzip; size cap vs `Asset.Size`; temp dirs 0700.
 - Helper runs as user; no privilege escalation path exists by design.
 
 ## 6. Testability hooks
-All no-op unless `ANYPICK_UPDATE_TESTING=1` (including in release builds):
-1. `ANYPICK_UPDATE_FEED_URL` — base URL replacing `https://api.github.com/repos/outof0/anypick` (allows `http://127.0.0.1` only under the testing gate).
+All no-op unless `ANYPICK_UPDATE_TESTING=1` (exactly `"1"`, including in release builds):
+1. `ANYPICK_UPDATE_FEED_URL` — base URL replacing `https://api.github.com/repos/outof0/anypick`. When the gate is open, that feed host is **added to the API allowlist** (https still required). When the gate is closed, the feed URL is ignored and the default `api.github.com` base + allowlist are used.
 2. `ANYPICK_UPDATE_CHANNEL=direct|brew|nsis|msi|winget|scoop|npm|deb|rpm|appimage|unknown`.
 3. `ANYPICK_UPDATE_CLOCK=2026-10-12T00:00:00Z` (fixed) or `ANYPICK_UPDATE_CLOCK_OFFSET=25h`.
 4. `ANYPICK_UPDATE_FAULT=relaunch-fail|swap-fail|checksum-mismatch|download-stall`.
 5. `ANYPICK_UPDATE_CURRENT_VERSION=1.1.0` to fake the running version.
 
-Download allowlist: production uses the three hosts in §5 (injected on `Transport.AllowedHosts` / `GitHubFetcher.AllowedHosts`; empty → defaults). Tests inject loopback (`127.0.0.1`) for `httptest`. Opt-in live test: `ANYPICK_UPDATE_LIVE_TEST=1` downloads real v1.1.0 `SHA256SUMS.txt` through the production client (skipped otherwise so normal `go test` stays offline). CI may enable it on a schedule so a GitHub host move surfaces.
+Allowlists: production API = `api.github.com`; production download = the three hosts in §5. Tests inject loopback hosts on `Transport.AllowedHosts` / `GitHubFetcher.AllowedHosts` for `httptest` (and optionally an `HTTP` client for TLS trust); the allowlist `CheckRedirect` is always wrapped around any injected client. Opt-in live tests: `ANYPICK_UPDATE_LIVE_TEST=1` downloads real v1.1.0 `SHA256SUMS.txt` through the download client and fetches `/releases/latest` through the API client (skipped otherwise so normal `go test` stays offline). CI may enable them on a schedule so a GitHub host move surfaces. Production files under `internal/update` are grepped in tests for unguarded `http.Get` / `http.DefaultClient` / bare `http.Client{`.
 
 ## 7. Phased PR slices
 1. Go `internal/update`: types, semver, fetcher (ETag/304/403/429), asset pick, SHA256SUMS verify, channel detect, clock, hooks + fake-server tests. *(this PR)*

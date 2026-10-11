@@ -8,20 +8,30 @@ import (
 	"strings"
 )
 
-// maxRedirects caps how many redirects the shared download client will follow.
+// maxRedirects caps how many redirects either allowlisted client will follow.
 const maxRedirects = 5
 
-// ErrDeniedDownloadURL is returned when the initial URL or a redirect hop fails
-// the allowlist / https check. Callers must not treat it as ErrOffline.
-type ErrDeniedDownloadURL struct{ Err error }
+// ErrDeniedURL is returned when the initial URL or a redirect hop fails the
+// allowlist / https check. Callers must not treat it as ErrOffline.
+type ErrDeniedURL struct{ Err error }
 
-func (e *ErrDeniedDownloadURL) Error() string {
+func (e *ErrDeniedURL) Error() string {
 	if e.Err == nil {
-		return "download URL denied"
+		return "URL denied"
 	}
 	return e.Err.Error()
 }
-func (e *ErrDeniedDownloadURL) Unwrap() error { return e.Err }
+func (e *ErrDeniedURL) Unwrap() error { return e.Err }
+
+// ErrDeniedDownloadURL is an alias kept for call sites that predate the
+// shared ErrDeniedURL name (downloads and API fetches use the same type).
+type ErrDeniedDownloadURL = ErrDeniedURL
+
+// DefaultAllowedAPIHosts is the production allowlist for GitHub Releases
+// metadata fetches. Exact host match, https only, no wildcards.
+var DefaultAllowedAPIHosts = []string{
+	"api.github.com",
+}
 
 // DefaultAllowedDownloadHosts is the production allowlist for release asset
 // downloads. Exact host match, https only, no wildcards.
@@ -35,25 +45,69 @@ var DefaultAllowedDownloadHosts = []string{
 	"release-assets.githubusercontent.com",
 }
 
-// Transport is the shared allowlisted HTTPS client used for the GitHub release
-// API fetch (redirect hops), AttachChecksums, and asset downloads.
+// Transport is an allowlisted HTTPS client. Two production configurations
+// exist — never mix them:
 //
-// AllowedHosts defaults to DefaultAllowedDownloadHosts when nil/empty.
-// Tests inject their own hosts (e.g. "127.0.0.1") and typically set HTTP to an
-// *http.Client whose Transport trusts httptest.NewTLSServer.
+//   - API:     NewAPITransport / DefaultAllowedAPIHosts (api.github.com only;
+//     test-feed host may be added when ANYPICK_UPDATE_TESTING=1).
+//   - Download: NewDownloadTransport / DefaultAllowedDownloadHosts (the three
+//     GitHub download hosts).
+//
+// AllowedHosts defaults depend on Kind when nil/empty. Tests inject their own
+// hosts (e.g. "127.0.0.1") and typically set HTTP to an *http.Client whose
+// Transport trusts httptest.NewTLSServer. A caller-supplied HTTP client is
+// always wrapped: our CheckRedirect runs first on every hop, then theirs.
 //
 // The initial URL is validated before the request; every redirect hop is
 // validated by CheckRedirect (host allowlist + https only, so an https→http
-// downgrade is refused). Prefer Transport over http.DefaultClient.
+// downgrade is refused). There is no fallback to http.DefaultClient or a
+// bare http.Client.
+type TransportKind int
+
+const (
+	// KindDownload is the default when Kind is unset (zero value).
+	KindDownload TransportKind = iota
+	KindAPI
+)
+
+// Transport is the shared allowlisted HTTPS client used for API fetches,
+// AttachChecksums, and asset downloads — always with an explicit host list.
 type Transport struct {
+	Kind         TransportKind // KindAPI or KindDownload (default)
 	AllowedHosts []string
 	HTTP         *http.Client
 }
 
+// NewAPITransport returns the production API client (api.github.com only,
+// https, CheckRedirect on every hop). When env has ANYPICK_UPDATE_TESTING=1 and
+// ANYPICK_UPDATE_FEED_URL set, that feed host is added to the allowlist; otherwise
+// the feed URL is ignored.
+func NewAPITransport(env Env) *Transport {
+	hosts := append([]string{}, DefaultAllowedAPIHosts...)
+	if feed := HookFeedURL(env); feed != "" {
+		if u, err := url.Parse(feed); err == nil {
+			if h := strings.ToLower(u.Hostname()); h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+	}
+	return &Transport{Kind: KindAPI, AllowedHosts: hosts}
+}
+
+// NewDownloadTransport returns the production download client (three GitHub
+// hosts, https, CheckRedirect on every hop).
+func NewDownloadTransport() *Transport {
+	return &Transport{Kind: KindDownload, AllowedHosts: append([]string{}, DefaultAllowedDownloadHosts...)}
+}
+
 func (t *Transport) hostSet() map[string]struct{} {
-	hosts := DefaultAllowedDownloadHosts
+	var hosts []string
 	if t != nil && len(t.AllowedHosts) > 0 {
 		hosts = t.AllowedHosts
+	} else if t != nil && t.Kind == KindAPI {
+		hosts = DefaultAllowedAPIHosts
+	} else {
+		hosts = DefaultAllowedDownloadHosts
 	}
 	out := make(map[string]struct{}, len(hosts))
 	for _, h := range hosts {
@@ -81,9 +135,15 @@ func (t *Transport) ValidateURL(raw string) error {
 	return nil
 }
 
-// ValidateDownloadURL validates raw against the production allowlist.
+// ValidateDownloadURL validates raw against the production download allowlist.
 func ValidateDownloadURL(raw string) error {
-	return (*Transport)(nil).ValidateURL(raw)
+	return NewDownloadTransport().ValidateURL(raw)
+}
+
+// ValidateAPIURL validates raw against the production API allowlist
+// (api.github.com only; no test-feed host).
+func ValidateAPIURL(raw string) error {
+	return (&Transport{Kind: KindAPI}).ValidateURL(raw)
 }
 
 // checkRedirect validates each redirect target and caps hop count.
@@ -98,35 +158,54 @@ func (t *Transport) checkRedirect(req *http.Request, via []*http.Request) error 
 }
 
 // Client returns the HTTP client with per-hop redirect checks. When t.HTTP is
-// set (tests), its Transport/Timeout are kept and CheckRedirect is installed
-// unless the caller already set one.
+// set (tests), its Transport/Timeout are kept. Our allowlist CheckRedirect is
+// always installed and runs first; a caller-supplied CheckRedirect runs after
+// ours succeeds (so a permissive injected check cannot bypass the allowlist).
 func (t *Transport) Client() *http.Client {
+	var c http.Client
 	if t != nil && t.HTTP != nil {
-		c := *t.HTTP
-		if c.CheckRedirect == nil {
-			c.CheckRedirect = t.checkRedirect
-		}
-		return &c
+		c = *t.HTTP
 	}
-	return &http.Client{CheckRedirect: t.checkRedirect}
+	inner := c.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := t.checkRedirect(req, via); err != nil {
+			return err
+		}
+		if inner != nil {
+			return inner(req, via)
+		}
+		return nil
+	}
+	return &c
 }
 
-// DefaultHTTPClient returns the production shared client (allowlist + https +
-// CheckRedirect on every hop + redirect cap). Used when GitHubFetcher.HTTP is
-// nil and whenever callers omit a Transport.
+// DefaultDownloadHTTPClient returns the production download client.
+func DefaultDownloadHTTPClient() *http.Client {
+	return NewDownloadTransport().Client()
+}
+
+// DefaultAPIHTTPClient returns the production API client (no test-feed host).
+func DefaultAPIHTTPClient() *http.Client {
+	return NewAPITransport(nil).Client()
+}
+
+// DefaultHTTPClient is the production download client. Prefer
+// DefaultDownloadHTTPClient or NewDownloadTransport; kept so existing call
+// sites that mean "download" keep working.
 func DefaultHTTPClient() *http.Client {
-	return (*Transport)(nil).Client()
+	return DefaultDownloadHTTPClient()
 }
 
 // Get validates rawURL against the allowlist, then GETs it with a client that
-// checks every redirect hop. Used by AttachChecksums and asset downloads.
-// Allowlist failures return *ErrDeniedDownloadURL (no request is made).
+// checks every redirect hop. Used by AttachChecksums, asset downloads, and
+// (with an API Transport) release metadata. Allowlist failures return
+// *ErrDeniedURL (no request is made).
 func (t *Transport) Get(ctx context.Context, rawURL string) (*http.Response, error) {
 	if t == nil {
-		t = &Transport{}
+		t = NewDownloadTransport()
 	}
 	if err := t.ValidateURL(rawURL); err != nil {
-		return nil, &ErrDeniedDownloadURL{Err: err}
+		return nil, &ErrDeniedURL{Err: err}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -136,11 +215,12 @@ func (t *Transport) Get(ctx context.Context, rawURL string) (*http.Response, err
 	return t.Client().Do(req)
 }
 
-// DownloadAsset GETs an installable release asset through the shared
-// allowlisted client (initial URL + every redirect hop).
+// DownloadAsset GETs an installable release asset through the download
+// allowlisted client (initial URL + every redirect hop). Callers that install
+// the bytes are wired in a later slice; this helper is ready now.
 func DownloadAsset(ctx context.Context, tr *Transport, rawURL string) (*http.Response, error) {
 	if tr == nil {
-		tr = &Transport{}
+		tr = NewDownloadTransport()
 	}
 	return tr.Get(ctx, rawURL)
 }

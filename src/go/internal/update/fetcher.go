@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -38,29 +39,52 @@ type Fetcher interface {
 	Latest(ctx context.Context, etag string) (rel Release, newETag string, notModified bool, err error)
 }
 
-// GitHubFetcher talks to the GitHub Releases API.
+// GitHubFetcher talks to the GitHub Releases API through a dedicated API
+// client that allows ONLY api.github.com (https, CheckRedirect on every hop,
+// same redirect cap as downloads). There is no fallback to an unrestricted
+// client: a nil HTTP field uses NewAPITransport; a caller-supplied HTTP
+// client (tests) is always wrapped so the API allowlist still applies.
 //
-// When HTTP is nil, the shared DefaultHTTPClient is used (allowlist + https +
-// CheckRedirect on every hop). The initial API URL (api.github.com) is not
-// subject to the download-host allowlist; only redirect hops are checked.
-// Tests inject their own HTTP client (typically httptest).
+// Tests inject AllowedHosts (e.g. httptest loopback) and optionally HTTP for
+// TLS trust — not a raw unguarded client.
+//
+// When ANYPICK_UPDATE_TESTING=1 and ANYPICK_UPDATE_FEED_URL is set, that feed host is
+// added to the API allowlist; otherwise the feed URL is ignored and the
+// default api.github.com base is used.
 type GitHubFetcher struct {
-	HTTP         *http.Client
-	BaseURL      string // API base, e.g. https://api.github.com/repos/outof0/anypick
+	HTTP         *http.Client // optional; always wrapped with API allowlist
+	BaseURL      string       // API base, e.g. https://api.github.com/repos/outof0/anypick
 	Env          Env
-	AllowedHosts []string // redirect-hop allowlist; empty → DefaultAllowedDownloadHosts
+	AllowedHosts []string // API allowlist override; empty → NewAPITransport(Env)
 }
 
-func (f *GitHubFetcher) client() *http.Client {
-	tr := &Transport{AllowedHosts: f.AllowedHosts, HTTP: f.HTTP}
-	return tr.Client()
+// apiTransport returns the allowlisted API Transport. Injected AllowedHosts
+// replace the default list (tests). Otherwise NewAPITransport(Env) applies
+// api.github.com plus an optional gated feed host. Injected HTTP is kept for
+// TLS/timeout but CheckRedirect is always ours (wrapping theirs).
+func (f *GitHubFetcher) apiTransport() *Transport {
+	if f != nil && len(f.AllowedHosts) > 0 {
+		return &Transport{Kind: KindAPI, AllowedHosts: f.AllowedHosts, HTTP: f.HTTP}
+	}
+	tr := NewAPITransport(f.env())
+	if f != nil && f.HTTP != nil {
+		tr.HTTP = f.HTTP
+	}
+	return tr
+}
+
+func (f *GitHubFetcher) env() Env {
+	if f != nil && f.Env != nil {
+		return f.Env
+	}
+	return OSEnv{}
 }
 
 func (f *GitHubFetcher) base() string {
-	if override := HookFeedURL(f.Env); override != "" {
+	if override := HookFeedURL(f.env()); override != "" {
 		return override
 	}
-	if f.BaseURL != "" {
+	if f != nil && f.BaseURL != "" {
 		return strings.TrimRight(f.BaseURL, "/")
 	}
 	return defaultAPIBase
@@ -83,12 +107,19 @@ type ghAsset struct {
 	Size               int64  `json:"size"`
 }
 
-// Latest fetches /releases/latest. Drafts and prereleases are rejected even if
-// the API somehow returns them. 304 sets notModified. 403/429 return
-// ErrRateLimited without panicking. Transport errors return *ErrOffline.
+// Latest fetches /releases/latest through the API allowlisted client. The
+// first URL and every redirect hop must be https on an API-allowlisted host
+// (production: api.github.com only). Drafts and prereleases are rejected even
+// if the API somehow returns them. 304 sets notModified. 403/429 return
+// ErrRateLimited without panicking. Allowlist failures return *ErrDeniedURL
+// (no request). Transport errors return *ErrOffline.
 func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, string, bool, error) {
-	url := f.base() + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	rawURL := f.base() + "/releases/latest"
+	tr := f.apiTransport()
+	if err := tr.ValidateURL(rawURL); err != nil {
+		return Release{}, "", false, &ErrDeniedURL{Err: err}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Release{}, "", false, err
 	}
@@ -97,8 +128,17 @@ func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, strin
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
-	resp, err := f.client().Do(req)
+	resp, err := tr.Client().Do(req)
 	if err != nil {
+		var denied *ErrDeniedURL
+		if errors.As(err, &denied) {
+			return Release{}, "", false, err
+		}
+		// CheckRedirect failures surface as url.Error with our message; treat
+		// allowlist/redirect-cap text as denied rather than offline.
+		if isDeniedRedirect(err) {
+			return Release{}, "", false, &ErrDeniedURL{Err: err}
+		}
 		return Release{}, "", false, &ErrOffline{Err: err}
 	}
 	defer resp.Body.Close()
@@ -149,6 +189,17 @@ func (f *GitHubFetcher) Latest(ctx context.Context, etag string) (Release, strin
 	return rel, etagOr(newETag, etag), false, nil
 }
 
+func isDeniedRedirect(err error) bool {
+	var uerr *url.Error
+	if !errors.As(err, &uerr) || uerr.Err == nil {
+		return false
+	}
+	msg := uerr.Err.Error()
+	return strings.Contains(msg, "not allowed") ||
+		strings.Contains(msg, "https only") ||
+		strings.Contains(msg, "stopped after")
+}
+
 func etagOr(a, b string) string {
 	if a != "" {
 		return a
@@ -157,13 +208,13 @@ func etagOr(a, b string) string {
 }
 
 // AttachChecksums fetches SHA256SUMS.txt from the release assets (by name) and
-// fills Asset.SHA256 via the shared allowlisted Transport (initial URL and
+// fills Asset.SHA256 via the download allowlisted Transport (initial URL and
 // every redirect hop). Fail-closed: missing SUMS file, non-allowlisted URL
 // (no request is made), non-200 / offline fetch, or unparseable body returns
 // an error. Call RequireChecksums for the asset being installed before install.
 func AttachChecksums(ctx context.Context, tr *Transport, rel Release) (Release, error) {
 	if tr == nil {
-		tr = &Transport{}
+		tr = NewDownloadTransport()
 	}
 	var sumsURL string
 	for _, a := range rel.Assets {
@@ -177,7 +228,7 @@ func AttachChecksums(ctx context.Context, tr *Transport, rel Release) (Release, 
 	}
 	resp, err := tr.Get(ctx, sumsURL)
 	if err != nil {
-		var denied *ErrDeniedDownloadURL
+		var denied *ErrDeniedURL
 		if errors.As(err, &denied) {
 			return rel, err
 		}

@@ -2,6 +2,9 @@ package update
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +21,22 @@ func testTransport(t *testing.T, srv *httptest.Server) *Transport {
 		t.Fatal(err)
 	}
 	return &Transport{
+		Kind:         KindDownload,
 		AllowedHosts: []string{u.Hostname()},
 		HTTP:         srv.Client(),
+	}
+}
+
+// multiTLSClient returns a client that can follow redirects across local TLS
+// httptest servers. InsecureSkipVerify is intentional: tests rewrite evil
+// redirect hosts to the distinct name "localhost" so the allowlist (not TLS
+// or DNS) is what refuses the hop.
+func multiTLSClient(srvs ...*httptest.Server) *http.Client {
+	_ = srvs
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test-only
+		},
 	}
 }
 
@@ -49,8 +66,25 @@ func TestValidateDownloadURLAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateAPIURLAllowlist(t *testing.T) {
+	if err := ValidateAPIURL("https://api.github.com/repos/outof0/anypick/releases/latest"); err != nil {
+		t.Fatalf("api.github.com must be allowed: %v", err)
+	}
+	bad := []string{
+		"http://api.github.com/repos/outof0/anypick/releases/latest",
+		"https://github.com/outof0/anypick/releases/latest",
+		"https://evil.com/x",
+		"https://objects.githubusercontent.com/x",
+	}
+	for _, u := range bad {
+		if err := ValidateAPIURL(u); err == nil {
+			t.Fatalf("expected reject for %q", u)
+		}
+	}
+}
+
 func TestRedirectToReleaseAssetsAllowed(t *testing.T) {
-	tr := &Transport{} // production allowlist
+	tr := NewDownloadTransport()
 	req, err := http.NewRequest(http.MethodGet, "https://release-assets.githubusercontent.com/foo", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -62,18 +96,36 @@ func TestRedirectToReleaseAssetsAllowed(t *testing.T) {
 }
 
 func TestRedirectToOtherHostRefused(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://evil.example/stolen", http.StatusFound)
+	// Both TLS servers bind 127.0.0.1; rewrite the redirect target to the
+	// distinct hostname "localhost" so the allowlist (exact host match) is
+	// what refuses — not DNS/TLS failure.
+	evilHits := 0
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.WriteHeader(200)
 	}))
-	defer srv.Close()
+	defer evil.Close()
+	evilOtherHost := strings.Replace(evil.URL, "127.0.0.1", "localhost", 1)
 
-	tr := testTransport(t, srv)
-	_, err := tr.Get(context.Background(), srv.URL+"/start")
+	good := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evilOtherHost+"/stolen", http.StatusFound)
+	}))
+	defer good.Close()
+
+	tr := &Transport{
+		Kind:         KindDownload,
+		AllowedHosts: []string{"127.0.0.1"},
+		HTTP:         multiTLSClient(good, evil),
+	}
+	_, err := tr.Get(context.Background(), good.URL+"/start")
 	if err == nil {
 		t.Fatal("redirect to other host must be refused")
 	}
-	if !strings.Contains(err.Error(), "not allowed") && !strings.Contains(err.Error(), "evil.example") {
+	if !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("want allowlist refusal, got %v", err)
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil host must receive ZERO requests, got %d", evilHits)
 	}
 }
 
@@ -99,9 +151,11 @@ func TestHTTPSToHTTPDowngradeRefused(t *testing.T) {
 }
 
 func TestTooManyRedirectsRefused(t *testing.T) {
+	var hops int
 	var srv *httptest.Server
 	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, srv.URL+"/next", http.StatusFound)
+		hops++
+		http.Redirect(w, r, fmt.Sprintf("%s/n%d", srv.URL, hops), http.StatusFound)
 	}))
 	defer srv.Close()
 
@@ -112,6 +166,13 @@ func TestTooManyRedirectsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "redirect") {
 		t.Fatalf("want redirect cap error, got %v", err)
+	}
+	// Literal 5 — not maxRedirects — so raising the cap to 50 fails this test.
+	if hops != 5 {
+		t.Fatalf("exactly 5 hops must be followed before refusal, got %d (maxRedirects=%d)", hops, maxRedirects)
+	}
+	if maxRedirects != 5 {
+		t.Fatalf("maxRedirects drifted to %d; update the hop assertion deliberately", maxRedirects)
 	}
 }
 
@@ -140,12 +201,19 @@ func TestRedirectSameAllowlistedHostOK(t *testing.T) {
 }
 
 func TestDefaultHTTPClientNoDefaultClient(t *testing.T) {
-	c := DefaultHTTPClient()
+	c := DefaultDownloadHTTPClient()
 	if c == nil || c.CheckRedirect == nil {
-		t.Fatal("DefaultHTTPClient must install CheckRedirect")
+		t.Fatal("DefaultDownloadHTTPClient must install CheckRedirect")
 	}
 	if c == http.DefaultClient {
 		t.Fatal("must not return http.DefaultClient")
+	}
+	api := DefaultAPIHTTPClient()
+	if api == nil || api.CheckRedirect == nil {
+		t.Fatal("DefaultAPIHTTPClient must install CheckRedirect")
+	}
+	if api == http.DefaultClient {
+		t.Fatal("API client must not be http.DefaultClient")
 	}
 }
 
@@ -166,12 +234,120 @@ func TestTransportInstallsCheckRedirectOnInjectedClient(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestCheckRedirectAlwaysWrapsCaller(t *testing.T) {
+	// Caller CheckRedirect allows everything; ours must still refuse off-list.
+	evilHits := 0
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.WriteHeader(200)
+	}))
+	defer evil.Close()
+	evilOtherHost := strings.Replace(evil.URL, "127.0.0.1", "localhost", 1)
+
+	good := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evilOtherHost+"/x", http.StatusFound)
+	}))
+	defer good.Close()
+
+	permissive := multiTLSClient(good, evil)
+	permissive.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return nil // allow everything
+	}
+	tr := &Transport{
+		Kind:         KindDownload,
+		AllowedHosts: []string{"127.0.0.1"},
+		HTTP:         permissive,
+	}
+	_, err := tr.Get(context.Background(), good.URL+"/start")
+	if err == nil {
+		t.Fatal("permissive caller CheckRedirect must not bypass allowlist")
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil must get zero hits, got %d", evilHits)
+	}
+
+	// Same for API kind.
+	apiPermissive := multiTLSClient(good, evil)
+	apiPermissive.CheckRedirect = func(req *http.Request, via []*http.Request) error { return nil }
+	apiTr := &Transport{
+		Kind:         KindAPI,
+		AllowedHosts: []string{"127.0.0.1"},
+		HTTP:         apiPermissive,
+	}
+	_, err = apiTr.Get(context.Background(), good.URL+"/start")
+	if err == nil {
+		t.Fatal("API client: permissive CheckRedirect must not bypass allowlist")
+	}
+}
+
+func TestNewAPITransportFeedHostGated(t *testing.T) {
+	feed := "https://127.0.0.1:9443/repos/outof0/anypick"
+	open := NewAPITransport(MapEnv{EnvTesting: "1", EnvFeedURL: feed})
+	if err := open.ValidateURL(feed + "/releases/latest"); err != nil {
+		t.Fatalf("gate open: feed host must be allowed: %v", err)
+	}
+	if err := open.ValidateURL("https://api.github.com/repos/x/releases/latest"); err != nil {
+		t.Fatalf("gate open: api.github.com still allowed: %v", err)
+	}
+
+	closed := NewAPITransport(MapEnv{EnvFeedURL: feed}) // TESTING unset
+	if err := closed.ValidateURL(feed + "/releases/latest"); err == nil {
+		t.Fatal("gate closed: feed host must NOT be on allowlist")
+	}
+	if err := closed.ValidateURL("https://api.github.com/repos/x/releases/latest"); err != nil {
+		t.Fatalf("gate closed: default api.github.com must be used: %v", err)
+	}
+
+	// TESTING not exactly "1"
+	almost := NewAPITransport(MapEnv{EnvTesting: "true", EnvFeedURL: feed})
+	if err := almost.ValidateURL(feed + "/releases/latest"); err == nil {
+		t.Fatal("TESTING=true must not open the gate")
+	}
+}
+
+func TestDownloadAssetHappyAndDenied(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("asset-bytes"))
+	}))
+	defer srv.Close()
+
+	tr := testTransport(t, srv)
+	resp, err := DownloadAsset(context.Background(), tr, srv.URL+"/AnyPick.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "asset-bytes" {
+		t.Fatalf("body %q", body)
+	}
+
+	// Off-list refused with no request (nil transport → production download list).
+	var hits int
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+	}))
+	defer evil.Close()
+	_, err = DownloadAsset(context.Background(), nil, evil.URL+"/x")
+	if err == nil {
+		t.Fatal("off-list DownloadAsset must be refused")
+	}
+	var denied *ErrDeniedURL
+	if !errors.As(err, &denied) {
+		t.Fatalf("want ErrDeniedURL, got %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("no request on deny, hits=%d", hits)
+	}
+}
+
 func TestLiveGitHubSHA256SUMS(t *testing.T) {
 	if os.Getenv("ANYPICK_UPDATE_LIVE_TEST") != "1" {
 		t.Skip("set ANYPICK_UPDATE_LIVE_TEST=1 to enable live GitHub download")
 	}
 	const rawURL = "https://github.com/outof0/anypick/releases/download/v1.1.0/SHA256SUMS.txt"
-	tr := &Transport{} // production allowlist + CheckRedirect
+	tr := NewDownloadTransport()
 	resp, err := tr.Get(context.Background(), rawURL)
 	if err != nil {
 		t.Fatalf("live download: %v", err)
@@ -189,6 +365,30 @@ func TestLiveGitHubSHA256SUMS(t *testing.T) {
 	}
 	if _, ok := sums["AnyPick-macos-universal.zip"]; !ok {
 		t.Fatalf("missing expected asset in sums: keys=%d", len(sums))
+	}
+}
+
+func TestLiveGitHubAPILatest(t *testing.T) {
+	if os.Getenv("ANYPICK_UPDATE_LIVE_TEST") != "1" {
+		t.Skip("set ANYPICK_UPDATE_LIVE_TEST=1 to enable live GitHub API fetch")
+	}
+	f := &GitHubFetcher{Env: MapEnv{}} // production API client, no hooks
+	rel, etag, mod, err := f.Latest(context.Background(), "")
+	if err != nil {
+		t.Fatalf("live API: %v", err)
+	}
+	if mod {
+		t.Fatal("first fetch must not be 304")
+	}
+	if rel.Version == "" || rel.Tag == "" {
+		t.Fatalf("empty release: %+v", rel)
+	}
+	if etag == "" {
+		t.Log("warning: no ETag from GitHub (unusual but not fatal)")
+	}
+	// Spot-check: a known asset name pattern from recent releases.
+	if len(rel.Assets) == 0 {
+		t.Fatal("expected assets on latest release")
 	}
 }
 

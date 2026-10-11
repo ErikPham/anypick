@@ -6,15 +6,36 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+func testAPIFetcher(t *testing.T, srv *httptest.Server, env Env) *GitHubFetcher {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env == nil {
+		env = MapEnv{}
+	}
+	return &GitHubFetcher{
+		HTTP:         srv.Client(),
+		BaseURL:      srv.URL,
+		Env:          env,
+		AllowedHosts: []string{u.Hostname()},
+	}
+}
+
 func TestFetcherETag304(t *testing.T) {
 	var hits int
 	var sawIfNone string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
 		sawIfNone = r.Header.Get("If-None-Match")
 		if sawIfNone == `"abc"` {
@@ -35,7 +56,7 @@ func TestFetcherETag304(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL, Env: MapEnv{}}
+	f := testAPIFetcher(t, srv, MapEnv{})
 	rel, etag, mod, err := f.Latest(context.Background(), "")
 	if err != nil || mod || etag != `"abc"` || rel.Version != "1.2.0" {
 		t.Fatalf("first: rel=%+v etag=%q mod=%v err=%v", rel, etag, mod, err)
@@ -55,11 +76,11 @@ func TestFetcherETag304(t *testing.T) {
 func TestFetcherRateLimited(t *testing.T) {
 	for _, code := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
 		t.Run(http.StatusText(code), func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(code)
 			}))
 			defer srv.Close()
-			f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL}
+			f := testAPIFetcher(t, srv, nil)
 			_, _, _, err := f.Latest(context.Background(), "")
 			if !errors.Is(err, ErrRateLimited) {
 				t.Fatalf("got %v", err)
@@ -69,10 +90,12 @@ func TestFetcherRateLimited(t *testing.T) {
 }
 
 func TestFetcherOffline(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	url := srv.URL
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	u := srv.URL
+	host, _ := url.Parse(u)
+	client := srv.Client()
 	srv.Close()
-	f := &GitHubFetcher{HTTP: DefaultHTTPClient(), BaseURL: url}
+	f := &GitHubFetcher{HTTP: client, BaseURL: u, AllowedHosts: []string{host.Hostname()}}
 	_, _, _, err := f.Latest(context.Background(), "")
 	var off *ErrOffline
 	if !errors.As(err, &off) {
@@ -81,7 +104,7 @@ func TestFetcherOffline(t *testing.T) {
 }
 
 func TestFetcherIgnoresPrerelease(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tag_name":   "v1.2.0-rc.1",
 			"prerelease": true,
@@ -90,7 +113,7 @@ func TestFetcherIgnoresPrerelease(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL}
+	f := testAPIFetcher(t, srv, nil)
 	_, _, _, err := f.Latest(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for prerelease")
@@ -98,13 +121,13 @@ func TestFetcherIgnoresPrerelease(t *testing.T) {
 }
 
 func TestFetcherUnparseableTag(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tag_name": "not-a-version", "draft": false, "prerelease": false, "assets": []any{},
 		})
 	}))
 	defer srv.Close()
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL}
+	f := testAPIFetcher(t, srv, nil)
 	_, _, _, err := f.Latest(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for unparseable tag")
@@ -112,14 +135,14 @@ func TestFetcherUnparseableTag(t *testing.T) {
 }
 
 func TestFetcherRejectsPathLikeAssetName(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tag_name": "v1.2.0", "draft": false, "prerelease": false,
 			"assets": []map[string]any{{"name": "../evil.zip", "browser_download_url": "https://github.com/x", "size": 1}},
 		})
 	}))
 	defer srv.Close()
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL}
+	f := testAPIFetcher(t, srv, nil)
 	_, _, _, err := f.Latest(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected reject for path-like asset name")
@@ -127,7 +150,7 @@ func TestFetcherRejectsPathLikeAssetName(t *testing.T) {
 }
 
 func TestFetcherFeedURLHook(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/releases/latest" {
 			t.Errorf("path %s", r.URL.Path)
 		}
@@ -137,7 +160,8 @@ func TestFetcherFeedURLHook(t *testing.T) {
 	}))
 	defer srv.Close()
 	env := MapEnv{EnvTesting: "1", EnvFeedURL: srv.URL}
-	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: "https://example.invalid", Env: env}
+	// No AllowedHosts: NewAPITransport must add the feed host when gate is open.
+	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: "https://api.github.com/repos/outof0/anypick", Env: env}
 	rel, _, _, err := f.Latest(context.Background(), "")
 	if err != nil || rel.Version != "1.1.0" {
 		t.Fatalf("rel=%+v err=%v", rel, err)
@@ -145,44 +169,177 @@ func TestFetcherFeedURLHook(t *testing.T) {
 }
 
 func TestFetcherFeedURLHookClosed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	feedHits := 0
+	feed := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		feedHits++
 		t.Fatal("must not hit override server when gate closed")
 	}))
-	defer srv.Close()
-	// Gate closed (TESTING unset) — FEED_URL ignored; BaseURL used.
-	real := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	defer feed.Close()
+
+	// Gate closed — FEED_URL ignored; BaseURL (default api path) used.
+	// Use an injected allowlisted mock as BaseURL to stay offline-safe, and
+	// assert base() ignores the feed + allowlist excludes feed host.
+	real := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"tag_name": "v1.1.0", "draft": false, "prerelease": false, "assets": []any{},
 		})
 	}))
 	defer real.Close()
-	env := MapEnv{EnvFeedURL: srv.URL} // no TESTING=1
-	f := &GitHubFetcher{HTTP: real.Client(), BaseURL: real.URL, Env: env}
+	env := MapEnv{EnvFeedURL: feed.URL} // no TESTING=1
+	f := testAPIFetcher(t, real, env)
+	if f.base() != strings.TrimRight(real.URL, "/") {
+		t.Fatalf("gate closed base=%q want real mock", f.base())
+	}
+	tr := NewAPITransport(env)
+	if err := tr.ValidateURL(feed.URL + "/releases/latest"); err == nil {
+		t.Fatal("gate closed: feed host must not be allowlisted")
+	}
 	rel, _, _, err := f.Latest(context.Background(), "")
 	if err != nil || rel.Version != "1.1.0" {
 		t.Fatalf("rel=%+v err=%v", rel, err)
+	}
+	if feedHits != 0 {
+		t.Fatalf("feed server hits=%d", feedHits)
+	}
+}
+
+func TestAPIClientRefusesNonAPIHost(t *testing.T) {
+	hits := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	// Production API allowlist (api.github.com only); httptest host not listed.
+	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL, Env: MapEnv{}}
+	_, _, _, err := f.Latest(context.Background(), "")
+	if err == nil {
+		t.Fatal("non-api.github.com host must be refused")
+	}
+	var denied *ErrDeniedURL
+	if !errors.As(err, &denied) {
+		t.Fatalf("want ErrDeniedURL, got %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("must not make a request, hits=%d", hits)
+	}
+}
+
+func TestAPIClientRefusesHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("http must not be reached")
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	f := &GitHubFetcher{HTTP: srv.Client(), BaseURL: srv.URL, AllowedHosts: []string{u.Hostname()}}
+	_, _, _, err := f.Latest(context.Background(), "")
+	if err == nil {
+		t.Fatal("http scheme must be refused")
+	}
+	var denied *ErrDeniedURL
+	if !errors.As(err, &denied) {
+		t.Fatalf("want ErrDeniedURL, got %v", err)
+	}
+}
+
+func TestAPIClientRefusesRedirectOffAPI(t *testing.T) {
+	evilHits := 0
+	evil := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		evilHits++
+		w.WriteHeader(200)
+	}))
+	defer evil.Close()
+	evilOtherHost := strings.Replace(evil.URL, "127.0.0.1", "localhost", 1)
+
+	good := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evilOtherHost+"/repos/x/releases/latest", http.StatusFound)
+	}))
+	defer good.Close()
+
+	f := &GitHubFetcher{
+		HTTP:         multiTLSClient(good, evil),
+		BaseURL:      good.URL,
+		AllowedHosts: []string{"127.0.0.1"},
+	}
+	_, _, _, err := f.Latest(context.Background(), "")
+	if err == nil {
+		t.Fatal("redirect off API allowlist must be refused")
+	}
+	var denied *ErrDeniedURL
+	if !errors.As(err, &denied) {
+		t.Fatalf("want ErrDeniedURL, got %v", err)
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil must get zero hits, got %d", evilHits)
+	}
+}
+
+func TestAPIClientFollowsSameHost301(t *testing.T) {
+	// GitHub renamed-repo style: 301 to /repositories/<id>/releases/latest on
+	// the same api host — must be followed, not reported as GitHub down.
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/outof0/anypick/releases/latest" {
+			http.Redirect(w, r, srv.URL+"/repositories/123456/releases/latest", http.StatusMovedPermanently)
+			return
+		}
+		if r.URL.Path != "/repositories/123456/releases/latest" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tag_name": "v1.1.0", "draft": false, "prerelease": false, "assets": []any{},
+		})
+	}))
+	defer srv.Close()
+
+	f := testAPIFetcher(t, srv, nil)
+	// Base mimics api.github.com/repos/... so first hop path matches.
+	f.BaseURL = srv.URL + "/repos/outof0/anypick"
+	rel, _, _, err := f.Latest(context.Background(), "")
+	if err != nil {
+		t.Fatalf("same-host 301 must be followed: %v", err)
+	}
+	if rel.Version != "1.1.0" {
+		t.Fatalf("version %q", rel.Version)
+	}
+}
+
+func TestAPIClientConstructorNoUnguarded(t *testing.T) {
+	tr := NewAPITransport(nil)
+	c := tr.Client()
+	if c == nil || c.CheckRedirect == nil {
+		t.Fatal("NewAPITransport().Client must install CheckRedirect")
+	}
+	if c == http.DefaultClient {
+		t.Fatal("must not be http.DefaultClient")
+	}
+	// Injected client with nil CheckRedirect still gets ours.
+	bare := &http.Client{}
+	tr2 := &Transport{Kind: KindAPI, AllowedHosts: DefaultAllowedAPIHosts, HTTP: bare}
+	c2 := tr2.Client()
+	if c2.CheckRedirect == nil {
+		t.Fatal("injected bare client must be wrapped with CheckRedirect")
+	}
+	// Production fetcher with nil HTTP still allowlists api.github.com only.
+	f := &GitHubFetcher{}
+	tr3 := f.apiTransport()
+	if err := tr3.ValidateURL("https://evil.com/x"); err == nil {
+		t.Fatal("nil-HTTP fetcher must still deny non-API hosts")
+	}
+	if err := tr3.ValidateURL("https://api.github.com/repos/outof0/anypick/releases/latest"); err != nil {
+		t.Fatalf("nil-HTTP fetcher must allow api.github.com: %v", err)
 	}
 }
 
 func testChecksumTransport(t *testing.T, srv *httptest.Server) *Transport {
 	t.Helper()
-	u := srv.URL
-	// httptest URL is http://127.0.0.1:port — use TLS servers in allowlist tests.
-	// For plain httptest used by legacy AttachChecksums cases, inject a Transport
-	// that allows the loopback host and relaxes scheme via a custom client that
-	// still runs CheckRedirect host checks... Production requires https; tests
-	// that need the allowlist path use NewTLSServer (see download_test.go).
-	// Here we only need a working GET to the test server: inject HTTP client and
-	// put the server host on the allowlist, and rewrite Validate via https URLs
-	// on TLS servers below.
-	host := strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
-	if i := strings.IndexByte(host, '/'); i >= 0 {
-		host = host[:i]
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if i := strings.IndexByte(host, ':'); i >= 0 {
-		host = host[:i]
-	}
-	return &Transport{AllowedHosts: []string{host}, HTTP: srv.Client()}
+	return &Transport{Kind: KindDownload, AllowedHosts: []string{u.Hostname()}, HTTP: srv.Client()}
 }
 
 func TestAttachChecksums(t *testing.T) {
@@ -257,16 +414,10 @@ func TestAttachChecksums(t *testing.T) {
 	t.Run("offline", func(t *testing.T) {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		u := srv.URL
-		host := strings.TrimPrefix(u, "https://")
-		if i := strings.IndexByte(host, '/'); i >= 0 {
-			host = host[:i]
-		}
-		if i := strings.IndexByte(host, ':'); i >= 0 {
-			host = host[:i]
-		}
+		host, _ := url.Parse(u)
 		client := srv.Client()
 		srv.Close()
-		tr := &Transport{AllowedHosts: []string{host}, HTTP: client}
+		tr := &Transport{Kind: KindDownload, AllowedHosts: []string{host.Hostname()}, HTTP: client}
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: u},
@@ -284,7 +435,7 @@ func TestAttachChecksums(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 		defer srv.Close()
-		tr := &Transport{} // production allowlist — 127.0.0.1 not included
+		tr := NewDownloadTransport()
 		rel := Release{Assets: []Asset{
 			{Name: "file.bin"},
 			{Name: "SHA256SUMS.txt", URL: srv.URL},
@@ -293,17 +444,15 @@ func TestAttachChecksums(t *testing.T) {
 		if err == nil {
 			t.Fatal("non-allowlisted URL must be refused")
 		}
-		var denied *ErrDeniedDownloadURL
+		var denied *ErrDeniedURL
 		if !errors.As(err, &denied) {
-			t.Fatalf("want ErrDeniedDownloadURL, got %v", err)
+			t.Fatalf("want ErrDeniedURL, got %v", err)
 		}
 		if hits != 0 {
 			t.Fatalf("must not make a request, hits=%d", hits)
 		}
 	})
 	t.Run("applies hashes without requiring every asset", func(t *testing.T) {
-		// SUMS only covers file.bin; other.bin is left empty — AttachChecksums
-		// must still succeed (RequireChecksums is scoped to the install asset).
 		body := strings.Repeat("ab", 32) + "  file.bin\n"
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(body))
@@ -326,4 +475,51 @@ func TestAttachChecksums(t *testing.T) {
 			t.Fatalf("other.bin should remain empty, got %q", out.Assets[1].SHA256)
 		}
 	})
+}
+
+func TestNoUnguardedHTTPInProductionUpdate(t *testing.T) {
+	// Grep-style guard: production files under internal/update must not call
+	// http.Get, use http.DefaultClient, or construct a bare http.Client{}
+	// outside the Transport.Client / New*Transport constructors.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offenders []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			trim := strings.TrimSpace(line)
+			if strings.HasPrefix(trim, "//") {
+				continue
+			}
+			lineno := i + 1
+			switch {
+			case strings.Contains(line, "http.Get("):
+				offenders = append(offenders, filepath.Base(path)+":"+strconv.Itoa(lineno)+": http.Get(")
+			case strings.Contains(line, "http.DefaultClient"):
+				// Mentions in comments already skipped; code refs are banned.
+				offenders = append(offenders, filepath.Base(path)+":"+strconv.Itoa(lineno)+": http.DefaultClient")
+			case strings.Contains(line, "http.Client{"):
+				// Bare http.Client{...} literals are banned in production files.
+				// Transport.Client uses `var c http.Client` (no brace literal).
+				offenders = append(offenders, filepath.Base(path)+":"+strconv.Itoa(lineno)+": http.Client{")
+			}
+		}
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("unguarded HTTP in production update files:\n  %s", strings.Join(offenders, "\n  "))
+	}
 }
