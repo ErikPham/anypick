@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	accountsvc "github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
@@ -32,7 +33,9 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 		}
 		err := lock.WithMutationLock(ctx, s.Deps.Root,
 			refs.ProviderScope(m.ProviderID), func(c context.Context) error {
-				_, err := s.Deps.Accounts.ImportEnvelope(c, m.ProviderID, m.Name, m.Path, m.Overwrite)
+				_, err := s.Deps.Accounts.Import(c, accountsvc.ImportRequest{
+					Paths: []string{m.Path}, ProviderID: m.ProviderID, Name: m.Name, Force: m.Overwrite,
+				})
 				return err
 			})
 		if err != nil {
@@ -88,8 +91,7 @@ func (s *Server) handleTransferOp(ctx context.Context, m Mutate) Result {
 	case "account-backup-import":
 		// Import resolves a previously inspected package by inspectionId; the
 		// protocol never sends a raw path here.
-		count, err := s.inspections.Restore(ctx, s.Deps.Providers,
-			m.InspectionID, m.EntryIDs, m.OverwriteConfirmed)
+		count, err := s.inspections.Restore(ctx, m.InspectionID, m.EntryIDs, m.OverwriteConfirmed)
 		if err != nil {
 			return fail(err)
 		}

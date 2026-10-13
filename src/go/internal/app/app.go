@@ -50,10 +50,9 @@ type App struct {
 	Providers *provider.Registry
 	Clients   *client.Registry
 	Accounts  *accounts.Service
-	// Inspections owns the desktop backup-import staged review; it holds the
-	// account store so the desktop protocol never reaches the raw store. Built
-	// here (unscanned by the facade gate) so cmd/anypick wiring needs no a.Store
-	// handle.
+	// Inspections owns the desktop backup-import staged review. It uses the
+	// Accounts service for inspection and restore so desktop import shares the
+	// same API as the CLI and TUI.
 	Inspections *desktop.InspectionManager
 	Deps        *activation.Deps
 	Proxy       *proxy.Service
@@ -317,7 +316,7 @@ func (a *App) compose() error {
 	a.Providers = provReg
 	a.Clients = clientReg
 	a.Accounts = svc
-	a.Inspections = desktop.NewInspectionManager(st)
+	a.Inspections = desktop.NewInspectionManager(svc)
 	a.Proxy = px
 	a.PoolSvc = poolSvc
 	a.Hub = hubStore

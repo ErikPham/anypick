@@ -246,7 +246,25 @@ anypick account export codex work -o ./work.json
 anypick account import codex work -i ./work.json
 ```
 
-`import` refuses to overwrite an existing name unless you pass `--force`.
+When `--out` is omitted, export writes an owner-only `.json` file under
+`~/.anypick/exports/` and prints its exact path. To move several accounts in
+one package, export all accounts (or one provider) to a single JSON backup:
+
+```bash
+anypick account export --all --out ./accounts.json
+anypick account import ./accounts.json
+```
+
+You can also import several single-account JSON files in one command, for
+example `anypick account import ./work.json ./personal.json`. `import` refuses
+to overwrite an existing name unless you pass `--force`. A login identity
+already saved under a different name remains blocked, including with `--force`;
+use that existing name when replacing it. API key display labels do not count
+as login identities.
+
+CLI, TUI, and desktop imports accept both single-account exports and account
+backups. The desktop file picker accepts `.json` and `.anypick-backup` files,
+and lets you review the accounts before importing.
 
 <Aside type="danger" title="Exports contain live credentials">
 An exported file holds the real tokens in plain form. Treat it like the

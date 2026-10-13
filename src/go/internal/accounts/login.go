@@ -464,11 +464,11 @@ func (s *Service) refuseDistinctOverwrite(ctx context.Context, pv provider.Provi
 	if err != nil || existing == nil {
 		return err
 	}
-	if accountScopedIdentity(live.Identity) && accountScopedIdentity(existing.Meta.Identity) &&
+	if provider.AccountScopedIdentity(live.Identity) && provider.AccountScopedIdentity(existing.Meta.Identity) &&
 		identitiesEqual(existing.Meta.Identity, live.Identity) {
 		return nil
 	}
-	if !accountScopedIdentity(live.Identity) && !accountScopedIdentity(existing.Meta.Identity) {
+	if !provider.AccountScopedIdentity(live.Identity) && !provider.AccountScopedIdentity(existing.Meta.Identity) {
 		return nil
 	}
 	return anyerr.Newf(
@@ -554,7 +554,7 @@ func (s *Service) resolveCurrentSaveName(ctx context.Context, pv provider.Provid
 func (s *Service) findAccountNameByIdentity(ctx context.Context, providerID, identity string) string {
 	// Display-only constants ("API key") are not account identities: matching
 	// one would resolve a different login onto the wrong account.
-	if !accountScopedIdentity(identity) {
+	if !provider.AccountScopedIdentity(identity) {
 		return ""
 	}
 	accounts, err := s.Store.ListAccounts(ctx, providerID)

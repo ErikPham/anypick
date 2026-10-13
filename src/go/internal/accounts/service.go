@@ -544,23 +544,6 @@ func (s *Service) DiscardLiveAuthCheckpoint(cp *Checkpoint) error {
 	return os.RemoveAll(cp.Directory)
 }
 
-// accountScopedIdentity reports whether an identity names one specific login.
-// Providers publish display-only constants when their snapshot carries no
-// account id (Codex reports "API key" for an OPENAI_API_KEY snapshot); those
-// say nothing about which upstream account a snapshot belongs to, so identity
-// resolution must not treat two of them as one login.
-func accountScopedIdentity(identity string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(identity))
-	if normalized == "" {
-		return false
-	}
-	switch normalized {
-	case "api key":
-		return false
-	}
-	return true
-}
-
 // SnapshotFingerprint returns a content digest of one snapshot directory. Two
 // accounts with the same digest hold the same credential material. A directory
 // with no readable files returns ok=false so callers fail open instead of
@@ -752,7 +735,7 @@ func (s *Service) DuplicateSnapshotGroups(ctx context.Context) ([]DuplicateSnaps
 // ResolveIdentityTarget resolves a duplicate identity to its existing local
 // account after confirmation.
 func (s *Service) ResolveIdentityTarget(ctx context.Context, providerID string, identity, accountName string, allowOverwrite bool) (string, error) {
-	if !accountScopedIdentity(identity) {
+	if !provider.AccountScopedIdentity(identity) {
 		return accountName, nil
 	}
 	accounts, err := s.Store.ListAccounts(ctx, providerID)
@@ -868,14 +851,36 @@ func (s *Service) ExportSelectedBackup(ctx context.Context, accounts []transfer.
 	return transfer.ExportSelectedBackup(s.Store, ctx, accounts, dest, overwrite)
 }
 
-// ImportEnvelope decodes, validates, and stages one account envelope. The
-// caller's identity-resolution closure is the service's own, so the outer
-// layer never hands the raw store into transfer.
-func (s *Service) ImportEnvelope(ctx context.Context, providerID, name, inPath string, force bool) (store.Meta, error) {
+// ImportRequest is the shared account-import contract used by the CLI, TUI,
+// and desktop service. Format detection and mutation semantics stay below the
+// UI boundary; optional fields express provider-scoped, named, or reviewed
+// backup imports.
+type ImportRequest struct {
+	Paths      []string
+	ProviderID string
+	Name       string
+	Force      bool
+	Selection  []transfer.BackupEntry
+	Replace    []transfer.BackupEntry
+}
+
+// Import detects and imports account envelopes or AnyPick backup packages.
+func (s *Service) Import(ctx context.Context, request ImportRequest) ([]store.Meta, error) {
 	deps := transfer.ImportDeps{
 		Store:                 s.Store,
 		Providers:             s.Providers,
 		ResolveIdentityTarget: s.ResolveIdentityTarget,
 	}
-	return transfer.ImportEnvelope(deps, ctx, providerID, name, inPath, force)
+	return transfer.ImportFiles(deps, ctx, request.Paths, transfer.FileImportOptions{
+		ProviderID: request.ProviderID,
+		Name:       request.Name,
+		Force:      request.Force,
+		Selection:  request.Selection,
+		Replace:    request.Replace,
+	})
+}
+
+// InspectBackup prepares the preview used by reviewed desktop imports.
+func (s *Service) InspectBackup(path string) (*transfer.Inspection, error) {
+	return transfer.InspectBackup(s.Store, s.Providers, path)
 }

@@ -96,6 +96,13 @@ func TestDryRunBreadthLeavesNothingBehind(t *testing.T) {
 	clearGlobalsForParity()
 	defer resetGlobals()()
 	seedSliceARoot(t)
+	backupPath := filepath.Join(t.TempDir(), "dry-run-import.anypick-backup")
+	clearGlobalsForParity()
+	code := -1
+	captureBoth(t, func() { code = run([]string{"account", "export", "--all", "--out", backupPath}) })
+	if code != int(anyerr.Success) {
+		t.Fatalf("could not prepare backup for dry-run import: exit=%d stderr=%q", code, lastStderr)
+	}
 
 	home := os.Getenv("HOME")
 	data := os.Getenv("ANYPICK_HOME")
@@ -107,6 +114,7 @@ func TestDryRunBreadthLeavesNothingBehind(t *testing.T) {
 		{"account remove", []string{"account", "remove", "deepseek", "ds"}, "[dry-run] Would remove deepseek/ds"},
 		{"account export", []string{"account", "export", "deepseek", "ds", "--out", filepath.Join(t.TempDir(), "x.json")}, "[dry-run] Would export deepseek/ds"},
 		{"account import", []string{"account", "import", "deepseek", "ds", "envelope.json"}, "[dry-run] Would import deepseek/ds from envelope.json"},
+		{"account backup import", []string{"account", "import", backupPath, "--force"}, "[dry-run] Would import 1 JSON file(s)"},
 		{"gateway edit", []string{"gateway", "edit", "or", "--endpoint", "https://x.example"}, "[dry-run] Would update gateway or"},
 		{"gateway remove", []string{"gateway", "remove", "or"}, "[dry-run] Would remove gateway or"},
 		{"gateway reset", []string{"gateway", "reset", "or", "--client", "claude"}, "[dry-run] reset claude"},
@@ -168,6 +176,8 @@ func TestDryRunJSONShapes(t *testing.T) {
 			map[string]any{"provider": "deepseek", "name": "ds"}},
 		{"account import", []string{"account", "import", "deepseek", "ds", "env.json", "--force"}, "account.import",
 			map[string]any{"provider": "deepseek", "name": "ds", "input": "env.json", "force": true}},
+		{"account backup import", []string{"account", "import", "backup.anypick-backup", "--force"}, "account.import",
+			map[string]any{"files": []any{"backup.anypick-backup"}, "force": true}},
 		{"gateway edit", []string{"gateway", "edit", "or", "--model", "m1"}, "gateway.edit",
 			map[string]any{"name": "or", "hasApiKey": false}},
 		{"gateway remove", []string{"gateway", "remove", "or"}, "gateway.remove",

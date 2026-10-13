@@ -28,6 +28,22 @@ type EnvelopeJSON struct {
 
 // BuildEnvelope assembles an envelope in memory for single and package export.
 func BuildEnvelope(st *store.AccountStore, ctx context.Context, providerID, name string) (*EnvelopeJSON, error) {
+	var envelope *EnvelopeJSON
+	err := lock.WithMutationLock(ctx, st.Root, refs.ProviderScope(providerID), func(c context.Context) error {
+		built, err := buildEnvelopeLocked(st, c, providerID, name)
+		envelope = built
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return envelope, nil
+}
+
+func buildEnvelopeLocked(st *store.AccountStore, ctx context.Context, providerID, name string) (*EnvelopeJSON, error) {
+	if err := lock.Require(ctx, st.Root, refs.ProviderScope(providerID)); err != nil {
+		return nil, err
+	}
 	acct, err := st.Require(ctx, providerID, name)
 	if err != nil {
 		return nil, err

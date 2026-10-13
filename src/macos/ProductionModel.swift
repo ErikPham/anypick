@@ -4,6 +4,15 @@ import Foundation
 import UniformTypeIdentifiers
 
 let anyPickBackupType = UTType(filenameExtension: "anypick-backup") ?? .data
+@MainActor
+func makeAnyPickImportPanel() -> NSOpenPanel {
+  let panel = NSOpenPanel()
+  panel.allowedContentTypes = [anyPickBackupType, .json]
+  panel.allowsMultipleSelection = false
+  panel.canChooseDirectories = false
+  panel.canChooseFiles = true
+  return panel
+}
 
 // Adapts the versioned tray snapshot/command protocol to the design-system UI.
 // Snapshots stay redacted. A proxy API key is fetched only when the user copies
@@ -1293,12 +1302,8 @@ final class ProductionDesignModel: MacOSDesignModel {
   }
 
   override func importBackupPackage() -> Bool {
-    let panel = NSOpenPanel()
-    panel.allowedContentTypes = [anyPickBackupType]
-    panel.allowsMultipleSelection = false
-    panel.canChooseDirectories = false
-    panel.canChooseFiles = true
-    panel.message = "Choose an AnyPick account backup to review."
+    let panel = makeAnyPickImportPanel()
+    panel.message = "Choose an AnyPick account export or backup to review."
     panel.prompt = "Choose"
     guard panel.runModal() == .OK, let path = panel.url?.path else { return false }
     importedBackupFileName = URL(fileURLWithPath: path).lastPathComponent

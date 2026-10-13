@@ -281,8 +281,8 @@ func TestInspectionForgetDropsStagedCopy(t *testing.T) {
 		[]transfer.BackupEntry{{Provider: "codex", Name: "alpha"}}, pkgPath, false); err != nil {
 		t.Fatal(err)
 	}
-	mgr := NewInspectionManager(env.Deps.Store)
-	preview, err := mgr.Inspect(env.Deps.Providers, "req1", pkgPath)
+	mgr := NewInspectionManager(env.Deps.Accounts)
+	preview, err := mgr.Inspect("req1", pkgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,12 +301,49 @@ func TestInspectionForgetDropsStagedCopy(t *testing.T) {
 		t.Fatalf("staged copy survives forget: %v", serr)
 	}
 	entryIDs := []string{preview.Entries[0].ID}
-	if _, rerr := mgr.Restore(context.Background(), env.Deps.Providers,
-		id, entryIDs, true); rerr == nil {
+	if _, rerr := mgr.Restore(context.Background(), id, entryIDs, true); rerr == nil {
 		t.Fatal("restore after forget succeeded")
 	} else if !strings.Contains(rerr.Error(), "unknown or expired") {
 		t.Fatalf("restore after forget err = %v, want unknown-or-expired", rerr)
 	}
 	mgr.Forget(id)
 	mgr.Forget("")
+}
+
+func TestDesktopInspectsAndRestoresBothExportFormats(t *testing.T) {
+	for _, format := range []string{"envelope", "backup"} {
+		t.Run(format, func(t *testing.T) {
+			source := newTrayEnv(t)
+			writeTestAccount(t, source, "codex", "alpha")
+			path := filepath.Join(t.TempDir(), format+".json")
+			if format == "envelope" {
+				if err := transfer.ExportEnvelope(source.Deps.Store, context.Background(), "codex", "alpha", path); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := transfer.ExportSelectedBackup(source.Deps.Store, context.Background(), []transfer.BackupEntry{{Provider: "codex", Name: "alpha"}}, path, false); err != nil {
+				t.Fatal(err)
+			}
+			dest := newTrayEnv(t)
+			mgr := NewInspectionManager(dest.Deps.Accounts)
+			preview, err := mgr.Inspect("export-roundtrip", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(preview.Entries) != 1 {
+				t.Fatalf("preview entries: %v", preview.Entries)
+			}
+			count, err := mgr.Restore(context.Background(), preview.InspectionID, []string{preview.Entries[0].ID}, false)
+			if err != nil || count != 1 {
+				t.Fatalf("restore: %d, %v", count, err)
+			}
+			acct, err := dest.Deps.Store.Get(context.Background(), "codex", "alpha")
+			if err != nil || acct == nil {
+				t.Fatalf("restored account missing: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(acct.SnapshotDir, "auth.json"))
+			if err != nil || string(raw) != `{"tokens":{"access_token":"alpha"}}` {
+				t.Fatal("restored snapshot differs")
+			}
+		})
+	}
 }

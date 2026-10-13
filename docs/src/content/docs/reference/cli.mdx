@@ -182,8 +182,10 @@ pass it through `ANYPICK_SECRET`.
 anypick account list [provider]
 anypick account refresh [provider [name]] [--all]
 anypick account remove <provider> <name> [--yes]
-anypick account export <provider> <name> --out <file>   # -o <file>
-anypick account import <provider> <name> <file> [--force]   # or -i <file>
+anypick account export <provider> <name> [--out <file>]   # -o <file>; defaults to ~/.anypick/exports/*.json
+anypick account export [provider] --all [--out <file>] [--overwrite]
+anypick account import <provider> <name> <file.json> [--force]   # or -i <file.json>
+anypick account import <file.json> [<file2.json> …] [--force]
 ```
 
 `refresh` adopts the provider's current live login into a saved account. With no

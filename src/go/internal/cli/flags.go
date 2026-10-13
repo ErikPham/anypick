@@ -10,7 +10,10 @@ import (
 
 func isBoolFlag(name string) bool {
 	switch name {
-	case "force", "json":
+	case "all", "allow-foreign-config", "current", "detach", "dry-run",
+		"follow", "force", "fix", "new", "no-input", "quiet", "reveal",
+		"rotate", "start", "stdio", "stop", "trace", "tray", "verbose", "overwrite",
+		"yes", "y", "json", "q", "v":
 		return true
 	default:
 		return false
@@ -39,7 +42,8 @@ func Reorder(args []string) []string {
 			flags = append(flags, arg)
 			continue
 		}
-		if isBoolFlag(name) || i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+		if isBoolFlag(name) || i+1 >= len(args) ||
+			(strings.HasPrefix(args[i+1], "-") && args[i+1] != "-") {
 			flags = append(flags, arg)
 			continue
 		}

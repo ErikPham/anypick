@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/outof0/anypick/go/internal/browserlogin"
@@ -22,6 +23,13 @@ type LiveAuthStatus struct {
 	// more than one. It is empty for providers whose LoginMethod source is
 	// presentation metadata rather than a scoped snapshot store.
 	Source string
+}
+
+// AccountScopedIdentity distinguishes login identifiers from display labels.
+// A key-only Codex snapshot reports "API key", which cannot identify its owner.
+func AccountScopedIdentity(identity string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(identity))
+	return normalized != "" && normalized != "api key"
 }
 
 // SnapshotInfo is the partial meta a Backup may contribute (identity, label…).

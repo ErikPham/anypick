@@ -1,8 +1,18 @@
 import AppKit
 import SwiftUI
 import XCTest
+import UniformTypeIdentifiers
 
 final class AnyPickTests: XCTestCase {
+  @MainActor
+  func testAccountImportPickerAcceptsBothExportExtensions() {
+    let panel = makeAnyPickImportPanel()
+    XCTAssertTrue(panel.allowedContentTypes.contains(.json))
+    XCTAssertTrue(panel.allowedContentTypes.contains(anyPickBackupType))
+    XCTAssertFalse(panel.canChooseDirectories)
+    XCTAssertFalse(panel.allowsMultipleSelection)
+  }
+
   func testBuiltAppContainsExecutableGoHelper() throws {
     let products = Bundle(for: Self.self).bundleURL.deletingLastPathComponent()
     let helper = products

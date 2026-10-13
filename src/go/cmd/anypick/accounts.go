@@ -7,16 +7,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/mattn/go-isatty"
+	accountsvc "github.com/outof0/anypick/go/internal/accounts"
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/app"
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/lock"
+	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/profile"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/slug"
 	"github.com/outof0/anypick/go/internal/store"
+	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 // jsonOut prints one machine-readable result on stdout (invariant #6).
@@ -262,8 +267,10 @@ func cmdAccountExport(ctx context.Context, a *appView, args []string) int {
 	// -o is the documented short form of --out; the stdlib parser has no alias
 	// concept, so the same target is registered twice.
 	outShort := fs.String("o", "", "alias of --out")
-	if err := fs.Parse(reorder(args)); err != nil || fs.NArg() != 2 {
-		return usageError("usage: anypick account export <provider> <name> --out <file>")
+	all := fs.Bool("all", false, "export every saved account (or every account for one provider)")
+	overwrite := fs.Bool("overwrite", false, "replace an existing multi-account backup file")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return usageError("usage: anypick account export [<provider> <name>] [--out <file>] [--all]")
 	}
 	if *outShort != "" {
 		if *out != "" && *out != *outShort {
@@ -271,23 +278,74 @@ func cmdAccountExport(ctx context.Context, a *appView, args []string) int {
 		}
 		*out = *outShort
 	}
-	if *out == "" {
-		return usageError("usage: anypick account export <provider> <name> --out <file>")
+	if *all {
+		if fs.NArg() > 1 {
+			return usageError("usage: anypick account export [<provider>] --all [--out <file>]")
+		}
+		providerFilter := ""
+		if fs.NArg() == 1 {
+			providerFilter = fs.Arg(0)
+		}
+		return cmdAccountExportAll(ctx, a, args, providerFilter, *out, *overwrite)
+	}
+	if fs.NArg() != 2 {
+		return usageError("usage: anypick account export <provider> <name> [--out <file>]")
+	}
+	providerID, name := fs.Arg(0), fs.Arg(1)
+	outPath, pathErr := accountEnvelopeExportPath(a.Root, providerID, name, *out)
+	if pathErr != nil {
+		return usageError("invalid provider or account name: %v", pathErr)
 	}
 	if globals.DryRun {
 		printDryRunFields("account.export",
-			fmt.Sprintf("Would export %s/%s → %s", fs.Arg(0), fs.Arg(1), *out),
-			kv{Key: "provider", Value: fs.Arg(0)}, kv{Key: "name", Value: fs.Arg(1)},
-			kv{Key: "out", Value: *out})
+			fmt.Sprintf("Would export %s/%s → %s", providerID, name, outPath),
+			kv{Key: "provider", Value: providerID}, kv{Key: "name", Value: name},
+			kv{Key: "out", Value: outPath})
 		return int(anyerr.Success)
 	}
-	if err := a.Accounts.ExportEnvelope(ctx, fs.Arg(0), fs.Arg(1), *out); err != nil {
+	if err := a.Accounts.ExportEnvelope(ctx, providerID, name, outPath); err != nil {
 		return reportErr(err)
 	}
-	if !wantJSON(args) {
+	if wantJSON(args) {
+		jsonOut(map[string]string{"file": outPath})
 		return int(anyerr.Success)
 	}
-	jsonOut(map[string]string{"file": *out})
+	fmt.Printf("exported %s/%s → %s\n", providerID, name, outPath)
+	return int(anyerr.Success)
+}
+
+func cmdAccountExportAll(ctx context.Context, a *appView, args []string, providerFilter, requestedPath string, overwrite bool) int {
+	providerIDs := append([]string(nil), a.Providers.IDs()...)
+	if providerFilter != "" {
+		providerIDs = []string{providerFilter}
+	}
+	sort.Strings(providerIDs)
+	selection := make([]transfer.BackupEntry, 0)
+	for _, providerID := range providerIDs {
+		accounts, err := a.Accounts.List(ctx, providerID)
+		if err != nil {
+			return reportErr(err)
+		}
+		for _, account := range accounts {
+			selection = append(selection, transfer.BackupEntry{Provider: providerID, Name: account.Meta.Name})
+		}
+	}
+	outPath := accountBackupExportPath(a.Root, requestedPath)
+	if globals.DryRun {
+		printDryRunFields("account.export", fmt.Sprintf("Would export %d account(s) → %s", len(selection), outPath),
+			kv{Key: "accounts", Value: selection}, kv{Key: "out", Value: outPath},
+			kv{Key: "overwrite", Value: overwrite})
+		return int(anyerr.Success)
+	}
+	count, err := a.Accounts.ExportSelectedBackup(ctx, selection, outPath, overwrite)
+	if err != nil {
+		return reportErr(err)
+	}
+	if wantJSON(args) {
+		jsonOut(map[string]interface{}{"file": outPath, "accounts": count})
+		return int(anyerr.Success)
+	}
+	fmt.Printf("exported %d account(s) → %s\n", count, outPath)
 	return int(anyerr.Success)
 }
 
@@ -298,37 +356,194 @@ func cmdAccountImport(ctx context.Context, a *appView, args []string) int {
 	// the documented short form of the input file, which the reference also
 	// accepts positionally.
 	input := fs.String("i", "", "input file (or pass it positionally)")
+	inputLong := fs.String("input", "", "alias of --i")
 	if err := fs.Parse(reorder(args)); err != nil {
-		return usageError("usage: anypick account import <provider> <name> <file> [--force]")
+		return reportErr(accountImportUsageError(a.Root, "usage: anypick account import <provider> <name> <file.json> [--force]"))
 	}
-	// The file is positional in the reference form and a flag value in the
-	// guide form; accept either, but exactly one.
-	var providerID, name, file string
-	switch {
-	case fs.NArg() == 3 && *input == "":
-		providerID, name, file = fs.Arg(0), fs.Arg(1), fs.Arg(2)
-	case fs.NArg() == 2 && *input != "":
-		providerID, name, file = fs.Arg(0), fs.Arg(1), *input
-	default:
-		return usageError("usage: anypick account import <provider> <name> <file> [--force]")
+	positionals := append([]string(nil), fs.Args()...)
+	positionalCount := len(positionals)
+	if *input != "" && *inputLong != "" && *input != *inputLong {
+		return reportErr(accountImportUsageError(a.Root, "pass one input path (--i or --input)"))
 	}
+	if *input == "" {
+		*input = *inputLong
+	}
+
+	// The explicit provider/name form remains available for one envelope. With
+	// no provider/name, every positional JSON path is imported as a batch; this
+	// also makes shell-expanded `*.json` imports work without a wrapper script.
+	// Keep the legacy provider/name/file spelling, but let three or more
+	// path-like arguments stay a batch. Without this check exactly three
+	// `*.json` files would be mistaken for provider, account, and file.
+	if positionalCount == 3 && *input == "" && !looksLikeImportFile(positionals[0]) {
+		return importOneAccount(ctx, a, positionals[0], positionals[1], positionals[2], *force, args)
+	}
+	if positionalCount == 2 && *input != "" {
+		return importOneAccount(ctx, a, positionals[0], positionals[1], *input, *force, args)
+	}
+	if positionalCount == 0 && *input != "" {
+		if globals.DryRun {
+			printDryRunFields("account.import", fmt.Sprintf("Would import %s", *input),
+				kv{Key: "input", Value: *input}, kv{Key: "force", Value: *force})
+			return int(anyerr.Success)
+		}
+		return runAccountImport(ctx, a, accountsvc.ImportRequest{Paths: []string{*input}, Force: *force}, args)
+	}
+	if *input != "" {
+		return reportErr(accountImportUsageError(a.Root, "usage: anypick account import <provider> <name> <file.json> [--force]"))
+	}
+	if len(positionals) == 0 {
+		return reportErr(accountImportUsageError(a.Root, "usage: anypick account import <file.json> [<file2.json> …] [--force]"))
+	}
+	if globals.DryRun {
+		printDryRunFields("account.import", fmt.Sprintf("Would import %d JSON file(s)", len(positionals)),
+			kv{Key: "files", Value: positionals}, kv{Key: "force", Value: *force})
+		return int(anyerr.Success)
+	}
+	return runAccountImport(ctx, a, accountsvc.ImportRequest{Paths: positionals, Force: *force}, args)
+}
+
+func importOneAccount(ctx context.Context, a *appView, providerID, name, file string, force bool, args []string) int {
 	if globals.DryRun {
 		printDryRunFields("account.import",
 			fmt.Sprintf("Would import %s/%s from %s", providerID, name, file),
 			kv{Key: "provider", Value: providerID}, kv{Key: "name", Value: name},
-			kv{Key: "input", Value: file}, kv{Key: "force", Value: *force})
+			kv{Key: "input", Value: file}, kv{Key: "force", Value: force})
 		return int(anyerr.Success)
 	}
-	meta, err := a.Accounts.ImportEnvelope(ctx, providerID, name, file, *force)
+	return runAccountImport(ctx, a, accountsvc.ImportRequest{
+		Paths: []string{file}, ProviderID: providerID, Name: name, Force: force,
+	}, args)
+}
+
+func runAccountImport(ctx context.Context, a *appView, request accountsvc.ImportRequest, args []string) int {
+	metas, err := a.Accounts.Import(ctx, request)
 	if err != nil {
-		return reportErr(err)
+		return reportErr(withImportFileSuggestions(err, a.Root))
 	}
 	if wantJSON(args) {
-		jsonOut(meta)
+		if request.Name != "" && len(metas) == 1 {
+			jsonOut(metas[0])
+		} else {
+			jsonOut(metas)
+		}
 		return int(anyerr.Success)
 	}
-	fmt.Printf("imported %s/%s\n", meta.Provider, meta.Name)
+	return reportImportedAccounts(metas, false)
+}
+
+func reportImportedAccounts(metas []store.Meta, jsonMode bool) int {
+	if jsonMode {
+		jsonOut(metas)
+		return int(anyerr.Success)
+	}
+	for _, meta := range metas {
+		fmt.Printf("imported %s/%s\n", meta.Provider, meta.Name)
+	}
 	return int(anyerr.Success)
+}
+
+func accountEnvelopeExportPath(root, providerID, name, requested string) (string, error) {
+	if requested == "" {
+		providerSlug, err := slug.Normalize(providerID, "Provider")
+		if err != nil {
+			return "", err
+		}
+		accountSlug, err := slug.AccountName(name)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(paths.Root(root), "exports", fmt.Sprintf("anypick-%s-%s.json", providerSlug, accountSlug)), nil
+	}
+	return ensureJSONPath(requested), nil
+}
+
+func accountBackupExportPath(root, requested string) string {
+	if requested == "" {
+		return filepath.Join(paths.Root(root), "exports", "anypick-backup.json")
+	}
+	return ensureJSONPath(requested)
+}
+
+func ensureJSONPath(path string) string {
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return path
+	}
+	return path + ".json"
+}
+
+func looksLikeImportFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".json" || ext == ".anypick-backup" {
+		return true
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func accountImportUsageError(root, message string) error {
+	suggestions := []string{"Choose a JSON envelope or backup file, for example: anypick account import ./account.json"}
+	suggestions = append(suggestions, importJSONFileSuggestions(root)...)
+	return anyerr.Newf(message, "INVALID_USAGE", anyerr.WithExitCode(anyerr.InvalidUsage),
+		anyerr.WithSuggestions(suggestions...))
+}
+
+func withImportFileSuggestions(err error, root string) error {
+	if err == nil {
+		return nil
+	}
+	var ae *anyerr.Error
+	if errors.As(err, &ae) {
+		ae.Suggestions = appendUniqueSuggestions(ae.Suggestions, importJSONFileSuggestions(root)...)
+	}
+	return err
+}
+
+func appendUniqueSuggestions(existing []string, additions ...string) []string {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	for _, value := range existing {
+		seen[value] = true
+	}
+	for _, value := range additions {
+		if value != "" && !seen[value] {
+			existing = append(existing, value)
+			seen[value] = true
+		}
+	}
+	return existing
+}
+
+func importJSONFileSuggestions(root string) []string {
+	dirs := []string{}
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, cwd)
+	}
+	dirs = append(dirs, filepath.Join(paths.Root(root), "exports"))
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			if entry.IsDir() || (ext != ".json" && ext != ".anypick-backup") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, "JSON file: "+path)
+		}
+	}
+	sort.Strings(out)
+	if len(out) > 12 {
+		out = out[:12]
+	}
+	return out
 }
 
 func cmdGatewayShow(ctx context.Context, a *appView, args []string) int {

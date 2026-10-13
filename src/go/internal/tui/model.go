@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/hub"
 	"github.com/outof0/anypick/go/internal/paths"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/store"
 	"github.com/outof0/anypick/go/internal/transfer"
 	"github.com/outof0/anypick/go/internal/transport"
 )
@@ -75,10 +77,12 @@ type Model struct {
 
 	// prompting captures a one-line file path for import. enter runs promptRun
 	// with the typed text; esc cancels.
-	prompting   bool
-	promptText  string
-	promptLabel string
-	promptRun   func(string) tea.Cmd
+	prompting              bool
+	promptText             string
+	promptLabel            string
+	promptRun              func(string) tea.Cmd
+	promptSuggestions      []string
+	promptSuggestionCursor int
 
 	status      string
 	statusErr   bool
@@ -298,23 +302,111 @@ func exportProviderCmd(ctx context.Context, a *app.App, providerID string) tea.C
 // it under that name (force=false so an existing account is not clobbered).
 func importAccountCmd(ctx context.Context, a *app.App, providerID, inPath string, force bool) tea.Cmd {
 	return func() tea.Msg {
-		raw, rerr := os.ReadFile(inPath)
-		if rerr != nil {
-			return actionMsg{err: rerr}
-		}
-		env, derr := transfer.DecodeEnvelope(raw, providerID)
-		if derr != nil {
-			return actionMsg{err: derr}
-		}
-		meta, ierr := transfer.ImportEnvelope(transfer.ImportDeps{
-			Store:                 a.Store,
-			Providers:             a.Providers,
-			ResolveIdentityTarget: a.Accounts.ResolveIdentityTarget,
-		}, ctx, providerID, env.Meta.Name, inPath, force)
+		metas, ierr := a.Accounts.Import(ctx, accounts.ImportRequest{
+			Paths: []string{inPath}, ProviderID: providerID, Force: force,
+		})
 		if ierr != nil {
-			return actionMsg{err: ierr}
+			return actionMsg{err: withImportPathSuggestions(ierr, a.Root)}
 		}
-		return actionMsg{text: fmt.Sprintf("imported %s/%s", providerID, meta.Name)}
+		if len(metas) == 1 {
+			return actionMsg{text: fmt.Sprintf("imported %s/%s", metas[0].Provider, metas[0].Name)}
+		}
+		return actionMsg{text: importedAccountsMessage(metas)}
+	}
+}
+
+func importedAccountsMessage(metas []store.Meta) string {
+	if len(metas) == 0 {
+		return "imported 0 accounts"
+	}
+	parts := make([]string, 0, len(metas))
+	for _, meta := range metas {
+		parts = append(parts, meta.Provider+"/"+meta.Name)
+	}
+	return fmt.Sprintf("imported %d account(s): %s", len(metas), strings.Join(parts, ", "))
+}
+
+func withImportPathSuggestions(err error, root string) error {
+	if err == nil {
+		return nil
+	}
+	var ae *anyerr.Error
+	if !errors.As(err, &ae) {
+		suggestions := append([]string{"Choose a JSON envelope or AnyPick backup file from the list."}, importPathCandidates(root)...)
+		return anyerr.Newf(err.Error(), "IMPORT_MISSING", anyerr.WithSuggestions(suggestions...))
+	}
+	suggestions := []string{"Choose a JSON envelope or AnyPick backup file from the list."}
+	suggestions = append(suggestions, importPathCandidates(root)...)
+	ae.Suggestions = appendUniqueTUISuggestions(ae.Suggestions, suggestions...)
+	return err
+}
+
+func appendUniqueTUISuggestions(existing []string, additions ...string) []string {
+	seen := make(map[string]bool, len(existing)+len(additions))
+	for _, value := range existing {
+		seen[value] = true
+	}
+	for _, value := range additions {
+		if value != "" && !seen[value] {
+			existing = append(existing, value)
+			seen[value] = true
+		}
+	}
+	return existing
+}
+
+func importPathCandidates(root string) []string {
+	dirs := make([]string, 0, 2)
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, cwd)
+	}
+	// A live app always supplies its resolved data root. Keeping the fallback
+	// out when the model is deliberately app-less also keeps preview/tests from
+	// enumerating a developer's real ~/.anypick directory.
+	if root != "" {
+		dirs = append(dirs, filepath.Join(paths.Root(root), "exports"))
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
+			if ext != ".json" && ext != ".anypick-backup" {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			if !seen[path] {
+				seen[path] = true
+				out = append(out, path)
+			}
+		}
+	}
+	sort.Strings(out)
+	if len(out) > 12 {
+		out = out[:12]
+	}
+	return out
+}
+
+func (m *Model) openImportPrompt(providerID string) {
+	root := ""
+	if m.app != nil {
+		root = m.app.Root
+	}
+	m.prompting = true
+	m.promptLabel = fmt.Sprintf("import into %s — choose a .json file:", providerID)
+	m.promptText = ""
+	m.promptSuggestions = importPathCandidates(root)
+	m.promptSuggestionCursor = 0
+	m.promptRun = func(path string) tea.Cmd {
+		return importAccountCmd(m.ctx, m.app, providerID, path, false)
 	}
 }
 
@@ -510,6 +602,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wizard = nil
 		m.prompting = false
 		m.promptText = ""
+		m.promptSuggestions = nil
+		m.promptSuggestionCursor = 0
 		return m, m.boardLoadCmd()
 	}
 	return m, nil
@@ -736,12 +830,7 @@ func (m *Model) accountsKey(key string) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			p := m.providers[m.cursor]
-			m.prompting = true
-			m.promptLabel = fmt.Sprintf("import into %s — path to .json envelope:", p.ID)
-			m.promptText = ""
-			m.promptRun = func(path string) tea.Cmd {
-				return importAccountCmd(m.ctx, m.app, p.ID, path, false)
-			}
+			m.openImportPrompt(p.ID)
 			return m, nil
 		case "f":
 			if len(m.providers) == 0 {
@@ -795,12 +884,7 @@ func (m *Model) accountsKey(key string) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "i":
-		m.prompting = true
-		m.promptLabel = fmt.Sprintf("import into %s — path to .json envelope:", row.ProviderID)
-		m.promptText = ""
-		m.promptRun = func(path string) tea.Cmd {
-			return importAccountCmd(m.ctx, m.app, row.ProviderID, path, false)
-		}
+		m.openImportPrompt(row.ProviderID)
 		return m, nil
 	case "e":
 		return m, exportAccountCmd(m.ctx, m.app, row.ProviderID, row.Name)
@@ -861,14 +945,22 @@ func (m *Model) updatePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.prompting = false
 		m.promptText = ""
+		m.promptSuggestions = nil
+		m.promptSuggestionCursor = 0
 		m.promptRun = nil
 		m.status = ""
 		return m, nil
 	case "enter":
 		run := m.promptRun
 		text := m.promptText
+		if text == "" && len(m.promptSuggestions) > 0 && m.promptSuggestionCursor >= 0 &&
+			m.promptSuggestionCursor < len(m.promptSuggestions) {
+			text = m.promptSuggestions[m.promptSuggestionCursor]
+		}
 		m.prompting = false
 		m.promptText = ""
+		m.promptSuggestions = nil
+		m.promptSuggestionCursor = 0
 		m.promptRun = nil
 		if run != nil {
 			return m, run(text)
@@ -879,9 +971,26 @@ func (m *Model) updatePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.promptText = m.promptText[:len(m.promptText)-1]
 		}
 		return m, nil
+	case "up":
+		if len(m.promptSuggestions) > 0 {
+			m.promptSuggestionCursor--
+			if m.promptSuggestionCursor < 0 {
+				m.promptSuggestionCursor = len(m.promptSuggestions) - 1
+			}
+		}
+		return m, nil
+	case "down", "tab":
+		if len(m.promptSuggestions) > 0 {
+			m.promptSuggestionCursor = (m.promptSuggestionCursor + 1) % len(m.promptSuggestions)
+			if key == "tab" {
+				m.promptText = m.promptSuggestions[m.promptSuggestionCursor]
+			}
+		}
+		return m, nil
 	default:
 		if len(key) == 1 {
 			m.promptText += key
+			m.promptSuggestionCursor = -1
 		}
 		return m, nil
 	}

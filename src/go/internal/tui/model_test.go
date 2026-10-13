@@ -2,11 +2,14 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/outof0/anypick/go/internal/doctor"
+	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 // key builds a KeyMsg the way bubbletea delivers a single printable rune.
@@ -315,6 +318,72 @@ func TestImportOpensPathPrompt(t *testing.T) {
 	_, run := updateModel(t, opened, special(tea.KeyEnter))
 	if run == nil {
 		t.Error("enter did not produce the import command")
+	}
+}
+
+func TestImportPromptAcceptsPathsContainingNavigationLetters(t *testing.T) {
+	a, cleanup := newTUIApp(t)
+	defer cleanup()
+	exports := filepath.Join(a.Root, "exports")
+	if err := os.MkdirAll(exports, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(exports, "suggested.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := New(context.Background(), a)
+	m.openImportPrompt("codex")
+	if len(m.promptSuggestions) == 0 {
+		t.Fatal("real import prompt opened without its file suggestions")
+	}
+	var imported string
+	m.promptRun = func(path string) tea.Cmd {
+		imported = path
+		return nil
+	}
+
+	for _, r := range "jk-work.json" {
+		m, _ = updateModel(t, m, key(r))
+	}
+	if m.promptText != "jk-work.json" {
+		t.Fatalf("promptText = %q, want jk-work.json", m.promptText)
+	}
+	_, _ = updateModel(t, m, special(tea.KeyEnter))
+	if imported != "jk-work.json" {
+		t.Fatalf("imported path = %q, want jk-work.json", imported)
+	}
+}
+
+func TestTUIBackupImportStaysOnSelectedProvider(t *testing.T) {
+	source, closeSource := newTUIApp(t)
+	defer closeSource()
+	seedSavedAccount(t, source, "openrouter", "or", "gateway@example.com")
+	seedSavedAccount(t, source, "deepseek", "ds", "deepseek@example.com")
+	backupPath := filepath.Join(t.TempDir(), "mixed.anypick-backup")
+	if _, err := source.Accounts.ExportSelectedBackup(context.Background(), []transfer.BackupEntry{
+		{Provider: "openrouter", Name: "or"}, {Provider: "deepseek", Name: "ds"},
+	}, backupPath, false); err != nil {
+		t.Fatalf("export mixed-provider fixture: %v", err)
+	}
+
+	destination, closeDestination := newTUIApp(t)
+	defer closeDestination()
+	msg := importAccountCmd(context.Background(), destination, "deepseek", backupPath, false)()
+	outcome, ok := msg.(actionMsg)
+	if !ok {
+		t.Fatalf("import command returned %T, want actionMsg", msg)
+	}
+	if outcome.err != nil {
+		t.Fatalf("TUI import failed: %v", outcome.err)
+	}
+	if outcome.text != "imported deepseek/ds" {
+		t.Fatalf("TUI import status = %q, want imported deepseek/ds", outcome.text)
+	}
+	if account, err := destination.Store.Get(context.Background(), "deepseek", "ds"); err != nil || account == nil {
+		t.Fatalf("selected provider account missing: account=%+v err=%v", account, err)
+	}
+	if account, err := destination.Store.Get(context.Background(), "openrouter", "or"); err != nil || account != nil {
+		t.Fatalf("TUI imported unselected provider account: account=%+v err=%v", account, err)
 	}
 }
 

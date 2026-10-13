@@ -117,6 +117,23 @@ func (m *Model) View() string {
 	if m.prompting {
 		out.WriteString("\n" + styleSelected.Render(m.promptLabel) + "\n")
 		out.WriteString(styleOK.Render(m.promptText+"_") + "\n")
+		if len(m.promptSuggestions) > 0 {
+			out.WriteString(styleDim.Render("JSON files (↑↓ choose · tab complete):") + "\n")
+			for i, path := range m.promptSuggestions {
+				mark := " "
+				if i == m.promptSuggestionCursor {
+					mark = "▸"
+				}
+				line := fmt.Sprintf("%s %s", mark, path)
+				if i == m.promptSuggestionCursor {
+					out.WriteString(styleSelected.Render(line) + "\n")
+				} else {
+					out.WriteString(line + "\n")
+				}
+			}
+		} else {
+			out.WriteString(styleDim.Render("No .json files found in the current folder or AnyPick exports.") + "\n")
+		}
 	}
 	return out.String()
 }

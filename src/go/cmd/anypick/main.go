@@ -128,34 +128,66 @@ func run(args []string) int {
 
 	var code int
 	switch args[0] {
-	case "add":
-		code = cmdAdd(ctx, a, args[1:])
 	case "use":
 		code = cmdUse(ctx, a, args[1:])
-	case "codex":
-		code = cmdCodex(ctx, a, args[1:])
+	case "run":
+		code = cmdRun(ctx, a, args[1:])
 	case "current":
 		code = cmdCurrent(ctx, a, args[1:])
 	case "list":
 		code = cmdList(ctx, a, args[1:])
+	case "models":
+		code = cmdModels(ctx, a, args[1:])
+	case "add":
+		code = cmdAdd(ctx, a, args[1:])
+	case "account":
+		code = cmdAccount(ctx, a, args[1:])
+	case "gateway":
+		code = cmdGateway(ctx, a, args[1:])
+	case "preset":
+		code = cmdPreset(ctx, a, args[1:])
+	case "proxy":
+		code = cmdProxy(ctx, a, args[1:])
+	case "plugin":
+		code = cmdPlugin(ctx, a, args[1:])
+	case "link":
+		code = cmdLink(ctx, a, args[1:])
+	case "unlink":
+		code = cmdUnlink(ctx, a, args[1:])
+	case "reset":
+		code = cmdReset(ctx, a, args[1:])
+	case "codex":
+		code = cmdCodex(ctx, a, args[1:])
 	case "tui", "--tui":
 		return runTuiSurface(ctx, a)
-	case "app":
-		code = cmdAppRun(ctx, a, args[1:])
-	case "desktop-service":
-		code = cmdDesktopService(ctx, a, args[1:])
 	case "tray":
 		code = cmdTray(ctx, a, args[1:])
+	case "serve":
+		code = cmdServe(ctx, a, args[1:])
+	case "doctor":
+		code = cmdDoctor(ctx, a, args[1:])
+	case "update":
+		code = cmdUpdate(ctx, a, args[1:])
+	case "completion":
+		code = cmdCompletion(a, args[1:])
+	case "providers":
+		code = cmdProviders(ctx, a, args[1:])
+	case "clients":
+		code = cmdClients(ctx, a, args[1:])
+	case "__complete":
+		code = cmdComplete(ctx, a, args[1:])
+	case "app":
+		code = cmdAppRun(ctx, a, args[1:])
 	case "start":
 		code = cmdStart(ctx, a, args[1:])
 	case "status":
 		code = cmdStatus(a, args[1:])
 	case "stop":
 		code = cmdStop(a, args[1:])
-	case "serve":
-		code = cmdServe(ctx, a, args[1:])
-	case "proxy":
-		code = cmdProxy(ctx, a, args[1:])
+	case "stop-proxy":
+		code = cmdStopProxy(ctx, a, args[1:])
+	case "desktop-service":
+		code = cmdDesktopService(ctx, a, args[1:])
 	case "_serve-hub":
 		return serveHubChild(ctx, a, args[1:])
 	case "_supervise":
@@ -174,38 +206,6 @@ func run(args []string) int {
 			return int(anyerr.Operational)
 		}
 		return int(anyerr.Success)
-	case "stop-proxy":
-		code = cmdStopProxy(ctx, a, args[1:])
-	case "gateway":
-		code = cmdGateway(ctx, a, args[1:])
-	case "plugin":
-		code = cmdPlugin(ctx, a, args[1:])
-	case "account":
-		code = cmdAccount(ctx, a, args[1:])
-	case "preset":
-		code = cmdPreset(ctx, a, args[1:])
-	case "link":
-		code = cmdLink(ctx, a, args[1:])
-	case "unlink":
-		code = cmdUnlink(ctx, a, args[1:])
-	case "reset":
-		code = cmdReset(ctx, a, args[1:])
-	case "run":
-		code = cmdRun(ctx, a, args[1:])
-	case "models":
-		code = cmdModels(ctx, a, args[1:])
-	case "providers":
-		code = cmdProviders(ctx, a, args[1:])
-	case "clients":
-		code = cmdClients(ctx, a, args[1:])
-	case "__complete":
-		code = cmdComplete(ctx, a, args[1:])
-	case "doctor":
-		code = cmdDoctor(ctx, a, args[1:])
-	case "update":
-		code = cmdUpdate(ctx, a, args[1:])
-	case "completion":
-		code = cmdCompletion(a, args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return int(anyerr.Success)
@@ -286,24 +286,27 @@ func bareInvocation(ctx context.Context, a *app.App) int {
 const usageText = `anypick-go — point AI coding clients at accounts you already have
 
 Usage:
+  anypick use <client> --with <source> [--profile <name>] [--model <id>] [--transport auto|direct|proxy]
+  anypick run <client> (--with <source>|--profile <name>) -- <args…>   ephemeral isolated launch
+  anypick current <provider>
+  anypick list providers | accounts [<provider>]
+  anypick models <client> [--with <source>]   ids this connection can serve
   anypick add account <provider> --name <name> [--current|--new] [--source <id>] [--force]
   anypick add gateway <name> --provider <id> [--endpoint url]
   anypick add <provider> --name <name> [--force]   (deprecated alias for add account --current)
-	anypick use <client> --with <source> [--profile <name>] [--model <id>] [--transport auto|direct|proxy]
-	anypick run <client> (--with <source>|--profile <name>) -- <args…>   ephemeral isolated launch
-	anypick codex profile login|list|show|remove …
-  anypick current <provider>
-  anypick models <client> [--with <source>]   ids this connection can serve
-  anypick list providers | accounts [<provider>]
-  anypick link|unlink <client> [--with <source>] [--dir <path>]   link re-applies the global spec without --with
-  anypick reset <client>
   anypick account list|remove|refresh|export|import …
+  anypick account export <provider> <name> [--out <file>] | [<provider>] --all [--out <file>] [--overwrite]
+  anypick account import <provider> <name> <file.json> [--force] | <file.json> [<file2.json> …] [--force]
   anypick gateway add|list|show|edit|remove|reset …
-	anypick plugin list|add|remove|enable|disable|trust …
   anypick preset list|show|remove …
   anypick proxy enable|disable|config|start|stop|status|token|restart|logs …
   anypick proxy pool status|enable|disable|member|start|stop …
   anypick proxy hub status|enable|source|owner|preview|start|stop|token …
+  anypick plugin list|add|remove|enable|disable|trust …
+  anypick link|unlink <client> [--with <source>] [--dir <path>]   link re-applies the global spec without --with
+  anypick reset <client>
+  anypick codex profile login|list|show|remove …
+  anypick tui | tray
   anypick serve [--detach|--stop]   core server (status API)
   anypick doctor | update | completion <bash|zsh|fish>
 

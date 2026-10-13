@@ -16,6 +16,10 @@ func TestReorder(t *testing.T) {
 		{"bool flag without value", []string{"myprov", "--force"}, []string{"--force", "myprov"}},
 		{"two positionals", []string{"a", "b"}, []string{"a", "b"}},
 		{"flag with equals", []string{"a", "--name=x"}, []string{"--name=x", "a"}},
+		{"boolean flag before positional", []string{"--all", "codex"}, []string{"--all", "codex"}},
+		{"boolean flag between positionals", []string{"codex", "--all", "work"}, []string{"--all", "codex", "work"}},
+		{"current before provider", []string{"--current", "codex"}, []string{"--current", "codex"}},
+		{"stdin sentinel is a value", []string{"codex", "--auth-file", "-"}, []string{"--auth-file", "-", "codex"}},
 		{"empty", nil, nil},
 	}
 	for _, tc := range tests {

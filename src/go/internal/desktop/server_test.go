@@ -80,7 +80,7 @@ func newTrayEnv(t *testing.T) *trayEnv {
 		Providers: provReg, Clients: clientReg,
 		Profiles:    profile.NewService(&profile.Store{Root: root, DB: database.DB}),
 		Bindings:    bindings.NewService(&bindings.Store{Root: root, DB: database.DB}),
-		Inspections: NewInspectionManager(st),
+		Inspections: NewInspectionManager(svc),
 		ModelCache:  &modelcache.Store{DB: database},
 	}
 	cfgStore := config.NewStore(root, database)

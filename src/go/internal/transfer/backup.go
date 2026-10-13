@@ -18,6 +18,7 @@ import (
 	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/slug"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
@@ -53,6 +54,24 @@ func backupError(code, format string, args ...interface{}) error {
 	return anyerr.Newf(fmt.Sprintf(format, args...), code, anyerr.WithMutated(false))
 }
 
+func encodedSnapshotSize(files map[string]string) (int, int64) {
+	decoded := int64(0)
+	for _, content := range files {
+		length := stdBase64.DecodedLen(len(content))
+		if strings.HasSuffix(content, "=") {
+			length--
+		}
+		if strings.HasSuffix(content, "==") {
+			length--
+		}
+		if length < 0 {
+			length = 0
+		}
+		decoded += int64(length)
+	}
+	return len(files), decoded
+}
+
 // ValidateBackupSelection normalizes and orders the selection, rejecting
 // empty/duplicate/invalid entries.
 func ValidateBackupSelection(accounts []BackupEntry) ([]BackupEntry, error) {
@@ -66,12 +85,12 @@ func ValidateBackupSelection(accounts []BackupEntry) ([]BackupEntry, error) {
 	seen := map[string]bool{}
 	selected := make([]BackupEntry, 0, len(accounts))
 	for _, a := range accounts {
-		if a.Provider == "" {
+		if strings.TrimSpace(a.Provider) == "" {
 			return nil, backupError("BACKUP_SELECTION_INVALID", "A selected backup account has no provider.")
 		}
-		name := slugNormalize(a.Name)
-		if name == "" {
-			return nil, backupError("BACKUP_SELECTION_INVALID", "A selected backup account has no name.")
+		name, err := slug.AccountName(a.Name)
+		if err != nil {
+			return nil, backupError("BACKUP_SELECTION_INVALID", "A selected backup account has an invalid name.")
 		}
 		key := a.Provider + "\x00" + name
 		if seen[key] {
@@ -89,8 +108,6 @@ func ValidateBackupSelection(accounts []BackupEntry) ([]BackupEntry, error) {
 	return selected, nil
 }
 
-func slugNormalize(raw string) string { return strings.TrimSpace(strings.ToLower(raw)) }
-
 // ExportSelectedBackup writes one multi-account package. Non-overwrite writes
 // fail when the destination exists (no silent clobber).
 func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts []BackupEntry, destination string, overwrite bool) (int, error) {
@@ -98,35 +115,24 @@ func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts 
 	if err != nil {
 		return 0, err
 	}
-	pkgAccounts := make([]backupPackageAccount, 0, len(selected))
-	fileCount, decodedBytes := 0, 0
-	for _, acct := range selected {
-		envelope, berr := BuildEnvelope(st, ctx, acct.Provider, acct.Name)
-		if berr != nil {
-			return 0, berr
+	var encoded []byte
+	err = lock.WithMutationLocks(ctx, st.Root, backupMutationScopes(selected), func(c context.Context) error {
+		payload, err := buildBackupPackageLocked(st, c, selected)
+		if err != nil {
+			return err
 		}
-		fileCount += len(envelope.Files)
-		for _, content := range envelope.Files {
-			if raw, derr := stdBase64.DecodeString(content); derr == nil {
-				decodedBytes += len(raw)
-			}
+		raw, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
 		}
-		if fileCount > MaxBackupFiles || decodedBytes > MaxBackupDecodedBytes {
-			return 0, backupError("BACKUP_LIMIT", "Selected accounts exceed the backup package limits.")
+		encoded = append(raw, '\n')
+		if len(encoded) > MaxBackupEncodedBytes {
+			return backupError("BACKUP_LIMIT", "Backup package exceeds the encoded size limit.")
 		}
-		pkgAccounts = append(pkgAccounts, backupPackageAccount{Provider: acct.Provider, Name: acct.Name, Envelope: envelope})
-	}
-	payload := backupPackageJSON{
-		Version: BackupVersion, Kind: BackupKind,
-		CreatedAt: nowISO(), Accounts: pkgAccounts,
-	}
-	raw, merr := json.MarshalIndent(payload, "", "  ")
-	if merr != nil {
-		return 0, merr
-	}
-	encoded := append(raw, '\n')
-	if len(encoded) > MaxBackupEncodedBytes {
-		return 0, backupError("BACKUP_LIMIT", "Backup package exceeds the encoded size limit.")
+		return nil
+	}, 0)
+	if err != nil {
+		return 0, err
 	}
 
 	if overwrite {
@@ -158,6 +164,323 @@ func ExportSelectedBackup(st *store.AccountStore, ctx context.Context, accounts 
 		return 0, lerr
 	}
 	return len(selected), nil
+}
+
+func backupMutationScopes(accounts []BackupEntry) []string {
+	scopeSet := make(map[string]bool, len(accounts))
+	for _, account := range accounts {
+		scopeSet[refs.ProviderScope(account.Provider)] = true
+	}
+	scopes := make([]string, 0, len(scopeSet))
+	for scope := range scopeSet {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
+func buildBackupPackageLocked(st *store.AccountStore, ctx context.Context, selected []BackupEntry) (*backupPackageJSON, error) {
+	for _, scope := range backupMutationScopes(selected) {
+		if err := lock.Require(ctx, st.Root, scope); err != nil {
+			return nil, err
+		}
+	}
+	pkgAccounts := make([]backupPackageAccount, 0, len(selected))
+	fileCount, decodedBytes := 0, 0
+	for _, acct := range selected {
+		envelope, berr := buildEnvelopeLocked(st, ctx, acct.Provider, acct.Name)
+		if berr != nil {
+			return nil, berr
+		}
+		fileCount += len(envelope.Files)
+		for _, content := range envelope.Files {
+			if raw, derr := stdBase64.DecodeString(content); derr == nil {
+				decodedBytes += len(raw)
+			}
+		}
+		if fileCount > MaxBackupFiles || decodedBytes > MaxBackupDecodedBytes {
+			return nil, backupError("BACKUP_LIMIT", "Selected accounts exceed the backup package limits.")
+		}
+		pkgAccounts = append(pkgAccounts, backupPackageAccount{Provider: acct.Provider, Name: acct.Name, Envelope: envelope})
+	}
+	return &backupPackageJSON{
+		Version: BackupVersion, Kind: BackupKind,
+		CreatedAt: nowISO(), Accounts: pkgAccounts,
+	}, nil
+}
+
+// ImportBackup restores every account in a backup package. The package is
+// inspected before the restore so the same identity and replacement rules are
+// used by the desktop, CLI, and TUI entry points. force is the explicit
+// approval to replace entries whose names already exist.
+func ImportBackup(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path string, force bool) ([]store.Meta, error) {
+	return importBackup(ctx, st, reg, path, "", force)
+}
+
+// ImportBackupForProvider restores only the entries for providerID from a
+// multi-account backup. The TUI starts imports from one provider's account
+// list, so importing a package there must stay scoped to that provider.
+func ImportBackupForProvider(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path, providerID string, force bool) ([]store.Meta, error) {
+	if strings.TrimSpace(providerID) == "" {
+		return nil, backupError("BACKUP_SELECTION_INVALID", "A provider is required to import a backup selection.")
+	}
+	return importBackup(ctx, st, reg, path, providerID, force)
+}
+
+func importBackup(ctx context.Context, st *store.AccountStore, reg *provider.Registry, path, providerID string, force bool) ([]store.Meta, error) {
+	inspection, err := InspectBackup(st, reg, path)
+	if err != nil {
+		return nil, err
+	}
+	selected := make([]BackupEntry, 0, len(inspection.Entries))
+	replace := make([]BackupEntry, 0, len(inspection.Entries))
+	for _, entry := range inspection.Entries {
+		if providerID != "" && entry.Provider != providerID {
+			continue
+		}
+		selected = append(selected, BackupEntry{Provider: entry.Provider, Name: entry.Name})
+		if force && entry.Disposition == DispositionReplace {
+			replace = append(replace, BackupEntry{Provider: entry.Provider, Name: entry.Name})
+		}
+	}
+	if len(selected) == 0 {
+		return nil, backupError("BACKUP_SELECTION_INVALID", "The backup contains no accounts for the selected provider.")
+	}
+	return RestoreSelectedContext(ctx, st, reg, path, selected, RestoreOptions{Replace: replace})
+}
+
+// FileImportOptions carries the choices a UI made for one import operation.
+// ImportFiles owns format detection so every UI uses the same import path.
+type FileImportOptions struct {
+	ProviderID string
+	Name       string
+	Force      bool
+	Selection  []BackupEntry
+	Replace    []BackupEntry
+}
+
+// ImportFiles imports account envelopes or a multi-account backup. A backup
+// selection is optional; when omitted, all entries in the package are selected
+// (or only the entries matching ProviderID when it is set).
+func ImportFiles(deps ImportDeps, ctx context.Context, paths []string, opts FileImportOptions) ([]store.Meta, error) {
+	if len(paths) == 0 {
+		return nil, backupError("BACKUP_EMPTY", "No import files were selected.")
+	}
+	if len(paths) > MaxBackupAccounts {
+		return nil, backupError("BACKUP_LIMIT", "An import can contain at most %d files.", MaxBackupAccounts)
+	}
+
+	if len(paths) == 1 && (opts.Name == "" || importFileKind(paths[0]) == BackupKind) {
+		if opts.Name != "" {
+			return nil, anyerr.Newf(
+				"A multi-account backup cannot be imported with provider and account arguments; pass only the backup file.",
+				"INVALID_USAGE", anyerr.WithMutated(false))
+		}
+		if len(opts.Replace) > 0 && len(opts.Selection) == 0 {
+			return nil, backupError("BACKUP_SELECTION_INVALID",
+				"Replacement approval requires an explicit backup selection.")
+		}
+		if len(opts.Selection) == 0 && len(opts.Replace) == 0 {
+			if opts.ProviderID != "" {
+				return ImportBackupForProvider(ctx, deps.Store, deps.Providers, paths[0], opts.ProviderID, opts.Force)
+			}
+			return ImportBackup(ctx, deps.Store, deps.Providers, paths[0], opts.Force)
+		}
+
+		inspection, err := InspectBackup(deps.Store, deps.Providers, paths[0])
+		if err != nil {
+			return nil, err
+		}
+		selected := append([]BackupEntry(nil), opts.Selection...)
+		if len(selected) == 0 {
+			for _, entry := range inspection.Entries {
+				if opts.ProviderID == "" || entry.Provider == opts.ProviderID {
+					selected = append(selected, BackupEntry{Provider: entry.Provider, Name: entry.Name})
+				}
+			}
+		}
+		if len(selected) == 0 {
+			return nil, backupError("BACKUP_SELECTION_INVALID", "The backup contains no accounts for the selected provider.")
+		}
+		for _, entry := range selected {
+			if opts.ProviderID != "" && entry.Provider != opts.ProviderID {
+				return nil, backupError("BACKUP_SELECTION_INVALID",
+					"The backup selection contains an account outside the requested provider.")
+			}
+		}
+
+		replace := append([]BackupEntry(nil), opts.Replace...)
+		if opts.Force && len(replace) == 0 {
+			selectedSet := make(map[string]bool, len(selected))
+			for _, entry := range selected {
+				selectedSet[entry.Provider+"\x00"+entry.Name] = true
+			}
+			for _, entry := range inspection.Entries {
+				if entry.Disposition == DispositionReplace && selectedSet[entry.Provider+"\x00"+entry.Name] {
+					replace = append(replace, BackupEntry{Provider: entry.Provider, Name: entry.Name})
+				}
+			}
+		}
+		return RestoreSelectedContext(ctx, deps.Store, deps.Providers, paths[0], selected,
+			RestoreOptions{Replace: replace})
+	}
+
+	if len(opts.Selection) > 0 || len(opts.Replace) > 0 {
+		return nil, backupError("BACKUP_SELECTION_INVALID",
+			"A backup selection can only be applied to one multi-account backup file.")
+	}
+	if opts.Name != "" {
+		if len(paths) != 1 || opts.ProviderID == "" {
+			return nil, backupError("IMPORT_SELECTION_INVALID",
+				"A named account import requires one file and a provider.")
+		}
+		name, err := slug.AccountName(opts.Name)
+		if err != nil {
+			return nil, anyerr.Newf(err.Error(), "INVALID_USAGE", anyerr.WithMutated(false))
+		}
+		return importEnvelopeFiles(ctx, deps.Store, deps.Providers, paths, opts.ProviderID, name, opts.Force)
+	}
+	return importEnvelopeFiles(ctx, deps.Store, deps.Providers, paths, opts.ProviderID, "", opts.Force)
+}
+
+func importFileKind(path string) string {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxBackupEncodedBytes {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var header struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(raw, &header) != nil {
+		return ""
+	}
+	return header.Kind
+}
+
+// ImportEnvelopeFiles imports several single-account JSON envelopes as one
+// restore operation. Shells expand a path such as `exports/*.json` before the
+// CLI sees it; collecting the envelopes into a temporary backup package keeps
+// the validation, collision checks, and commit behavior identical to a native
+// multi-account backup.
+func ImportEnvelopeFiles(ctx context.Context, st *store.AccountStore, reg *provider.Registry, paths []string, force bool) ([]store.Meta, error) {
+	return importEnvelopeFiles(ctx, st, reg, paths, "", "", force)
+}
+
+func importEnvelopeFiles(ctx context.Context, st *store.AccountStore, reg *provider.Registry, paths []string, expectedProviderID, requestedName string, force bool) ([]store.Meta, error) {
+	if len(paths) == 0 {
+		return nil, backupError("BACKUP_EMPTY", "No JSON files were selected for import.")
+	}
+	if len(paths) > MaxBackupAccounts {
+		return nil, backupError("BACKUP_LIMIT", "An import can contain at most %d files.", MaxBackupAccounts)
+	}
+
+	accounts := make([]backupPackageAccount, 0, len(paths))
+	refs := make([]BackupEntry, 0, len(paths))
+	var totalEncoded int64
+	totalFiles, totalDecoded := 0, int64(0)
+	for i, path := range paths {
+		info, statErr := os.Stat(path)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return nil, backupError("BACKUP_MISSING", "JSON import file %q could not be read.", path)
+		}
+		if info.Size() > MaxImportEnvelopeSize {
+			return nil, backupError("BACKUP_LIMIT", "JSON import file %q exceeds the encoded size limit.", path)
+		}
+		totalEncoded += info.Size()
+		if totalEncoded > MaxBackupEncodedBytes {
+			return nil, backupError("BACKUP_LIMIT", "Selected JSON import files exceed the encoded size limit.")
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, backupError("BACKUP_FORMAT", "JSON import file %q could not be read.", path)
+		}
+		var header struct {
+			Kind string `json:"kind"`
+			Meta struct {
+				Provider string `json:"provider"`
+			} `json:"meta"`
+		}
+		if json.Unmarshal(raw, &header) != nil || header.Kind != EnvelopeKind {
+			return nil, backupError("BACKUP_FORMAT", "Import file %d (%q) is not an AnyPick account envelope.", i+1, path)
+		}
+		if header.Meta.Provider == "" {
+			return nil, backupError("BACKUP_FORMAT", "Import file %d (%q) has no provider.", i+1, path)
+		}
+		if expectedProviderID != "" && header.Meta.Provider != expectedProviderID {
+			return nil, backupError("BACKUP_FORMAT",
+				"Import file %d belongs to provider %q, not requested provider %q.",
+				i+1, header.Meta.Provider, expectedProviderID)
+		}
+		env, decodeErr := DecodeEnvelope(raw, header.Meta.Provider)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		nameToImport := env.Meta.Name
+		if requestedName != "" {
+			nameToImport = requestedName
+		}
+		name, nameErr := slug.AccountName(nameToImport)
+		if nameErr != nil {
+			return nil, backupError("BACKUP_FORMAT", "Import file %d (%q) has an invalid account name.", i+1, path)
+		}
+		env.Meta.Name = name
+		fileCount, decodedBytes := encodedSnapshotSize(env.Files)
+		totalFiles += fileCount
+		totalDecoded += decodedBytes
+		if totalFiles > MaxBackupFiles || totalDecoded > MaxBackupDecodedBytes {
+			return nil, backupError("BACKUP_LIMIT", "Selected JSON import files exceed the backup payload limits.")
+		}
+		accounts = append(accounts, backupPackageAccount{
+			Provider: env.Meta.Provider,
+			Name:     env.Meta.Name,
+			Envelope: &EnvelopeJSON{
+				Version: env.Version,
+				Kind:    env.Kind,
+				Meta:    env.Meta,
+				Proxy:   env.Proxy,
+				Files:   env.Files,
+			},
+		})
+		refs = append(refs, BackupEntry{Provider: env.Meta.Provider, Name: env.Meta.Name})
+	}
+	selected, err := ValidateBackupSelection(refs)
+	if err != nil {
+		return nil, err
+	}
+
+	packagePath, err := os.CreateTemp("", "anypick-import-*.json")
+	if err != nil {
+		return nil, err
+	}
+	packageName := packagePath.Name()
+	if closeErr := packagePath.Close(); closeErr != nil {
+		_ = os.Remove(packageName)
+		return nil, closeErr
+	}
+	defer os.Remove(packageName)
+	payload := backupPackageJSON{
+		Version:   BackupVersion,
+		Kind:      BackupKind,
+		CreatedAt: nowISO(),
+		Accounts:  accounts,
+	}
+	raw, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return nil, marshalErr
+	}
+	if writeErr := os.WriteFile(packageName, raw, 0o600); writeErr != nil {
+		return nil, writeErr
+	}
+
+	replace := selected
+	if !force {
+		replace = nil
+	}
+	return RestoreSelectedContext(ctx, st, reg, packageName, selected, RestoreOptions{Replace: replace})
 }
 
 // Disposition is the per-account restore outcome.
@@ -344,11 +667,16 @@ func restoreSelectedLocked(ctx context.Context, st *store.AccountStore, reg *pro
 func validateRefs(entries []BackupEntry) (map[string]bool, error) {
 	keys := map[string]bool{}
 	for _, e := range entries {
-		if e.Provider == "" || e.Name == "" {
+		if strings.TrimSpace(e.Provider) == "" {
 			return nil, backupError("BACKUP_SELECTION_INVALID",
 				"The restore selection contains an invalid account reference.")
 		}
-		keys[e.Provider+"\x00"+slugNormalize(e.Name)] = true
+		name, err := slug.AccountName(e.Name)
+		if err != nil {
+			return nil, backupError("BACKUP_SELECTION_INVALID",
+				"The restore selection contains an invalid account reference.")
+		}
+		keys[e.Provider+"\x00"+name] = true
 	}
 	return keys, nil
 }
@@ -362,7 +690,7 @@ type preparedPackage struct {
 // touched. Every envelope is re-run through the same codec as single imports.
 func readBackupPackage(path string) (*backupPackageJSON, error) {
 	info, statErr := os.Stat(path)
-	if statErr != nil || info.IsDir() {
+	if statErr != nil || !info.Mode().IsRegular() {
 		return nil, backupError("BACKUP_MISSING", "Backup package could not be read.")
 	}
 	if info.Size() > MaxBackupEncodedBytes {
@@ -373,12 +701,24 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 		return nil, backupError("BACKUP_FORMAT", "Backup package is not valid JSON.")
 	}
 	var pkg backupPackageJSON
-	var probe interface{}
-	if json.Unmarshal(raw, &probe) != nil {
-		return nil, backupError("BACKUP_FORMAT", "Backup package is not valid JSON.")
-	}
 	if json.Unmarshal(raw, &pkg) != nil {
 		return nil, backupError("BACKUP_FORMAT", "Backup package is not valid JSON.")
+	}
+	// Normalize a single-account export into the same restore plan as a package.
+	// Desktop preview and commit must interpret the exact same staged bytes.
+	if pkg.Kind == EnvelopeKind {
+		var envelope EnvelopeJSON
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, importFormat("Invalid account envelope.")
+		}
+		decoded, err := DecodeEnvelope(raw, envelope.Meta.Provider)
+		if err != nil {
+			return nil, err
+		}
+		pkg = backupPackageJSON{
+			Version: BackupVersion, Kind: BackupKind, CreatedAt: decoded.Meta.CreatedAt,
+			Accounts: []backupPackageAccount{{Provider: decoded.Meta.Provider, Name: decoded.Meta.Name, Envelope: &envelope}},
+		}
 	}
 	if pkg.Kind != BackupKind {
 		return nil, backupError("BACKUP_FORMAT", "Unrecognized backup package format.")
@@ -398,6 +738,7 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 	if len(pkg.Accounts) > MaxBackupAccounts {
 		return nil, backupError("BACKUP_LIMIT", "A backup can contain at most %d accounts.", MaxBackupAccounts)
 	}
+	totalFiles, totalDecoded := 0, int64(0)
 	for i, acct := range pkg.Accounts {
 		// The envelope is untrusted input. A missing or explicit null envelope
 		// must be reported as a format error before prepareBackup dereferences
@@ -405,8 +746,17 @@ func readBackupPackage(path string) (*backupPackageJSON, error) {
 		if acct.Envelope == nil {
 			return nil, backupError("BACKUP_FORMAT", "Backup entry %d is missing its envelope.", i+1)
 		}
-		if slugNormalize(acct.Provider) == "" || slugNormalize(acct.Name) == "" {
+		if strings.TrimSpace(acct.Provider) == "" {
 			return nil, backupError("BACKUP_FORMAT", "Backup entry %d has an invalid account reference.", i+1)
+		}
+		if _, nameErr := slug.AccountName(acct.Name); nameErr != nil {
+			return nil, backupError("BACKUP_FORMAT", "Backup entry %d has an invalid account reference.", i+1)
+		}
+		fileCount, decodedBytes := encodedSnapshotSize(acct.Envelope.Files)
+		totalFiles += fileCount
+		totalDecoded += decodedBytes
+		if totalFiles > MaxBackupFiles || totalDecoded > MaxBackupDecodedBytes {
+			return nil, backupError("BACKUP_LIMIT", "Backup package exceeds the file or decoded payload limit.")
 		}
 	}
 	return &pkg, nil
@@ -439,13 +789,22 @@ func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) 
 		}
 		env, derr := DecodeEnvelope(envRaw, acct.Envelope.Meta.Provider)
 		if derr != nil {
-			return nil, backupError("BACKUP_FORMAT", "Backup entry %d failed validation: %v", i+1, derr)
+			return nil, derr
 		}
+		outerName, nameErr := slug.AccountName(acct.Name)
+		if nameErr != nil {
+			return nil, backupError("BACKUP_FORMAT", "Backup entry %d has an invalid account name.", i+1)
+		}
+		metaName, metaNameErr := slug.AccountName(env.Meta.Name)
+		if metaNameErr != nil || outerName != metaName || acct.Provider != env.Meta.Provider {
+			return nil, backupError("BACKUP_FORMAT", "Backup entry %d account reference does not match its envelope.", i+1)
+		}
+		env.Meta.Name = outerName
 		item := described{
-			acct: backupPackageAccount{Provider: env.Meta.Provider, Name: acct.Name, Envelope: &EnvelopeJSON{
+			acct: backupPackageAccount{Provider: env.Meta.Provider, Name: outerName, Envelope: &EnvelopeJSON{
 				Version: env.Version, Kind: env.Kind, Meta: env.Meta, Proxy: env.Proxy, Files: env.Files,
 			}},
-			label:    firstNonEmpty(env.Meta.Label, acct.Name),
+			label:    firstNonEmpty(env.Meta.Label, outerName),
 			identity: env.Meta.Identity,
 		}
 		pv, gerr := reg.Get(env.Meta.Provider)
@@ -474,11 +833,18 @@ func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) 
 		}
 		list = append(list, item)
 	}
+	refs := make([]BackupEntry, 0, len(list))
+	for _, item := range list {
+		refs = append(refs, BackupEntry{Provider: item.acct.Provider, Name: item.acct.Name})
+	}
+	if _, err := ValidateBackupSelection(refs); err != nil {
+		return nil, err
+	}
 
 	// Duplicate identities inside the package itself are conflicts too.
 	packageIdentityCounts := map[string]int{}
 	for _, item := range list {
-		if item.identity != "" {
+		if provider.AccountScopedIdentity(item.identity) {
 			packageIdentityCounts[item.acct.Provider+"\x00"+normalizeIdentityKey(item.identity)]++
 		}
 	}
@@ -498,9 +864,9 @@ func prepareBackup(st *store.AccountStore, reg *provider.Registry, path string) 
 		}
 		normIdentity := normalizeIdentityKey(item.identity)
 		collision := false
-		if normIdentity != "" {
+		if provider.AccountScopedIdentity(item.identity) {
 			for _, acct := range local {
-				if acct.Meta.Name != item.acct.Name && acct.Meta.Identity != "" &&
+				if acct.Meta.Name != item.acct.Name && provider.AccountScopedIdentity(acct.Meta.Identity) &&
 					normalizeIdentityKey(acct.Meta.Identity) == normIdentity {
 					collision = true
 					break

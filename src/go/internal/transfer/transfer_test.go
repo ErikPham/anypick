@@ -3,14 +3,18 @@ package transfer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outof0/anypick/go/internal/anyerr"
 	"github.com/outof0/anypick/go/internal/db"
+	"github.com/outof0/anypick/go/internal/lock"
 	"github.com/outof0/anypick/go/internal/provider"
+	"github.com/outof0/anypick/go/internal/refs"
 	"github.com/outof0/anypick/go/internal/store"
 )
 
@@ -304,6 +308,11 @@ func TestValidateBackupSelectionAndLimits(t *testing.T) {
 	if !(sel[0].Provider == "claude" && sel[0].Name == "b") {
 		t.Fatalf("selection not normalized/sorted: %+v", sel)
 	}
+	if _, err := ValidateBackupSelection([]BackupEntry{
+		{Provider: "codex", Name: "work"}, {Provider: "codex", Name: "work/"},
+	}); err == nil {
+		t.Fatal("names that normalize to the same account were accepted")
+	}
 }
 
 func TestBackupExportInspectRestoreAtomic(t *testing.T) {
@@ -362,6 +371,278 @@ func TestBackupExportInspectRestoreAtomic(t *testing.T) {
 	acct, _ := st.Get(ctx, "claude", "alpha")
 	if acct.Meta.CreatedAt != "2026-01-01T00:00:00.000Z" {
 		t.Fatalf("createdAt not preserved: %q", acct.Meta.CreatedAt)
+	}
+}
+
+func TestImportEnvelopeFilesRestoresMultipleJSONEnvelopes(t *testing.T) {
+	src, reg := newTransferEnv(t)
+	saveFakeAccount(t, src, "claude", "alpha")
+	saveFakeAccount(t, src, "codex", "beta")
+
+	paths := []string{filepath.Join(t.TempDir(), "alpha.json"), filepath.Join(t.TempDir(), "beta.json")}
+	if err := ExportEnvelope(src, t.Context(), "claude", "alpha", paths[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExportEnvelope(src, t.Context(), "codex", "beta", paths[1]); err != nil {
+		t.Fatal(err)
+	}
+	dstRoot := t.TempDir()
+	dstDB := openTestDB(t, dstRoot)
+	dst := store.New(dstRoot, dstDB)
+	metas, err := ImportEnvelopeFiles(t.Context(), dst, reg, paths, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("imported %d accounts, want 2", len(metas))
+	}
+	for _, ref := range []BackupEntry{{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"}} {
+		acct, getErr := dst.Get(t.Context(), ref.Provider, ref.Name)
+		if getErr != nil || acct == nil {
+			t.Fatalf("imported %s/%s missing: %v", ref.Provider, ref.Name, getErr)
+		}
+	}
+}
+
+func TestImportEnvelopeFilesNormalizesBeforeCollisionChecks(t *testing.T) {
+	st, reg := newTransferEnv(t)
+	saveFakeAccount(t, st, "codex", "work")
+	path := filepath.Join(t.TempDir(), "work.json")
+	if err := ExportEnvelope(st, t.Context(), "codex", "work", path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope EnvelopeJSON
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Meta.Name = "work/"
+	envelope.Meta.Label = "Must not replace"
+	raw, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ImportEnvelopeFiles(t.Context(), st, reg, []string{path}, false); err == nil {
+		t.Fatal("normalized-name collision imported without --force")
+	}
+	account, err := st.Get(t.Context(), "codex", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account == nil || account.Meta.Label != "Work" {
+		t.Fatalf("existing account changed after rejected import: %+v", account)
+	}
+
+	metas, err := ImportEnvelopeFiles(t.Context(), st, reg, []string{path}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].Name != "work" {
+		t.Fatalf("forced import metadata = %+v, want canonical work", metas)
+	}
+	account, err = st.Get(t.Context(), "codex", "work")
+	if err != nil || account == nil || account.Meta.Label != "Must not replace" {
+		t.Fatalf("forced import did not replace canonical account: %+v, err=%v", account, err)
+	}
+}
+
+func TestImportBackupRestoresWholePackage(t *testing.T) {
+	src, reg := newTransferEnv(t)
+	saveFakeAccount(t, src, "claude", "alpha")
+	saveFakeAccount(t, src, "codex", "beta")
+	dest := filepath.Join(t.TempDir(), "accounts.json")
+	if _, err := ExportSelectedBackup(src, t.Context(), []BackupEntry{
+		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},
+	}, dest, false); err != nil {
+		t.Fatal(err)
+	}
+	dstRoot := t.TempDir()
+	dstDB := openTestDB(t, dstRoot)
+	dst := store.New(dstRoot, dstDB)
+	metas, err := ImportBackup(t.Context(), dst, reg, dest, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("imported %d accounts, want 2", len(metas))
+	}
+}
+
+func TestImportBackupForProviderRestoresOnlyThatProvider(t *testing.T) {
+	src, reg := newTransferEnv(t)
+	saveFakeAccount(t, src, "claude", "alpha")
+	saveFakeAccount(t, src, "codex", "beta")
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	if _, err := ExportSelectedBackup(src, t.Context(), []BackupEntry{
+		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},
+	}, path, false); err != nil {
+		t.Fatal(err)
+	}
+	dstRoot := t.TempDir()
+	dst := store.New(dstRoot, openTestDB(t, dstRoot))
+	metas, err := ImportBackupForProvider(t.Context(), dst, reg, path, "codex", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metas) != 1 || metas[0].Provider != "codex" || metas[0].Name != "beta" {
+		t.Fatalf("provider-scoped import = %+v", metas)
+	}
+	if account, err := dst.Get(t.Context(), "claude", "alpha"); err != nil || account != nil {
+		t.Fatalf("unselected provider was imported: account=%+v err=%v", account, err)
+	}
+	if account, err := dst.Get(t.Context(), "codex", "beta"); err != nil || account == nil {
+		t.Fatalf("selected provider account missing: account=%+v err=%v", account, err)
+	}
+}
+
+func TestInspectAndImportRejectNormalizedDuplicatePackageNames(t *testing.T) {
+	src, reg := newTransferEnv(t)
+	saveFakeAccount(t, src, "codex", "work")
+	envelope, err := BuildEnvelope(src, t.Context(), "codex", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := *envelope
+	second.Meta.Name = "work/"
+	pkg := backupPackageJSON{
+		Version: BackupVersion,
+		Kind:    BackupKind,
+		Accounts: []backupPackageAccount{
+			{Provider: "codex", Name: "work", Envelope: envelope},
+			{Provider: "codex", Name: "work/", Envelope: &second},
+		},
+	}
+	raw, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "duplicate.anypick-backup")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	destRoot := t.TempDir()
+	dst := store.New(destRoot, openTestDB(t, destRoot))
+	if _, err := InspectBackup(dst, reg, path); err == nil {
+		t.Fatal("inspection accepted duplicate normalized account refs")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_DUPLICATE" {
+		t.Fatalf("inspection error = %v, want BACKUP_DUPLICATE", err)
+	}
+	if _, err := ImportBackup(t.Context(), dst, reg, path, true); err == nil {
+		t.Fatal("import accepted duplicate normalized account refs")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_DUPLICATE" {
+		t.Fatalf("import error = %v, want BACKUP_DUPLICATE", err)
+	}
+	if account, err := dst.Get(t.Context(), "codex", "work"); err != nil || account != nil {
+		t.Fatalf("rejected package mutated destination: account=%+v err=%v", account, err)
+	}
+}
+
+func TestBackupPackageBuildRequiresAllProviderLocks(t *testing.T) {
+	st, reg := newTransferEnv(t)
+	saveFakeAccount(t, st, "claude", "alpha")
+	saveFakeAccount(t, st, "codex", "beta")
+	selected, err := ValidateBackupSelection([]BackupEntry{
+		{Provider: "claude", Name: "alpha"}, {Provider: "codex", Name: "beta"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildBackupPackageLocked(st, t.Context(), selected); err == nil {
+		t.Fatal("package builder accepted an unlocked context")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "MUTATION_LOCK_NOT_HELD" {
+		t.Fatalf("unlocked build error = %v, want MUTATION_LOCK_NOT_HELD", err)
+	}
+	err = lock.WithMutationLocks(t.Context(), st.Root, backupMutationScopes(selected), func(ctx context.Context) error {
+		_, err := buildBackupPackageLocked(st, ctx, selected)
+		return err
+	}, 0)
+	if err != nil {
+		t.Fatalf("package builder failed while every provider lock was held: %v", err)
+	}
+
+	// The public export waits for a concurrent mutation lock before it reads
+	// the saved snapshot; after release it writes the complete package.
+	held := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- lock.WithMutationLock(t.Context(), st.Root, refs.ProviderScope("codex"), func(context.Context) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+			<-lockDone
+		}
+	}()
+	<-held
+	destination := filepath.Join(t.TempDir(), "locked.anypick-backup")
+	exportDone := make(chan error, 1)
+	go func() {
+		_, err := ExportSelectedBackup(st, t.Context(), []BackupEntry{{Provider: "codex", Name: "beta"}}, destination, false)
+		exportDone <- err
+	}()
+	select {
+	case err := <-exportDone:
+		t.Fatalf("export completed while provider mutation lock was held: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	released = true
+	if err := <-lockDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-exportDone; err != nil {
+		t.Fatalf("export failed after provider lock release: %v", err)
+	}
+	if _, err := InspectBackup(st, reg, destination); err != nil {
+		t.Fatalf("exported package did not inspect: %v", err)
+	}
+}
+
+func TestReadBackupPackageEnforcesAggregateFileLimit(t *testing.T) {
+	files := make(map[string]string, MaxBackupFiles+1)
+	for i := 0; i <= MaxBackupFiles; i++ {
+		files[fmt.Sprintf("file-%04d", i)] = "eA=="
+	}
+	pkg := backupPackageJSON{
+		Version: BackupVersion,
+		Kind:    BackupKind,
+		Accounts: []backupPackageAccount{{
+			Provider: "codex",
+			Name:     "work",
+			Envelope: &EnvelopeJSON{
+				Version: EnvelopeVersion,
+				Kind:    EnvelopeKind,
+				Meta:    store.Meta{Provider: "codex", Name: "work"},
+				Files:   files,
+			},
+		}},
+	}
+	raw, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "too-many-files.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBackupPackage(path); err == nil {
+		t.Fatal("backup with more than MaxBackupFiles was accepted")
+	} else if ae, ok := err.(*anyerr.Error); !ok || ae.Code != "BACKUP_LIMIT" {
+		t.Fatalf("error = %v, want BACKUP_LIMIT", err)
 	}
 }
 

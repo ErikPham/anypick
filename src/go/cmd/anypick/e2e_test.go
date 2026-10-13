@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -30,10 +31,138 @@ import (
 	"github.com/outof0/anypick/go/internal/ownership"
 	"github.com/outof0/anypick/go/internal/pools"
 	"github.com/outof0/anypick/go/internal/refs"
+	"github.com/outof0/anypick/go/internal/transfer"
 )
 
 func appReadyForTest() (*app.App, func(), error) {
 	return app.Ready(context.Background(), app.Options{SkipMigrate: true})
+}
+
+func TestAccountBackupCLIExportImportRoundTrip(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	seedRootForParity(t)
+
+	source, closeSource, err := appReadyForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceAccount, err := source.Accounts.Get(context.Background(), "deepseek", "ds")
+	if err != nil {
+		closeSource()
+		t.Fatal(err)
+	}
+	if sourceAccount == nil {
+		closeSource()
+		t.Fatal("seed account is missing")
+	}
+	expectedFiles := transfer.CollectSnapshotFiles(sourceAccount.SnapshotDir)
+	closeSource()
+	if len(expectedFiles) == 0 {
+		t.Fatal("seed account has no snapshot files to round-trip")
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "roundtrip.json")
+	clearGlobalsForParity()
+	code := -1
+	captureBoth(t, func() {
+		code = run([]string{"account", "export", "--all", "--out", backupPath})
+	})
+	if code != int(anyerr.Success) {
+		t.Fatalf("account export exited %d (stdout=%q stderr=%q)", code, lastStdout, lastStderr)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup file was not created: %v", err)
+	}
+
+	destRoot := t.TempDir()
+	destHome := filepath.Join(destRoot, "home")
+	if err := os.MkdirAll(destHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", destHome)
+	t.Setenv("USERPROFILE", destHome)
+	t.Setenv("APPDATA", filepath.Join(destHome, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(destHome, "AppData", "Local"))
+	t.Setenv("ANYPICK_HOME", filepath.Join(destRoot, "data"))
+	t.Setenv("CODEX_HOME", "")
+	clearGlobalsForParity()
+	captureBoth(t, func() { code = run([]string{"account", "import", backupPath}) })
+	if code != int(anyerr.Success) {
+		t.Fatalf("account import exited %d (stdout=%q stderr=%q)", code, lastStdout, lastStderr)
+	}
+
+	dest, closeDest, err := appReadyForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDest()
+	imported, err := dest.Accounts.Get(context.Background(), "deepseek", "ds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported == nil {
+		t.Fatal("account is missing after CLI backup import")
+	}
+	if got := transfer.CollectSnapshotFiles(imported.SnapshotDir); !reflect.DeepEqual(got, expectedFiles) {
+		t.Fatalf("imported snapshot differs from exported snapshot: got %d file(s), want %d", len(got), len(expectedFiles))
+	}
+}
+
+func TestAccountBackupCannotUseSingleAccountImportForm(t *testing.T) {
+	isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	seedRootForParity(t)
+
+	backupPath := filepath.Join(t.TempDir(), "accounts.json")
+	code := -1
+	captureBoth(t, func() {
+		code = run([]string{"account", "export", "--all", "--out", backupPath})
+	})
+	if code != int(anyerr.Success) {
+		t.Fatalf("could not prepare backup: exit=%d stderr=%q", code, lastStderr)
+	}
+	clearGlobalsForParity()
+	home, data := os.Getenv("HOME"), os.Getenv("ANYPICK_HOME")
+	before := treeDigest(t, home, data)
+	captureBoth(t, func() {
+		code = run([]string{"account", "import", "deepseek", "renamed", backupPath, "--force"})
+	})
+	if code != int(anyerr.InvalidUsage) {
+		t.Fatalf("single-account backup import exited %d, want invalid usage (stdout=%q stderr=%q)", code, lastStdout, lastStderr)
+	}
+	if after := treeDigest(t, home, data); after != before {
+		t.Fatal("rejected single-account backup import mutated local state")
+	}
+}
+
+func TestAccountExportDefaultPathCanonicalizesAccountName(t *testing.T) {
+	base := isolateEnv(t)
+	clearGlobalsForParity()
+	defer resetGlobals()()
+	seedRootForParity(t)
+
+	code := -1
+	captureBoth(t, func() {
+		code = run([]string{"account", "export", "deepseek", "../../../../ds"})
+	})
+	if code != int(anyerr.Success) {
+		t.Fatalf("account export exited %d (stdout=%q stderr=%q)", code, lastStdout, lastStderr)
+	}
+
+	exportsDir := filepath.Join(os.Getenv("ANYPICK_HOME"), "exports")
+	want := filepath.Join(exportsDir, "anypick-deepseek-ds.json")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("canonical export was not written inside exports: %v", err)
+	}
+	if rel, err := filepath.Rel(exportsDir, want); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("default export path escaped exports: %q (rel %q, err %v)", want, rel, err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "ds.json")); err == nil {
+		t.Fatal("traversal alias wrote an export outside the data root")
+	}
 }
 
 // leakedChildren reports detached children launched from this test's own temp

@@ -1567,7 +1567,7 @@ func (s *Server) handle(ctx context.Context, cmd *Command) error {
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
 			return err
 		}
-		preview, err := s.inspections.Inspect(s.Deps.Providers, p.RequestID, p.Path)
+		preview, err := s.inspections.Inspect(p.RequestID, p.Path)
 		if err != nil {
 			reason := inspectionFailureReason(err)
 			s.write(FrameBackupPreview(BackupPreviewResult{

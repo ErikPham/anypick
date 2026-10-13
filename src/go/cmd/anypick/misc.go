@@ -516,7 +516,7 @@ func cmdCompletion(a *appView, args []string) int {
 	// Static word lists reflect the dispatched tree minus hidden helpers;
 	// positional depth resolves live ids through the hidden `__complete`
 	// helper.
-	const topLevel = "add use run codex current list link unlink reset account gateway preset proxy plugin tray serve app start status stop stop-proxy update completion doctor providers clients"
+	const topLevel = "use run current list models add account gateway preset proxy plugin link unlink reset codex tui tray serve doctor update completion providers clients app start status stop stop-proxy"
 	switch shell {
 	case "bash":
 		fmt.Printf(`# bash completion for anypick
@@ -546,8 +546,9 @@ _anypick_completions() {
       ;;
     account)
       if [[ ${COMP_CWORD} -eq 2 ]]; then COMPREPLY=( $(compgen -W 'list remove refresh export import' -- "$cur") )
+      elif [[ ${COMP_WORDS[2]} == import && ${COMP_CWORD} -ge 3 ]]; then COMPREPLY=( $(compgen -f -- "$cur" | grep -E '\.(json|anypick-backup)$') )
       elif [[ ${COMP_CWORD} -eq 3 ]]; then COMPREPLY=( $(compgen -W "$(anypick __complete providers 2>/dev/null)" -- "$cur") )
-      elif [[ ${COMP_CWORD} -eq 4 ]]; then COMPREPLY=( $(compgen -W "$(anypick __complete accounts ${COMP_WORDS[2]} 2>/dev/null)" -- "$cur") ); fi
+      elif [[ ${COMP_CWORD} -eq 4 ]]; then COMPREPLY=( $(compgen -W "$(anypick __complete accounts ${COMP_WORDS[3]} 2>/dev/null)" -- "$cur") ); fi
       ;;
     gateway)
       if [[ ${COMP_CWORD} -eq 2 ]]; then COMPREPLY=( $(compgen -W 'add list show edit remove reset' -- "$cur") )
@@ -593,6 +594,7 @@ _anypick() {
       ;;
     (account)
       if (( CURRENT == 2 )); then _values 'action' list remove refresh export import
+      elif (( CURRENT >= 3 )) && [[ $words[3] == import ]]; then _files -g '*.(json|anypick-backup)'
       elif (( CURRENT == 3 )); then _values 'provider' ${(f)"$(anypick __complete providers 2>/dev/null)"}
       elif (( CURRENT == 4 )); then _values 'account' ${(f)"$(anypick __complete accounts $words[3] 2>/dev/null)"}; fi
       ;;
@@ -627,6 +629,7 @@ compdef _anypick anypick
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from add' -a 'account gateway'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from plugin' -a 'list add remove enable disable trust'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from account' -a '(anypick __complete providers 2>/dev/null)'")
+		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from import' -a '(__fish_complete_path)' -F")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from gateway' -a '(anypick __complete gateways 2>/dev/null)'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from account; and test (count (commandline -opc)) -eq 3' -a '(anypick __complete accounts (commandline -opc)[3] 2>/dev/null)'")
 		fmt.Println("complete -c anypick -n '__fish_seen_subcommand_from proxy; and test (count (commandline -opc)) -eq 4' -a '(anypick __complete accounts (commandline -opc)[3] 2>/dev/null)'")

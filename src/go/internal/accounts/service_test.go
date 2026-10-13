@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"errors"
+	"github.com/outof0/anypick/go/internal/transfer"
 	"os"
 	"path/filepath"
 	"testing"
@@ -326,5 +327,190 @@ func TestDeleteAbortsWhenTheCascadeFails(t *testing.T) {
 	}
 	if account, err := st.Get(context.Background(), "deepseek", "work"); err != nil || account == nil {
 		t.Fatalf("account was deleted after a failed cascade: %+v, %v", account, err)
+	}
+}
+
+// Use the real Codex snapshot parser: display labels are not account identities.
+func saveImportCodexFixture(t *testing.T, svc *Service, name, auth string) {
+	t.Helper()
+	dir, _, err := svc.Store.PrepareSnapshot("codex", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Store.DiscardPreparedSnapshot(dir)
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(auth), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pv, err := svc.Providers.Get("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := pv.DescribeSnapshot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Store.WriteMetaContext(context.Background(), store.Meta{Provider: "codex", Name: name, Identity: info.Identity, Label: info.Label}, dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertImportSnapshot(t *testing.T, svc *Service, name, want string) {
+	t.Helper()
+	acct, err := svc.Store.Get(context.Background(), "codex", name)
+	if err != nil || acct == nil {
+		t.Fatalf("missing %s: %v", name, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(acct.SnapshotDir, "auth.json"))
+	if err != nil || string(raw) != want {
+		t.Fatalf("snapshot for %s differs", name)
+	}
+}
+
+func TestImportCodexDistinctAPIKeysRoundTrip(t *testing.T) {
+	source, _ := testService(t)
+	saveImportCodexFixture(t, source, "first", `{"OPENAI_API_KEY":"sk-fake-first"}`)
+	saveImportCodexFixture(t, source, "second", `{"OPENAI_API_KEY":"sk-fake-second"}`)
+	ctx := context.Background()
+	backup := filepath.Join(t.TempDir(), "backup.json")
+	if _, err := transfer.ExportSelectedBackup(source.Store, ctx, []transfer.BackupEntry{{Provider: "codex", Name: "first"}, {Provider: "codex", Name: "second"}}, backup, false); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := testService(t)
+	got, err := target.Import(ctx, ImportRequest{Paths: []string{backup}})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("backup round trip: %v, %v", got, err)
+	}
+	envelope := filepath.Join(t.TempDir(), "account.json")
+	if err := transfer.ExportEnvelope(source.Store, ctx, "codex", "first", envelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, named := range []bool{false, true} {
+		dest, _ := testService(t)
+		saveImportCodexFixture(t, dest, "second", `{"OPENAI_API_KEY":"sk-fake-second"}`)
+		request := ImportRequest{Paths: []string{envelope}, ProviderID: "codex"}
+		if named {
+			request.Name = "renamed"
+		}
+		if _, err := dest.Import(ctx, request); err != nil {
+			t.Fatalf("named=%v: %v", named, err)
+		}
+		importedName := "first"
+		if named {
+			importedName = "renamed"
+		}
+		assertImportSnapshot(t, dest, importedName, `{"OPENAI_API_KEY":"sk-fake-first"}`)
+		assertImportSnapshot(t, dest, "second", `{"OPENAI_API_KEY":"sk-fake-second"}`)
+	}
+	for _, name := range []string{"first", "second"} {
+		acct, err := target.Store.Get(ctx, "codex", name)
+		if err != nil || acct == nil {
+			t.Fatalf("missing %s: %v", name, err)
+		}
+		raw, err := os.ReadFile(filepath.Join(acct.SnapshotDir, "auth.json"))
+		want := `{"OPENAI_API_KEY":"sk-fake-` + name + `"}`
+		if err != nil || string(raw) != want {
+			t.Fatalf("%s credentials did not round trip", name)
+		}
+	}
+}
+
+func TestImportCollisionPolicyParity(t *testing.T) {
+	ctx := context.Background()
+	source, _ := testService(t)
+	auth := `{"tokens":{"account_id":"fake-account","access_token":"fake-access"}}`
+	saveImportCodexFixture(t, source, "incoming", auth)
+	envelope := filepath.Join(t.TempDir(), "account.json")
+	backup := filepath.Join(t.TempDir(), "backup.json")
+	if err := transfer.ExportEnvelope(source.Store, ctx, "codex", "incoming", envelope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transfer.ExportSelectedBackup(source.Store, ctx, []transfer.BackupEntry{{Provider: "codex", Name: "incoming"}}, backup, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, existing := range []string{"existing", "incoming"} {
+		for _, force := range []bool{false, true} {
+			for _, mode := range []string{"automatic", "named", "backup", "reviewed"} {
+				t.Run(existing+"/"+mode+"/force="+map[bool]string{false: "false", true: "true"}[force], func(t *testing.T) {
+					dest, _ := testService(t)
+					oldAuth := `{"tokens":{"account_id":"fake-account","access_token":"fake-old-access"}}`
+					saveImportCodexFixture(t, dest, existing, oldAuth)
+					request := ImportRequest{Paths: []string{envelope}, Force: force}
+					if mode == "named" {
+						request.ProviderID = "codex"
+						request.Name = "incoming"
+					}
+					if mode == "backup" {
+						request.Paths = []string{backup}
+					}
+					if mode == "reviewed" {
+						request.Selection = []transfer.BackupEntry{{Provider: "codex", Name: "incoming"}}
+					}
+					got, err := dest.Import(ctx, request)
+					if existing == "incoming" && force {
+						if err != nil || len(got) != 1 || got[0].Name != "incoming" {
+							t.Fatalf("replacement: %v, %v", got, err)
+						}
+					} else if err == nil {
+						t.Fatal("collision succeeded")
+					}
+					expectedAuth := oldAuth
+					if existing == "incoming" && force {
+						expectedAuth = auth
+					}
+					assertImportSnapshot(t, dest, existing, expectedAuth)
+					rows, err := dest.Store.ListAccounts(ctx, "codex")
+					if err != nil || len(rows) != 1 || rows[0].Meta.Name != existing {
+						t.Fatalf("collision changed account names: %v, %v", rows, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestImportErrorExitParity(t *testing.T) {
+	for _, mode := range []string{"automatic", "named", "reviewed"} {
+		for _, invalid := range []string{"json", "kind", "limit"} {
+			t.Run(mode+"/"+invalid, func(t *testing.T) {
+				svc, _ := testService(t)
+				path := filepath.Join(t.TempDir(), "invalid.json")
+				raw := "{"
+				if invalid == "kind" {
+					raw = `{"kind":"unknown"}`
+				}
+				if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				want := anyerr.ImportFormat
+				if invalid == "limit" {
+					file, err := os.OpenFile(path, os.O_WRONLY, 0600)
+					if err != nil {
+						t.Fatal(err)
+					}
+					err = file.Truncate(transfer.MaxBackupEncodedBytes + 1)
+					file.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					want = anyerr.ImportLimit
+				}
+				req := ImportRequest{Paths: []string{path}}
+				if mode == "named" {
+					req.ProviderID = "codex"
+					req.Name = "incoming"
+				}
+				if mode == "reviewed" {
+					req.Selection = []transfer.BackupEntry{{Provider: "codex", Name: "incoming"}}
+				}
+				_, err := svc.Import(context.Background(), req)
+				if err == nil || anyerr.ExitCodeOf(err) != want {
+					t.Fatalf("error=%v exit=%v want=%v", err, anyerr.ExitCodeOf(err), want)
+				}
+				rows, err := svc.Store.ListAccounts(context.Background(), "codex")
+				if err != nil || len(rows) != 0 {
+					t.Fatal("invalid import changed store")
+				}
+			})
+		}
 	}
 }

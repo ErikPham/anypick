@@ -78,6 +78,9 @@ func TestReservedCodesCarryTheirDocumentedExitStatus(t *testing.T) {
 		{"HEALTH_FAILURE", HealthFailure},
 		{"MISSING_DEPENDENCY", MissingDependency},
 		{"IMPORT_FORMAT", ImportFormat},
+		{"BACKUP_FORMAT", ImportFormat},
+		{"BACKUP_VERSION", ImportFormat},
+		{"BACKUP_LIMIT", ImportLimit},
 		{"IMPORT_LIMIT", ImportLimit},
 		{"CANCELLED", Cancelled},
 	}
