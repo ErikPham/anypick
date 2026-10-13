@@ -639,6 +639,9 @@ func buildCLI() {
 	}
 	builtCLIDir = dir
 	bin := filepath.Join(dir, "anypick-cli")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", bin, "./cmd/anypick")
 	cmd.Dir = filepath.Join(thisFileDir(), "..", "..")
 	// Tests replace HOME with a TempDir. The child Go command then places its
